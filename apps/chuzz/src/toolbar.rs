@@ -15,12 +15,14 @@ pub fn Toolbar(
     active_tab_id: Signal<TabId>,
     mut url_input_value: Signal<String>,
 ) -> Element {
-    // Whenever the active tab navigates, the address bar follows it. Typing
-    // overwrites this until the next navigation commits.
-    use_effect(move || {
-        let tab = active_tab(tabs, active_tab_id());
-        *url_input_value.write_unchecked() = tab.current_url().to_string();
-    });
+    // The address bar follows the active tab, but only when that tab actually
+    // navigates. Tracking the URL itself is what makes typing possible: an
+    // effect that re-ran on every render would overwrite each keystroke with
+    // the current URL, and the field could never hold anything typed.
+    let current_url = active_tab(tabs, active_tab_id()).current_url().to_string();
+    use_effect(use_reactive!(|current_url| {
+        *url_input_value.write_unchecked() = current_url;
+    }));
 
     let tab = active_tab(tabs, active_tab_id());
     let can_go_back = tab.can_go_back();

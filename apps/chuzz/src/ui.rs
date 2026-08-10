@@ -121,6 +121,8 @@ html, body {
   font-size: 13px;
 }
 
+/* Always mounted, only faded: showing it on hover by adding the element
+   would resize the pill under the pointer. */
 .tab-close {
   width: 18px;
   height: 18px;
@@ -130,7 +132,12 @@ html, body {
   color: #8fa0b8;
   flex-shrink: 0;
   font-size: 13px;
+  opacity: 0;
 }
+
+.tab-close.visible { opacity: 1; }
+
+.tab:hover .tab-close { opacity: 1; }
 
 .tab-close:hover { background: rgba(255, 255, 255, 0.14); color: #ffffff; }
 
@@ -250,6 +257,9 @@ html, body {
   background: #0f1622;
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 14px;
+  /* Clip to the rounded corners. The child document scrolls itself, so this
+     hides the corners without trapping the page. */
+  overflow: hidden;
 }
 
 .page {
@@ -259,9 +269,6 @@ html, body {
 
 /* Side panel */
 
-/* The seam: a hairline dividing the page from the panel, which the toggle
-   straddles. Without it the handle floats in empty space with nothing to
-   attach to. */
 /* w-[332px] with ml-4 when visible; w-0 ml-0 when not. */
 #side-panel {
   display: flex;
@@ -276,24 +283,6 @@ html, body {
 #side-panel.collapsed {
   width: 0;
   margin-left: 0;
-}
-
-.panel-rail-toggle {
-  width: 26px;
-  height: 26px;
-  line-height: 24px;
-  text-align: center;
-  border-radius: 13px;
-  color: #8fa0b8;
-  background: #1b2739;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  cursor: pointer;
-}
-
-.panel-rail-toggle:hover {
-  color: #ffffff;
-  background: #33445e;
-  border-color: #4c8dff;
 }
 
 #side-panel-header {
@@ -315,10 +304,6 @@ html, body {
   white-space: nowrap;
 }
 
-/* The collapse affordance is an edge handle, not a button in a header: a
-   rounded tab that protrudes from the panel's leading edge, vertically
-   centred, present whether the panel is open or collapsed. It rides the seam
-   between the page card and the panel. */
 /* Ported from AgencyZero's ProjectPanelToggle. The handle starts at the page
    boundary and occupies the whole gap on its right: a slim rectangular tab in
    the primary blue, rounded on its right side only, reaching neither panel's

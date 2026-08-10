@@ -19,6 +19,7 @@ use dioxus_native::winit::platform::macos::WindowAttributesMacOS;
 mod document_loader;
 mod history;
 mod nav;
+mod shortcuts;
 mod side_panel;
 mod status_strip;
 mod tab;
@@ -28,6 +29,7 @@ mod ui;
 
 use document_loader::NetProvider;
 use nav::HOME_URL;
+use shortcuts::{apply, resolve};
 use side_panel::{PanelEdgeHandle, PanelSections, SidePanel};
 use status_strip::StatusStrip;
 use tab::{Tab, TabId, TabStoreImplExt, TabView, active_tab, open_tab, tab_display_title};
@@ -71,6 +73,8 @@ fn app() -> Element {
     let home_url = use_hook(|| Url::parse(HOME_URL).expect("home URL is a valid constant"));
     let startup_url = use_hook(|| try_consume_context::<StartupUrl>().and_then(|ctx| ctx.0));
     let net_provider = use_context::<Arc<NetProvider>>();
+    let shortcut_net_provider = net_provider.clone();
+    let focus_address_bar = use_signal(|| false);
 
     let url_input_value = use_signal(String::new);
     // Collapsed by default: the page gets the full width until asked otherwise.
@@ -92,7 +96,29 @@ fn app() -> Element {
     let is_loading = active_tab(tabs, active_tab_id()).is_loading();
 
     rsx!(
-        div { id: "frame",
+        div {
+            id: "frame",
+            tabindex: 0,
+            onkeydown: move |event| {
+                let modifiers = event.modifiers();
+                if let Some(shortcut) = resolve(
+                    &event.key().to_string(),
+                    &event.code().to_string(),
+                    modifiers.meta(),
+                    modifiers.ctrl(),
+                    modifiers.alt(),
+                    modifiers.shift(),
+                ) {
+                    event.prevent_default();
+                    apply(
+                        shortcut,
+                        tabs,
+                        active_tab_id,
+                        focus_address_bar,
+                        shortcut_net_provider.clone(),
+                    );
+                }
+            },
             title { "{window_title}" }
             // A bare `style {}` element does not reach the document: Dioxus
             // overloads `style` as an attribute namespace, so the stylesheet is
