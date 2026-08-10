@@ -19,6 +19,7 @@ use dioxus_native::winit::platform::macos::WindowAttributesMacOS;
 mod document_loader;
 mod history;
 mod nav;
+mod side_panel;
 mod tab;
 mod tab_strip;
 mod toolbar;
@@ -26,6 +27,7 @@ mod ui;
 
 use document_loader::NetProvider;
 use nav::HOME_URL;
+use side_panel::SidePanel;
 use tab::{Tab, TabId, TabStoreImplExt, TabView, active_tab, open_tab, tab_display_title};
 use tab_strip::TabStrip;
 use toolbar::Toolbar;
@@ -65,6 +67,7 @@ fn app() -> Element {
     let net_provider = use_context::<Arc<NetProvider>>();
 
     let url_input_value = use_signal(String::new);
+    let panel_collapsed = use_signal(|| false);
     let tabs: Store<Vec<Tab>> = use_store(Vec::new);
 
     let mut active_tab_id: Signal<TabId> = use_hook(|| {
@@ -83,16 +86,23 @@ fn app() -> Element {
     rsx!(
         div { id: "frame",
             title { "{window_title}" }
-            style { "{BROWSER_UI_CSS}" }
+            // A bare `style {}` element does not reach the document: Dioxus
+            // overloads `style` as an attribute namespace, so the stylesheet is
+            // silently dropped and the whole UI renders unstyled. `document::Style`
+            // routes inline CSS through the supported head path instead.
+            document::Style { "{BROWSER_UI_CSS}" }
             TabStrip { tabs, active_tab_id, home_url, open_new_tab }
             Toolbar { tabs, active_tab_id, url_input_value }
             if is_loading {
                 div { id: "loading-bar" }
             }
-            div { id: "page-area",
-                for tab in tabs.iter() {
-                    TabView { key: "{tab.tab_id()}", tab, active_tab_id }
+            div { id: "content-row",
+                div { id: "page-area",
+                    for tab in tabs.iter() {
+                        TabView { key: "{tab.tab_id()}", tab, active_tab_id }
+                    }
                 }
+                SidePanel { collapsed: panel_collapsed }
             }
         }
     )

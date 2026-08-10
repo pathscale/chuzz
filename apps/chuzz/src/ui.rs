@@ -10,18 +10,23 @@ pub const BROWSER_UI_CSS: &str = r#"
 html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
+  height: 100vh;
+  overflow: hidden;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
   color: #202124;
   background: #dee1e6;
 }
 
+/* Viewport units, not height:100%. A percentage height only resolves when
+   every ancestor has a resolved height; when that chain breaks the frame
+   collapses to its content and the rest of the window paints as dead space. */
 #frame {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  width: 100%;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
 }
 
 /* Tab strip */
@@ -138,10 +143,24 @@ html, body {
   outline: 2px solid #1a73e8;
 }
 
-/* Page area */
+/* Content row: page on the left, side panel on the right.
+   Mirrors AgencyZero's shell: a column frame whose content row fills the
+   remaining height and never scrolls as a whole. */
 
+#content-row {
+  display: flex;
+  flex-direction: row;
+  flex-grow: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* min-width/min-height:0 stop a flex item from refusing to shrink below its
+   content size, which is what leaves a page clipped mid-paragraph. */
 #page-area {
   flex-grow: 1;
+  min-width: 0;
+  min-height: 0;
   background: #ffffff;
   overflow: hidden;
 }
@@ -150,6 +169,63 @@ html, body {
   width: 100%;
   height: 100%;
 }
+
+/* Side panel */
+
+#side-panel {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  flex-shrink: 0;
+  background: #f7f8fa;
+  border-left: 1px solid #d9dce0;
+  overflow: hidden;
+}
+
+#side-panel.collapsed {
+  width: 36px;
+}
+
+#side-panel-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 6px 0 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #d9dce0;
+}
+
+#side-panel-title {
+  flex-grow: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5f6368;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#side-panel-body {
+  flex-grow: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+  color: #5f6368;
+  font-size: 13px;
+}
+
+#side-panel-toggle {
+  width: 24px;
+  height: 24px;
+  line-height: 24px;
+  text-align: center;
+  border-radius: 12px;
+  color: #3c4043;
+  flex-shrink: 0;
+}
+
+#side-panel-toggle:hover { background: rgba(0, 0, 0, 0.10); }
 
 #loading-bar {
   height: 2px;
