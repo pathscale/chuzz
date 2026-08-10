@@ -20,6 +20,7 @@ mod document_loader;
 mod history;
 mod nav;
 mod side_panel;
+mod status_strip;
 mod tab;
 mod tab_strip;
 mod toolbar;
@@ -27,9 +28,10 @@ mod ui;
 
 use document_loader::NetProvider;
 use nav::HOME_URL;
-use side_panel::SidePanel;
+use side_panel::{PanelSections, SidePanel};
+use status_strip::StatusStrip;
 use tab::{Tab, TabId, TabStoreImplExt, TabView, active_tab, open_tab, tab_display_title};
-use tab_strip::TabStrip;
+use tab_strip::TitleBar;
 use toolbar::Toolbar;
 use ui::BROWSER_UI_CSS;
 
@@ -45,8 +47,12 @@ fn main() {
     let window_attributes = WindowAttributes::default().with_title("Chuzz");
     #[cfg(target_os = "macos")]
     let window_attributes = window_attributes.with_platform_attributes(Box::new(
+        // Tabs live in the title row, so the native titlebar is hidden and the
+        // content view is extended to full size behind the traffic lights.
         WindowAttributesMacOS::default()
-            .with_titlebar_transparent(false)
+            .with_titlebar_transparent(true)
+            .with_fullsize_content_view(true)
+            .with_title_hidden(true)
             .with_unified_titlebar(true),
     ));
 
@@ -68,6 +74,7 @@ fn app() -> Element {
 
     let url_input_value = use_signal(String::new);
     let panel_collapsed = use_signal(|| false);
+    let panel_sections = use_signal(PanelSections::default);
     let tabs: Store<Vec<Tab>> = use_store(Vec::new);
 
     let mut active_tab_id: Signal<TabId> = use_hook(|| {
@@ -91,7 +98,7 @@ fn app() -> Element {
             // silently dropped and the whole UI renders unstyled. `document::Style`
             // routes inline CSS through the supported head path instead.
             document::Style { "{BROWSER_UI_CSS}" }
-            TabStrip { tabs, active_tab_id, home_url, open_new_tab }
+            TitleBar { tabs, active_tab_id, home_url, open_new_tab }
             Toolbar { tabs, active_tab_id, url_input_value }
             if is_loading {
                 div { id: "loading-bar" }
@@ -102,7 +109,12 @@ fn app() -> Element {
                         TabView { key: "{tab.tab_id()}", tab, active_tab_id }
                     }
                 }
-                SidePanel { collapsed: panel_collapsed }
+                SidePanel { collapsed: panel_collapsed, sections: panel_sections }
+            }
+            StatusStrip {
+                is_loading,
+                current_url: active_tab(tabs, active_tab_id()).current_url().to_string(),
+                tab_count: tabs.iter().count(),
             }
         }
     )

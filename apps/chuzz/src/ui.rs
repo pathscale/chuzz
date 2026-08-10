@@ -1,8 +1,17 @@
-//! Styling for the browser UI.
+//! Styling for the browser UI, ported from AgencyZero's workspace.
+//!
+//! The palette is theirs: a dark navy desk, panels lifted above it, a text
+//! ladder that never reaches pure white, and a gold accent. Two rules the
+//! design encodes and this keeps: nothing dimmer than the faint rung, and no
+//! pure white anywhere.
+//!
+//! Values are resolved rather than computed. AgencyZero derives every surface
+//! from `oklch()` and `color-mix()` driven by a theme picker; there is no
+//! picker here, so the ladder is written out directly.
 //!
 //! This stylesheet only ever applies to the shell document. Page content lives
 //! in a child document inside `.page`, so a site's CSS cannot reach the
-//! toolbar and this cannot reach the site.
+//! browser UI and this cannot reach the site.
 
 pub const BROWSER_UI_CSS: &str = r#"
 * { box-sizing: border-box; }
@@ -14,8 +23,9 @@ html, body {
   overflow: hidden;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
-  color: #202124;
-  background: #dee1e6;
+  color: #dbe2ea;
+  /* The desk. */
+  background: #131c2b;
 }
 
 /* Viewport units, not height:100%. A percentage height only resolves when
@@ -29,45 +39,86 @@ html, body {
   overflow: hidden;
 }
 
-/* Tab strip */
+/* Titlebar: tabs sit in the window's title row, beside the traffic lights.
+   The left pad clears the macOS window buttons. */
 
-#tab-strip {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 6px 8px 0 8px;
-  background: #dee1e6;
-  flex-shrink: 0;
-}
-
-.tab {
+#titlebar {
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  min-width: 80px;
-  max-width: 240px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 8px 8px 0 0;
-  background: #c8ccd1;
-  color: #3c4043;
+  height: 52px;
+  flex-shrink: 0;
+  padding: 0 14px 0 96px;
+  background: #131c2b;
+}
+
+#nav-back {
+  width: 30px;
+  height: 30px;
+  line-height: 30px;
+  text-align: center;
+  border-radius: 15px;
+  color: #8fa0b8;
+  font-size: 15px;
+  flex-shrink: 0;
   cursor: pointer;
 }
 
-.tab:hover { background: #d4d8dd; }
+#nav-back:hover { background: rgba(255, 255, 255, 0.07); color: #dbe2ea; }
+
+#tab-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  flex-grow: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Pills that change surface, not shape, when active. */
+.tab {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  min-width: 90px;
+  max-width: 260px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 17px;
+  border: 1px solid transparent;
+  color: #8fa0b8;
+  cursor: pointer;
+}
+
+.tab:hover { background: rgba(255, 255, 255, 0.05); color: #dbe2ea; }
 
 .tab.active {
-  background: #ffffff;
-  color: #202124;
+  background: #1b2739;
+  border-color: rgba(255, 255, 255, 0.10);
+  color: #ffffff;
+  font-weight: 600;
 }
+
+/* Per-tab status dot: the point is seeing a background tab change state. */
+.tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+  background: #3fb950;
+  flex-shrink: 0;
+}
+
+.tab-dot.loading { background: #d2ad3f; }
 
 .tab-title {
   flex-grow: 1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  font-size: 13px;
 }
 
 .tab-close {
@@ -76,25 +127,57 @@ html, body {
   line-height: 18px;
   text-align: center;
   border-radius: 9px;
-  color: #5f6368;
+  color: #8fa0b8;
   flex-shrink: 0;
+  font-size: 13px;
 }
 
-.tab-close:hover { background: rgba(0, 0, 0, 0.12); color: #202124; }
+.tab-close:hover { background: rgba(255, 255, 255, 0.14); color: #ffffff; }
 
+/* Dashed outline: an empty slot waiting to be filled. */
 #new-tab {
-  width: 28px;
-  height: 28px;
-  line-height: 28px;
+  width: 34px;
+  height: 34px;
+  line-height: 32px;
   text-align: center;
-  border-radius: 14px;
-  color: #3c4043;
-  font-size: 18px;
+  border-radius: 17px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  color: #8fa0b8;
+  font-size: 16px;
   cursor: pointer;
   flex-shrink: 0;
 }
 
-#new-tab:hover { background: rgba(0, 0, 0, 0.10); }
+#new-tab:hover { border-color: rgba(255, 255, 255, 0.34); color: #dbe2ea; }
+
+.titlebar-button {
+  width: 32px;
+  height: 32px;
+  line-height: 30px;
+  text-align: center;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: #8fa0b8;
+  font-size: 14px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.titlebar-button:hover { background: rgba(255, 255, 255, 0.07); color: #dbe2ea; }
+
+#avatar {
+  width: 32px;
+  height: 32px;
+  line-height: 30px;
+  text-align: center;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #1b2739;
+  color: #dbe2ea;
+  font-size: 12.5px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
 
 /* Toolbar */
 
@@ -103,55 +186,55 @@ html, body {
   flex-direction: row;
   align-items: center;
   gap: 4px;
-  padding: 6px 8px;
-  background: #ffffff;
+  padding: 0 14px 10px 14px;
   flex-shrink: 0;
 }
 
 .tool-button {
-  width: 32px;
-  height: 32px;
-  line-height: 32px;
+  width: 30px;
+  height: 30px;
+  line-height: 30px;
   text-align: center;
-  border-radius: 16px;
-  color: #3c4043;
-  font-size: 16px;
+  border-radius: 15px;
+  color: #8fa0b8;
+  font-size: 15px;
   cursor: pointer;
   flex-shrink: 0;
 }
 
-.tool-button:hover { background: rgba(0, 0, 0, 0.08); }
+.tool-button:hover { background: rgba(255, 255, 255, 0.07); color: #dbe2ea; }
 
-.tool-button.disabled { color: #bdc1c6; }
-.tool-button.disabled:hover { background: transparent; }
+.tool-button.disabled { color: #4a5768; }
+.tool-button.disabled:hover { background: transparent; color: #4a5768; }
 
 #url-bar {
   flex-grow: 1;
   height: 32px;
   margin: 0 8px;
   padding: 0 14px;
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 16px;
-  background: #f1f3f4;
-  color: #202124;
-  font-size: 14px;
+  background: #1b2739;
+  color: #dbe2ea;
+  font-size: 13px;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 #url-bar:focus {
-  background: #ffffff;
-  outline: 2px solid #1a73e8;
+  background: #223047;
+  border-color: #4c8dff;
+  outline: none;
 }
 
-/* Content row: page on the left, side panel on the right.
-   Mirrors AgencyZero's shell: a column frame whose content row fills the
-   remaining height and never scrolls as a whole. */
+/* Content row: page card on the left, panel on the right. */
 
 #content-row {
   display: flex;
   flex-direction: row;
   flex-grow: 1;
   min-height: 0;
+  padding: 0 14px 10px 14px;
+  gap: 10px;
   overflow: hidden;
 }
 
@@ -162,6 +245,8 @@ html, body {
   min-width: 0;
   min-height: 0;
   background: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
   overflow: hidden;
 }
 
@@ -175,44 +260,49 @@ html, body {
 #side-panel {
   display: flex;
   flex-direction: column;
-  width: 320px;
+  width: 332px;
   flex-shrink: 0;
-  background: #f7f8fa;
-  border-left: 1px solid #d9dce0;
+  min-height: 0;
   overflow: hidden;
 }
 
 #side-panel.collapsed {
-  width: 36px;
+  width: 34px;
+  align-items: center;
+  padding-top: 4px;
 }
+
+.panel-rail-toggle {
+  width: 26px;
+  height: 26px;
+  line-height: 24px;
+  text-align: center;
+  border-radius: 13px;
+  color: #8fa0b8;
+  background: #1b2739;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  cursor: pointer;
+}
+
+.panel-rail-toggle:hover { color: #dbe2ea; background: #223047; }
 
 #side-panel-header {
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  height: 36px;
-  padding: 0 6px 0 10px;
+  height: 30px;
   flex-shrink: 0;
-  border-bottom: 1px solid #d9dce0;
+  padding: 0 4px 0 6px;
 }
 
 #side-panel-title {
   flex-grow: 1;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
-  color: #5f6368;
+  color: #8fa0b8;
   overflow: hidden;
   white-space: nowrap;
-}
-
-#side-panel-body {
-  flex-grow: 1;
-  min-height: 0;
-  padding: 12px;
-  overflow-y: auto;
-  color: #5f6368;
-  font-size: 13px;
 }
 
 #side-panel-toggle {
@@ -221,15 +311,136 @@ html, body {
   line-height: 24px;
   text-align: center;
   border-radius: 12px;
-  color: #3c4043;
+  color: #8fa0b8;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+#side-panel-toggle:hover { background: rgba(255, 255, 255, 0.07); color: #dbe2ea; }
+
+#side-panel-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-grow: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Accordion sections: a card with a hairline, radius 14, whose body exists
+   only while open. */
+
+.section-panel {
+  background: #1b2739;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
+  overflow: hidden;
   flex-shrink: 0;
 }
 
-#side-panel-toggle:hover { background: rgba(0, 0, 0, 0.10); }
+.section-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  cursor: pointer;
+}
+
+.section-header:hover { background: rgba(255, 255, 255, 0.04); }
+
+.section-title {
+  flex-grow: 1;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #dbe2ea;
+}
+
+.section-count {
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #26344a;
+  color: #8fa0b8;
+  flex-shrink: 0;
+}
+
+.section-count.primary {
+  background: rgba(76, 141, 255, 0.18);
+  color: #7fb0ff;
+}
+
+.section-chevron {
+  color: #7fb0ff;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.section-body { border-top: 1px solid rgba(255, 255, 255, 0.07); }
+
+.section-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 12px;
+}
+
+.section-row-label {
+  flex-grow: 1;
+  color: #b9c4d2;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.section-row-value {
+  color: #8fa0b8;
+  flex-shrink: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.section-empty {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: #8fa0b8;
+}
+
+/* Status strip along the bottom. */
+
+#status-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0 18px;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: #6f7f96;
+}
+
+.status-spacer { flex-grow: 1; }
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+  background: #3fb950;
+  flex-shrink: 0;
+}
+
+.status-dot.loading { background: #d2ad3f; }
+
+.status-accent { color: #7fb0ff; }
 
 #loading-bar {
   height: 2px;
-  background: #1a73e8;
+  background: #4c8dff;
   flex-shrink: 0;
 }
 "#;
