@@ -453,6 +453,98 @@ impl blitz_script::ScriptFetcher for PrefetchedScripts {
     }
 }
 
+/// Load a page outside the browser, for headless capture.
+///
+/// Shares the fetch, decompression, script execution and web-API shims with
+/// the browser's own loader, so a capture shows what a tab would show. It
+/// cannot reuse `DocumentLoader` itself, which is built around Dioxus signals
+/// that only exist inside a running UI.
+#[cfg(feature = "capture")]
+pub async fn load_for_capture(
+    request: Request,
+    net_provider: Arc<NetProvider>,
+) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
+    use blitz_dom::Document as _;
+
+    let (resolved_url, bytes) = net_provider
+        .fetch_async(request)
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    let html = decode_body(&bytes);
+
+    let config = DocumentConfig {
+        base_url: Some(resolved_url),
+        net_provider: Some(Arc::clone(&net_provider) as _),
+        html_parser_provider: Some(Arc::new(HtmlProvider)),
+        ..Default::default()
+    };
+
+    #[cfg(feature = "javascript")]
+    {
+        let document = blitz_script::ScriptDocument::from_html(&html, config);
+        let mut scripts: HashMap<Url, String> = HashMap::new();
+        for url in document.external_script_urls() {
+            if scripts.contains_key(&url) {
+                continue;
+            }
+            if let Ok((_, bytes)) = net_provider.fetch_async(Request::get(url.clone())).await {
+                scripts.insert(url, decode_body(&bytes));
+            }
+        }
+        let mut document = document.with_fetcher(PrefetchedScripts { scripts });
+        document.eval(WEB_API_SHIM);
+        document.execute_scripts();
+        for _ in 0..24 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            document.eval("void 0");
+            document.poll(None);
+            let built = document
+                .inner()
+                .query_selector("body > * > *")
+                .ok()
+                .flatten()
+                .is_some();
+            if built {
+                break;
+            }
+        }
+        Ok(CapturedDocument::Script(Box::new(document)))
+    }
+
+    #[cfg(not(feature = "javascript"))]
+    Ok(CapturedDocument::Html(
+        HtmlDocument::from_html(&html, config).into_inner(),
+    ))
+}
+
+/// A loaded page held for capture. Which variant it is depends on whether the
+/// build runs scripts; both expose the same document underneath.
+#[cfg(feature = "capture")]
+pub enum CapturedDocument {
+    // Boxed: a ScriptDocument is far larger than a bare one, and the enum
+    // would otherwise cost the bigger variant on every use.
+    #[cfg(feature = "javascript")]
+    Script(Box<blitz_script::ScriptDocument>),
+    #[allow(dead_code)]
+    Html(Box<blitz_dom::BaseDocument>),
+}
+
+#[cfg(feature = "capture")]
+impl CapturedDocument {
+    pub fn with_document<R>(
+        &mut self,
+        callback: impl FnOnce(&mut blitz_dom::BaseDocument) -> R,
+    ) -> R {
+        #[cfg(feature = "javascript")]
+        use blitz_dom::Document as _;
+        match self {
+            #[cfg(feature = "javascript")]
+            Self::Script(document) => callback(&mut document.inner_mut()),
+            Self::Html(document) => callback(document),
+        }
+    }
+}
+
 impl Drop for DocumentLoader {
     fn drop(&mut self) {
         self.abort_current();

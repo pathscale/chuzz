@@ -24,6 +24,14 @@ dioxus-native = { path = "../blitz-rust/packages/dioxus-native", default-feature
 endpoint-libs = { path = "../endpoint-libs", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
 image = { version = "=0.25.6", default-features = false }
+# Headless capture: renders a page to a buffer with the CPU rasteriser, so the
+# result can be inspected without a window.
+# Must be the same anyrender blitz-paint links against, or PaintScene is two
+# unrelated traits and the painter cannot be passed to paint_scene.
+anyrender = { package = "ps-anyrender", version = "0.12.0" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "0.15.0" }
+blitz-paint = { package = "ps-blitz-paint", path = "../blitz-rust/packages/blitz-paint" }
+png = "=0.18.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

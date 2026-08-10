@@ -16,6 +16,8 @@ use dioxus_native::{LogicalSize, WindowAttributes, prelude::*, use_window_event}
 #[cfg(target_os = "macos")]
 use dioxus_native::winit::platform::macos::WindowAttributesMacOS;
 
+#[cfg(feature = "capture")]
+mod capture;
 mod control;
 mod decode;
 mod document_loader;
@@ -47,6 +49,50 @@ use ui::BROWSER_UI_CSS;
 struct StartupUrl(Option<Url>);
 
 fn main() {
+    // `--capture <file>` renders the page headlessly and exits. It shares the
+    // browser's loader, so what it writes is what a tab would show.
+    #[cfg(feature = "capture")]
+    if let Some(index) = std::env::args().position(|arg| arg == "--capture") {
+        let args: Vec<String> = std::env::args().collect();
+        let output = args.get(index + 1).cloned().unwrap_or_else(|| {
+            eprintln!("chuzz: --capture needs an output path");
+            std::process::exit(2);
+        });
+        let url = args
+            .iter()
+            .skip(1)
+            .find(|arg| !arg.starts_with("--") && *arg != &output)
+            .cloned()
+            .unwrap_or_else(|| nav::HOME_URL.to_owned());
+        let width = std::env::var("CHUZZ_CAPTURE_WIDTH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1440);
+        let height = std::env::var("CHUZZ_CAPTURE_HEIGHT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(960);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("capture needs a tokio runtime");
+        let result = runtime.block_on(capture::capture(
+            &url,
+            width,
+            height,
+            std::path::Path::new(&output),
+        ));
+        match result {
+            Ok(()) => println!("chuzz: wrote {output}"),
+            Err(error) => {
+                eprintln!("chuzz: capture failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let startup_url = std::env::args()
         .skip(1)
         .find_map(|argument| nav::request_from_input(&argument).map(|req| req.url));
