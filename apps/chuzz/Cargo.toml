@@ -38,6 +38,7 @@ blitz-html = { workspace = true, default-features = true }
 blitz-net = { workspace = true, features = ["http2", "cookies", "compression"] }
 blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
 blitz-traits = { workspace = true, default-features = true }
+chuzz-control = { path = "../../crates/chuzz-control" }
 brotli.workspace = true
 image = { workspace = true, default-features = false }
 flate2.workspace = true

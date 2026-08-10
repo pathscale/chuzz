@@ -9,12 +9,16 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "server")]
+pub mod server;
+
 pub const CONTROL_PROTOCOL_VERSION: u32 = 1;
 pub const AGENT_CONTROL_TOOL: &str = "blitz.agent.control";
 pub const DIAGNOSTICS_TOOL: &str = "blitz.diagnostics";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", content = "params", rename_all = "camelCase")]
+#[serde(rename_all_fields = "camelCase")]
 pub enum AgentControlRequest {
     Inspect { root: Option<u64>, max_depth: u32 },
     Act(AgentAction),
@@ -24,6 +28,7 @@ pub enum AgentControlRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", content = "params", rename_all = "camelCase")]
+#[serde(rename_all_fields = "camelCase")]
 pub enum AgentAction {
     Click { node_id: u64 },
     SetValue { node_id: u64, value: String },
@@ -33,6 +38,7 @@ pub enum AgentAction {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "input", rename_all = "camelCase")]
+#[serde(rename_all_fields = "camelCase")]
 pub enum InputCommand {
     Key {
         phase: KeyPhase,
@@ -114,6 +120,58 @@ pub struct SnapshotRequest {
     pub include_computed_style: bool,
 }
 
+/// One node as an agent sees it: identity, role, text, state and where it is
+/// on screen. Mirrors AgencyZero's `SemanticNode`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticNode {
+    pub id: u64,
+    pub parent: Option<u64>,
+    pub role: String,
+    pub name: String,
+    pub value: Option<String>,
+    pub enabled: bool,
+    pub visible: bool,
+    /// `[x, y, width, height]` in CSS pixels, absent when the node has no box.
+    pub bounds: Option<[f64; 4]>,
+}
+
+/// A settled view of the document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSnapshot {
+    pub revision: u64,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub focused_node: Option<u64>,
+    pub nodes: Vec<SemanticNode>,
+}
+
+/// What the browser answers with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "result", content = "value", rename_all = "camelCase")]
+pub enum ControlResponse {
+    Ok,
+    Snapshot(AgentSnapshot),
+    Error(ControlError),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlError {
+    pub code: String,
+    pub message: String,
+}
+
+impl ControlError {
+    pub fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_owned(),
+            message: message.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +201,59 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<AgentControlRequest>(encoded).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn request_fields_are_camel_case_like_every_other_field() {
+        let encoded = serde_json::to_value(AgentControlRequest::Inspect {
+            root: None,
+            max_depth: 3,
+        })
+        .unwrap();
+        assert_eq!(encoded["params"]["maxDepth"], 3);
+        assert!(
+            encoded["params"].get("max_depth").is_none(),
+            "snake_case leaked into the wire format"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_response_round_trips() {
+        let response = ControlResponse::Snapshot(AgentSnapshot {
+            revision: 7,
+            url: Some("https://24x.ai/".into()),
+            title: Some("24x.ai".into()),
+            focused_node: None,
+            nodes: vec![SemanticNode {
+                id: 1,
+                parent: None,
+                role: "svg".into(),
+                name: String::new(),
+                value: None,
+                enabled: true,
+                visible: true,
+                bounds: Some([16.0, 12.0, 210.0, 44.0]),
+            }],
+        });
+        let encoded = serde_json::to_value(&response).unwrap();
+        assert_eq!(encoded["result"], "snapshot");
+        assert_eq!(encoded["value"]["nodes"][0]["bounds"][2], 210.0);
+        assert_eq!(
+            serde_json::from_value::<ControlResponse>(encoded).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn an_error_response_carries_a_code() {
+        let response = ControlResponse::Error(ControlError::new("no_such_node", "node 42 is gone"));
+        let encoded = serde_json::to_value(&response).unwrap();
+        assert_eq!(encoded["result"], "error");
+        assert_eq!(encoded["value"]["code"], "no_such_node");
+        assert_eq!(
+            serde_json::from_value::<ControlResponse>(encoded).unwrap(),
+            response
         );
     }
 

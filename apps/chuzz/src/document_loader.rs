@@ -414,6 +414,13 @@ impl DocumentLoader {
             }
         }
 
+        // Resolve style and layout before handing the document over.
+        // AgencyZero's blitz-preview does the same after its poll loop: without
+        // it the tree is built but unmeasured, so anything whose size comes
+        // from layout (an inline SVG sized `w-auto` from its viewBox, a flex
+        // child) is swapped in at the wrong size or not painted at all.
+        document.inner_mut().resolve(0.0);
+
         let title = {
             let inner = document.inner();
             inner

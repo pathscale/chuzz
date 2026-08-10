@@ -6,7 +6,15 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# The socket server. Types are always available; the listener is opt-in so a
+# build that only speaks the protocol does not pull in a transport.
+default = ["server"]
+server = ["dep:endpoint-libs", "dep:tokio"]
+
 [dependencies]
+endpoint-libs = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
 

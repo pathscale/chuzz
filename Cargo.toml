@@ -19,6 +19,9 @@ blitz-net = { path = "../blitz-rust/packages/blitz-net" }
 blitz-script = { package = "ps-blitz-script", path = "../blitz-rust/packages/blitz-script" }
 blitz-traits = { package = "ps-blitz-traits", path = "../blitz-rust/packages/blitz-traits" }
 dioxus-native = { path = "../blitz-rust/packages/dioxus-native", default-features = false }
+# The MCP framing the control server speaks, same source and feature as
+# tauri-runtime-blitz uses for its agent-control surface.
+endpoint-libs = { path = "../endpoint-libs", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
 image = { version = "=0.25.6", default-features = false }
 flate2 = "1"

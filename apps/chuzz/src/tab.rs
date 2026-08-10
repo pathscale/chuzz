@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use blitz_traits::net::{Request, Url};
-use dioxus_native::{SubDocumentAttr, prelude::*};
+use dioxus_native::{NodeHandle, SubDocumentAttr, prelude::*};
 
 use crate::document_loader::{DocumentLoader, LoadStatus, LoadedDocument, NetProvider};
 use crate::history::{History, HistoryNav, SyncStore};
@@ -26,6 +26,9 @@ fn next_tab_id() -> TabId {
 #[derive(Store)]
 pub struct Tab {
     pub id: TabId,
+    /// Set when the web-view mounts; the only handle through which the page
+    /// document can be reached after it is swapped in.
+    pub node_handle: Option<NodeHandle>,
     pub history: SyncStore<History>,
     pub loader: Option<Rc<DocumentLoader>>,
     pub document: Option<SubDocumentAttr>,
@@ -93,6 +96,7 @@ pub fn open_tab(
 
     tabs.push(Tab {
         id: next_tab_id(),
+        node_handle: None,
         history,
         loader: None,
         document: None,
@@ -171,10 +175,17 @@ pub fn TabView(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
         "display: none"
     };
 
+    let mut node_handle_lens = tab.node_handle();
+
     rsx!(web-view {
         key: "{id}",
         class: "page",
         style: visibility,
         "__webview_document": document,
+        onmounted: move |event: Event<MountedData>| {
+            if let Ok(handle) = event.downcast::<NodeHandle>().cloned().ok_or(()) {
+                node_handle_lens.set(Some(handle));
+            }
+        },
     })
 }

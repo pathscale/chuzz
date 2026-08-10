@@ -11,11 +11,12 @@
 use std::sync::Arc;
 
 use blitz_traits::net::Url;
-use dioxus_native::{WindowAttributes, prelude::*};
+use dioxus_native::{LogicalSize, WindowAttributes, prelude::*};
 
 #[cfg(target_os = "macos")]
 use dioxus_native::winit::platform::macos::WindowAttributesMacOS;
 
+mod control;
 mod decode;
 mod document_loader;
 mod history;
@@ -28,12 +29,15 @@ mod tab_strip;
 mod toolbar;
 mod ui;
 
+use control::ControlHandle;
 use document_loader::NetProvider;
 use nav::HOME_URL;
 use shortcuts::{apply, resolve};
 use side_panel::{PanelEdgeHandle, PanelSections, SidePanel};
 use status_strip::StatusStrip;
-use tab::{Tab, TabId, TabStoreImplExt, TabView, active_tab, open_tab, tab_display_title};
+use tab::{
+    Tab, TabId, TabStoreExt, TabStoreImplExt, TabView, active_tab, open_tab, tab_display_title,
+};
 use tab_strip::TitleBar;
 use toolbar::Toolbar;
 use ui::BROWSER_UI_CSS;
@@ -47,7 +51,12 @@ fn main() {
         .skip(1)
         .find_map(|argument| nav::request_from_input(&argument).map(|req| req.url));
 
-    let window_attributes = WindowAttributes::default().with_title("Chuzz");
+    // Wide enough that a desktop layout renders as its author intended: at
+    // 770px the responsive breakpoints collapse to the tablet layout, which
+    // makes any comparison against a desktop browser meaningless.
+    let window_attributes = WindowAttributes::default()
+        .with_title("Chuzz")
+        .with_surface_size(LogicalSize::new(1440.0, 960.0));
     #[cfg(target_os = "macos")]
     let window_attributes = window_attributes.with_platform_attributes(Box::new(
         // Tabs live in the title row, so the native titlebar is hidden and the
@@ -92,6 +101,44 @@ fn app() -> Element {
         let opened = open_tab(tabs, url, net_provider.clone());
         active_tab_id.set(opened.tab_id());
     });
+
+    // The control socket is opened once and polled on a timer.
+    //
+    // Not during render: `doc_mut` takes the document's RefCell, which Dioxus
+    // still holds while a component body runs, and borrowing it there panics.
+    // Not from a plain effect either: an effect re-runs only when a signal it
+    // read changes, so on an idle page nothing would ever drain the queue and
+    // every request would time out.
+    let control = use_hook(|| ControlHandle::start().map(std::rc::Rc::new));
+    {
+        let control = control.clone();
+        use_future(move || {
+            let control = control.clone();
+            async move {
+                let Some(control) = control else { return };
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                    if !control.has_pending() {
+                        continue;
+                    }
+                    let tab = active_tab(tabs, active_tab_id());
+                    let url = tab.current_url().to_string();
+                    let title = tab.title().cloned();
+                    let Some(handle) = tab.node_handle().cloned() else {
+                        control.drain_unavailable();
+                        continue;
+                    };
+                    let mut doc = handle.doc_mut();
+                    if let Some(sub) = doc.subdoc_mut(handle.node_id()) {
+                        control.service(&sub.inner_mut(), Some(url), Some(title));
+                    } else {
+                        drop(doc);
+                        control.drain_unavailable();
+                    }
+                }
+            }
+        });
+    }
 
     let window_title = tab_display_title(active_tab(tabs, active_tab_id()));
     let is_loading = active_tab(tabs, active_tab_id()).is_loading();
