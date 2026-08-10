@@ -74,7 +74,9 @@ pub fn resolve(
         ("1", _) | (_, "Digit1") => Some(Shortcut::PreviousTab),
         ("2", _) | (_, "Digit2") => Some(Shortcut::NextTab),
         ("r", _) | (_, "KeyR") => Some(Shortcut::Reload),
+        // Cmd+L and Cmd+D both reach the address bar, as Chrome does.
         ("l", _) | (_, "KeyL") => Some(Shortcut::FocusAddressBar),
+        ("d", _) | (_, "KeyD") => Some(Shortcut::FocusAddressBar),
         ("s", _) | (_, "KeyS") => Some(Shortcut::Home),
         ("[", _) | (_, "BracketLeft") => Some(Shortcut::Back),
         ("]", _) | (_, "BracketRight") => Some(Shortcut::Forward),
@@ -168,6 +170,10 @@ mod tests {
     fn the_browser_chords_resolve() {
         assert_eq!(
             resolve("l", "KeyL", true, false, false, false),
+            Some(Shortcut::FocusAddressBar)
+        );
+        assert_eq!(
+            resolve("d", "KeyD", true, false, false, false),
             Some(Shortcut::FocusAddressBar)
         );
         assert_eq!(

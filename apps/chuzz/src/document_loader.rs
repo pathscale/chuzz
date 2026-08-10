@@ -12,7 +12,13 @@ use blitz_traits::net::{AbortController, AbortSignal, Request};
 use blitz_traits::shell::ShellProvider;
 use dioxus_native::{SubDocumentAttr, prelude::*};
 
+use crate::decode::decode_body;
 use crate::history::{History, SyncStore, TabNavProvider};
+
+#[cfg(feature = "javascript")]
+use blitz_traits::net::Url;
+#[cfg(feature = "javascript")]
+use std::collections::HashMap;
 
 pub type NetProvider = blitz_net::Provider;
 
@@ -47,6 +53,142 @@ const EMPTY_HTML: &str = r#"<!doctype html>
     <p>The server returned no content for this address.</p>
   </body>
 </html>
+"#;
+
+/// Web APIs the script engine does not provide.
+///
+/// Boa is a JavaScript engine, not a browser: it supplies the language, and
+/// everything `window`-shaped has to come from the embedder. A bundle that
+/// touches `localStorage` on startup otherwise dies before it renders, which
+/// looks exactly like a blank page.
+///
+/// This is in-memory and per-document on purpose. Real persistence is browser
+/// policy: it needs an origin-keyed store on disk and a quota, and pretending
+/// otherwise would silently lose a site's data on reload.
+#[cfg(feature = "javascript")]
+const WEB_API_SHIM: &str = r#"
+(function () {
+  function MemoryStorage() {
+    var entries = Object.create(null);
+    return {
+      getItem: function (key) {
+        var value = entries[String(key)];
+        return value === undefined ? null : value;
+      },
+      setItem: function (key, value) { entries[String(key)] = String(value); },
+      removeItem: function (key) { delete entries[String(key)]; },
+      clear: function () { entries = Object.create(null); },
+      key: function (index) {
+        var names = Object.keys(entries);
+        return index < names.length ? names[index] : null;
+      },
+      get length() { return Object.keys(entries).length; }
+    };
+  }
+  if (typeof globalThis.localStorage === 'undefined') {
+    globalThis.localStorage = MemoryStorage();
+  }
+  if (typeof globalThis.sessionStorage === 'undefined') {
+    globalThis.sessionStorage = MemoryStorage();
+  }
+  if (typeof globalThis.URL === 'undefined') {
+    // Enough of the URL interface for routing: parse, read the parts, and
+    // resolve against a base. Not a WHATWG-conformant implementation.
+    globalThis.URL = function (input, base) {
+      var text = String(input);
+      if (base !== undefined && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) {
+        var root = String(base);
+        if (text.charAt(0) === '/') {
+          var origin = root.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/?#]*)/);
+          text = (origin ? origin[1] : root.replace(/[?#].*$/, '')) + text;
+        } else {
+          text = root.replace(/[?#].*$/, '').replace(/[^\/]*$/, '') + text;
+        }
+      }
+      var parts = text.match(
+        /^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/([^\/?#:]*)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/
+      );
+      this.href = text;
+      this.protocol = parts ? parts[1] : '';
+      this.hostname = parts ? parts[2] : '';
+      this.port = parts && parts[3] ? parts[3] : '';
+      this.pathname = parts && parts[4] ? parts[4] : '/';
+      this.search = parts && parts[5] ? parts[5] : '';
+      this.hash = parts && parts[6] ? parts[6] : '';
+      this.host = this.hostname + (this.port ? ':' + this.port : '');
+      this.origin = this.protocol + '//' + this.host;
+      this.toString = function () { return this.href; };
+    };
+  }
+  if (typeof globalThis.URLSearchParams === 'undefined') {
+    globalThis.URLSearchParams = function (init) {
+      var pairs = [];
+      if (typeof init === 'string') {
+        init.replace(/^\?/, '').split('&').forEach(function (part) {
+          if (!part) return;
+          var index = part.indexOf('=');
+          var key = index < 0 ? part : part.slice(0, index);
+          var value = index < 0 ? '' : part.slice(index + 1);
+          pairs.push([decodeURIComponent(key), decodeURIComponent(value)]);
+        });
+      }
+      this.get = function (key) {
+        for (var i = 0; i < pairs.length; i++) {
+          if (pairs[i][0] === key) return pairs[i][1];
+        }
+        return null;
+      };
+      this.has = function (key) { return this.get(key) !== null; };
+      this.set = function (key, value) { pairs.push([key, String(value)]); };
+      this.append = function (key, value) { pairs.push([key, String(value)]); };
+      this.toString = function () {
+        return pairs
+          .map(function (pair) {
+            return encodeURIComponent(pair[0]) + '=' + encodeURIComponent(pair[1]);
+          })
+          .join('&');
+      };
+    };
+  }
+  if (typeof globalThis.MutationObserver === 'undefined') {
+    // Frameworks construct an observer at startup and only rely on callbacks
+    // later. A constructor that records its target and never fires keeps that
+    // startup path alive; it does not make mutations observable.
+    globalThis.MutationObserver = function (callback) {
+      this.callback = callback;
+      this.observe = function () {};
+      this.disconnect = function () {};
+      this.takeRecords = function () { return []; };
+    };
+  }
+  if (typeof globalThis.requestIdleCallback === 'undefined') {
+    globalThis.requestIdleCallback = function (callback) {
+      return setTimeout(function () {
+        callback({ didTimeout: false, timeRemaining: function () { return 0; } });
+      }, 1);
+    };
+    globalThis.cancelIdleCallback = function (handle) { clearTimeout(handle); };
+  }
+  if (typeof globalThis.matchMedia === 'undefined') {
+    globalThis.matchMedia = function (query) {
+      return {
+        media: String(query),
+        matches: false,
+        addListener: function () {},
+        removeListener: function () {},
+        addEventListener: function () {},
+        removeEventListener: function () {},
+        dispatchEvent: function () { return false; }
+      };
+    };
+  }
+})();
+"#;
+
+/// A new tab: an empty document, not a failed load.
+const BLANK_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title></title></head>
+<body style="margin:0;background:#0f1622"></body></html>
 "#;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,6 +275,16 @@ impl DocumentLoader {
     }
 
     pub async fn load(&self, req: Request) -> LoadedDocument {
+        if req.url.scheme() == "about" {
+            let signal = self.install_abort();
+            let config = self.doc_config(None, signal);
+            let document = HtmlDocument::from_html(BLANK_HTML, config).into_inner();
+            return LoadedDocument {
+                document: SubDocumentAttr::new(document),
+                title: String::new(),
+            };
+        }
+
         let signal = self.install_abort();
         let response = self
             .net_provider
@@ -144,18 +296,10 @@ impl DocumentLoader {
                 let html = if bytes.is_empty() {
                     EMPTY_HTML.to_string()
                 } else {
-                    String::from_utf8_lossy(&bytes).into_owned()
+                    decode_body(&bytes)
                 };
-                let config = self.doc_config(Some(resolved_url), signal);
-                let document = HtmlDocument::from_html(&html, config).into_inner();
-                let title = document
-                    .find_title_node()
-                    .map(|node| node.text_content())
-                    .unwrap_or_default();
-                LoadedDocument {
-                    document: SubDocumentAttr::new(document),
-                    title,
-                }
+                let config = self.doc_config(Some(resolved_url), signal.clone());
+                self.build_page(&html, config, &signal).await
             }
             Err(error) => {
                 let config = self.doc_config(None, signal);
@@ -175,6 +319,113 @@ impl DocumentLoader {
                 }
             }
         }
+    }
+}
+
+impl DocumentLoader {
+    /// Parse a page. Without JavaScript the parsed DOM is the final DOM.
+    #[cfg(not(feature = "javascript"))]
+    async fn build_page(
+        &self,
+        html: &str,
+        config: DocumentConfig,
+        _signal: &AbortSignal,
+    ) -> LoadedDocument {
+        let document = HtmlDocument::from_html(html, config).into_inner();
+        let title = document
+            .find_title_node()
+            .map(|node| node.text_content())
+            .unwrap_or_default();
+        LoadedDocument {
+            document: SubDocumentAttr::new(document),
+            title,
+        }
+    }
+
+    /// Parse a page and run its scripts.
+    ///
+    /// Most of the web ships an empty body and builds the DOM in JavaScript, so
+    /// without this step such a page paints nothing at all. The script fetcher
+    /// is synchronous, so external sources are prefetched through the browser's
+    /// own net provider (keeping cookies and caching) and then served from
+    /// memory.
+    #[cfg(feature = "javascript")]
+    async fn build_page(
+        &self,
+        html: &str,
+        config: DocumentConfig,
+        signal: &AbortSignal,
+    ) -> LoadedDocument {
+        use blitz_dom::Document as _;
+
+        let document = blitz_script::ScriptDocument::from_html(html, config);
+
+        let mut scripts: HashMap<Url, String> = HashMap::new();
+        for url in document.external_script_urls() {
+            if scripts.contains_key(&url) {
+                continue;
+            }
+            let request = Request::get(url.clone()).signal(signal.clone());
+            if let Ok((_, bytes)) = self.net_provider.fetch_async(request).await {
+                scripts.insert(url, decode_body(&bytes));
+            }
+        }
+
+        let mut document = document.with_fetcher(PrefetchedScripts { scripts });
+        // Installed before the page's own scripts, which read these at startup.
+        document.eval(WEB_API_SHIM);
+        document.execute_scripts();
+
+        // Scripts keep working after the first pass: timers, microtasks and
+        // fetches all land later. Drive the document until it settles, or the
+        // page swaps in as the empty mount point the server actually sent.
+        for _ in 0..24 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            document.eval("void 0");
+            document.poll(None);
+            // Settle as soon as the page has built something to paint. Keyed
+            // on the body having element children rather than on any single
+            // site's mount-point id.
+            let built = document
+                .inner()
+                .query_selector("body > *")
+                .ok()
+                .flatten()
+                .is_some();
+            if built {
+                break;
+            }
+        }
+
+        let title = {
+            let inner = document.inner();
+            inner
+                .find_title_node()
+                .map(|node| node.text_content())
+                .unwrap_or_default()
+        };
+
+        LoadedDocument {
+            document: SubDocumentAttr::new(document),
+            title,
+        }
+    }
+}
+
+/// Serves the sources prefetched above, falling back to the default fetcher
+/// for `file:` and `data:` URLs.
+#[cfg(feature = "javascript")]
+struct PrefetchedScripts {
+    scripts: HashMap<Url, String>,
+}
+
+#[cfg(feature = "javascript")]
+impl blitz_script::ScriptFetcher for PrefetchedScripts {
+    fn fetch(&self, url: &Url) -> Result<String, blitz_script::FetchError> {
+        if let Some(source) = self.scripts.get(url) {
+            return Ok(source.clone());
+        }
+        blitz_script::DefaultScriptFetcher.fetch(url)
     }
 }
 

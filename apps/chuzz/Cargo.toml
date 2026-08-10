@@ -14,7 +14,10 @@ path = "src/main.rs"
 [features]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
-default = ["vello", "scrollbars", "incremental"]
+default = ["vello", "scrollbars", "incremental", "javascript"]
+# Most of the web builds its DOM in JavaScript: without this a script-rendered
+# page parses to an empty mount point and paints nothing.
+javascript = ["dep:blitz-script"]
 vello = ["dioxus-native/vello"]
 vello-hybrid = ["dioxus-native/vello-hybrid"]
 incremental = ["dioxus-native/incremental"]
@@ -24,7 +27,10 @@ scrollbars = ["blitz-dom/scrollbars"]
 blitz-dom = { workspace = true, features = ["woff"] }
 blitz-html.workspace = true
 blitz-net = { workspace = true, features = ["http2", "cookies"] }
+blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
 blitz-traits.workspace = true
+brotli.workspace = true
+flate2.workspace = true
 dioxus-native = { workspace = true, features = [
   "accessibility",
   "clipboard",

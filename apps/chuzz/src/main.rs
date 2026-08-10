@@ -16,6 +16,7 @@ use dioxus_native::{WindowAttributes, prelude::*};
 #[cfg(target_os = "macos")]
 use dioxus_native::winit::platform::macos::WindowAttributesMacOS;
 
+mod decode;
 mod document_loader;
 mod history;
 mod nav;
