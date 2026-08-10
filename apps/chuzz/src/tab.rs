@@ -207,8 +207,9 @@ pub fn TabView(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
 
     let mut node_handle_lens = tab.node_handle();
 
+    // The keyed element stays first: a key on any later node is ignored, and
+    // tab reconciliation depends on it.
     rsx!(
-    AnimationClock { tab, active_tab_id }
     web-view {
         key: "{id}",
         class: "page",
@@ -219,5 +220,7 @@ pub fn TabView(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
                 node_handle_lens.set(Some(handle));
             }
         },
-    })
+    }
+    AnimationClock { tab, active_tab_id }
+    )
 }
