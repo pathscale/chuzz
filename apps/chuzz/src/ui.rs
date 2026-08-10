@@ -284,16 +284,24 @@ html, body {
   cursor: pointer;
 }
 
-.panel-rail-toggle:hover { color: #dbe2ea; background: #223047; }
+.panel-rail-toggle:hover {
+  color: #ffffff;
+  background: #33445e;
+  border-color: #4c8dff;
+}
 
 #side-panel-header {
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  height: 30px;
+  height: 34px;
   flex-shrink: 0;
-  padding: 0 4px 0 6px;
+  margin-bottom: 10px;
+  padding: 0 6px 0 12px;
+  background: #1b2739;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 17px;
 }
 
 #side-panel-title {
@@ -305,18 +313,27 @@ html, body {
   white-space: nowrap;
 }
 
+/* A bare glyph on a flat surface reads as text, not as a control: this needs
+   its own surface and border to be findable at all. */
 #side-panel-toggle {
   width: 24px;
   height: 24px;
-  line-height: 24px;
+  line-height: 22px;
   text-align: center;
   border-radius: 12px;
-  color: #8fa0b8;
+  background: #26344a;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #dbe2ea;
+  font-size: 13px;
   flex-shrink: 0;
   cursor: pointer;
 }
 
-#side-panel-toggle:hover { background: rgba(255, 255, 255, 0.07); color: #dbe2ea; }
+#side-panel-toggle:hover {
+  background: #33445e;
+  border-color: #4c8dff;
+  color: #ffffff;
+}
 
 #side-panel-scroll {
   display: flex;
@@ -372,9 +389,20 @@ html, body {
 }
 
 .section-chevron {
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
   color: #7fb0ff;
-  font-size: 13px;
+  font-size: 11px;
   flex-shrink: 0;
+}
+
+.section-header:hover .section-chevron {
+  background: rgba(76, 141, 255, 0.20);
+  color: #ffffff;
 }
 
 .section-body { border-top: 1px solid rgba(255, 255, 255, 0.07); }
