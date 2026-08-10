@@ -9,12 +9,16 @@ rust-version = "1.91"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-blitz-dom = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false }
-blitz-html = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false }
-blitz-net = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false }
-blitz-script = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false }
-blitz-traits = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false }
-dioxus-native = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false }
+# Path dependencies into the local Blitz checkout, the way AgencyZero's
+# blitz-preview consumes it. The crates there are namespaced `ps-blitz-*`.
+# A git rev cannot be used instead: the fix for compressed responses lives in
+# that tree, and mixing the two would put two copies of the DOM types in play.
+blitz-dom = { package = "ps-blitz-dom", path = "../blitz-rust/packages/blitz-dom", default-features = false }
+blitz-html = { package = "ps-blitz-html", path = "../blitz-rust/packages/blitz-html", default-features = false }
+blitz-net = { path = "../blitz-rust/packages/blitz-net", default-features = false }
+blitz-script = { package = "ps-blitz-script", path = "../blitz-rust/packages/blitz-script", default-features = false }
+blitz-traits = { package = "ps-blitz-traits", path = "../blitz-rust/packages/blitz-traits", default-features = false }
+dioxus-native = { path = "../blitz-rust/packages/dioxus-native", default-features = false }
 brotli = { version = "8", default-features = false, features = ["std"] }
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }

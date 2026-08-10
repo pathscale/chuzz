@@ -26,7 +26,7 @@ scrollbars = ["blitz-dom/scrollbars"]
 [dependencies]
 blitz-dom = { workspace = true, features = ["woff"] }
 blitz-html.workspace = true
-blitz-net = { workspace = true, features = ["http2", "cookies"] }
+blitz-net = { workspace = true, features = ["http2", "cookies", "compression"] }
 blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
 blitz-traits.workspace = true
 brotli.workspace = true
