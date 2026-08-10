@@ -58,11 +58,17 @@ fn main() {
             eprintln!("chuzz: --capture needs an output path");
             std::process::exit(2);
         });
+        // Skip the flag and its value explicitly. Comparing against `output`
+        // here was a type error that always compared unequal, so the output
+        // path itself was taken as the URL and quietly navigated to.
         let url = args
             .iter()
+            .enumerate()
             .skip(1)
-            .find(|arg| !arg.starts_with("--") && *arg != &output)
-            .cloned()
+            .find(|(position, arg)| {
+                *position != index && *position != index + 1 && !arg.starts_with("--")
+            })
+            .map(|(_, arg)| arg.clone())
             .unwrap_or_else(|| nav::HOME_URL.to_owned());
         let width = std::env::var("CHUZZ_CAPTURE_WIDTH")
             .ok()

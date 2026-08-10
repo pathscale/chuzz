@@ -1,11 +1,9 @@
 //! Address-bar policy: deciding what a typed string means.
 //!
 //! The browser, not the engine, owns this. A string is a URL if it parses as
-//! one, a bare hostname if it looks like a domain, and a search query
-//! otherwise.
+//! one, a bare hostname if it looks like a domain, and nothing otherwise.
 
-use blitz_traits::navigation::NavigationOptions;
-use blitz_traits::net::{Method, Request, Url};
+use blitz_traits::net::{Request, Url};
 
 /// Page opened by the home button.
 pub const HOME_URL: &str = "https://24x.ai/";
@@ -13,13 +11,10 @@ pub const HOME_URL: &str = "https://24x.ai/";
 /// Page opened by a new tab. Same as home: a new tab lands somewhere useful.
 pub const NEW_TAB_URL: &str = HOME_URL;
 
-/// Search endpoint used when the address bar holds something that is not a URL.
-const SEARCH_URL: &str = "https://duckduckgo.com/";
-
 /// Turn whatever the user typed into a request.
 ///
-/// Returns `None` only when the input is empty or whitespace, which the
-/// toolbar treats as "do nothing" rather than as a failed navigation.
+/// Returns `None` for anything that is not a URL or a bare hostname. The
+/// toolbar treats that as "do nothing".
 pub fn request_from_input(input: &str) -> Option<Request> {
     let input = input.trim();
     if input.is_empty() {
@@ -38,7 +33,11 @@ pub fn request_from_input(input: &str) -> Option<Request> {
         return Some(Request::get(url));
     }
 
-    Some(search_request(input))
+    // No search fallback. Anything that is not a URL and not a hostname is a
+    // mistake, and quietly navigating somewhere unrelated hides it: that is how
+    // a wrong capture argument ended up loading a search engine instead of the
+    // local file it was given.
+    None
 }
 
 /// A dotted, space-free token is treated as a host rather than a query.
@@ -61,21 +60,6 @@ fn looks_like_hostname(input: &str) -> bool {
         .unwrap_or(input);
     // A trailing dot ("foo.") or a leading dot (".foo") is a typo, not a host.
     host.contains('.') && !host.starts_with('.') && !host.ends_with('.')
-}
-
-fn search_request(query: &str) -> Request {
-    // `Url::parse` of a constant literal cannot fail.
-    #[allow(clippy::expect_used)]
-    let mut url = Url::parse(SEARCH_URL).expect("search URL is a valid constant");
-    url.query_pairs_mut().append_pair("q", query);
-
-    NavigationOptions::new(
-        url,
-        Some(String::from("application/x-www-form-urlencoded")),
-        0,
-    )
-    .set_method(Method::GET)
-    .into_request()
 }
 
 /// Text shown in the tab strip and the window title.
@@ -123,38 +107,18 @@ mod tests {
     }
 
     #[test]
-    fn prose_becomes_a_search() {
-        let searched = target("how tall is the eiffel tower");
-        assert!(
-            searched.starts_with("https://duckduckgo.com/?q="),
-            "{searched}"
-        );
-        assert!(searched.contains("eiffel"), "{searched}");
+    fn prose_is_not_a_navigation() {
+        assert!(request_from_input("how tall is the eiffel tower").is_none());
     }
 
     #[test]
-    fn a_dotted_phrase_with_spaces_is_a_search_not_a_host() {
-        let searched = target("what is rust.lang about");
-        assert!(
-            searched.starts_with("https://duckduckgo.com/?q="),
-            "{searched}"
-        );
+    fn a_dotted_phrase_with_spaces_is_not_a_host() {
+        assert!(request_from_input("what is rust.lang about").is_none());
     }
 
     #[test]
-    fn a_trailing_dot_is_a_typo_and_searches() {
-        let searched = target("example.");
-        assert!(
-            searched.starts_with("https://duckduckgo.com/?q="),
-            "{searched}"
-        );
-    }
-
-    #[test]
-    fn search_queries_are_percent_encoded() {
-        let searched = target("rust & c++");
-        assert!(!searched.contains(' '), "{searched}");
-        assert!(searched.contains("%26"), "{searched}");
+    fn a_trailing_dot_is_a_typo_and_goes_nowhere() {
+        assert!(request_from_input("example.").is_none());
     }
 
     #[test]
