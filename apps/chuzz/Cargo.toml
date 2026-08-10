@@ -1,0 +1,37 @@
+[package]
+name = "chuzz"
+description = "A pure Rust web browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "chuzz"
+path = "src/main.rs"
+
+[features]
+# The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
+# wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
+default = ["vello", "scrollbars", "incremental"]
+vello = ["dioxus-native/vello"]
+vello-hybrid = ["dioxus-native/vello-hybrid"]
+incremental = ["dioxus-native/incremental"]
+scrollbars = ["blitz-dom/scrollbars"]
+
+[dependencies]
+blitz-dom = { workspace = true, features = ["woff"] }
+blitz-html.workspace = true
+blitz-net = { workspace = true, features = ["http2", "cookies"] }
+blitz-traits.workspace = true
+dioxus-native = { workspace = true, features = [
+  "accessibility",
+  "clipboard",
+  "net",
+  "prelude",
+  "svg",
+  "system-fonts",
+] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+url.workspace = true

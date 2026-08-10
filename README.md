@@ -1,0 +1,45 @@
+# Chuzz
+
+Chuzz is a pure Rust web browser built on the Pathscale Blitz engine. It does not embed WebKit, Chromium, Electron, or Tauri.
+
+```sh
+cargo run -p chuzz                      # opens the home page
+cargo run -p chuzz -- example.com       # opens a bare hostname over HTTPS
+cargo run -p chuzz -- "rust ownership"  # a non-URL argument becomes a search
+```
+
+## Layout
+
+The window is a Chrome-shaped shell: tab strip on top, toolbar under it, page filling the rest.
+
+```text
+apps/chuzz/src
+  main.rs             window, startup URL, and the shell layout
+  tab_strip.rs        tab row: select, close, new tab
+  toolbar.rs          back, forward, reload, address bar
+  tab.rs              one tab: history + loader + the document on screen
+  document_loader.rs  fetch a URL, parse it into a page document, abort the previous load
+  history.rs          per-tab session history and the engine's navigation hook
+  nav.rs              what a typed string means: URL, bare hostname, or search
+  ui.rs               stylesheet for the browser UI
+
+crates/chuzz-control  built-in diagnostics and agent-control interface (in-process, no server)
+```
+
+## Two documents, not one
+
+The browser UI is itself a Blitz document, driven by Dioxus Native. Each tab's page is a
+separate child document mounted inside the UI's `web-view` element. Page markup and browser
+markup never share a DOM, so a site's CSS cannot restyle the toolbar and the toolbar's CSS
+cannot leak into the site.
+
+Everything a browser decides rather than renders stays in this binary: tabs, session history,
+address-bar interpretation, and error pages. The engine only reports that a navigation was
+requested; `history.rs` decides what the back and forward stacks look like afterwards.
+
+## Engine
+
+Pathscale Blitz supplies HTML parsing, Stylo CSS, Taffy layout, networking, Vello rendering,
+input, and accessibility. The renderer is Vello on wgpu, following AgencyZero's Blitz
+performance thesis: Metal on macOS, with the Vulkan and D3D12 paths preserved for Linux and
+Windows.
