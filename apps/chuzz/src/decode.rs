@@ -9,6 +9,15 @@
 //! The encoding header is not visible through the net provider's API, so the
 //! payload is sniffed instead: both formats have recognisable openings, and
 //! anything that already decodes as UTF-8 text is left alone.
+//!
+//! This is a workaround, and the real fix is upstream. `blitz-net` declares
+//! `reqwest` with `default-features = false` and the features `charset`,
+//! `native-tls` and `form` (see `packages/blitz-net/Cargo.toml`). reqwest only
+//! decompresses transparently when its `brotli`/`gzip`/`deflate`/`zstd`
+//! features are enabled, so adding those there would make every response
+//! arrive decoded and this module unnecessary. Sniffing is a heuristic: a
+//! served file that happens to be valid brotli and not valid UTF-8 would be
+//! decompressed when it should not be.
 
 use std::io::Read;
 

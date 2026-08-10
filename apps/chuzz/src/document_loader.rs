@@ -383,12 +383,16 @@ impl DocumentLoader {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             document.eval("void 0");
             document.poll(None);
-            // Settle as soon as the page has built something to paint. Keyed
-            // on the body having element children rather than on any single
-            // site's mount-point id.
+            // Settle once the page has built something worth painting.
+            //
+            // Checking `body > *` was wrong: a script-rendered page ships an
+            // empty mount point, so that matches on the first iteration and
+            // the loop exits before any script has run. A framework mounts
+            // *into* that element, so the test is whether the tree has grown
+            // below it.
             let built = document
                 .inner()
-                .query_selector("body > *")
+                .query_selector("body > * > *")
                 .ok()
                 .flatten()
                 .is_some();
