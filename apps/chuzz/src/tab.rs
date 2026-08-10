@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use blitz_traits::net::{Request, Url};
+use blitz_traits::shell::Viewport;
 use dioxus_native::{NodeHandle, SubDocumentAttr, prelude::*};
 
 use crate::document_loader::{DocumentLoader, LoadStatus, LoadedDocument, NetProvider};
@@ -155,10 +156,40 @@ fn AnimationClock(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
             let Some(handle) = tab.node_handle().cloned() else {
                 continue;
             };
-            let mut doc = handle.doc_mut();
+            // `try_doc_mut` rather than `doc_mut`: the control poll borrows the
+            // same RefCell, and two timers will eventually tick together. A
+            // dropped frame is invisible; a panic is not.
+            let Some(mut doc) = handle.try_doc_mut() else {
+                continue;
+            };
+            // The widget's box is the page's viewport. Nothing else sets it:
+            // a sub-document is not a window, so it never receives a resize,
+            // and a document with no viewport lays out against a default width
+            // rather than the space it actually occupies.
+            let box_size = doc
+                .get_node(handle.node_id())
+                .map(|node| node.final_layout.size);
             if let Some(sub) = doc.subdoc_mut(handle.node_id()) {
-                sub.inner_mut()
-                    .resolve(start.elapsed().as_secs_f64() * 1000.0);
+                let mut inner = sub.inner_mut();
+                if let Some(size) = box_size
+                    && size.width > 0.0
+                    && size.height > 0.0
+                {
+                    // `Viewport::new` takes physical pixels; the widget's box is
+                    // in CSS pixels, so it has to be scaled back up or the page
+                    // lays out at half width on a retina display. Wrong bounds
+                    // here would also mislead any agent driving the browser
+                    // through `inspect`.
+                    let viewport = inner.viewport();
+                    let scale = viewport.hidpi_scale;
+                    let scheme = viewport.color_scheme;
+                    let width = (size.width * scale).round() as u32;
+                    let height = (size.height * scale).round() as u32;
+                    if viewport.window_size != (width, height) {
+                        inner.set_viewport(Viewport::new(width, height, scale, scheme));
+                    }
+                }
+                inner.resolve(start.elapsed().as_secs_f64() * 1000.0);
             }
         }
     });

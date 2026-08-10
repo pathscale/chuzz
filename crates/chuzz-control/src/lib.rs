@@ -134,6 +134,25 @@ pub struct SemanticNode {
     pub visible: bool,
     /// `[x, y, width, height]` in CSS pixels, absent when the node has no box.
     pub bounds: Option<[f64; 4]>,
+    /// The element's XML namespace, when it is not plain HTML. Inline SVG that
+    /// arrives in the HTML namespace is never treated as SVG by the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// For an image element: what the engine actually holds after fetching.
+    /// A laid-out `<img>` with `None` here downloaded but never decoded, which
+    /// on screen is indistinguishable from a missing file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageStatus>,
+}
+
+/// What an image element resolved to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageStatus {
+    /// `raster`, `svg`, or `none` when the slot is empty.
+    pub kind: String,
+    /// Intrinsic pixel size, when decoded.
+    pub intrinsic: Option<[u32; 2]>,
 }
 
 /// A settled view of the document.
@@ -229,6 +248,11 @@ mod tests {
                 id: 1,
                 parent: None,
                 role: "svg".into(),
+                namespace: Some("http://www.w3.org/2000/svg".into()),
+                image: Some(ImageStatus {
+                    kind: "svg".into(),
+                    intrinsic: Some([744, 221]),
+                }),
                 name: String::new(),
                 value: None,
                 enabled: true,

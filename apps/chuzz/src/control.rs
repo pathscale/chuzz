@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use blitz_dom::BaseDocument;
 use chuzz_control::server::{ControlBridge, ControlServer};
 use chuzz_control::{
-    AgentControlRequest, AgentSnapshot, ControlError, ControlResponse, SemanticNode,
+    AgentControlRequest, AgentSnapshot, ControlError, ControlResponse, ImageStatus, SemanticNode,
 };
 use tokio::sync::oneshot;
 
@@ -175,10 +175,39 @@ fn collect(
         layout.size.height as f64,
     ]);
 
+    // Report what an image slot holds: a laid-out element with no decoded data
+    // looks identical on screen to one whose file never arrived.
+    let image = element.and_then(|data| {
+        data.image_data().map(|image| match image {
+            blitz_dom::node::ImageData::Raster(raster) => ImageStatus {
+                kind: "raster".to_owned(),
+                intrinsic: Some([raster.width, raster.height]),
+            },
+            // No `cfg` here: `svg` is a feature of blitz-dom, not of chuzz, so
+            // gating on it silently compiled this arm out and reported every
+            // parsed SVG as an empty slot.
+            blitz_dom::node::ImageData::Svg(svg) => ImageStatus {
+                kind: "svg".to_owned(),
+                intrinsic: Some([
+                    svg.tree.size().width().round() as u32,
+                    svg.tree.size().height().round() as u32,
+                ]),
+            },
+            blitz_dom::node::ImageData::None => ImageStatus {
+                kind: "none".to_owned(),
+                intrinsic: None,
+            },
+        })
+    });
+
+    let namespace = element.map(|data| data.name.ns.to_string());
+
     out.push(SemanticNode {
         id: node_id as u64,
         parent,
         role,
+        namespace,
+        image,
         name: name.chars().take(200).collect(),
         value: None,
         enabled: true,

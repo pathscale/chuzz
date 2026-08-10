@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use blitz_traits::net::Url;
-use dioxus_native::{LogicalSize, WindowAttributes, prelude::*};
+use dioxus_native::{LogicalSize, WindowAttributes, prelude::*, use_window_event};
 
 #[cfg(target_os = "macos")]
 use dioxus_native::winit::platform::macos::WindowAttributesMacOS;
@@ -128,7 +128,10 @@ fn app() -> Element {
                         control.drain_unavailable();
                         continue;
                     };
-                    let mut doc = handle.doc_mut();
+                    // Fallible: the animation clock borrows the same document.
+                    let Some(mut doc) = handle.try_doc_mut() else {
+                        continue;
+                    };
                     if let Some(sub) = doc.subdoc_mut(handle.node_id()) {
                         control.service(&sub.inner_mut(), Some(url), Some(title));
                     } else {
@@ -138,6 +141,57 @@ fn app() -> Element {
                 }
             }
         });
+    }
+
+    // Shortcuts come from the window, not the document: the frame is a div, so
+    // it only receives keys while focused, and nothing focuses it at startup.
+    // A browser's chords have to work the moment the window opens.
+    {
+        let net = shortcut_net_provider.clone();
+        let mut modifiers_state = std::rc::Rc::new(std::cell::Cell::new(
+            dioxus_native::winit::keyboard::ModifiersState::empty(),
+        ));
+        let tracked = std::rc::Rc::clone(&modifiers_state);
+        use_window_event(move |event, _target| {
+            use dioxus_native::winit::event::{ElementState, WindowEvent};
+            use dioxus_native::winit::keyboard::Key;
+            match event {
+                WindowEvent::ModifiersChanged(new) => tracked.set(new.state()),
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed =>
+                {
+                    let mods = tracked.get();
+                    let key = match &event.logical_key {
+                        Key::Character(text) => text.to_string(),
+                        _ => String::new(),
+                    };
+                    let code = format!("{:?}", event.physical_key);
+                    let code = code
+                        .strip_prefix("Code(")
+                        .and_then(|rest| rest.strip_suffix(')'))
+                        .unwrap_or(code.as_str())
+                        .to_owned();
+                    if let Some(shortcut) = resolve(
+                        &key,
+                        &code,
+                        mods.meta_key(),
+                        mods.control_key(),
+                        mods.alt_key(),
+                        mods.shift_key(),
+                    ) {
+                        apply(
+                            shortcut,
+                            tabs,
+                            active_tab_id,
+                            focus_address_bar,
+                            net.clone(),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        });
+        let _ = &mut modifiers_state;
     }
 
     let window_title = tab_display_title(active_tab(tabs, active_tab_id()));
