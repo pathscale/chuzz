@@ -14,10 +14,15 @@ path = "src/main.rs"
 [features]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
-default = ["vello", "scrollbars", "incremental", "javascript"]
+default = ["vello", "scrollbars", "incremental", "javascript", "webp", "avif"]
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
 # page parses to an empty mount point and paints nothing.
 javascript = ["dep:blitz-script"]
+# The `image` crate is pulled in with default features off, so without these a
+# .webp or .avif downloads fine and then cannot be decoded: the element simply
+# never paints, which reads as a missing asset rather than a missing codec.
+webp = ["image/webp"]
+avif = ["image/avif"]
 vello = ["dioxus-native/vello"]
 vello-hybrid = ["dioxus-native/vello-hybrid"]
 incremental = ["dioxus-native/incremental"]
@@ -30,6 +35,7 @@ blitz-net = { workspace = true, features = ["http2", "cookies", "compression"] }
 blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
 blitz-traits.workspace = true
 brotli.workspace = true
+image = { workspace = true, default-features = false }
 flate2.workspace = true
 dioxus-native = { workspace = true, features = [
   "accessibility",

@@ -119,6 +119,19 @@ const WEB_API_SHIM: &str = r#"
       this.origin = this.protocol + '//' + this.host;
       this.toString = function () { return this.href; };
     };
+    // Object URLs: a page that creates one and revokes it on teardown would
+    // otherwise throw on a missing static. Blobs are not backed here, so the
+    // handle is a token rather than a readable resource.
+    var objectUrls = Object.create(null);
+    var objectUrlSeq = 0;
+    globalThis.URL.createObjectURL = function (object) {
+      var handle = 'blob:chuzz/' + (++objectUrlSeq);
+      objectUrls[handle] = object;
+      return handle;
+    };
+    globalThis.URL.revokeObjectURL = function (handle) {
+      delete objectUrls[String(handle)];
+    };
   }
   if (typeof globalThis.URLSearchParams === 'undefined') {
     globalThis.URLSearchParams = function (init) {
