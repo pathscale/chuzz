@@ -29,6 +29,23 @@ pub async fn capture(
     let net_provider = std::sync::Arc::new(blitz_net::Provider::new(None));
     let mut document = crate::document_loader::load_for_capture(request, net_provider).await?;
 
+    // Images are fetched asynchronously and applied through the document's
+    // message channel, which only drains inside `resolve`. Resolving once
+    // captures the page before any image has arrived, so every <img> paints
+    // nothing. Give the fetches a few passes to land.
+    for _ in 0..40 {
+        let pending = document.with_document(|document| {
+            document.resolve(0.0);
+            document.has_pending_critical_resources()
+        });
+        if !pending {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    // A final settle for anything that arrived on the last pass.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     let buffer = document.with_document(|document| {
         document.set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
         document.resolve(0.0);
