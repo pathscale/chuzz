@@ -235,7 +235,7 @@ html, body {
   flex-grow: 1;
   min-height: 0;
   padding: 0 14px 10px 14px;
-  gap: 10px;
+  gap: 22px;
   overflow: hidden;
 }
 
@@ -314,27 +314,42 @@ html, body {
    rounded tab that protrudes from the panel's leading edge, vertically
    centred, present whether the panel is open or collapsed. It rides the seam
    between the page card and the panel. */
+/* Ported from AgencyZero's ProjectPanelToggle. The handle starts at the page
+   boundary and occupies the whole gap on its right: a slim rectangular tab in
+   the primary blue, rounded on its right side only, reaching neither panel's
+   scrollbar. The arrow points toward the action, so right closes the visible
+   panel and left restores the hidden one. */
 .panel-edge-handle {
   position: absolute;
   top: 50%;
-  width: 15px;
-  height: 46px;
-  margin-top: -23px;
-  line-height: 44px;
-  text-align: center;
-  background: #26344a;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px 0 0 8px;
-  border-right: none;
-  color: #8fa0b8;
-  font-size: 11px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 6px;
+  height: 36px;
+  margin-top: -18px;
+  border: 1px solid rgba(76, 141, 255, 0.40);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background: rgba(76, 141, 255, 0.20);
+  color: #4c8dff;
+  font-size: 10px;
+  font-weight: 700;
   cursor: pointer;
 }
 
 .panel-edge-handle:hover {
-  background: #33445e;
-  border-color: #4c8dff;
-  color: #ffffff;
+  border-color: rgba(76, 141, 255, 0.60);
+  background: rgba(76, 141, 255, 0.30);
+}
+
+/* Hidden panel: the same tab mirrored, so the arrow still points at what the
+   click will do. */
+.panel-edge-handle.rotate {
+  border: 1px solid rgba(76, 141, 255, 0.40);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
 }
 
 #side-panel-scroll {

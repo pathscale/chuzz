@@ -32,12 +32,9 @@ impl Default for PanelSections {
 
 #[component]
 pub fn SidePanel(collapsed: Signal<bool>, sections: Signal<PanelSections>) -> Element {
-    let mut collapsed = collapsed;
-    let is_collapsed = collapsed();
-
     // Collapsed, the panel yields all its width to the page. The edge handle
     // lives in the content row rather than in here, so it survives.
-    if is_collapsed {
+    if collapsed() {
         return rsx!();
     }
 
@@ -100,34 +97,32 @@ pub fn SidePanel(collapsed: Signal<bool>, sections: Signal<PanelSections>) -> El
     )
 }
 
-/// The collapse affordance: a rounded tab on the seam between the page and
-/// the panel, vertically centred and always present. Its chevron points the
-/// way the panel will move.
+/// The collapse affordance, ported from AgencyZero's `ProjectPanelToggle`.
+///
+/// A slim tab anchored to the page card's trailing edge, occupying the gap
+/// beside it. One chevron, rotated: it points toward the action, so right
+/// closes the visible panel and left restores the hidden one.
 #[component]
 pub fn PanelEdgeHandle(collapsed: Signal<bool>) -> Element {
     let mut collapsed = collapsed;
-    let is_collapsed = collapsed();
-    let glyph = if is_collapsed { "\u{2039}" } else { "\u{203a}" };
-    let title = if is_collapsed {
-        "Expand panel"
+    let is_visible = !collapsed();
+    let label = if is_visible {
+        "Hide the panel"
     } else {
-        "Collapse panel"
+        "Show the panel"
     };
-    // Sits just inside the panel's leading edge when open, and against the
-    // window's trailing edge when the panel is gone.
-    let offset = if is_collapsed {
-        "right: 14px"
-    } else {
-        "right: 332px"
-    };
+    // `left-full` in the original: the handle hangs off the page card's right
+    // edge. Here the page card ends where the panel and gap begin.
+    let from_right = if is_visible { 354 } else { 8 };
+    let rotation = if is_visible { "" } else { " rotate" };
 
     rsx!(
         div {
-            class: "panel-edge-handle",
-            style: "{offset}",
-            title: "{title}",
+            class: "panel-edge-handle{rotation}",
+            style: "right: {from_right}px",
+            title: "{label}",
             onclick: move |_| collapsed.toggle(),
-            "{glyph}"
+            "\u{203a}"
         }
     )
 }
