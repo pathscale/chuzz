@@ -135,6 +135,36 @@ fn commit_loaded(tab: Store<Tab>, loaded: LoadedDocument) {
     *tab.document().write_unchecked() = Some(loaded.document);
 }
 
+/// Drives the page document's animation clock.
+///
+/// `View` resolves its own document with `current_animation_time()` on every
+/// redraw, which is what makes CSS animations and transitions advance. A
+/// sub-document mounted inside `web-view` is not a `View`, so without this its
+/// layout is resolved once and every time-based style stays on frame one.
+#[component]
+fn AnimationClock(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
+    use_future(move || async move {
+        let start = std::time::Instant::now();
+        loop {
+            // 60fps. Cheap when nothing animates: `resolve` is a no-op unless
+            // the document reports active animations.
+            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            if tab.tab_id() != active_tab_id() {
+                continue;
+            }
+            let Some(handle) = tab.node_handle().cloned() else {
+                continue;
+            };
+            let mut doc = handle.doc_mut();
+            if let Some(sub) = doc.subdoc_mut(handle.node_id()) {
+                sub.inner_mut()
+                    .resolve(start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+    });
+    rsx!()
+}
+
 /// Renders one tab's page. Inactive tabs stay mounted but hidden, so switching
 /// back to a tab does not refetch it.
 #[component]
@@ -177,7 +207,9 @@ pub fn TabView(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
 
     let mut node_handle_lens = tab.node_handle();
 
-    rsx!(web-view {
+    rsx!(
+    AnimationClock { tab, active_tab_id }
+    web-view {
         key: "{id}",
         class: "page",
         style: visibility,
