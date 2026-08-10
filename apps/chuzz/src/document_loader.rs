@@ -494,6 +494,20 @@ pub async fn load_for_capture(
         let mut document = document.with_fetcher(PrefetchedScripts { scripts });
         document.eval(WEB_API_SHIM);
         document.execute_scripts();
+        // Pump the script runtime until the page has built its DOM, then keep
+        // pumping for a few more passes.
+        //
+        // Breaking out the moment `body > * > *` matches is wrong: parsing the
+        // HTML already issued the <img> fetches, and those responses are
+        // delivered on the document's channel. Returning early drops the
+        // document that owns the receiver while requests are still in flight,
+        // so `respond` sends into a closed channel and the decoded image is
+        // discarded, which looks exactly like an image that failed to load.
+        //
+        // Note the selector also matches static markup that simply has a
+        // wrapper element, so for most pages this loop used to exit on the
+        // first pass regardless of whether anything was pending.
+        let mut passes_since_built = 0;
         for _ in 0..24 {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             document.eval("void 0");
@@ -505,7 +519,10 @@ pub async fn load_for_capture(
                 .flatten()
                 .is_some();
             if built {
-                break;
+                passes_since_built += 1;
+                if passes_since_built >= 8 {
+                    break;
+                }
             }
         }
         Ok(CapturedDocument::Script(Box::new(document)))

@@ -32,18 +32,23 @@ pub async fn capture(
     // Images are fetched asynchronously and applied through the document's
     // message channel, which only drains inside `resolve`. Resolving once
     // captures the page before any image has arrived, so every <img> paints
-    // nothing. Give the fetches a few passes to land.
-    for _ in 0..40 {
+    // nothing.
+    //
+    // `has_pending_critical_resources` is not enough on its own: only
+    // stylesheets in <head> are critical, so it reports "settled" while every
+    // image is still in flight. Wait on the images too.
+    for _ in 0..80 {
         let pending = document.with_document(|document| {
             document.resolve(0.0);
-            document.has_pending_critical_resources()
+            document.has_pending_critical_resources() || document.pending_image_count() > 0
         });
         if !pending {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    // A final settle for anything that arrived on the last pass.
+    // A final settle: the last response may still be sitting on the channel,
+    // and it is only applied by the `resolve` inside the render below.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let buffer = document.with_document(|document| {
