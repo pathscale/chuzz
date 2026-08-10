@@ -28,7 +28,7 @@ mod ui;
 
 use document_loader::NetProvider;
 use nav::HOME_URL;
-use side_panel::{PanelSections, SidePanel};
+use side_panel::{PanelEdgeHandle, PanelSections, SidePanel};
 use status_strip::StatusStrip;
 use tab::{Tab, TabId, TabStoreImplExt, TabView, active_tab, open_tab, tab_display_title};
 use tab_strip::TitleBar;
@@ -73,7 +73,8 @@ fn app() -> Element {
     let net_provider = use_context::<Arc<NetProvider>>();
 
     let url_input_value = use_signal(String::new);
-    let panel_collapsed = use_signal(|| false);
+    // Collapsed by default: the page gets the full width until asked otherwise.
+    let panel_collapsed = use_signal(|| true);
     let panel_sections = use_signal(PanelSections::default);
     let tabs: Store<Vec<Tab>> = use_store(Vec::new);
 
@@ -110,6 +111,7 @@ fn app() -> Element {
                     }
                 }
                 SidePanel { collapsed: panel_collapsed, sections: panel_sections }
+                PanelEdgeHandle { collapsed: panel_collapsed }
             }
             StatusStrip {
                 is_loading,

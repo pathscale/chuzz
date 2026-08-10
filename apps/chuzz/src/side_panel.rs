@@ -35,31 +35,16 @@ pub fn SidePanel(collapsed: Signal<bool>, sections: Signal<PanelSections>) -> El
     let mut collapsed = collapsed;
     let is_collapsed = collapsed();
 
-    // Collapsed, the panel stays on screen as a narrow rail: the affordance to
-    // bring it back has to remain reachable.
+    // Collapsed, the panel yields all its width to the page. The edge handle
+    // lives in the content row rather than in here, so it survives.
     if is_collapsed {
-        return rsx!(
-            div { id: "side-panel", class: "collapsed",
-                div {
-                    class: "panel-rail-toggle",
-                    title: "Expand panel",
-                    onclick: move |_| collapsed.toggle(),
-                    "\u{2039}"
-                }
-            }
-        );
+        return rsx!();
     }
 
     rsx!(
         div { id: "side-panel",
             div { id: "side-panel-header",
                 div { id: "side-panel-title", "Inspector" }
-                div {
-                    id: "side-panel-toggle",
-                    title: "Collapse panel",
-                    onclick: move |_| collapsed.toggle(),
-                    "\u{203a}"
-                }
             }
             div { id: "side-panel-scroll",
                 SectionPanel {
@@ -111,6 +96,38 @@ pub fn SidePanel(collapsed: Signal<bool>, sections: Signal<PanelSections>) -> El
                     MockRows { rows: CONSOLE_ROWS }
                 }
             }
+        }
+    )
+}
+
+/// The collapse affordance: a rounded tab on the seam between the page and
+/// the panel, vertically centred and always present. Its chevron points the
+/// way the panel will move.
+#[component]
+pub fn PanelEdgeHandle(collapsed: Signal<bool>) -> Element {
+    let mut collapsed = collapsed;
+    let is_collapsed = collapsed();
+    let glyph = if is_collapsed { "\u{2039}" } else { "\u{203a}" };
+    let title = if is_collapsed {
+        "Expand panel"
+    } else {
+        "Collapse panel"
+    };
+    // Sits just inside the panel's leading edge when open, and against the
+    // window's trailing edge when the panel is gone.
+    let offset = if is_collapsed {
+        "right: 14px"
+    } else {
+        "right: 332px"
+    };
+
+    rsx!(
+        div {
+            class: "panel-edge-handle",
+            style: "{offset}",
+            title: "{title}",
+            onclick: move |_| collapsed.toggle(),
+            "{glyph}"
         }
     )
 }

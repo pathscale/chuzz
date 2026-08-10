@@ -229,6 +229,7 @@ html, body {
 /* Content row: page card on the left, panel on the right. */
 
 #content-row {
+  position: relative;
   display: flex;
   flex-direction: row;
   flex-grow: 1;
@@ -295,13 +296,9 @@ html, body {
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  height: 34px;
+  height: 30px;
   flex-shrink: 0;
-  margin-bottom: 10px;
-  padding: 0 6px 0 12px;
-  background: #1b2739;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 17px;
+  padding: 0 6px 0 4px;
 }
 
 #side-panel-title {
@@ -313,23 +310,28 @@ html, body {
   white-space: nowrap;
 }
 
-/* A bare glyph on a flat surface reads as text, not as a control: this needs
-   its own surface and border to be findable at all. */
-#side-panel-toggle {
-  width: 24px;
-  height: 24px;
-  line-height: 22px;
+/* The collapse affordance is an edge handle, not a button in a header: a
+   rounded tab that protrudes from the panel's leading edge, vertically
+   centred, present whether the panel is open or collapsed. It rides the seam
+   between the page card and the panel. */
+.panel-edge-handle {
+  position: absolute;
+  top: 50%;
+  width: 15px;
+  height: 46px;
+  margin-top: -23px;
+  line-height: 44px;
   text-align: center;
-  border-radius: 12px;
   background: #26344a;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #dbe2ea;
-  font-size: 13px;
-  flex-shrink: 0;
+  border-radius: 8px 0 0 8px;
+  border-right: none;
+  color: #8fa0b8;
+  font-size: 11px;
   cursor: pointer;
 }
 
-#side-panel-toggle:hover {
+.panel-edge-handle:hover {
   background: #33445e;
   border-color: #4c8dff;
   color: #ffffff;
