@@ -235,13 +235,13 @@ html, body {
   flex-grow: 1;
   min-height: 0;
   padding: 0 14px 10px 14px;
-  gap: 34px;
   overflow: hidden;
 }
 
 /* min-width/min-height:0 stop a flex item from refusing to shrink below its
    content size, which is what leaves a page clipped mid-paragraph. */
 #page-area {
+  position: relative;
   flex-grow: 1;
   min-width: 0;
   min-height: 0;
@@ -250,7 +250,6 @@ html, body {
   background: #0f1622;
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 14px;
-  overflow: hidden;
 }
 
 .page {
@@ -260,19 +259,23 @@ html, body {
 
 /* Side panel */
 
+/* The seam: a hairline dividing the page from the panel, which the toggle
+   straddles. Without it the handle floats in empty space with nothing to
+   attach to. */
+/* w-[332px] with ml-4 when visible; w-0 ml-0 when not. */
 #side-panel {
   display: flex;
   flex-direction: column;
   width: 332px;
+  margin-left: 16px;
   flex-shrink: 0;
   min-height: 0;
   overflow: hidden;
 }
 
 #side-panel.collapsed {
-  width: 34px;
-  align-items: center;
-  padding-top: 4px;
+  width: 0;
+  margin-left: 0;
 }
 
 .panel-rail-toggle {
@@ -321,9 +324,14 @@ html, body {
    the primary blue, rounded on its right side only, reaching neither panel's
    scrollbar. The arrow points toward the action, so right closes the visible
    panel and left restores the hidden one. */
+/* Ported from AgencyZero's ProjectPanelToggle. The tab straddles the seam,
+   flat where it meets the line and rounded on its outer side, in a muted blue
+   rather than a saturated chip. The arrow points toward the action: right
+   closes the visible panel, left restores the hidden one. */
 .panel-edge-handle {
   position: absolute;
   top: 50%;
+  left: 100%;
   z-index: 20;
   display: flex;
   align-items: center;
@@ -337,7 +345,6 @@ html, body {
   background: rgba(76, 141, 255, 0.20);
   color: #4c8dff;
   font-size: 10px;
-  font-weight: 700;
   cursor: pointer;
 }
 
@@ -346,21 +353,17 @@ html, body {
   background: rgba(76, 141, 255, 0.30);
 }
 
-/* Hidden panel: the same tab mirrored, so the arrow still points at what the
-   click will do. */
-.panel-edge-handle.rotate {
-  border: 1px solid rgba(76, 141, 255, 0.40);
-  border-right: none;
-  border-radius: 6px 0 0 6px;
-}
-
 #side-panel-scroll {
   display: flex;
   flex-direction: column;
   gap: 10px;
   flex-grow: 1;
   min-height: 0;
-  overflow-y: auto;
+  /* Always reserve the scrollbar gutter. Without this the cards shift
+     sideways the moment content starts overflowing, and anything anchored to
+     the panel's edge appears to drift. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
 }
 
 /* Accordion sections: a card with a hairline, radius 14, whose body exists

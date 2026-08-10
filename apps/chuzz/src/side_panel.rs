@@ -32,10 +32,13 @@ impl Default for PanelSections {
 
 #[component]
 pub fn SidePanel(collapsed: Signal<bool>, sections: Signal<PanelSections>) -> Element {
-    // Collapsed, the panel yields all its width to the page. The edge handle
-    // lives in the content row rather than in here, so it survives.
+    // Collapsed, the panel keeps the seam and the handle attached to it, but
+    // gives up its width and contents.
     if collapsed() {
-        return rsx!();
+        return rsx!(div {
+            id: "side-panel",
+            class: "collapsed"
+        });
     }
 
     rsx!(
@@ -111,15 +114,11 @@ pub fn PanelEdgeHandle(collapsed: Signal<bool>) -> Element {
     } else {
         "Show the panel"
     };
-    // `left-full` in the original: the handle hangs off the page card's right
-    // edge. Here the page card ends where the panel and gap begin.
-    let from_right = if is_visible { 360 } else { 14 };
     let rotation = if is_visible { "" } else { " rotate" };
 
     rsx!(
         div {
             class: "panel-edge-handle{rotation}",
-            style: "right: {from_right}px",
             title: "{label}",
             onclick: move |_| collapsed.toggle(),
             "\u{203a}"

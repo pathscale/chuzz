@@ -85,8 +85,26 @@ pub fn TitleBar(
                     "+"
                 }
             }
-            div { class: "titlebar-button", title: "Forward", "\u{203a}" }
-            div { class: "titlebar-button", title: "Metrics", "\u{25d4}" }
+            div {
+                class: "titlebar-button",
+                title: "Forward",
+                onclick: move |_| {
+                    if let Some(tab) = tabs.iter().find(|tab| tab.tab_id() == active_tab_id()) {
+                        tab.go_forward();
+                    }
+                },
+                "\u{203a}"
+            }
+            div {
+                class: "titlebar-button",
+                title: "Reload",
+                onclick: move |_| {
+                    if let Some(tab) = tabs.iter().find(|tab| tab.tab_id() == active_tab_id()) {
+                        tab.reload();
+                    }
+                },
+                "\u{21bb}"
+            }
             div { class: "titlebar-button", title: "Settings", "\u{2699}" }
             div { id: "avatar", "N" }
         }

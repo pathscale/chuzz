@@ -109,9 +109,9 @@ fn app() -> Element {
                     for tab in tabs.iter() {
                         TabView { key: "{tab.tab_id()}", tab, active_tab_id }
                     }
+                    PanelEdgeHandle { collapsed: panel_collapsed }
                 }
                 SidePanel { collapsed: panel_collapsed, sections: panel_sections }
-                PanelEdgeHandle { collapsed: panel_collapsed }
             }
             StatusStrip {
                 is_loading,
