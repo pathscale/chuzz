@@ -7,8 +7,12 @@
 use blitz_traits::navigation::NavigationOptions;
 use blitz_traits::net::{Method, Request, Url};
 
-/// Page opened by a new tab and by the home button.
-pub const HOME_URL: &str = "about:blank";
+/// Page opened by the home button.
+pub const HOME_URL: &str = "https://24x.ai/";
+
+/// Page opened by a new tab: blank, so opening one costs nothing and shows
+/// nothing until you ask for something.
+pub const NEW_TAB_URL: &str = "about:blank";
 
 /// Search endpoint used when the address bar holds something that is not a URL.
 const SEARCH_URL: &str = "https://duckduckgo.com/";

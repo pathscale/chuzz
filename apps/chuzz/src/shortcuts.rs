@@ -17,7 +17,7 @@
 
 use dioxus_native::prelude::*;
 
-use crate::nav::HOME_URL;
+use crate::nav::{HOME_URL, NEW_TAB_URL};
 use crate::tab::{Tab, TabId, TabStoreImplExt, active_tab, open_tab};
 use crate::tab_strip::close_tab;
 
@@ -99,8 +99,8 @@ pub fn apply(
         Shortcut::NewTab => {
             // `Url::parse` of a constant literal cannot fail.
             #[allow(clippy::expect_used)]
-            let home = Url::parse(HOME_URL).expect("home URL is a valid constant");
-            let opened = open_tab(tabs, home, net_provider);
+            let blank = Url::parse(NEW_TAB_URL).expect("blank URL is a valid constant");
+            let opened = open_tab(tabs, blank, net_provider);
             active_tab_id.set(opened.tab_id());
         }
         Shortcut::CloseTab => close_tab(tabs, active_tab_id, active_tab_id()),

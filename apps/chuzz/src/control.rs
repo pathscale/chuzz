@@ -202,6 +202,15 @@ fn collect(
 
     let namespace = element.map(|data| data.name.ns.to_string());
 
+    // The resolved `src`, so a client can tell a missing asset from a decode
+    // failure without guessing at the URL.
+    let value = element.and_then(|data| {
+        data.attrs
+            .iter()
+            .find(|attr| attr.name.local.as_ref() == "src")
+            .map(|attr| attr.value.to_string())
+    });
+
     out.push(SemanticNode {
         id: node_id as u64,
         parent,
@@ -209,7 +218,7 @@ fn collect(
         namespace,
         image,
         name: name.chars().take(200).collect(),
-        value: None,
+        value,
         enabled: true,
         // A zero-area box paints nothing, which is exactly what "invisible"
         // means to a client trying to click it.

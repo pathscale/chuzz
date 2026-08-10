@@ -33,7 +33,7 @@ mod ui;
 
 use control::ControlHandle;
 use document_loader::NetProvider;
-use nav::HOME_URL;
+use nav::{HOME_URL, NEW_TAB_URL};
 use shortcuts::{apply, resolve};
 use side_panel::{PanelEdgeHandle, PanelSections, SidePanel};
 use status_strip::StatusStrip;
@@ -127,6 +127,9 @@ fn app() -> Element {
     // `Url::parse` of a constant literal cannot fail.
     #[allow(clippy::expect_used)]
     let home_url = use_hook(|| Url::parse(HOME_URL).expect("home URL is a valid constant"));
+    // The new tab button opens a blank page, not the home page: a new tab
+    // should cost nothing until you ask it for something.
+    let new_tab_url = use_hook(|| Url::parse(NEW_TAB_URL).expect("blank URL is a valid constant"));
     let startup_url = use_hook(|| try_consume_context::<StartupUrl>().and_then(|ctx| ctx.0));
     let net_provider = use_context::<Arc<NetProvider>>();
     let shortcut_net_provider = net_provider.clone();
@@ -273,7 +276,7 @@ fn app() -> Element {
             // silently dropped and the whole UI renders unstyled. `document::Style`
             // routes inline CSS through the supported head path instead.
             document::Style { "{BROWSER_UI_CSS}" }
-            TitleBar { tabs, active_tab_id, home_url, open_new_tab }
+            TitleBar { tabs, active_tab_id, home_url: new_tab_url, open_new_tab }
             Toolbar { tabs, active_tab_id, url_input_value }
             if is_loading {
                 div { id: "loading-bar" }
