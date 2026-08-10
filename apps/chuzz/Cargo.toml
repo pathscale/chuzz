@@ -29,11 +29,15 @@ incremental = ["dioxus-native/incremental"]
 scrollbars = ["blitz-dom/scrollbars"]
 
 [dependencies]
-blitz-dom = { workspace = true, features = ["woff"] }
-blitz-html.workspace = true
+# Default features are the engine's own baseline: svg (inline SVG cannot be
+# measured or painted without it, so a logo silently collapses),
+# accessibility, system-fonts, file-input and custom-widget. Stripping them
+# and re-adding one by hand was how the logo broke.
+blitz-dom = { workspace = true, default-features = true, features = ["woff"] }
+blitz-html = { workspace = true, default-features = true }
 blitz-net = { workspace = true, features = ["http2", "cookies", "compression"] }
 blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
-blitz-traits.workspace = true
+blitz-traits = { workspace = true, default-features = true }
 brotli.workspace = true
 image = { workspace = true, default-features = false }
 flate2.workspace = true
