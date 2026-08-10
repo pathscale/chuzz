@@ -235,7 +235,7 @@ html, body {
   flex-grow: 1;
   min-height: 0;
   padding: 0 14px 10px 14px;
-  gap: 22px;
+  gap: 34px;
   overflow: hidden;
 }
 
@@ -245,7 +245,9 @@ html, body {
   flex-grow: 1;
   min-width: 0;
   min-height: 0;
-  background: #ffffff;
+  /* Dark until a page paints over it: a white card on a dark desk strobes on
+     every load. */
+  background: #0f1622;
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 14px;
   overflow: hidden;

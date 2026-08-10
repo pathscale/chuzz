@@ -113,7 +113,7 @@ pub fn PanelEdgeHandle(collapsed: Signal<bool>) -> Element {
     };
     // `left-full` in the original: the handle hangs off the page card's right
     // edge. Here the page card ends where the panel and gap begin.
-    let from_right = if is_visible { 354 } else { 8 };
+    let from_right = if is_visible { 360 } else { 14 };
     let rotation = if is_visible { "" } else { " rotate" };
 
     rsx!(

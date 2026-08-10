@@ -7,8 +7,9 @@
 use blitz_traits::navigation::NavigationOptions;
 use blitz_traits::net::{Method, Request, Url};
 
-/// Page opened by a new tab and by the home button.
-pub const HOME_URL: &str = "https://duckduckgo.com/";
+/// Page opened by a new tab and by the home button. Dark by default, because
+/// a bright page on a dark shell is punishing to look at.
+pub const HOME_URL: &str = "https://html.duckduckgo.com/html/";
 
 /// Search endpoint used when the address bar holds something that is not a URL.
 const SEARCH_URL: &str = "https://duckduckgo.com/";
