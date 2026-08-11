@@ -23,6 +23,21 @@ fn tree_dump_path() -> Option<PathBuf> {
     std::env::var_os("CHUZZ_CAPTURE_TREE").map(PathBuf::from)
 }
 
+/// Device pixel ratio to render at. Defaults to 1.
+///
+/// The window renders the page as a sub-document on a retina display, so its
+/// scale is 2. A capture fixed at 1 therefore cannot reproduce anything that
+/// only goes wrong when the scale is not 1, which is a whole class of paint
+/// fault. The output is `width * scale` by `height * scale` pixels, laid out
+/// at `width` by `height` CSS pixels, the same as the window does.
+fn capture_scale() -> f32 {
+    std::env::var("CHUZZ_CAPTURE_SCALE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|scale: &f32| *scale > 0.0)
+        .unwrap_or(1.0)
+}
+
 /// Render `url` at the given size and write a PNG to `output`.
 pub async fn capture(
     url: &str,
@@ -59,8 +74,17 @@ pub async fn capture(
     // and it is only applied by the `resolve` inside the render below.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
+    let scale = capture_scale();
+    // Physical pixels, the way a window sizes its surface.
+    let device_width = (width as f32 * scale).round() as u32;
+    let device_height = (height as f32 * scale).round() as u32;
     let buffer = document.with_document(|document| {
-        document.set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
+        document.set_viewport(Viewport::new(
+            device_width,
+            device_height,
+            scale,
+            ColorScheme::Light,
+        ));
         document.resolve(0.0);
         // Written from the same settled document the pixels come from, so a box
         // in the dump is the box that was painted.
@@ -70,14 +94,24 @@ pub async fn capture(
             eprintln!("chuzz: could not write the tree dump: {error}");
         }
         render_to_buffer::<VelloCpuImageRenderer, _>(
-            |scene| paint_scene(scene, document, 1.0, width, height, 0, 0),
-            width,
-            height,
+            |scene| {
+                paint_scene(
+                    scene,
+                    document,
+                    scale as f64,
+                    device_width,
+                    device_height,
+                    0,
+                    0,
+                )
+            },
+            device_width,
+            device_height,
         )
     });
 
     let file = std::fs::File::create(output)?;
-    let mut encoder = png::Encoder::new(file, width, height);
+    let mut encoder = png::Encoder::new(file, device_width, device_height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header()?;
