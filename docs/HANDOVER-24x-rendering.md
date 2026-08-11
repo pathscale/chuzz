@@ -299,6 +299,38 @@ before trusting one.
 Nothing here makes 24x.ai impossible. Failure 1 is the only one that changes how the page
 reads, and it is a missing renderer feature with a named source line, not a wall.
 
+## The engine tree has forked, and that needs a decision
+
+Found while committing the fix for failure 3, and it changes what several of the numbers
+above are worth.
+
+`~/code/blitz-rust`, the tree chuzz path-depends on, is checked out at
+`feat/window-created-hook`. That branch is an **ancestor of `master`**: `git rev-list
+--left-right --count master...HEAD` is `58 0`, so master holds 58 commits the build has
+never seen and the branch holds nothing master lacks. On top of that ancestor sit
+uncommitted changes, several of which duplicate work that is already on master by another
+route: `restore_svg_attribute_case` and the compression features are byte for byte
+identical to master's copies, and `feat/chuzz-render-fixes` carries them as
+`bce78342 Fix five defects that stop a modern page rendering`.
+
+What master has that the running build does not, judging by subject lines alone:
+
+- `acf82e71 fix: measure a textarea in CSS pixels, not the display's`, which is the same
+  neighbourhood as failure 3
+- `c5b58fd8 build: move to taffy 0.13`, the layout cache change `TODO.md` wants A/B tested
+- `04107c01 perf: answer a textarea's height from its editor, not a full resolve`
+- `fbaf7734`, `09ef9d7c`, `9ff0b4c1`, the layer accounting and clipping work
+
+What the working tree has that master does not, and would be lost by a naive checkout:
+`pending_image_count` (chuzz's capture needs it), the `isolation: isolate` stacking
+context, `sync_multiline_width`, a content-width cache, and an `incremental_layout` flag.
+
+**Do not switch branches without the owner.** Doing it changes what their running browser
+contains. The work is: diff the tree against master properly, land the genuinely local
+pieces, then move the checkout forward and re-measure everything above. Several failures
+may simply go away, and until that is done, every engine-level finding here carries the
+caveat that it was measured on a 58-commit-old base.
+
 ## Also changed this session, at the owner's request
 
 - New tabs open `about:blank` again rather than the home page.
