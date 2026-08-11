@@ -8,8 +8,14 @@ use blitz_traits::net::{Request, Url};
 /// Page opened by the home button.
 pub const HOME_URL: &str = "https://24x.ai/";
 
-/// Page opened by a new tab. Same as home: a new tab lands somewhere useful.
-pub const NEW_TAB_URL: &str = HOME_URL;
+/// Page opened by a new tab: nothing at all.
+///
+/// A new tab should cost nothing until it is asked for something. Pointing it
+/// at the home page instead means every new tab fetches a site, runs its
+/// scripts, and decodes its images before the address bar has been touched.
+/// `document_loader` answers the `about` scheme from a constant, without a
+/// request.
+pub const NEW_TAB_URL: &str = "about:blank";
 
 /// Turn whatever the user typed into a request.
 ///
@@ -77,6 +83,15 @@ mod tests {
 
     fn target(input: &str) -> String {
         request_from_input(input).unwrap().url.to_string()
+    }
+
+    /// `document_loader` answers the `about` scheme from a constant instead of
+    /// fetching. A new tab pointed anywhere else costs a request before it has
+    /// been asked for anything.
+    #[test]
+    fn a_new_tab_costs_no_request() {
+        let url = Url::parse(NEW_TAB_URL).unwrap();
+        assert_eq!(url.scheme(), "about");
     }
 
     #[test]
