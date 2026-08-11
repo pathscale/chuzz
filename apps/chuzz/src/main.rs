@@ -35,7 +35,7 @@ mod ui;
 
 use control::ControlHandle;
 use document_loader::NetProvider;
-use nav::{HOME_URL, NEW_TAB_URL};
+use nav::NEW_TAB_URL;
 use shortcuts::{apply, resolve};
 use side_panel::{PanelEdgeHandle, PanelSections, SidePanel};
 use status_strip::StatusStrip;
@@ -132,11 +132,13 @@ fn main() {
 }
 
 fn app() -> Element {
+    // The new tab button opens a blank page, not the home page: a new tab
+    // should cost nothing until you ask it for something. Startup is the same:
+    // opening the browser is not a request to load a site, and starting on one
+    // means every launch pays for a fetch nobody asked for. Name a URL on the
+    // command line, or type one.
     // `Url::parse` of a constant literal cannot fail.
     #[allow(clippy::expect_used)]
-    let home_url = use_hook(|| Url::parse(HOME_URL).expect("home URL is a valid constant"));
-    // The new tab button opens a blank page, not the home page: a new tab
-    // should cost nothing until you ask it for something.
     let new_tab_url = use_hook(|| Url::parse(NEW_TAB_URL).expect("blank URL is a valid constant"));
     let startup_url = use_hook(|| try_consume_context::<StartupUrl>().and_then(|ctx| ctx.0));
     let net_provider = use_context::<Arc<NetProvider>>();
@@ -150,7 +152,7 @@ fn app() -> Element {
     let tabs: Store<Vec<Tab>> = use_store(Vec::new);
 
     let mut active_tab_id: Signal<TabId> = use_hook(|| {
-        let first_url = startup_url.clone().unwrap_or_else(|| home_url.clone());
+        let first_url = startup_url.clone().unwrap_or_else(|| new_tab_url.clone());
         Signal::new(open_tab(tabs, first_url, net_provider.clone()).tab_id())
     });
 
