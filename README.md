@@ -15,6 +15,28 @@ cargo run -p chuzz -- example.com       # opens a bare hostname over HTTPS
 A non-URL argument is not a search: anything that is neither a URL nor a hostname
 does nothing, so a mistyped path cannot quietly navigate somewhere unrelated.
 
+## Where the built binary lands
+
+Chuzz's executable is `chuzz`. It is this repository's counterpart to AgencyZero's
+`az-gui`, and it is the binary to run when you want the browser without going
+through cargo.
+
+| What | Path |
+| --- | --- |
+| Release binary | `target/release/chuzz` |
+| Debug binary | `target/debug/chuzz` |
+| macOS bundle | `target/release/bundle/macos/Chuzz.app` |
+
+```sh
+./apps/chuzz/build-app.sh release    # builds, bundles, ad-hoc signs, prints the bundle path
+./target/release/chuzz               # or run the bare binary
+```
+
+The bundle's `Contents/MacOS/chuzz` is a copy of `target/release/chuzz` that has
+been re-signed, so the two are the same build but differ in size and timestamp.
+Compare `CFBundleShortVersionString` against `[workspace.package] version` if you
+need to know which build a bundle came from; nothing else distinguishes them.
+
 ## Layout
 
 The window is a Chrome-shaped shell: tab strip on top, toolbar under it, page filling the rest.
