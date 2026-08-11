@@ -11,9 +11,19 @@ export default defineConfig({
     },
   },
   html: {
-    tags: [{ tag: "meta", attrs: { charset: "utf-8" }, head: true, prepend: true }],
+    tags: [
+      { tag: "meta", attrs: { charset: "utf-8" }, head: true, prepend: true },
+      { tag: "link", attrs: { rel: "icon", sizes: "32x32", href: "./favicon-32.png" }, head: true },
+      { tag: "link", attrs: { rel: "icon", sizes: "16x16", href: "./favicon-16.png" }, head: true },
+      {
+        tag: "link",
+        attrs: { rel: "apple-touch-icon", href: "./apple-touch-icon.png" },
+        head: true,
+      },
+    ],
     meta: {
       viewport: "width=device-width, initial-scale=1",
+      "color-scheme": "dark light",
     },
     title: "Chuzz",
     mountId: "root",
@@ -27,6 +37,10 @@ export default defineConfig({
     // fixture server. Both run alongside this one often enough that sharing a
     // port turns a stale tab into a confusing bug report.
     port: 3012,
+    // `public/` is copied verbatim into dist. The icons there are resized from
+    // the same `icons/icon.icns` the bundle uses, so the tab icon and the Dock
+    // icon cannot drift apart.
+    publicDir: { name: "public" },
   },
   tools: {
     rspack: {

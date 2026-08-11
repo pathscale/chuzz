@@ -7,6 +7,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
+authors = ["PathScale Pte Ltd"]
+repository = "https://github.com/pathscale/chuzz"
+homepage = "https://github.com/pathscale/chuzz"
 
 [workspace.dependencies]
 # Path dependencies into the local Blitz checkout, the way AgencyZero's
