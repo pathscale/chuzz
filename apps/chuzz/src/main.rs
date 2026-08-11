@@ -283,7 +283,7 @@ fn app() -> Element {
             // routes inline CSS through the supported head path instead.
             document::Style { "{BROWSER_UI_CSS}" }
             TitleBar { tabs, active_tab_id, home_url: new_tab_url, open_new_tab }
-            Toolbar { tabs, active_tab_id, url_input_value }
+            Toolbar { tabs, active_tab_id, url_input_value, focus_address_bar }
             if is_loading {
                 div { id: "loading-bar" }
             }

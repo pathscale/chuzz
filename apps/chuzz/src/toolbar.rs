@@ -14,7 +14,25 @@ pub fn Toolbar(
     tabs: Store<Vec<Tab>>,
     active_tab_id: Signal<TabId>,
     mut url_input_value: Signal<String>,
+    mut focus_address_bar: Signal<bool>,
 ) -> Element {
+    // The address bar's element handle, captured when it mounts. A shortcut can
+    // only ask for focus by name; something has to hold the node it names.
+    let mut address_bar: Signal<Option<std::rc::Rc<MountedData>>> = use_signal(|| None);
+    use_effect(move || {
+        if !focus_address_bar() {
+            return;
+        }
+        if let Some(element) = address_bar() {
+            spawn(async move {
+                let _ = element.set_focus(true).await;
+            });
+        }
+        // Cleared whether or not the element was there: the signal is a request,
+        // not a state, and leaving it set would make the next request a no-op
+        // because the effect only re-runs on a change.
+        focus_address_bar.set(false);
+    });
     // The address bar follows the active tab, but only when that tab actually
     // navigates. Tracking the URL itself is what makes typing possible: an
     // effect that re-ran on every render would overwrite each keystroke with
@@ -71,6 +89,7 @@ pub fn Toolbar(
                 r#type: "text",
                 value: "{url_input_value}",
                 placeholder: "Search or enter address",
+                onmounted: move |event| address_bar.set(Some(event.data())),
                 oninput: move |event| url_input_value.set(event.value()),
                 onkeydown: move |event| {
                     if is_enter(&event.key()) {
