@@ -1,0 +1,63 @@
+<!doctype html>
+<!--
+  The source of Chuzz's app icon, rendered by Chuzz.
+
+  `icons/build-icon.sh` captures this page headlessly and turns the PNG into
+  icon.icns. Keeping the source as markup rather than a binary means the icon
+  can be read, diffed and edited, and it exercises the renderer on every change.
+
+  The canvas is 1024x1024 with a transparent margin, because macOS expects the
+  art to sit inside roughly 824 of those pixels rather than run to the edge.
+  Colours are the browser UI's own, from src/ui.rs.
+-->
+<html><head><meta charset="utf-8"><title>Chuzz icon</title>
+<style>
+  html, body { margin: 0; width: 1024px; height: 1024px; background: transparent; }
+  body { display: flex; align-items: center; justify-content: center; }
+
+  .tile {
+    width: 824px;
+    height: 824px;
+    border-radius: 184px;
+    background: #131c2b;
+    border: 8px solid #1b2739;
+    box-sizing: border-box;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* A browser is a window onto something else: the mark is an aperture, not a
+     letterform, so it still reads at 32px where a glyph turns to mush. */
+  .ring {
+    width: 496px;
+    height: 496px;
+    border-radius: 50%;
+    border: 72px solid #4c8dff;
+    box-sizing: border-box;
+  }
+
+  /* One mark riding the ring, centred on the stroke: the ring is 496 across
+     with a 72 stroke, so its right edge runs 688 to 760 and the stroke centre
+     sits at 724. A 64 dot centred there is 168 in from the tile's right edge.
+     Reads as a cursor on a loop, and survives being drawn at 16 pixels. */
+  .dot {
+    position: absolute;
+    right: 168px;
+    top: 380px;
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    /* The UI's foreground rather than another blue: at 16 pixels the dot is
+       four pixels across, and a near neighbour of the ring's colour would
+       simply disappear. */
+    background: #dbe2ea;
+  }
+</style></head>
+<body>
+  <div class="tile">
+    <div class="ring"></div>
+    <div class="dot"></div>
+  </div>
+</body></html>

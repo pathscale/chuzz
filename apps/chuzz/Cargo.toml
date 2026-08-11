@@ -1,0 +1,66 @@
+[package]
+name = "chuzz"
+description = "A pure Rust web browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "chuzz"
+path = "src/main.rs"
+
+[features]
+# The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
+# wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
+default = ["vello", "scrollbars", "javascript", "webp", "avif"]
+# Most of the web builds its DOM in JavaScript: without this a script-rendered
+# page parses to an empty mount point and paints nothing.
+javascript = ["dep:blitz-script"]
+# The `image` crate is pulled in with default features off, so without these a
+# .webp or .avif downloads fine and then cannot be decoded: the element simply
+# never paints, which reads as a missing asset rather than a missing codec.
+webp = ["image/webp"]
+# Render a page headlessly to a PNG. Off by default: it pulls in the CPU
+# rasteriser, which the windowed browser never needs.
+capture = ["dep:anyrender", "dep:anyrender_vello_cpu", "dep:blitz-paint", "dep:png"]
+avif = ["image/avif"]
+vello = ["dioxus-native/vello"]
+vello-hybrid = ["dioxus-native/vello-hybrid"]
+# `incremental` was a feature flag upstream; PR #599 made it a runtime setting on
+# DocumentConfig, so the forwarding feature no longer has anything to forward to.
+scrollbars = ["blitz-dom/scrollbars"]
+
+[dependencies]
+# Default features are the engine's own baseline: svg (inline SVG cannot be
+# measured or painted without it, so a logo silently collapses),
+# accessibility, system-fonts, file-input and custom-widget. Stripping them
+# and re-adding one by hand was how the logo broke.
+blitz-dom = { workspace = true, default-features = true, features = ["woff"] }
+blitz-html = { workspace = true, default-features = true }
+# compression: reqwest only sends Accept-Encoding for codecs it was built
+# with, so without it every response arrives uncompressed and a page costs
+# several times the bytes it should. cache: without it every navigation is
+# cold, including a reload of the page you are already on.
+blitz-net = { workspace = true, features = ["http2", "cookies", "compression", "cache"] }
+blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
+blitz-traits = { workspace = true, default-features = true }
+chuzz-control = { path = "../../crates/chuzz-control" }
+brotli.workspace = true
+image = { workspace = true, default-features = false }
+anyrender = { workspace = true, optional = true }
+anyrender_vello_cpu = { workspace = true, optional = true }
+blitz-paint = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+flate2.workspace = true
+dioxus-native = { workspace = true, features = [
+  "accessibility",
+  "clipboard",
+  "net",
+  "prelude",
+  "svg",
+  "system-fonts",
+] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+url.workspace = true

@@ -1,0 +1,705 @@
+/*
+ * The 24x.ai dark palette, contrast-tuned for this app — the theme the design
+ * kit exports against (`design/README.md`).
+ *
+ * Two hard rules the design encodes, both about legibility on a very dark desk:
+ *   - text contrast floor is oklch(62%); nothing dimmer than --color-az-faint
+ *   - no pure white; the top tier is oklch(86%)
+ *
+ * Surfaces stack desk -> panel -> card, matching @pathscale/ui's base-N
+ * convention so `bg-base-100` and friends resolve without a second vocabulary.
+ */
+
+@layer theme {
+  [data-theme="24x-dark"] {
+    color-scheme: only dark;
+
+    /*
+     * The axes the theme picker drives. Every surface and text colour below is
+     * written in terms of them, so one write to `:root` recolours the whole app
+     * — there is no second place holding a colour.
+     *
+     * The defaults reproduce the palette exactly: `+ 0%`, `× 1` and a 0% mix
+     * are all identity, so a build with the picker untouched renders the values
+     * that were literals here before.
+     *
+     *   --az-hue     the hue every neutral leans on, in oklch degrees
+     *   --az-tint    chroma multiplier for the neutral ladder
+     *   --az-lift    lightness added to every surface, in percentage points.
+     *                The comfort axis: a desk at 10.5% under 86% text is a
+     *                contrast the eye pays for over hours.
+     *   --az-damp    taken off every text rung, so the ladder comes down to
+     *                meet a lifted desk instead of glaring off it
+     *   --az-surface the independent colour mixed into the surface ladder
+     *   --az-wash    how much of that colour is mixed into every surface
+     *
+     * `--az-wash` is what makes a picked colour read as a *theme* rather than
+     * as a highlight. It follows nofilter.io, whose picker mixes the chosen
+     * colour into its base tiers at 8–11% (see `hueShift.js` in
+     * `@pathscale/ui`): the accent alone changes buttons and rings, while the
+     * wash is what makes the workspace itself lean warm or cool.
+     *
+     * The per-tier multipliers below are deliberate rather than uniform. Deeper
+     * surfaces take slightly more because they have the least chroma to begin
+     * with and would otherwise stay stubbornly grey next to a washed panel; the
+     * transcript takes the least, because a wall of body text is the one place
+     * a colour cast is read as a fault rather than as a theme.
+     */
+    --az-hue: 240;
+    --az-tint: 1;
+    --az-lift: 0%;
+    /* Text leans a touch warmer than the surfaces it sits on; kept separate so
+     * the picker can move both together without flattening the difference. */
+    --az-hue-text: 245;
+    --az-damp: 0%;
+    --az-wash: 0%;
+    --az-wash-105: min(100%, calc(var(--az-wash) * 1.05));
+    --az-wash-110: min(100%, calc(var(--az-wash) * 1.1));
+    --az-wash-120: min(100%, calc(var(--az-wash) * 1.2));
+    --az-surface: #ffee58;
+    --az-sheen: 255 255 255;
+
+    /* Panels: the floating cards the workspace is built from. */
+    --color-base-100: color-mix(
+      in oklab,
+      var(--az-surface) var(--az-wash),
+      oklch(calc(15% + var(--az-lift)) calc(0.005 * var(--az-tint)) var(--az-hue))
+    );
+    /* Desk: the window interior, under the dot grid. */
+    --color-base-200: color-mix(
+      in oklab,
+      var(--az-surface) var(--az-wash-110),
+      oklch(calc(10.5% + var(--az-lift)) calc(0.004 * var(--az-tint)) var(--az-hue))
+    );
+    /* Cards: rows and chips sitting on a panel. */
+    --color-base-300: color-mix(
+      in oklab,
+      var(--az-surface) var(--az-wash-120),
+      oklch(calc(20% + var(--az-lift)) calc(0.008 * var(--az-tint)) var(--az-hue))
+    );
+    /* Text takes a fraction of the wash — enough to belong to the surface it
+     * sits on, far short of tinting prose. */
+    --color-base-content: color-mix(
+      in oklab,
+      var(--az-surface) calc(var(--az-wash) * 0.25),
+      oklch(calc(84% - var(--az-damp)) calc(0.008 * var(--az-tint)) var(--az-hue-text))
+    );
+
+    --color-primary: #d2ad3f;
+    --color-primary-content: #111111;
+
+    --color-secondary: oklch(80% 0.13 260);
+    --color-secondary-content: oklch(10% 0.003 240);
+
+    --color-accent: #d2ad3f;
+    --color-accent-content: #111111;
+
+    --color-neutral: oklch(20% 0.008 240);
+    --color-neutral-content: oklch(84% 0.008 245);
+
+    --color-info: oklch(80% 0.13 260);
+    --color-info-content: oklch(10% 0.003 240);
+    --color-success: oklch(72% 0.15 148);
+    --color-success-content: oklch(10% 0.003 240);
+    --color-warning: oklch(75% 0.15 55);
+    --color-warning-content: oklch(10% 0.003 240);
+    --color-error: oklch(70% 0.17 22);
+    --color-error-content: oklch(10% 0.003 240);
+
+    --radius-selector: 0.5rem;
+    --radius-field: 0.5rem;
+    --radius-box: 0.875rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 0;
+    --noise: 0;
+  }
+
+  /*
+   * Light is the same semantic ladder turned over, not a second component
+   * theme. Accent, wash and comfort axes still apply; surfaces subtract lift
+   * while text adds damp so both modes soften toward the middle.
+   */
+  [data-theme="24x-dark"][data-color-mode="light"] {
+    color-scheme: only light;
+    --az-sheen: 17 24 39;
+
+    --color-base-100: color-mix(
+      in oklab,
+      var(--az-surface) var(--az-wash),
+      oklch(calc(98% - var(--az-lift)) calc(0.005 * var(--az-tint)) var(--az-hue))
+    );
+    --color-base-200: color-mix(
+      in oklab,
+      var(--az-surface) var(--az-wash-110),
+      oklch(calc(93% - var(--az-lift)) calc(0.004 * var(--az-tint)) var(--az-hue))
+    );
+    --color-base-300: color-mix(
+      in oklab,
+      var(--az-surface) var(--az-wash-120),
+      oklch(calc(89% - var(--az-lift)) calc(0.008 * var(--az-tint)) var(--az-hue))
+    );
+    --color-base-content: color-mix(
+      in oklab,
+      var(--az-surface) calc(var(--az-wash) * 0.18),
+      oklch(calc(20% + var(--az-damp)) calc(0.008 * var(--az-tint)) var(--az-hue-text))
+    );
+
+    --color-neutral: oklch(89% 0.008 240);
+    --color-neutral-content: oklch(20% 0.008 245);
+    --color-info: oklch(52% 0.16 260);
+    --color-info-content: #ffffff;
+    --color-success: oklch(48% 0.15 148);
+    --color-success-content: #ffffff;
+    --color-warning: oklch(52% 0.15 55);
+    --color-warning-content: #111111;
+    --color-error: oklch(52% 0.17 22);
+    --color-error-content: #ffffff;
+  }
+}
+
+/*
+ * App tokens on top of the theme. Tailwind v4 turns `--color-az-*` into real
+ * utilities (`text-az-muted`, `bg-az-void`, `border-az-hairline`), so screens
+ * never hand-write an oklch triple.
+ */
+@theme {
+  /*
+   * Text ladder. The design footer names four rungs: 84 / 76 bold / 73 body /
+   * 64 muted. Every rung carries `- var(--az-damp)`, so the picker can bring
+   * the whole ladder down together and keep the intervals between rungs.
+   */
+  --color-az-title: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.25),
+    oklch(calc(86% - var(--az-damp)) calc(0.008 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-strong: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.25),
+    oklch(calc(80% - var(--az-damp)) calc(0.008 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-body: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.25),
+    oklch(calc(75% - var(--az-damp)) calc(0.009 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-muted: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.3),
+    oklch(calc(66% - var(--az-damp)) calc(0.01 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-faint: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.3),
+    oklch(calc(62% - var(--az-damp)) calc(0.01 * var(--az-tint)) var(--az-hue-text))
+  );
+
+  /*
+   * Below the stated 62% floor, for marks rather than prose: an unpinned pin,
+   * a meta glyph. Named so they are visibly exceptions instead of arbitrary
+   * triples inlined in a class list, which is how they entered the codebase.
+   */
+  --color-az-dim: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.3),
+    oklch(calc(56% - var(--az-damp)) calc(0.01 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-ghost: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.3),
+    oklch(calc(48% - var(--az-damp)) calc(0.01 * var(--az-tint)) var(--az-hue-text))
+  );
+
+  /*
+   * Surfaces the base-N ladder does not cover. Each takes the wash, weighted:
+   * the deepest tiers slightly more, because they start with the least chroma
+   * and would otherwise stay grey beside a washed panel.
+   */
+  --color-az-void: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-120),
+    oklch(calc(8% + var(--az-lift)) calc(0.003 * var(--az-tint)) var(--az-hue))
+  );
+  --color-az-desk: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-110),
+    oklch(calc(10.5% + var(--az-lift)) calc(0.004 * var(--az-tint)) var(--az-hue))
+  );
+  --color-az-inset: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-105),
+    oklch(calc(12.5% + var(--az-lift)) calc(0.005 * var(--az-tint)) var(--az-hue))
+  );
+  --color-az-tab: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash),
+    oklch(calc(16% + var(--az-lift)) calc(0.006 * var(--az-tint)) var(--az-hue))
+  );
+
+  /* Three more the screens were hand-writing: a sunken card, a row hover, a
+   * badge pill. Same ladder, now named. */
+  --color-az-sunken: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-105),
+    oklch(calc(13% + var(--az-lift)) calc(0.004 * var(--az-tint)) var(--az-hue))
+  );
+  --color-az-hover: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash),
+    oklch(calc(17% + var(--az-lift)) calc(0.006 * var(--az-tint)) var(--az-hue))
+  );
+  --color-az-badge: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-120),
+    oklch(calc(24% + var(--az-lift)) calc(0.01 * var(--az-tint)) var(--az-hue))
+  );
+
+  /*
+   * Hairlines carry the accent at low alpha rather than plain white.
+   *
+   * They are the app's connective tissue — every panel edge, every row divider —
+   * so tinting them is what puts the chosen colour *everywhere* without any one
+   * control shouting. At 9-16% the hue is felt rather than seen; what reads is
+   * that the edges belong to the same theme as the buttons.
+   */
+  --color-az-hairline: rgb(from var(--color-primary) r g b / 11%);
+  --color-az-hairline-soft: rgb(from var(--color-primary) r g b / 8%);
+  --color-az-hairline-strong: rgb(from var(--color-primary) r g b / 18%);
+
+  /*
+   * The transcript's own surface — the one you read for hours.
+   *
+   * These were hex (#1e1e1e / #2a2a2a / #e0e0e0) because the oklch ladder
+   * compresses hard at the *desk's* lightnesses: 8% lands on #010202 and 12.5%
+   * on #050708, four sRGB points apart, which is why the bubble once read as a
+   * hole rather than a card. That reasoning holds for 8-15%; the bubble sits at
+   * 23.5%, where oklch has room.
+   *
+   * The 5%/9% floors are why this reads as themed at all. Everything else takes
+   * the accent only through `--az-wash`, which is 0 until a colour is picked —
+   * so on the designed palette the reply stayed the grey card it had always
+   * been, and the fix that was supposed to theme it changed nothing anyone
+   * could see. The floor makes it lean on the accent from the first launch.
+   *
+   * It follows the theme rather than staying neutral grey. Held apart from the
+   * user's own bubble by *lightness* rather than by hue: the user is `base-300`
+   * at 20% and this is 23.5%, so the reply reads as the lighter card whatever
+   * colour is picked.
+   *
+   * It takes the *same* share of the wash as the tier it belongs to, and that
+   * is the whole point. Held back at 0.8 of the wash against `base-300`'s 1.2,
+   * the reply was the least-themed surface in the window while the user's own
+   * message beside it was the most — which read as the one card that missed the
+   * memo, not as restraint. The text rung had the same problem twice over: 0.15
+   * of the wash where every other rung takes 0.25, at chroma 0.004 where
+   * `az-title` takes 0.008. Matching the siblings is what keeps it from
+   * standing out; the earlier fear of tinting a wall of prose is already
+   * answered by `az-title` and `az-body` carrying 0.25 over far more of the
+   * window than this bubble covers.
+   *
+   * Lightness is untouched, so contrast stays a number that can be checked:
+   * 90.67% on 23.5% is the 12.6:1 the original hex pair gave.
+   */
+  --color-az-bubble: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-120),
+    oklch(calc(23.5% + var(--az-lift)) calc(0.008 * var(--az-tint)) var(--az-hue))
+  );
+  --color-az-bubble-edge: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-110),
+    oklch(calc(28.5% + var(--az-lift)) calc(0.008 * var(--az-tint)) var(--az-hue))
+  );
+  --color-az-bubble-text: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.25),
+    oklch(calc(90.67% - var(--az-damp)) calc(0.008 * var(--az-tint)) var(--az-hue-text))
+  );
+
+  /*
+   * Accents, for links, highlights and active states. Chosen to stay legible on
+   * the dark surfaces above without glare. Deliberately *not* on the neutral
+   * axes: these carry meaning (a link is blue, a PR is purple) and must not
+   * drift when the desk changes hue.
+   */
+  --color-az-link: #60a5fa;
+  --color-az-highlight: #22d3ee;
+  --color-az-active: #f59e0b;
+
+  /*
+   * The hover tint for a primary button: the accent, lightened.
+   *
+   * Was the palette's lighter yellow spelled out, which survived the first
+   * theming pass and would have flashed yellow on hover under a blue accent.
+   * Relative colour syntax keeps it a lightening *of whatever the accent is*,
+   * so it follows the wheel with no second value to maintain.
+   */
+  --color-az-primary-hover: oklch(from var(--color-primary) calc(l + 0.06) c h);
+
+  /* PR chips over the composer: border/tint, and the brighter text on top. */
+  --color-az-pr: #7e6bd0;
+  --color-az-pr-strong: #a794ee;
+
+  --radius-panel: 0.875rem;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  /*
+   * The interface uses an explicit pixel type ladder, so changing the root font
+   * size would leave nearly every label untouched. Zoom keeps that ladder and
+   * its control geometry together. CSS zoom participates in layout already;
+   * inverse dimensions would compensate a second time and leave empty space.
+   */
+  #root {
+    zoom: var(--az-ui-scale, 1.08);
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background-color: var(--color-az-void);
+    color: var(--color-base-content);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The webview is chrome, not a document: nothing here is text to select or drag. */
+  body {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /*
+   * `[data-selectable] *` and not just the element itself.
+   *
+   * Opting in per text element was not enough for what people actually do:
+   * dragging across several messages. The containers, padding and gaps between
+   * them were still `none`, so a selection that had to cross one collapsed and
+   * the copy came back empty — silently, which is what made it read as the chat
+   * area eating the copy rather than as a selection that never formed.
+   */
+  input,
+  textarea,
+  [data-selectable],
+  [data-selectable] * {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  /*
+   * Blitz 30faf47 starts a selection drag for `auto`, but its explicit
+   * `UserSelect::Text` branch currently falls through without entering
+   * selection mode. Keep WebKit's required `text` opt-in above and feed Blitz
+   * `auto` on the same islands until the renderer-side branch is corrected.
+   * Every descendant is covered because the native hit node may be an inline
+   * child rather than the bubble carrying `data-selectable`.
+   */
+  html[data-blitz-renderer] [data-selectable],
+  html[data-blitz-renderer] [data-selectable] * {
+    user-select: auto;
+    -webkit-user-select: auto;
+  }
+
+  /*
+   * Controls stay unselectable even inside one, so dragging across a transcript
+   * does not sweep "Copy", "Retry" and "Cancel" into what you paste.
+   */
+  [data-selectable] button {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /*
+   * Every live button carries a hairline of the accent.
+   *
+   * `outline` with a negative offset rather than a border: it draws on the edge
+   * pixel without joining the box model, so nothing reflows and buttons that
+   * already have a border keep their metrics exactly. Outlines follow
+   * `border-radius`, so pills stay pills.
+   *
+   * Disabled is the one exclusion — an inactive control claiming the accent
+   * reads as available, which is the opposite of what it means.
+   */
+  button:not(:disabled):not([aria-disabled="true"]):not([class*="w-full"]):not(
+    [class*="flex-1"]
+  ):not([data-no-outline]) {
+    outline: 1px solid rgb(from var(--color-primary) r g b / 14%);
+    outline-offset: -1px;
+  }
+
+  /*
+   * Panels take the same treatment. They already carry a hairline border, and
+   * the outline lands on the same pixel — so this reads as one slightly firmer
+   * edge rather than two lines, and every card in the workspace is bounded by
+   * the accent instead of by grey.
+   */
+  .rounded-panel {
+    outline: 1px solid rgb(from var(--color-primary) r g b / 16%);
+    outline-offset: -1px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    /* biome-ignore lint/style/noDescendingSpecificity: this sets animation and
+       transition only, and shares no property with the selection rules above
+       it, so the specificity order cannot decide anything between them. */
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* The desk: dot grid over the window interior. */
+  .az-desk {
+    background-color: var(--color-az-desk);
+    /* The dot grid is the largest single surface in the window; in the accent
+     * rather than white it tints the whole desk at a density the eye reads as
+     * texture. */
+    background-image: radial-gradient(
+      rgb(from var(--color-primary) r g b / 7%) 1px,
+      transparent 1px
+    );
+    background-size: 22px 22px;
+  }
+
+  /*
+   * The composer and the new-project prompt sit inside a 1px gradient ring
+   * that fades from primary to a plain hairline — a border-image would not
+   * follow the radius, so this is a padded wrapper.
+   */
+  .az-ring {
+    padding: 1px;
+    background-image: linear-gradient(
+      120deg,
+      rgb(from var(--color-primary) r g b / 34%),
+      rgb(var(--az-sheen) / 7%) 42%,
+      rgb(var(--az-sheen) / 5%)
+    );
+  }
+
+  .az-ring-strong {
+    background-image: linear-gradient(
+      120deg,
+      rgb(from var(--color-primary) r g b / 40%),
+      rgb(var(--az-sheen) / 8%) 45%,
+      rgb(var(--az-sheen) / 5%)
+    );
+  }
+
+  /*
+   * The accent on the composer edge, and the drift across it.
+   *
+   * This used to animate unconditionally. Blitz correctly treated that CSS
+   * animation as an active document and kept submitting full frames while the
+   * app was otherwise idle, consuming a full core for decoration alone, so
+   * PR #136 removed the animation and left the accent static.
+   *
+   * The drift is worth having while someone is actually writing, which is the
+   * only time anyone looks at this edge. `az-ring-drift` is applied by the
+   * composer while its field holds focus and dropped the moment it does not,
+   * so the render loop lasts exactly as long as the cursor is in the box and
+   * an idle window animates nothing.
+   */
+  .az-ring-composer {
+    background-image: linear-gradient(
+      112deg,
+      rgb(var(--az-sheen) / 5%) 0%,
+      rgb(from var(--color-primary) r g b / 16%) 24%,
+      rgb(var(--az-sheen) / 7%) 43%,
+      rgb(from var(--color-primary) r g b / 38%) 52%,
+      rgb(var(--az-sheen) / 7%) 61%,
+      rgb(from var(--color-primary) r g b / 16%) 78%,
+      rgb(var(--az-sheen) / 5%) 100%
+    );
+    background-position: 50% 50%;
+    background-size: 240% 100%;
+  }
+
+  .az-ring-drift {
+    animation: az-composer-ring-drift 12s ease-in-out infinite alternate;
+  }
+
+  @keyframes az-composer-ring-drift {
+    from {
+      background-position: 100% 50%;
+    }
+    to {
+      background-position: -100% 50%;
+    }
+  }
+
+  /* Status dots carry a soft halo when the state is live rather than historic. */
+  .az-halo-primary {
+    box-shadow: 0 0 0 3px rgb(from var(--color-primary) r g b / 18%);
+  }
+
+  .az-halo-warning {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-warning) 22%, transparent);
+  }
+
+  .az-halo-error {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-error) 22%, transparent);
+  }
+
+  .az-halo-success {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-success) 22%, transparent);
+  }
+
+  /* Scrollbars: visible enough to grab, quiet enough to ignore. */
+  .az-scroll {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(from var(--color-primary) r g b / 20%) transparent;
+  }
+
+  .az-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .az-scroll::-webkit-scrollbar-thumb {
+    background-color: rgb(from var(--color-primary) r g b / 20%);
+    border-radius: 999px;
+  }
+
+  .az-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /*
+   * Scrolls, shows nothing. The tab strip overflows sideways and a horizontal
+   * scrollbar under the tabs is both ugly and — sitting inside the window's
+   * drag region, a few pixels tall — effectively unclickable. Arrows do that
+   * job instead.
+   */
+  .az-scroll-x {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .az-scroll-x::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * `@theme` emits the app-specific variables outside the DaisyUI theme layer.
+ * Keep their light counterparts outside that layer too, or the unlayered dark
+ * values win the cascade even when the root carries `data-color-mode=light`.
+ */
+[data-theme="24x-dark"][data-color-mode="light"] {
+  /* Tailwind's `white/N` utilities are translucent chrome in this app. */
+  --color-white: #111827;
+
+  --color-az-title: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.18),
+    oklch(calc(15% + var(--az-damp)) calc(0.008 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-strong: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.18),
+    oklch(calc(22% + var(--az-damp)) calc(0.008 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-body: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.18),
+    oklch(calc(28% + var(--az-damp)) calc(0.009 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-muted: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.2),
+    oklch(calc(40% + var(--az-damp)) calc(0.01 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-faint: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.2),
+    oklch(calc(46% + var(--az-damp)) calc(0.01 * var(--az-tint)) var(--az-hue-text))
+  );
+  --color-az-dim: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.2),
+    oklch(calc(54% + var(--az-damp)) 0.01 var(--az-hue-text))
+  );
+  --color-az-ghost: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.2),
+    oklch(calc(62% + var(--az-damp)) 0.01 var(--az-hue-text))
+  );
+
+  --color-az-void: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-120),
+    oklch(calc(88% - var(--az-lift)) 0.003 var(--az-hue))
+  );
+  --color-az-desk: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-110),
+    oklch(calc(93% - var(--az-lift)) 0.004 var(--az-hue))
+  );
+  --color-az-inset: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-105),
+    oklch(calc(96% - var(--az-lift)) 0.005 var(--az-hue))
+  );
+  --color-az-tab: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash),
+    oklch(calc(96% - var(--az-lift)) 0.006 var(--az-hue))
+  );
+  --color-az-sunken: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-105),
+    oklch(calc(94% - var(--az-lift)) 0.004 var(--az-hue))
+  );
+  --color-az-hover: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash),
+    oklch(calc(91% - var(--az-lift)) 0.006 var(--az-hue))
+  );
+  --color-az-badge: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-120),
+    oklch(calc(85% - var(--az-lift)) 0.01 var(--az-hue))
+  );
+
+  --color-az-bubble: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-120),
+    oklch(calc(91% - var(--az-lift)) 0.008 var(--az-hue))
+  );
+  --color-az-bubble-edge: color-mix(
+    in oklab,
+    var(--az-surface) var(--az-wash-110),
+    oklch(calc(82% - var(--az-lift)) 0.008 var(--az-hue))
+  );
+  --color-az-bubble-text: color-mix(
+    in oklab,
+    var(--az-surface) calc(var(--az-wash) * 0.18),
+    oklch(calc(18% + var(--az-damp)) 0.008 var(--az-hue-text))
+  );
+
+  --color-az-hairline: rgb(from var(--color-primary) r g b / 14%);
+  --color-az-hairline-soft: rgb(from var(--color-primary) r g b / 9%);
+  --color-az-hairline-strong: rgb(from var(--color-primary) r g b / 22%);
+  --color-az-link: #1d4ed8;
+  --color-az-highlight: #0e7490;
+  --color-az-active: #b45309;
+  --color-az-pr: #5b4bb7;
+  --color-az-pr-strong: #49359f;
+}

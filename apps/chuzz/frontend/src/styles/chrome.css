@@ -1,0 +1,514 @@
+/*
+ * The browser chrome, ported from `apps/chuzz/src/ui.rs`.
+ *
+ * Every colour here is a theme token. `ui.rs` could not do that: it wrote the
+ * palette out as literals because there was no picker on that side, and the
+ * comment at the top of that file says so. The result was AgencyZero's ladder
+ * transcribed by hand into a Rust string, drifting from the moment it was
+ * written. This file exists so that copy can be deleted rather than translated.
+ *
+ * State lives on data attributes rather than class names, matching
+ * `@pathscale/ui`'s own components, so a rule and a test target the same thing.
+ */
+
+@layer base {
+  /*
+   * The height chain the frame needs.
+   *
+   * `ui.rs` used viewport units instead and said why: a percentage height only
+   * resolves when every ancestor has a resolved height, and a broken chain
+   * collapses the frame to its content. Viewport units cannot be used here,
+   * though — `@pathscale/ui` puts `zoom` on `#root` for interface size, and
+   * under zoom `100vw` still resolves to the unscaled viewport and then gets
+   * scaled past it, clipping the right edge of the window. So the chain is
+   * declared properly instead.
+   */
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    overflow: hidden;
+  }
+}
+
+@layer components {
+  .chrome-frame {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: var(--color-base-200);
+    color: var(--color-az-body);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+  }
+
+  /* Titlebar: tabs sit in the window's title row, beside the traffic lights.
+     The left pad clears the macOS window buttons. */
+  .chrome-titlebar {
+    height: 52px;
+    flex-shrink: 0;
+    padding: 0 14px 0 96px;
+    background: var(--color-base-200);
+  }
+
+  .chrome-nav-back {
+    width: 30px;
+    height: 30px;
+    line-height: 30px;
+    text-align: center;
+    border: 0;
+    border-radius: 15px;
+    background: transparent;
+    color: var(--color-az-muted);
+    font-size: 15px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+
+  .chrome-nav-back:hover {
+    background: var(--color-az-hover);
+    color: var(--color-az-body);
+  }
+
+  .chrome-tab-strip {
+    flex-grow: 1;
+    min-width: 0;
+    overflow: hidden;
+    gap: 4px;
+  }
+
+  /* Pills that change surface, not shape, when active. */
+  .chrome-tab {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 9px;
+    min-width: 90px;
+    max-width: 260px;
+    height: 34px;
+    padding: 0 14px;
+    border-radius: 17px;
+    border: 1px solid transparent;
+    color: var(--color-az-muted);
+    cursor: pointer;
+  }
+
+  .chrome-tab:hover {
+    background: var(--color-az-hover);
+    color: var(--color-az-body);
+  }
+
+  .chrome-tab[data-active] {
+    background: var(--color-az-tab);
+    border-color: var(--color-az-hairline);
+    color: var(--color-az-title);
+    font-weight: 600;
+  }
+
+  /* Per-tab status dot: the point is seeing a background tab change state. */
+  .chrome-tab-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 4px;
+    background: var(--color-success);
+    flex-shrink: 0;
+  }
+
+  .chrome-tab-dot[data-loading] {
+    background: var(--color-primary);
+  }
+
+  .chrome-tab-title {
+    flex-grow: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 13px;
+  }
+
+  /* Always mounted, only faded: showing it on hover by adding the element
+     would resize the pill under the pointer. */
+  .chrome-tab-close {
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--color-az-muted);
+    flex-shrink: 0;
+    font-size: 13px;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .chrome-tab-close[data-visible] {
+    opacity: 1;
+  }
+
+  .chrome-tab:hover .chrome-tab-close {
+    opacity: 1;
+  }
+
+  .chrome-tab-close:hover {
+    background: var(--color-az-active);
+    color: var(--color-az-title);
+  }
+
+  /* Dashed outline: an empty slot waiting to be filled. */
+  .chrome-new-tab {
+    width: 34px;
+    height: 34px;
+    line-height: 32px;
+    text-align: center;
+    border-radius: 17px;
+    border: 1px dashed var(--color-az-hairline-strong);
+    background: transparent;
+    color: var(--color-az-muted);
+    font-size: 16px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .chrome-new-tab:hover {
+    border-color: var(--color-primary);
+    color: var(--color-az-body);
+  }
+
+  .chrome-titlebar-button {
+    width: 32px;
+    height: 32px;
+    line-height: 30px;
+    text-align: center;
+    border-radius: 16px;
+    border: 1px solid var(--color-az-hairline);
+    background: transparent;
+    color: var(--color-az-muted);
+    font-size: 14px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+
+  .chrome-titlebar-button:hover {
+    background: var(--color-az-hover);
+    color: var(--color-az-body);
+  }
+
+  .chrome-avatar {
+    width: 32px;
+    height: 32px;
+    line-height: 30px;
+    text-align: center;
+    border-radius: 16px;
+    border: 1px solid var(--color-az-hairline-strong);
+    background: var(--color-base-100);
+    color: var(--color-az-body);
+    font-size: 12.5px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  /* Toolbar */
+
+  .chrome-toolbar {
+    padding: 0 14px 10px 14px;
+    flex-shrink: 0;
+    gap: 4px;
+  }
+
+  .chrome-tool-button {
+    width: 30px;
+    height: 30px;
+    line-height: 30px;
+    text-align: center;
+    border: 0;
+    border-radius: 15px;
+    background: transparent;
+    color: var(--color-az-muted);
+    font-size: 15px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+
+  .chrome-tool-button:hover:not(:disabled) {
+    background: var(--color-az-hover);
+    color: var(--color-az-body);
+  }
+
+  .chrome-tool-button:disabled {
+    color: var(--color-az-faint);
+    cursor: default;
+  }
+
+  .chrome-url-bar {
+    flex-grow: 1;
+    min-width: 0;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: var(--radius-field);
+    border: 1px solid var(--color-az-hairline);
+    background: var(--color-az-inset);
+    color: var(--color-az-body);
+    font-size: 13px;
+  }
+
+  .chrome-url-bar:focus {
+    outline: none;
+    border-color: var(--color-primary);
+  }
+
+  /* A refused address is not a failed navigation, it is a string the shell
+     declined to interpret. Saying so beats looking inert. */
+  .chrome-url-bar[data-refused] {
+    border-color: var(--color-error);
+  }
+
+  .chrome-loading-bar {
+    height: 2px;
+    flex-shrink: 0;
+    background: var(--color-primary);
+  }
+
+  /* Content row */
+
+  .chrome-content-row {
+    display: flex;
+    flex-direction: row;
+    flex-grow: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .chrome-page-area {
+    position: relative;
+    flex-grow: 1;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--color-base-100);
+  }
+
+  .chrome-page {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .chrome-panel-handle {
+    width: 5px;
+    flex-shrink: 0;
+    border: 0;
+    padding: 0;
+    background: var(--color-az-hairline-soft);
+    cursor: col-resize;
+  }
+
+  .chrome-panel-handle:hover {
+    background: var(--color-primary);
+  }
+
+  /* Inspector */
+
+  .chrome-side-panel {
+    display: flex;
+    flex-direction: column;
+    width: 320px;
+    flex-shrink: 0;
+    overflow: hidden;
+    background: var(--color-base-200);
+  }
+
+  /* Collapsed keeps the seam and the handle attached to it, and gives up its
+     width entirely. `min-width: 0` matters: a flex item at width 0 still sizes
+     to its content without it, so the panel would refuse to close. */
+  .chrome-side-panel[data-collapsed] {
+    width: 0;
+    min-width: 0;
+    border: 0;
+  }
+
+  .chrome-side-panel-header {
+    height: 38px;
+    flex-shrink: 0;
+    padding: 0 14px;
+  }
+
+  .chrome-side-panel-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--color-az-title);
+  }
+
+  .chrome-side-panel-scroll {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 12px 12px 12px;
+    overflow-y: auto;
+    flex-grow: 1;
+  }
+
+  .chrome-section {
+    border-radius: var(--radius-box);
+    border: 1px solid var(--color-az-hairline);
+    background: var(--color-base-100);
+    overflow: hidden;
+  }
+
+  .chrome-section-trigger {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    background: transparent;
+    color: var(--color-az-strong);
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .chrome-section-trigger:hover {
+    background: var(--color-az-hover);
+  }
+
+  .chrome-section-title {
+    flex-grow: 1;
+  }
+
+  .chrome-section-indicator {
+    color: var(--color-az-muted);
+    flex-shrink: 0;
+  }
+
+  .chrome-section-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 12px 10px 12px;
+  }
+
+  .chrome-section-row {
+    padding: 4px 0;
+    font-size: 11.5px;
+  }
+
+  .chrome-section-row-label {
+    color: var(--color-az-muted);
+  }
+
+  .chrome-section-row-value {
+    color: var(--color-az-body);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* Status strip */
+
+  .chrome-status-strip {
+    height: 26px;
+    flex-shrink: 0;
+    padding: 0 14px;
+    border-top: 1px solid var(--color-az-hairline-soft);
+    background: var(--color-base-200);
+    color: var(--color-az-muted);
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .chrome-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--color-success);
+    flex-shrink: 0;
+  }
+
+  .chrome-status-dot[data-loading] {
+    background: var(--color-primary);
+  }
+
+  .chrome-status-url {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 40%;
+  }
+
+  .chrome-status-spacer {
+    flex-grow: 1;
+  }
+
+  .chrome-status-accent {
+    color: var(--color-primary);
+  }
+
+  /* Settings */
+
+  .chrome-settings-scrim {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-az-void);
+  }
+
+  .chrome-settings {
+    width: 520px;
+    max-width: calc(100vw - 48px);
+    border-radius: var(--radius-box);
+    border: 1px solid var(--color-az-hairline);
+    background: var(--color-base-100);
+    overflow: hidden;
+  }
+
+  .chrome-settings-header {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--color-az-hairline-soft);
+  }
+
+  .chrome-settings-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-az-title);
+  }
+
+  .chrome-settings-row {
+    padding: 12px 14px;
+  }
+
+  .chrome-settings-label {
+    font-size: 12.5px;
+    color: var(--color-az-muted);
+    min-width: 96px;
+  }
+
+  .chrome-mode-group {
+    gap: 6px;
+  }
+
+  .chrome-mode-button {
+    padding: 5px 12px;
+    border-radius: var(--radius-field);
+    border: 1px solid var(--color-az-hairline);
+    background: transparent;
+    color: var(--color-az-muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .chrome-mode-button[data-selected] {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+}
