@@ -1,26 +1,31 @@
 name: Release
 
-# Publishes Chuzz.app to the CDN and updates the Homebrew cask, when the
-# version changes and only then.
+# Publishes when the version changes, and only then.
 #
-# The version lives in one place: `[workspace.package] version` in the root
-# Cargo.toml. `apps/chuzz/build-app.sh` stamps it into the bundle's Info.plist,
-# and the verify step below checks the two agree, so the manifest can never
-# advertise a version the app does not report.
+# Mirrors AgencyZero's release.yml, which publishes to the same pull zone. The
+# version lives in one place, `[workspace.package] version` in the root
+# Cargo.toml; `apps/chuzz/build-app.sh` stamps it into the bundle's Info.plist,
+# and the verify step checks the two agree, so latest.json can never advertise a
+# version the app does not report.
 #
-# Modelled on AgencyZero's release.yml, which publishes the same way to the same
-# pull zone, with one deliberate difference: **the URL carries the version.**
-# AgencyZero can overwrite a fixed path because it carries a self-updater and
-# pulls itself forward; Chuzz has no updater, so a versionless URL with
-# `sha256 :no_check` would leave every installed copy pinned to whatever it
-# first fetched, with `brew upgrade` unable to see a new release. A versioned
-# URL means a real `sha256` in the cask, a working `brew upgrade`, and one file
-# per release in storage.
+# "Changed" is decided against what is actually published, not against git
+# history. Comparing to the live latest.json makes this idempotent: a release
+# that failed halfway is retried by the next push, a re-run is harmless, and
+# squashes and force-pushes cannot confuse it.
 #
-# That also removes the failure mode that dominates AgencyZero's pipeline. Each
-# release writes a path no edge has ever held, so a stale or half-cached object
-# cannot be served in place of the new one. The purge below is belt and braces
-# rather than the thing holding the release together.
+# Publishing overwrites a fixed, versionless CDN path, so latest.json is the
+# only record of the current version. That is why the purges below are hard
+# failures: a stale edge copy is indistinguishable, to a client, from a release
+# that never happened.
+#
+# The publish choreography follows AgencyZero's, which follows the 24x.ai site
+# pipeline: DELETE the storage object before uploading its replacement, and
+# purge the whole pull zone rather than one URL. Overwriting in place is how
+# AgencyZero's 0.1.1 release got poisoned, when an edge pulled mid-overwrite and
+# cached a truncated gzip for the length of its max-age. The per-URL purge
+# endpoint reported success without evicting it, three times. A zone-wide purge
+# does evict, and the site fronted by this same zone purges it on every deploy
+# of its own, so the collateral is nil.
 
 on:
   push:
@@ -44,7 +49,7 @@ env:
 
 jobs:
   # Cheap gate, so a macOS runner is only spent on pushes that actually ship.
-  # No macOS dependency here, so it follows the usual runner rule.
+  # This half has no macOS dependency, so it follows the usual runner rule.
   check:
     runs-on: ubicloud-standard-2
     outputs:
@@ -54,10 +59,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Decided against what is actually published rather than against git
-      # history, which makes this idempotent: a release that failed halfway is
-      # retried by the next push, a re-run is harmless, and squashes and
-      # force-pushes cannot confuse it.
       - name: Compare the committed version against the published one
         id: decide
         run: |
@@ -84,8 +85,9 @@ jobs:
   release:
     needs: check
     if: needs.check.outputs.publish == 'true'
-    # Ubicloud offers Linux runners only, and a macOS bundle needs the macOS SDK
-    # and Apple's signing tools. Same profile AgencyZero uses, and it is arm64,
+    # The only job here that cannot use ubicloud-standard-*: Ubicloud offers
+    # Linux runners only, and a macOS bundle needs the macOS SDK and Apple's
+    # signing tools. Same Namespace profile AgencyZero uses, and it is arm64,
     # so the build is native rather than cross.
     runs-on: namespace-profile-agency-tahoe
 
@@ -93,11 +95,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Chuzz path-depends on sibling checkouts, so the engine has to be beside
-      # it on the runner exactly as it is on a developer's machine. The revision
-      # is pinned rather than floating: a release must be reproducible, and
-      # tracking a branch would make the same Chuzz version mean different
-      # engines on different days.
+      # Chuzz path-depends on sibling checkouts, so the engine has to sit beside
+      # it on the runner exactly as it does on a developer's machine.
+      #
+      # BLITZ_REF is pinned rather than floating: a release has to be
+      # reproducible, and tracking a branch would make the same Chuzz version
+      # mean different engines on different days. Move it deliberately, and
+      # re-test the pages in docs/ when you do.
       - name: Check out the engine and endpoint-libs
         env:
           BLITZ_REF: master
@@ -119,20 +123,21 @@ jobs:
           shared-key: chuzz-macos-release
           cache-targets: true
 
+      # Ad-hoc signed by build-app.sh via `codesign --sign -`, which needs no
+      # certificate. Notarization needs a current Apple Developer Program
+      # membership; the verify step below asserts the bundle is still ad-hoc so
+      # that acquiring one cannot silently leave the cask stripping a Gatekeeper
+      # check users should be getting.
       - name: Build the bundle
         run: apps/chuzz/build-app.sh release
 
-      # Two failures worth catching. A bundle whose signature does not verify
-      # reports itself to the user as "damaged and can't be opened", which names
-      # nothing about signing. And a bundle whose version disagrees with
-      # Cargo.toml would be advertised under a version it does not report, so
-      # every client would see an upgrade that changes nothing.
       - name: Verify the bundle
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           APP="$BUNDLE_DIR/Chuzz.app"
           codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Signature|TeamIdentifier|Sealed Resources"
 
           BUILT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
           if [ "$BUILT" != "$VERSION" ]; then
@@ -141,9 +146,6 @@ jobs:
           fi
           echo "bundle version $BUILT matches"
 
-          # Assert the bundle really is ad-hoc. If a Developer ID certificate is
-          # ever wired in, this fires, and it is the reminder to drop the cask's
-          # quarantine postflight and check `spctl -a` here instead.
           if codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "TeamIdentifier=not set"; then
             echo "ad-hoc as expected"
           else
@@ -151,52 +153,71 @@ jobs:
             exit 1
           fi
 
+      # Tauri produces this tarball as a side effect of its bundler. Chuzz has no
+      # Tauri, so it is packed here. COPYFILE_DISABLE stops bsdtar writing an
+      # AppleDouble `._` sidecar beside every file carrying an extended
+      # attribute, and the round trip proves the code signature survived being
+      # archived: tar preserving modes is not the same as tar preserving a
+      # signature, and getting that wrong only shows up on someone else's Mac.
       - name: Pack the tarball
-        id: pack
-        env:
-          VERSION: ${{ needs.check.outputs.version }}
         run: |
-          # COPYFILE_DISABLE stops bsdtar writing an AppleDouble `._` sidecar
-          # beside every file that carries an extended attribute. Those confuse
-          # nothing on macOS but bloat the archive and leak into any Linux
-          # extraction of it.
-          COPYFILE_DISABLE=1 tar -czf "Chuzz-$VERSION.app.tar.gz" \
+          COPYFILE_DISABLE=1 tar -czf "$BUNDLE_DIR/Chuzz.app.tar.gz" \
             -C "$BUNDLE_DIR" Chuzz.app
-          gunzip -t "Chuzz-$VERSION.app.tar.gz" || {
+          gunzip -t "$BUNDLE_DIR/Chuzz.app.tar.gz" || {
             echo "::error::the built tarball is not a valid gzip"; exit 1;
           }
-
-          # Unpack it somewhere else and check the signature survived the round
-          # trip: tar preserving modes is not the same as tar preserving a code
-          # signature, and the symptom of getting that wrong only appears on
-          # someone else's Mac.
-          mkdir -p roundtrip && tar -xzf "Chuzz-$VERSION.app.tar.gz" -C roundtrip
+          mkdir -p roundtrip && tar -xzf "$BUNDLE_DIR/Chuzz.app.tar.gz" -C roundtrip
           codesign --verify --deep --strict roundtrip/Chuzz.app
           rm -rf roundtrip
+          echo "packed and the signature survived the round trip"
 
-          SHA=$(shasum -a 256 "Chuzz-$VERSION.app.tar.gz" | cut -d' ' -f1)
-          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "packed Chuzz-$VERSION.app.tar.gz sha256 $SHA"
+      # minisign, unrelated to Apple signing: it signs the payload rather than
+      # the bundle, so a client can check the bytes it fetched came from this
+      # pipeline. Produced by the same rsign2 implementation and key format
+      # Tauri uses, so the signature is verifiable with the public key already
+      # published beside AgencyZero's.
+      - name: Sign the tarball
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required to sign the release"
+            exit 1
+          fi
+          bunx --yes @tauri-apps/cli@^2.11 signer sign \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "" \
+            "$BUNDLE_DIR/Chuzz.app.tar.gz"
+          test -f "$BUNDLE_DIR/Chuzz.app.tar.gz.sig" || {
+            echo "::error::signer produced no .sig"; exit 1;
+          }
+          echo "signed"
 
       - name: Build latest.json
         env:
           VERSION: ${{ needs.check.outputs.version }}
-          SHA: ${{ steps.pack.outputs.sha256 }}
         run: |
-          # No signature field and no updater: this manifest exists so the check
-          # job above can ask what is live without consulting git, and so a
-          # human can answer the same question with curl.
-          python3 - "$VERSION" "$SHA" "$CDN_BASE" <<'PY'
+          TARBALL="$BUNDLE_DIR/Chuzz.app.tar.gz"
+          test -f "$TARBALL.sig" || { echo "::error::missing $TARBALL.sig"; exit 1; }
+          python3 - "$VERSION" "$TARBALL.sig" "$CDN_BASE" <<'PY'
           import json, sys, datetime
-          version, sha, base = sys.argv[1], sys.argv[2], sys.argv[3]
+          version, sig_path, base = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(sig_path) as f:
+              signature = f.read().strip()
           manifest = {
               "version": version,
               "pub_date": datetime.datetime.now(datetime.timezone.utc)
                   .strftime("%Y-%m-%dT%H:%M:%SZ"),
               "platforms": {
                   "darwin-aarch64": {
-                      "sha256": sha,
-                      "url": f"{base}/Chuzz-{version}.app.tar.gz",
+                      "signature": signature,
+                      # The query string is a cache-buster, and it works because
+                      # this pull zone keys its cache on the full URL including
+                      # the query, so each release advertises a URL no edge has
+                      # ever held. Brew fetches the bare URL and relies on the
+                      # purge.
+                      "url": f"{base}/Chuzz.app.tar.gz?v={version}",
                   }
               },
           }
@@ -206,24 +227,15 @@ jobs:
           PY
           cat latest.json
 
-      # The tarball goes live and is confirmed live before latest.json
-      # advertises it, and before the cask points at it. Reversed, a client
-      # could read the new version and fetch a URL that is not there yet.
-      #
-      # The DELETE before the PUT is inherited from AgencyZero's pipeline, where
-      # overwriting in place once let an edge cache a partial response. It
-      # should be impossible here, since a versioned path is written exactly
-      # once, but a forced republish of the same version writes it twice.
+      # Ordering matters and is the whole reason these are separate steps. The
+      # tarball goes live and is confirmed live *before* latest.json advertises
+      # it. Reversed, a client reads the new version and fetches an edge-cached
+      # older tarball.
       - name: Upload the tarball
         env:
-          VERSION: ${{ needs.check.outputs.version }}
           STORAGE_API_KEY: ${{ secrets.BUNNYCDN_STORAGE_API_KEY }}
           STORAGE_NAME: ${{ secrets.BUNNYCDN_STORAGE_NAME }}
         run: |
-          if [ -z "$STORAGE_API_KEY" ] || [ -z "$STORAGE_NAME" ]; then
-            echo "::error::BUNNYCDN_STORAGE_API_KEY and BUNNYCDN_STORAGE_NAME are required"
-            exit 1
-          fi
           upload() {
             file="$1"; dest="$2"; attempt=1
             curl -sS -X DELETE -H "AccessKey: $STORAGE_API_KEY" \
@@ -242,43 +254,46 @@ jobs:
             echo "::error::upload failed for $dest"
             return 1
           }
-          upload "Chuzz-$VERSION.app.tar.gz" "$CDN_DIR/Chuzz-$VERSION.app.tar.gz"
+          upload "$BUNDLE_DIR/Chuzz.app.tar.gz" "$CDN_DIR/Chuzz.app.tar.gz"
+          upload "$BUNDLE_DIR/Chuzz.app.tar.gz.sig" "$CDN_DIR/Chuzz.app.tar.gz.sig"
 
-      # Zone-wide, never per-URL: the per-URL endpoint has been observed
-      # reporting success without evicting anything, and the site sharing this
-      # zone purges the whole zone on every deploy of its own.
       - name: Purge the pull zone
         env:
           ZONE_API_KEY: ${{ secrets.BUNNYCDN_ZONE_API_KEY }}
           ZONE_ID: ${{ secrets.BUNNYCDN_ZONE_ID }}
         run: |
           if [ -z "$ZONE_API_KEY" ] || [ -z "$ZONE_ID" ]; then
-            echo "::error::BUNNYCDN_ZONE_API_KEY and BUNNYCDN_ZONE_ID are required"
+            echo "::error::BUNNYCDN_ZONE_API_KEY and BUNNYCDN_ZONE_ID are required: a versionless URL that is not purged serves the previous release forever."
             exit 1
           fi
           curl -sS --fail-with-body -X POST -H "AccessKey: $ZONE_API_KEY" \
             "https://bunnycdn.com/api/pullzone/$ZONE_ID/purgeCache"
           echo "purged pull zone $ZONE_ID"
 
-      - name: Confirm the edge serves the tarball we built
+      - name: Confirm the live tarball is the one just built
         env:
-          VERSION: ${{ needs.check.outputs.version }}
-          SHA: ${{ steps.pack.outputs.sha256 }}
+          ZONE_API_KEY: ${{ secrets.BUNNYCDN_ZONE_API_KEY }}
+          ZONE_ID: ${{ secrets.BUNNYCDN_ZONE_ID }}
         run: |
-          # The cask pins this exact sha256, so an edge serving anything else
-          # gives every installer a checksum failure rather than a bad app.
-          # Catch it here instead.
+          LOCAL=$(shasum -a 256 "$BUNDLE_DIR/Chuzz.app.tar.gz" | cut -d' ' -f1)
           for attempt in 1 2 3 4 5 6; do
-            curl -sS -L -o edge.tar.gz "$CDN_BASE/Chuzz-$VERSION.app.tar.gz" || true
+            curl -sS -L -o edge.tar.gz "$CDN_BASE/Chuzz.app.tar.gz" || true
             REMOTE=$(shasum -a 256 edge.tar.gz | cut -d' ' -f1)
-            if [ "$SHA" = "$REMOTE" ] && gunzip -t edge.tar.gz; then
-              echo "edge matches build ($SHA) and the gzip is intact"
+            # The sha proves identity; gunzip proves the edge did not cache a
+            # partial response. Both, so the failure message names the culprit.
+            if [ "$LOCAL" = "$REMOTE" ] && gunzip -t edge.tar.gz; then
+              echo "edge matches build ($LOCAL) and the gzip is intact"
               exit 0
             fi
-            echo "attempt $attempt: edge has $REMOTE, want $SHA"
+            echo "attempt $attempt: edge has $REMOTE, want $LOCAL"
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::edge still stale after purge; purging the zone again"
+              curl -sS --fail-with-body -X POST -H "AccessKey: $ZONE_API_KEY" \
+                "https://bunnycdn.com/api/pullzone/$ZONE_ID/purgeCache" || true
+            fi
             sleep 10
           done
-          echo "::error::edge never served the new tarball; not publishing"
+          echo "::error::edge never served the new tarball; not publishing latest.json"
           exit 1
 
       - name: Publish latest.json
@@ -296,8 +311,9 @@ jobs:
           curl -sS --fail-with-body -X POST -H "AccessKey: $ZONE_API_KEY" \
             "https://bunnycdn.com/api/pullzone/$ZONE_ID/purgeCache"
 
-          # latest.json is what the next run compares against, so a stale edge
-          # copy here would republish this version forever.
+          # latest.json is the version record, so a stale edge copy here means
+          # nobody sees the release. It is also what the next run compares
+          # against, so a stale copy would republish this version forever.
           for attempt in 1 2 3 4 5 6; do
             LIVE=$(curl -sS -L "$CDN_BASE/latest.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || echo "")
             if [ "$LIVE" = "$VERSION" ]; then
@@ -305,52 +321,12 @@ jobs:
               exit 0
             fi
             echo "attempt $attempt: edge serves '$LIVE', want '$VERSION'"
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::edge still stale after purge; purging the zone again"
+              curl -sS --fail-with-body -X POST -H "AccessKey: $ZONE_API_KEY" \
+                "https://bunnycdn.com/api/pullzone/$ZONE_ID/purgeCache" || true
+            fi
             sleep 10
           done
           echo "::error::edge never served the new latest.json"
           exit 1
-
-      - name: Render the cask
-        env:
-          VERSION: ${{ needs.check.outputs.version }}
-          SHA: ${{ steps.pack.outputs.sha256 }}
-        run: |
-          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$SHA/" \
-            packaging/chuzz.rb.in > chuzz.rb
-          cat chuzz.rb
-
-      # Committed to the tap only when a token is present. Without one the
-      # release still completes and the rendered cask is attached below, so the
-      # tap can be updated by hand. Failing the release for a missing token
-      # would leave a published tarball nobody can install, which is worse.
-      # The `secrets` context is not available to `if`, so the token is lifted
-      # into `env` first and the condition reads that. Writing
-      # `if: secrets.TAP_GITHUB_TOKEN != ''` looks right, is accepted, and is
-      # always false.
-      - name: Update the Homebrew tap
-        if: env.TAP_GITHUB_TOKEN != ''
-        env:
-          VERSION: ${{ needs.check.outputs.version }}
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-        run: |
-          git clone --depth 1 \
-            "https://x-access-token:$TAP_GITHUB_TOKEN@github.com/pathscale/homebrew-tap.git" tap
-          cp chuzz.rb tap/Casks/chuzz.rb
-          cd tap
-          if git diff --quiet; then
-            echo "cask already at $VERSION"
-            exit 0
-          fi
-          git config user.name "pathscale-ci"
-          git config user.email "ci@pathscale.com"
-          git add Casks/chuzz.rb
-          git commit -m "Chuzz $VERSION"
-          git push
-
-      - name: Attach the cask and the manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: chuzz-${{ needs.check.outputs.version }}
-          path: |
-            chuzz.rb
-            latest.json

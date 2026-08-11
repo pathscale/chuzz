@@ -39,42 +39,45 @@ macOS Sequoia removed the Control-click bypass, so a user who downloads the
 tarball in a browser has no quick way out: System Settings, Privacy & Security,
 Open Anyway.
 
-## Ad-hoc signing needs no key
+## Why the URL carries no version
 
-Worth stating because the neighbouring project's setup invites the opposite
-conclusion. `apps/chuzz/build-app.sh` signs with `codesign --sign -`, which takes
-no certificate and no secret. That is what "ad-hoc" means. The release workflow
-verifies the result and fails if the bundle ever stops being ad-hoc, because at
-that point the cask's quarantine `postflight` should be dropped instead.
+Releases overwrite `Chuzz.app.tar.gz` at a fixed path rather than accumulating
+one file per version, the same way AgencyZero does. Two consequences, both
+deliberate:
 
-AgencyZero's `TAURI_SIGNING_PRIVATE_KEY` is a **minisign** key, unrelated to
-Apple signing: it signs the update payloads its self-updater verifies. Chuzz has
-no updater, so nothing here would ever read such a signature and the secret is
-not used.
+- `latest.json` is the only record of the current version.
+- The cask is pinned to `version :latest` with `sha256 :no_check`, because the
+  bytes behind a fixed URL change. The upside is that the cask never needs a
+  commit per release, so no release touches the tap repo at all.
 
-## Why the URL carries the version
+The cost is that the release workflow has to purge the BunnyCDN edge cache, and
+has to do it in the right order: the tarball goes live and is confirmed live
+*before* `latest.json` advertises it. Reversed, a client reads the new version
+and fetches an edge-cached older tarball. Those purge steps are hard failures in
+[`release.yml`](../.github/workflows/release.yml) for that reason.
 
-The opposite of AgencyZero, deliberately.
+**One thing this costs that it does not cost AgencyZero.** Homebrew cannot
+detect a new release, and AgencyZero does not care because its self-updater
+pulls it forward. Chuzz has no updater yet, so until it does, moving an
+installed copy forward is `brew reinstall --cask chuzz`.
 
-AgencyZero overwrites a fixed, versionless path and pins its cask to
-`version :latest` with `sha256 :no_check`. It can, because it carries a
-self-updater that pulls it forward from the same CDN, so `brew upgrade` never
-needing to fire is a feature rather than a defect.
+## Signing
 
-**Chuzz has no updater.** A versionless URL would mean Homebrew cannot detect a
-new release and the app cannot update itself either, so every installed copy
-would sit on whatever it first fetched until someone thought to
-`brew reinstall`. So each release writes `Chuzz-<version>.app.tar.gz`, the cask
-pins a real `version` and a real `sha256`, and `brew upgrade` works.
+Two signatures, unrelated to each other, and conflating them wastes an
+afternoon.
 
-That also removes the failure mode that dominates AgencyZero's pipeline, where
-overwriting a live object let an edge cache a partial response and serve a
-truncated gzip for as long as its max-age allowed. Each release here writes a
-path no edge has ever held, so the purge is belt and braces rather than the
-thing holding the release together.
+**Apple ad-hoc signing** is `codesign --sign -`, applied by
+`apps/chuzz/build-app.sh`. It takes no certificate and no secret; that is what
+"ad-hoc" means. The release workflow verifies the result and asserts the bundle
+is still ad-hoc, so acquiring a Developer ID certificate cannot silently leave
+the cask stripping a Gatekeeper check users should be getting.
 
-The cost is a commit to the tap per release, which the workflow makes for you
-when `TAP_GITHUB_TOKEN` is set.
+**minisign signing** is applied by the release runner to the tarball, producing
+`Chuzz.app.tar.gz.sig` beside it and the `signature` field in `latest.json`. It
+signs the payload rather than the bundle, so a client can check that the bytes
+it fetched came from this pipeline. It uses `TAURI_SIGNING_PRIVATE_KEY`, the
+same rsign2 key and format Tauri uses, which is why the signing step shells out
+to the Tauri CLI's `signer sign` rather than reimplementing it.
 
 ## Cutting a release
 
@@ -104,12 +107,11 @@ Four, all on `pathscale/chuzz`:
 | `BUNNYCDN_STORAGE_NAME` | the storage zone name |
 | `BUNNYCDN_ZONE_API_KEY` | purging the pull zone |
 | `BUNNYCDN_ZONE_ID` | which pull zone to purge |
+| `TAURI_SIGNING_PRIVATE_KEY` | signing the tarball, see above |
 
-Optional: `TAP_GITHUB_TOKEN`, with push access to `pathscale/homebrew-tap`. With
-it the workflow commits the rendered cask; without it the release still
-completes and attaches the cask as a build artifact to paste in by hand. A
-missing token is not a release failure, because failing there would leave a
-published tarball nobody can install.
+The cask itself needs no secret and no automation: [`packaging/chuzz.rb`](../packaging/chuzz.rb)
+is copied into `pathscale/homebrew-tap` as `Casks/chuzz.rb` once, and a release
+never touches it again.
 
 ## The engine the release builds against
 
