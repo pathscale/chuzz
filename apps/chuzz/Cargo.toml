@@ -1,5 +1,6 @@
 [package]
-name = "chuzz"
+# Package and binary share the name, matching AgencyZero's `apps/gui` -> `az-gui`.
+name = "chuzz-gui"
 description = "A pure Rust web browser"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +9,7 @@ license.workspace = true
 publish = false
 
 [[bin]]
-name = "chuzz"
+name = "chuzz-gui"
 path = "src/main.rs"
 
 [features]

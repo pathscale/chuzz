@@ -31,13 +31,13 @@ resources_dir="$contents_dir/Resources"
 
 cd "$repo_dir"
 # shellcheck disable=SC2086
-cargo build -p chuzz $cargo_args
+cargo build -p chuzz-gui $cargo_args
 
 # Removed rather than overwritten: a stale file left inside Contents from an
 # earlier layout would be signed along with everything else and shipped.
 rm -rf "$bundle_dir"
 mkdir -p "$macos_dir" "$resources_dir"
-cp "$repo_dir/target/$profile/chuzz" "$macos_dir/chuzz"
+cp "$repo_dir/target/$profile/chuzz-gui" "$macos_dir/chuzz-gui"
 cp "$script_dir/Info.plist" "$contents_dir/Info.plist"
 cp "$script_dir/icons/icon.icns" "$resources_dir/icon.icns"
 

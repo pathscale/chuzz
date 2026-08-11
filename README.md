@@ -8,8 +8,8 @@ chrome is a SolidJS app interpreted by Boa, the same way page content is, and ev
 it is Rust.
 
 ```sh
-cargo run -p chuzz                      # opens a blank tab
-cargo run -p chuzz -- example.com       # opens a bare hostname over HTTPS
+cargo run -p chuzz-gui                  # opens a blank tab
+cargo run -p chuzz-gui -- example.com   # opens a bare hostname over HTTPS
 ```
 
 A non-URL argument is not a search: anything that is neither a URL nor a hostname
@@ -17,22 +17,23 @@ does nothing, so a mistyped path cannot quietly navigate somewhere unrelated.
 
 ## Where the built binary lands
 
-Chuzz's executable is `chuzz`. It is this repository's counterpart to AgencyZero's
-`az-gui`, and it is the binary to run when you want the browser without going
-through cargo.
+Chuzz's executable is `chuzz-gui`. It is this repository's counterpart to
+AgencyZero's `az-gui`: the package in `apps/chuzz` and the binary it produces
+share that name, the same way `apps/gui` produces `az-gui`. This is the binary to
+run when you want the browser without going through cargo.
 
 | What | Path |
 | --- | --- |
-| Release binary | `target/release/chuzz` |
-| Debug binary | `target/debug/chuzz` |
+| Release binary | `target/release/chuzz-gui` |
+| Debug binary | `target/debug/chuzz-gui` |
 | macOS bundle | `target/release/bundle/macos/Chuzz.app` |
 
 ```sh
 ./apps/chuzz/build-app.sh release    # builds, bundles, ad-hoc signs, prints the bundle path
-./target/release/chuzz               # or run the bare binary
+./target/release/chuzz-gui           # or run the bare binary
 ```
 
-The bundle's `Contents/MacOS/chuzz` is a copy of `target/release/chuzz` that has
+The bundle's `Contents/MacOS/chuzz-gui` is a copy of `target/release/chuzz-gui` that has
 been re-signed, so the two are the same build but differ in size and timestamp.
 Compare `CFBundleShortVersionString` against `[workspace.package] version` if you
 need to know which build a bundle came from; nothing else distinguishes them.

@@ -817,7 +817,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "chuzz"
+name = "chuzz-control"
+version = "0.1.0"
+dependencies = [
+ "endpoint-libs",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "chuzz-gui"
 version = "0.1.0"
 dependencies = [
  "blitz-html",
@@ -836,16 +846,6 @@ dependencies = [
  "ps-blitz-traits",
  "tokio",
  "url",
-]
-
-[[package]]
-name = "chuzz-control"
-version = "0.1.0"
-dependencies = [
- "endpoint-libs",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

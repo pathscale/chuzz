@@ -7,7 +7,7 @@
   <key>CFBundleDisplayName</key>
   <string>Chuzz</string>
   <key>CFBundleExecutable</key>
-  <string>chuzz</string>
+  <string>chuzz-gui</string>
   <key>CFBundleIconFile</key>
   <string>icon.icns</string>
   <key>CFBundleIdentifier</key>

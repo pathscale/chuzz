@@ -16,7 +16,7 @@ trap 'rm -rf "$work_dir"' EXIT
 
 cd "$repo_dir"
 CHUZZ_CAPTURE_WIDTH=1024 CHUZZ_CAPTURE_HEIGHT=1024 \
-  cargo run -q -p chuzz --features capture -- \
+  cargo run -q -p chuzz-gui --features capture -- \
   --capture "$work_dir/icon-1024.png" "file://$script_dir/icon.html"
 
 iconset="$work_dir/icon.iconset"
