@@ -41,6 +41,16 @@ cp "$repo_dir/target/$profile/chuzz" "$macos_dir/chuzz"
 cp "$script_dir/Info.plist" "$contents_dir/Info.plist"
 cp "$script_dir/icons/icon.icns" "$resources_dir/icon.icns"
 
+# The version lives in one place, `[workspace.package] version`, and is stamped
+# into the bundle here. The committed Info.plist carries a value only so it is a
+# valid plist on its own; a second hand-maintained version is a second thing to
+# forget, and the release workflow checks the bundle against Cargo.toml for
+# exactly that reason.
+version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$repo_dir/Cargo.toml" | head -1)
+test -n "$version" || { echo "could not read the version from Cargo.toml" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents_dir/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$contents_dir/Info.plist"
+
 # Ad-hoc signing. Not a distributable signature: it satisfies the loader on
 # Apple silicon, which refuses an unsigned bundle outright, and nothing more.
 if command -v codesign >/dev/null 2>&1; then
