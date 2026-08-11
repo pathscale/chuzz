@@ -3,10 +3,12 @@
 Chuzz is a pure Rust web browser built on the Pathscale Blitz engine. It does not embed WebKit, Chromium, Electron, or Tauri.
 
 ```sh
-cargo run -p chuzz                      # opens the home page
+cargo run -p chuzz                      # opens a blank tab
 cargo run -p chuzz -- example.com       # opens a bare hostname over HTTPS
-cargo run -p chuzz -- "rust ownership"  # a non-URL argument becomes a search
 ```
+
+A non-URL argument is not a search: anything that is neither a URL nor a hostname
+does nothing, so a mistyped path cannot quietly navigate somewhere unrelated.
 
 ## Layout
 
@@ -43,3 +45,17 @@ Pathscale Blitz supplies HTML parsing, Stylo CSS, Taffy layout, networking, Vell
 input, and accessibility. The renderer is Vello on wgpu, following AgencyZero's Blitz
 performance thesis: Metal on macOS, with the Vulkan and D3D12 paths preserved for Linux and
 Windows.
+
+## Building the app
+
+```sh
+apps/chuzz/build-app.sh          # release, the default
+apps/chuzz/build-app.sh debug    # unoptimised, for a backtrace
+```
+
+Writes `target/<profile>/bundle/macos/Chuzz.app`, ad-hoc signed. Drag it to
+/Applications, or `open` it in place.
+
+The icon is `apps/chuzz/icons/icon.icns`, committed. Its source is
+`icons/icon.html`, which Chuzz renders itself: `apps/chuzz/icons/build-icon.sh`
+rebuilds the icns and is only needed when the markup changes.
