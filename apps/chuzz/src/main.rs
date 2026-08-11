@@ -290,7 +290,7 @@ fn app() -> Element {
             div { id: "content-row",
                 div { id: "page-area",
                     for tab in tabs.iter() {
-                        TabView { key: "{tab.tab_id()}", tab, active_tab_id }
+                        TabView { key: "{tab.tab_id()}", tabs, tab, active_tab_id }
                     }
                     PanelEdgeHandle { collapsed: panel_collapsed }
                 }

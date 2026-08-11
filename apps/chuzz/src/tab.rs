@@ -111,6 +111,20 @@ pub fn open_tab(
     tab
 }
 
+/// Look a tab up by identity, or `None` if it has been closed.
+///
+/// A `Store<Tab>` taken from `tabs.iter()` is a *positional* lens: it holds an
+/// index into the vector. Holding one across an await point is a bug, because
+/// closing a tab shifts every later row down. The lens for the last row then
+/// indexes past the end and `dioxus_stores` panics inside `ops::Index`, taking
+/// the whole browser with it; the rows in between quietly address the wrong
+/// tab. Anything that survives a render has to re-resolve by id, here.
+pub fn find_tab(tabs: Store<Vec<Tab>>, id: TabId) -> Option<Store<Tab>> {
+    tabs.iter()
+        .find(|tab| tab.tab_id() == id)
+        .map(|tab| tab.into())
+}
+
 pub fn active_tab(tabs: Store<Vec<Tab>>, active_id: TabId) -> Store<Tab> {
     // At least one tab is always open, and closing a tab reassigns the active
     // id before removing the row.
@@ -143,16 +157,22 @@ fn commit_loaded(tab: Store<Tab>, loaded: LoadedDocument) {
 /// sub-document mounted inside `web-view` is not a `View`, so without this its
 /// layout is resolved once and every time-based style stays on frame one.
 #[component]
-fn AnimationClock(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
+fn AnimationClock(tabs: Store<Vec<Tab>>, tab_id: TabId, active_tab_id: Signal<TabId>) -> Element {
     use_future(move || async move {
         let start = std::time::Instant::now();
         loop {
             // 60fps. Cheap when nothing animates: `resolve` is a no-op unless
             // the document reports active animations.
             tokio::time::sleep(std::time::Duration::from_millis(16)).await;
-            if tab.tab_id() != active_tab_id() {
+            if tab_id != active_tab_id() {
                 continue;
             }
+            // Resolved fresh on every tick rather than captured: see `find_tab`.
+            // This loop outlives its own component by at least one render when a
+            // tab closes, which is exactly when a captured lens goes bad.
+            let Some(tab) = find_tab(tabs, tab_id) else {
+                return;
+            };
             let Some(handle) = tab.node_handle().cloned() else {
                 continue;
             };
@@ -199,7 +219,7 @@ fn AnimationClock(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
 /// Renders one tab's page. Inactive tabs stay mounted but hidden, so switching
 /// back to a tab does not refetch it.
 #[component]
-pub fn TabView(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
+pub fn TabView(tabs: Store<Vec<Tab>>, tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
     let loader = tab.loader_rc();
 
     let loaded = use_resource(move || {
@@ -252,6 +272,6 @@ pub fn TabView(tab: Store<Tab>, active_tab_id: Signal<TabId>) -> Element {
             }
         },
     }
-    AnimationClock { tab, active_tab_id }
+    AnimationClock { tabs, tab_id: id, active_tab_id }
     )
 }
