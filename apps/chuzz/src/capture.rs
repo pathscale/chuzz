@@ -8,12 +8,20 @@
 //! It deliberately shares the loader with the browser, so what it captures is
 //! what the browser would show, not a second rendering path that could drift.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_paint::paint_scene;
 use blitz_traits::shell::{ColorScheme, Viewport};
+
+/// Where to write the laid-out tree alongside the PNG, when asked.
+///
+/// An environment variable rather than a flag: the capture path parses its own
+/// arguments by hand, and a second positional would be taken for the URL.
+fn tree_dump_path() -> Option<PathBuf> {
+    std::env::var_os("CHUZZ_CAPTURE_TREE").map(PathBuf::from)
+}
 
 /// Render `url` at the given size and write a PNG to `output`.
 pub async fn capture(
@@ -54,6 +62,13 @@ pub async fn capture(
     let buffer = document.with_document(|document| {
         document.set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
         document.resolve(0.0);
+        // Written from the same settled document the pixels come from, so a box
+        // in the dump is the box that was painted.
+        if let Some(path) = tree_dump_path()
+            && let Err(error) = crate::dump::write_tree(document, &path)
+        {
+            eprintln!("chuzz: could not write the tree dump: {error}");
+        }
         render_to_buffer::<VelloCpuImageRenderer, _>(
             |scene| paint_scene(scene, document, 1.0, width, height, 0, 0),
             width,

@@ -21,6 +21,8 @@ mod capture;
 mod control;
 mod decode;
 mod document_loader;
+#[cfg(feature = "capture")]
+mod dump;
 mod history;
 mod nav;
 mod shortcuts;
