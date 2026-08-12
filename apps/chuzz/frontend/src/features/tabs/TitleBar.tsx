@@ -1,4 +1,4 @@
-import { Icon } from "@pathscale/test-ui";
+import { Button, Icon } from "@pathscale/test-ui";
 import { Flex } from "@pathscale/ui";
 import { For, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
@@ -18,14 +18,16 @@ export function TitleBar(props: { onOpenSettings: () => void }): JSX.Element {
 
   return (
     <Flex as="div" align="center" gap="sm" class="chrome-titlebar">
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        isIconOnly
         class="chrome-nav-back"
         title={t("chrome.back")}
         onClick={() => browser.goBack()}
       >
         {"‹"}
-      </button>
+      </Button>
 
       {/* Spacing lives in chrome.css with the rest of the strip's geometry,
           rather than half here and half there. */}
@@ -33,40 +35,48 @@ export function TitleBar(props: { onOpenSettings: () => void }): JSX.Element {
         <For each={browser.state.tabs}>
           {(tab) => <TabPill tab={tab} isActive={tab.id === browser.state.activeTabId} />}
         </For>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
+          isIconOnly
           class="chrome-new-tab"
           title={t("chrome.newTab")}
           onClick={() => browser.openTab()}
         >
           +
-        </button>
+        </Button>
       </Flex>
 
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        isIconOnly
         class="chrome-titlebar-button"
         title={t("chrome.forward")}
         onClick={() => browser.goForward()}
       >
         {"›"}
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        isIconOnly
         class="chrome-titlebar-button"
         title={t("chrome.reload")}
         onClick={() => browser.reload()}
       >
         {"↻"}
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        isIconOnly
         class="chrome-titlebar-button"
         title={t("chrome.settings")}
         onClick={props.onOpenSettings}
       >
         <Icon name="icon-[mdi--cog]" width={15} height={15} />
-      </button>
+      </Button>
       <div class="chrome-avatar">N</div>
     </Flex>
   );
@@ -83,8 +93,10 @@ function TabPill(props: { tab: Tab; isActive: boolean }): JSX.Element {
     >
       <span class="chrome-tab-dot" data-loading={props.tab.status === "loading" ? "" : undefined} />
       <span class="chrome-tab-title">{props.tab.title}</span>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        isIconOnly
         class="chrome-tab-close"
         data-visible={props.isActive ? "" : undefined}
         title={t("chrome.closeTab")}
@@ -96,7 +108,7 @@ function TabPill(props: { tab: Tab; isActive: boolean }): JSX.Element {
         }}
       >
         {"×"}
-      </button>
+      </Button>
     </div>
   );
 }
