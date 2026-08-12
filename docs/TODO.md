@@ -1,5 +1,61 @@
 # TODO: what to work on, and what is still research
 
+## Measured 2026-08-12, after the ps-blitz move (read this first)
+
+The three-site corpus was re-captured against engine `464444a2`. **All three render**, which
+is a large change from the state the rest of this file describes: pathscale.com was blocked
+on `customElements` and is not any more, and 24x.ai is well past "roughly 80 percent".
+
+Four new findings, each reproduced from a fixture rather than read off a screenshot.
+
+| # | Finding | Evidence |
+|---|---|---|
+| 1 | **`overflow: hidden` does not clip in-flow children.** Absolutely-positioned children clip correctly, including with `border-radius`. A static child larger than its container is not clipped at all — it paints across the page. | fixture with four cases; abs/rounded correct, in-flow square *and* rounded both leak |
+| 2 | **Percentage `translate()` resolves against the wrong box.** `left:50%; top:50%; transform:translate(-50%,-50%)` on a 240x240 child of a 160x100 container must cover it completely; it leaves an uncovered strip. This is *the* centring idiom on the web. | three-case fixture: no-transform correct, `translate(-50%,-50%)` decentred, `+rotate(30deg)` visibly off-centre |
+| 3 | **No `@property`.** `conic-gradient(from var(--ang))` with a registered `<angle>` does not just fail to animate — the gradient escapes its box and the interior fill stops painting. | ring fixture case C |
+| 4 | **No `mask-image` at all** in `blitz-paint` (`mask_image`/`mask_composite`: zero hits). `clip-path` exists. | grep + the MetalBorder work below |
+
+**Do not conclude "the ring leaked past the clip" from a screenshot.** That was the first
+reading of finding 2 and it was wrong; the clip was fine and the layer was mis-centred.
+Isolating it took one fixture. [measure before theorising]
+
+### 24x.ai's animated border
+
+The border is `MetalBorder` from `@pathscale/ui`: a **WebGL + canvas-2D engine** with
+shaders, a shared GL canvas, per-frame pixel readback and a `requestAnimationFrame` loop.
+Blitz's `<canvas>` is a replaced element with a `src` and has no `getContext`, so
+`loop.ts:58` throws `metal-fx: canvas 2D context unavailable`.
+
+The component already handles this: the `try`/`catch` around instance creation sets
+`isWebGlUnavailable(true)` and applies `.metal-border--unavailable`. **Nothing in the library
+styles that class**, so the fallback is a dead hook and the border simply vanishes. That is a
+`@pathscale/ui` bug, not a Blitz one, and it costs every non-WebGL consumer.
+
+A CSS-only ring — conic gradient on a padded box, sweep animated by rotating the layer —
+renders correctly in Blitz today and is far cheaper than the shader path: one transform per
+frame, no GL context, no readback. It is written and verified against **opaque** content.
+
+**It is not shippable as the default yet.** With translucent content — which is what 24x.ai
+wraps — the sweep bleeds through the card interior, because every no-mask gradient-border
+technique needs an opaque interior to hide the layer. The glass-safe version the web uses is
+`mask-composite: exclude`, which is finding 4. **So `mask-image` in `blitz-paint` is the
+unlock, and it is the highest-value engine item on this list.**
+
+### js.software renders italic, everywhere
+
+Every glyph on the page is oblique. The site requests Google Fonts with
+`ital,opsz,wght@0,...;1,...`, and Google emits the **five italic faces first**, then the five
+normal ones. Chrome resolves `font-style: normal` to a normal face; we take an italic one.
+Any site using a two-axis Google Fonts request is affected, so this is a broad class.
+
+Not yet root-caused, and **the obvious hypotheses are already ruled out**: a fixture with all
+ten faces in Google's own order selects correctly, and so does one sweeping weight 200-900.
+The descriptors are captured (`blitz-dom/src/net.rs:390`), mapped correctly
+(`stylo_to_fontique_style`) and passed to `register_fonts` (`document.rs:1497`). The trigger
+is something the real page does that the fixtures do not — the `@import` inside the
+stylesheet is the next thing to eliminate.
+
+
 Written 2026-08-11, revised the same day after the first round of measurement. A
 high-level index: every line points at the document carrying the evidence and the line
 numbers. **Read the linked doc before acting**, because several items carry ordering
