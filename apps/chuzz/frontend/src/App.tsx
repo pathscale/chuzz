@@ -1,6 +1,6 @@
 import { createSignal, Show, type JSX } from "solid-js";
 import { PageArea } from "~/features/page/PageArea";
-import { SidePanel } from "~/features/panel/SidePanel";
+import { SidePanel } from "~/features/panel";
 import { SettingsPanel } from "~/features/settings/SettingsPanel";
 import { StatusStrip } from "~/features/status/StatusStrip";
 import { TitleBar } from "~/features/tabs/TitleBar";

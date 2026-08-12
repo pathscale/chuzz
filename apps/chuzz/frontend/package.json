@@ -1,7 +1,7 @@
 {
   "name": "chuzz-frontend",
   "version": "0.1.0",
-  "description": "Chuzz — browser chrome frontend",
+  "description": "Chuzz \u2014 browser chrome frontend",
   "type": "module",
   "private": true,
   "scripts": {
@@ -23,7 +23,8 @@
     "clsx": "^2.1.1",
     "popmotion": "^11.0.5",
     "solid-js": "^1.9.5",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "solid-layouts": "file:../../../../solid-layouts/packages/solid-layouts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
