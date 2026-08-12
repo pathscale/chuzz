@@ -32,7 +32,9 @@ image = { version = "=0.25.6", default-features = false }
 # Must be the same anyrender blitz-paint links against, or PaintScene is two
 # unrelated traits and the painter cannot be passed to paint_scene.
 anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+# `filters` is off by default in the backend, and with it off `push_layer`
+# discards both the element's `filter:` and its `backdrop-filter:`.
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea", features = ["filters"] }
 blitz-paint = { path = "../blitz-rust/packages/blitz-paint" }
 png = "=0.18.1"
 flate2 = "1"

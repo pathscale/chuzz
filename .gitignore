@@ -10,3 +10,6 @@ apps/chuzz/dist/
 
 # Handover notes are session state, tracked locally and never committed.
 docs/HANDOVER-*.md
+
+# Local-only renderer patch, see the file itself.
+.cargo/config.toml
