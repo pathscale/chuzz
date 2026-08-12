@@ -5,7 +5,7 @@ high-level index: every line points at the document carrying the evidence and th
 numbers. **Read the linked doc before acting**, because several items carry ordering
 constraints or caveats that do not survive a one-line summary.
 
-Items marked ENGINE land in `~/code/blitz-rust`, which is now a plain checkout of
+Items marked ENGINE land in `~/code/ps-blitz`, which is now a plain checkout of
 `ps-blitz` master. That was not true this morning, and everything measured before the
 reconciliation carries an asterisk because of it.
 
@@ -62,7 +62,7 @@ conclusions written above:
   `blitz-paint` are **not**, and chuzz's `Cargo.toml:17,33` still asks for `ps-blitz-html`
   and `ps-blitz-paint`.
 
-**So the chuzz port is now viable and small**: repoint the six paths from `../blitz-rust` to
+**So the chuzz port is now viable and small**: repoint the six paths from `../ps-blitz` to
 the mega tree, and drop the `package =` rename on `blitz-html` and `blitz-paint` only. It was
 correctly deferred this afternoon; it is not blocked any more.
 
@@ -94,7 +94,7 @@ real page defects.
 |---|---|---|
 | 1 | `import.meta`, the last of the five missing JavaScript globals and the only one that is Boa's rather than ours. A module using it is a parse error, so the whole file never runs. | [HANDOVER-24x-rendering.md](HANDOVER-24x-rendering.md) failure 4 |
 | 2 | ~~Do not shim `customElements`~~ **Done, and in the right order.** Shadow DOM and custom elements were ported from upstream's unmerged branch behind `feature = "shadow-dom"`, then `customElements.define/get/getName` landed on top with upgrade on define and on insertion. The trap this item described — a bundle getting past the `ReferenceError` into a `todo!()` — was avoided by doing shadow DOM first. **The constructor body still does not run**, because Boa cannot construct into an existing object. | `ps-blitz` PR #6 |
-| 3 | **Point the engine at `ps-taffy`.** The layout cache work is shared with AgencyZero and lands in the fork, `~/code/ps-taffy`, which AgencyZero already consumes as a path dependency through `ps-blitz-render`. `blitz-rust/Cargo.toml:99` still takes stock `taffy` from crates.io, so none of that work reaches this browser. One line, and it is the prerequisite for inheriting the rest. | see below |
+| 3 | **Point the engine at `ps-taffy`.** The layout cache work is shared with AgencyZero and lands in the fork, `~/code/ps-taffy`, which AgencyZero already consumes as a path dependency through `ps-blitz-render`. `ps-blitz/Cargo.toml:99` still takes stock `taffy` from crates.io, so none of that work reaches this browser. One line, and it is the prerequisite for inheriting the rest. | see below |
 | 4 | Two counters: DOM node count against layout node count, and distinct versus total attribute values on a real page. Both size per-page costs that scale with everything loaded. | [blink-for-a-browser.md](blink-for-a-browser.md) section 3 |
 | 5 | Make Stylo snapshots updatable. A correctness fix, and it unblocks the invalidation work. ENGINE | [TODO-dom-related-work.md](TODO-dom-related-work.md) item 1a |
 

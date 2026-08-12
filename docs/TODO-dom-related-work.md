@@ -3,7 +3,7 @@
 Written 2026-08-11. A plan, not a design doc: each item says what to change, where, why,
 what it depends on, and how to tell it worked.
 
-**Engine paths here are `blitz-rust/packages/blitz-dom/src/...`**, the checkout this
+**Engine paths here are `ps-blitz/packages/blitz-dom/src/...`**, the checkout this
 repository builds against by path. AgencyZero patches in a *different* checkout
 (`ps-blitz-render`) whose line numbers differ, and keeps its own list at
 `agencyzero/docs/TODO-dom-related-work.md`. **A fix in one tree does not reach the other.**

@@ -1,7 +1,7 @@
 # mega-blitz: one engine tree, and what the node should look like
 
 Written 2026-08-11. The plan for `~/code/blitz-mega`, branch `mega-blitz`, a worktree of
-`~/code/blitz-rust`. Working there rather than in the main checkout so the running browser
+`~/code/ps-blitz`. Working there rather than in the main checkout so the running browser
 and the other session are untouched.
 
 Background for every claim here: [blitz-fork-sweep.md](blitz-fork-sweep.md) for what each

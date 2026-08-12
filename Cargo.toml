@@ -16,12 +16,12 @@ homepage = "https://github.com/pathscale/chuzz"
 # blitz-preview consumes it. The crates there are namespaced `ps-blitz-*`.
 # A git rev cannot be used instead: the fix for compressed responses lives in
 # that tree, and mixing the two would put two copies of the DOM types in play.
-blitz-dom = { package = "ps-blitz-dom", path = "../blitz-rust/packages/blitz-dom" }
-blitz-html = { path = "../blitz-rust/packages/blitz-html" }
-blitz-net = { path = "../blitz-rust/packages/blitz-net" }
-blitz-script = { package = "ps-blitz-script", path = "../blitz-rust/packages/blitz-script" }
-blitz-traits = { package = "ps-blitz-traits", path = "../blitz-rust/packages/blitz-traits" }
-dioxus-native = { path = "../blitz-rust/packages/dioxus-native", default-features = false }
+blitz-dom = { package = "ps-blitz-dom", path = "../ps-blitz/packages/blitz-dom" }
+blitz-html = { path = "../ps-blitz/packages/blitz-html" }
+blitz-net = { path = "../ps-blitz/packages/blitz-net" }
+blitz-script = { package = "ps-blitz-script", path = "../ps-blitz/packages/blitz-script" }
+blitz-traits = { package = "ps-blitz-traits", path = "../ps-blitz/packages/blitz-traits" }
+dioxus-native = { path = "../ps-blitz/packages/dioxus-native", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 endpoint-libs = { path = "../endpoint-libs", default-features = false, features = ["agent-control"] }
@@ -35,7 +35,7 @@ anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-a
 # `filters` is off by default in the backend, and with it off `push_layer`
 # discards both the element's `filter:` and its `backdrop-filter:`.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea", features = ["filters"] }
-blitz-paint = { path = "../blitz-rust/packages/blitz-paint" }
+blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
 png = "=0.18.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
@@ -51,6 +51,6 @@ codegen-units = 1
 # section is ignored when chuzz is the root. Its blitz-dom calls
 # `usvg::Tree::intrinsic_dimensions`, which exists only on this branch, so
 # without this the engine does not compile here even though it compiles there.
-# Keep this in step with `blitz-rust/Cargo.toml`'s `[patch.crates-io]`.
+# Keep this in step with `ps-blitz/Cargo.toml`'s `[patch.crates-io]`.
 [patch.crates-io]
 usvg = { git = "https://github.com/DioxusLabs/resvg", branch = "devin/1785858271-intrinsic-dimensions" }
