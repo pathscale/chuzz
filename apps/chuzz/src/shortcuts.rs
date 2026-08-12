@@ -49,6 +49,13 @@ pub fn resolve(
         return None;
     }
 
+    // F5 carries no modifier, and every branch below requires one, so reload
+    // was reachable only as Cmd+R. Handled before the `!meta` gate because that
+    // gate is what made pressing F5 do nothing at all.
+    if code == "F5" || key == "F5" {
+        return Some(Shortcut::Reload);
+    }
+
     // Ctrl+T is AgencyZero's webview binding for a new project; here, a new tab.
     if ctrl && !meta && !shift && (key == "t" || code == "KeyT") {
         return Some(Shortcut::NewTab);
@@ -163,6 +170,28 @@ mod tests {
         assert_eq!(
             resolve("t", "KeyT", false, true, false, false),
             Some(Shortcut::NewTab)
+        );
+    }
+
+    #[test]
+    fn f5_reloads_without_a_modifier() {
+        // The gate below this in `resolve` returns `None` unless Cmd is held, so
+        // a bare F5 resolved to nothing and the key did nothing at all. Reload
+        // was reachable only as Cmd+R.
+        assert_eq!(
+            resolve("", "F5", false, false, false, false),
+            Some(Shortcut::Reload)
+        );
+        // Still reload when a stray modifier rides along, except Alt, which
+        // `resolve` refuses wholesale.
+        assert_eq!(
+            resolve("", "F5", false, false, false, true),
+            Some(Shortcut::Reload)
+        );
+        // And the chord it used to be is untouched.
+        assert_eq!(
+            resolve("r", "KeyR", true, false, false, false),
+            Some(Shortcut::Reload)
         );
     }
 

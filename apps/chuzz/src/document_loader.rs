@@ -269,6 +269,14 @@ pub struct DocumentLoader {
     /// Bumped by `reload`. The tab's load resource reads it, so reloading the
     /// same URL still re-runs the fetch.
     pub reload_generation: Signal<u64>,
+    /// Set by `reload`, consumed by the next top-level fetch.
+    ///
+    /// Bumping the generation only re-runs the fetch; it does not make that
+    /// fetch reach the network. `blitz-net` is built with the `cache` feature at
+    /// `CacheMode::Default`, so a still-fresh entry is served without
+    /// contacting the server and a reload could not pick up a new deploy until
+    /// the cached copy expired on its own.
+    revalidate_next_load: Mutex<bool>,
     current_abort: Mutex<Option<AbortController>>,
 }
 
@@ -280,14 +288,27 @@ impl DocumentLoader {
             status: Signal::new(LoadStatus::Idle),
             history,
             reload_generation: Signal::new(0),
+            revalidate_next_load: Mutex::new(false),
             current_abort: Mutex::new(None),
         }
     }
 
     pub fn reload(&self) {
         self.abort_current();
+        if let Ok(mut flag) = self.revalidate_next_load.lock() {
+            *flag = true;
+        }
         let mut generation = self.reload_generation;
         *generation.write() += 1;
+    }
+
+    /// Whether the load about to start was asked for by the user, clearing the
+    /// request so an ordinary navigation afterwards uses the cache normally.
+    fn take_revalidate(&self) -> bool {
+        self.revalidate_next_load
+            .lock()
+            .map(|mut flag| std::mem::replace(&mut *flag, false))
+            .unwrap_or(false)
     }
 
     pub fn reload_generation(&self) -> u64 {
@@ -343,10 +364,18 @@ impl DocumentLoader {
         }
 
         let signal = self.install_abort();
-        let response = self
-            .net_provider
-            .fetch_async(req.signal(signal.clone()))
-            .await;
+        // A reload means "check with the server", which is what every browser
+        // does and what the cache would otherwise prevent. `no-cache` asks for
+        // revalidation rather than refusing the cache outright, so an unchanged
+        // page still costs a 304 and not a full re-download.
+        let mut req = req.signal(signal.clone());
+        if self.take_revalidate() {
+            req.headers.insert(
+                blitz_traits::net::http::header::CACHE_CONTROL,
+                blitz_traits::net::http::HeaderValue::from_static("no-cache"),
+            );
+        }
+        let response = self.net_provider.fetch_async(req).await;
 
         match response {
             Ok((resolved_url, bytes)) => {
