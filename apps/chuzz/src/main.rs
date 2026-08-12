@@ -157,15 +157,26 @@ fn app() -> Element {
     let startup_url = use_hook(|| try_consume_context::<StartupUrl>().and_then(|ctx| ctx.0));
     let net_provider = use_context::<Arc<NetProvider>>();
     let shortcut_net_provider = net_provider.clone();
-    // Opening on a blank page is a request to go somewhere, and the only thing
-    // that can say where is the address bar — so focus it, exactly as opening a
-    // new tab does. Starting unfocused meant every launch began with a click
-    // that had only one sensible target.
+    // Wanted: `startup_url.is_none()`, so opening on a blank page puts the caret
+    // where the only useful thing to do is type. It cannot be done from here yet
+    // and the attempt panics on every launch, so it is left off deliberately
+    // rather than left broken.
     //
-    // Conditional on there being no startup URL: naming a page on the command
-    // line is already an answer to "where to", and stealing focus from it would
-    // put the caret in front of a page the user asked for.
-    let focus_address_bar = use_signal(|| startup_url.is_none());
+    // `MountedData::set_focus` takes `doc_mut()` synchronously
+    // (`dioxus-native-dom/src/events.rs:243`), and `DioxusDocument::poll` drives
+    // task wakeups while the document is borrowed. A `spawn`ed focus request
+    // therefore runs inside that borrow and hits `RefCell already borrowed` at
+    // `events.rs:158`. Deferring further does not help: every later tick is also
+    // inside a poll.
+    //
+    // Which means this is not a startup bug. The same path serves Cmd+D and
+    // Cmd+L, so those focus requests are only safe when a poll does not happen
+    // to hold the borrow — a plausible explanation for Cmd+D being reported as
+    // unreliable. The fix belongs in the engine: `set_focus` should record the
+    // request and let it be applied after the borrow is released, next to
+    // `flush_queued_mounted_events`, which is what the `TODO: queue focus events
+    // somehow` beside it is already asking for.
+    let focus_address_bar = use_signal(|| false);
 
     let url_input_value = use_signal(String::new);
     // Collapsed by default: the page gets the full width until asked otherwise.
