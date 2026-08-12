@@ -2,11 +2,26 @@ import { defineConfig } from "@rsbuild/core";
 import { pluginBabel } from "@rsbuild/plugin-babel";
 import { pluginSolid } from "@rsbuild/plugin-solid";
 import ForkTsCheckerWebpackPlugin from "fork-ts-checker-webpack-plugin";
+import { pluginSolidLayoutsApplication } from "../../../../solid-layouts/packages/solid-layouts-oxc/application.js";
 
 export default defineConfig({
-  plugins: [pluginBabel({ include: /\.(?:jsx|tsx|ts)$/ }), pluginSolid()],
+  plugins: [
+    pluginSolidLayoutsApplication({
+      layouts: [
+        {
+          module: "@pathscale/test-ui",
+          root: "../../../../solid-layouts/Test-UI/bundle",
+        },
+      ],
+      runtime: "../../../../solid-layouts/packages/solid-layouts/src/index.ts",
+    }),
+    pluginBabel({ include: /\.(?:jsx|tsx|ts)$/ }),
+    pluginSolid(),
+  ],
   resolve: {
     alias: {
+      "@pathscale/test-ui": "../../../../solid-layouts/Test-UI/bundle/index.ts",
+      "solid-layouts$": "../../../../solid-layouts/packages/solid-layouts/src/index.ts",
       "~": "./src",
     },
   },
