@@ -119,11 +119,10 @@ Chuzz path-depends on `../ps-blitz`, which on a developer's machine is a local
 checkout and in CI is a fresh clone of `pathscale/ps-blitz` at the ref named in
 [`release.yml`](../.github/workflows/release.yml).
 
-**Those are not the same engine today.** The local checkout sits on a branch that
-is 58 commits behind that repository's master, with uncommitted changes on top.
-Until those are reconciled, a CI-built Chuzz.app is not the binary anyone has
-been testing. See
-[HANDOVER-24x-rendering.md](HANDOVER-24x-rendering.md#the-engine-tree-has-forked-and-that-needs-a-decision).
+The release workflow pins the exact tested engine commit rather than a branch.
+Move that SHA deliberately when adopting engine work, and test the render corpus
+before releasing. A floating `master` would let the same Chuzz version produce
+different binaries on different days.
 
 ## What buying a Developer ID would change
 
