@@ -1,4 +1,4 @@
-import { Icon } from "@pathscale/test-ui";
+import { Button, Icon } from "@pathscale/test-ui";
 import { Chip, Flex } from "@pathscale/ui";
 import { For, Show, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
@@ -90,8 +90,10 @@ function Section(props: { section: InspectorSection; isOpen: boolean }): JSX.Ele
 
   return (
     <div class="chrome-section" data-open={props.isOpen ? "" : undefined}>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        fullWidth
         class="chrome-section-trigger"
         aria-expanded={props.isOpen}
         onClick={toggle}
@@ -113,7 +115,7 @@ function Section(props: { section: InspectorSection; isOpen: boolean }): JSX.Ele
           width={16}
           height={16}
         />
-      </button>
+      </Button>
       <Show when={props.isOpen}>
         <div class="chrome-section-body">
           <For each={props.section.rows}>
