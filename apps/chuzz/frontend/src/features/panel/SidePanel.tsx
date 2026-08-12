@@ -1,4 +1,5 @@
-import { Chip, Flex, Icon } from "@pathscale/ui";
+import { Icon } from "@pathscale/test-ui";
+import { Chip, Flex } from "@pathscale/ui";
 import { For, Show, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
