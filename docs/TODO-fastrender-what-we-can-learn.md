@@ -56,7 +56,7 @@ Everything here is a real gap in code we own.
 ### 0.1 `backdrop-filter` is not blocked. [TODO.md](TODO.md) item 1 is wrong
 
 That item calls `backdrop-filter` "the biggest single visual gap on any modern site" and
-says it is **"not fixable in this repo or in `blitz-rust`. Needs a change in the anyrender
+says it is **"not fixable in this repo or in `ps-blitz`. Needs a change in the anyrender
 backends, which are crates.io releases."**
 
 Both halves are wrong, and checking took two minutes:

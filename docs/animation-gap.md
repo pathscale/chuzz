@@ -1,10 +1,10 @@
 # The animation gap, for a browser
 
-Written 2026-08-11, from reading the `blitz-rust` checkout this repository builds against,
+Written 2026-08-11, from reading the `ps-blitz` checkout this repository builds against,
 Blink at
 [`7e6a84f`](https://github.com/chromium/chromium/tree/7e6a84f5165fd617dbf3d032f755e11804bf8ff6),
 and a survey of the Rust animation crate ecosystem. Engine line numbers are from
-`blitz-rust/packages/...`, which differs from AgencyZero's `ps-blitz-render` checkout.
+`ps-blitz/packages/...`, which differs from AgencyZero's `ps-blitz-render` checkout.
 **Nothing here was measured.**
 
 AgencyZero has the same engine finding at `agencyzero/docs/animation-gap.md`. **The
@@ -25,7 +25,7 @@ Two facts make that worse than it sounds:
 
 1. **The flag is document-wide.** `has_active_animations` is computed as
    `sets.values().any(|state| state.needs_animation_ticks())`
-   (`blitz-rust/packages/blitz-dom/src/stylo.rs:171`), and `is_animating()`
+   (`ps-blitz/packages/blitz-dom/src/stylo.rs:171`), and `is_animating()`
    (`document.rs:1640` area) ORs it with canvas, subdocuments, custom widgets and scroll.
    One animating element anywhere makes the entire document animating.
 2. **There is no viewport or offscreen gating in this path.** An animation on an element
@@ -64,7 +64,7 @@ suggests.
 Stylo's CSS animation path already sets the narrowest possible hint on animating nodes:
 
 ```rust
-// blitz-rust/packages/blitz-dom/src/stylo.rs:100
+// ps-blitz/packages/blitz-dom/src/stylo.rs:100
 self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
 ```
 

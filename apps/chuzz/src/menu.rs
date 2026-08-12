@@ -20,11 +20,23 @@ use muda::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
 /// Must run after the event loop exists, since attaching needs a live NSApp.
 /// Failures are swallowed: a browser without a menu is still a browser, and a
 /// panic here would take the window with it.
-pub fn install() {
+///
+/// **The returned `Menu` must be held for as long as the app runs.** Dropping
+/// it does not remove the menu — NSApp keeps the NSMenu it was handed — it just
+/// frees everything the live menu still points at. Two pointers go stale at
+/// once: `NSMenu`'s delegate is a *weak* reference, which is the entire reason
+/// `muda`'s `NsMenuRef` holds a `Retained<MudaMenuDelegate>` beside it, so
+/// opening the menu messages a freed object; and each item's native class
+/// stores `Cell<*const MenuChild>` as an ivar, a raw pointer into the `Rc` this
+/// tree owns, so clicking About dereferences freed memory. Building this in
+/// locals and returning `()` was exactly that bug.
+#[must_use = "dropping the menu frees what NSApp still points at, and the next \
+              click lands in freed memory"]
+pub fn install() -> Menu {
     let menu = Menu::new();
     let app = Submenu::new("Chuzz", true);
     if menu.append(&app).is_err() {
-        return;
+        return menu;
     }
 
     let about = PredefinedMenuItem::about(Some("About Chuzz"), Some(metadata()));
@@ -39,6 +51,10 @@ pub fn install() {
 
     #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
+
+    // Cloning is how the tree stays reachable: `Menu` is an `Rc` handle, and
+    // the root holds the submenu's `Rc`, which holds each item's.
+    menu
 }
 
 /// What the About panel shows.

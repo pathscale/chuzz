@@ -2,9 +2,9 @@
 
 Written 2026-08-11, from reading Blink at
 [`7e6a84f`](https://github.com/chromium/chromium/tree/7e6a84f5165fd617dbf3d032f755e11804bf8ff6),
-Stylo 0.20.0 in the local cargo registry, and the `blitz-rust` checkout this repository
+Stylo 0.20.0 in the local cargo registry, and the `ps-blitz` checkout this repository
 builds against. All line numbers below are from **our** checkout at
-`../blitz-rust/packages/blitz-dom/src/`, which differs slightly from the sibling
+`../ps-blitz/packages/blitz-dom/src/`, which differs slightly from the sibling
 `ps-blitz-render` tree. **Nothing here was measured or built.**
 
 Chuzz is 3,522 lines of browser policy on top of Blitz, so almost everything here is an
@@ -25,7 +25,7 @@ targeting work on any page built with web components.
 **Ours.** The Stylo integration declares shadow roots and then refuses:
 
 ```rust
-// blitz-rust/packages/blitz-dom/src/stylo.rs:224 and :231
+// ps-blitz/packages/blitz-dom/src/stylo.rs:224 and :231
 fn host(&self) -> ... { todo!("Shadow roots not implemented") }
 fn style_data<'b>(&self) -> ... { todo!("Shadow roots not implemented") }
 ```
@@ -72,7 +72,7 @@ with `wholeSubtreeInvalid` as the explicit fallback. Their doc names the alterna
 | Snapshot-driven processor | `invalidation/element/state_and_attributes.rs:282`, `:314` |
 | Entry point | `invalidation/stylesheets.rs:252` |
 
-**And we already call it.** `blitz-rust/packages/blitz-dom/src/stylo.rs:77`:
+**And we already call it.** `ps-blitz/packages/blitz-dom/src/stylo.rs:77`:
 
 ```rust
 self.stylist.flush(&guards).process_style(root, Some(&self.snapshots));
@@ -82,7 +82,7 @@ self.stylist.flush(&guards).process_style(root, Some(&self.snapshots));
 
 - `snapshot_node` sets `class_changed: true`, `id_changed: true` and
   `other_attributes_changed: true` unconditionally
-  (`blitz-rust/packages/blitz-dom/src/document.rs:1294-1296`). Those are the exact flags
+  (`ps-blitz/packages/blitz-dom/src/document.rs:1294-1296`). Those are the exact flags
   `state_and_attributes.rs:282` and `:314` read to choose which maps to walk, so every
   mutation forces the union of all of them.
 - `set_attribute` adds `RestyleHint::restyle_subtree()` on the node
@@ -125,7 +125,7 @@ and a `UniqueElementData` is created only when an element actually mutates
 ([`:219`](https://github.com/chromium/chromium/blob/7e6a84f5165fd617dbf3d032f755e11804bf8ff6/third_party/blink/renderer/core/dom/element_data.h#L219)).
 
 **Ours.** `Attribute` is `{ name: QualName, value: String }` and `Attributes` wraps a plain
-`Vec<Attribute>` (`blitz-rust/packages/blitz-dom/src/node/attributes.rs`). Every element
+`Vec<Attribute>` (`ps-blitz/packages/blitz-dom/src/node/attributes.rs`). Every element
 owns a separate heap `String` per attribute, with no sharing and no copy-on-write. A page
 with a thousand table rows carrying identical `class` attributes allocates a thousand
 copies of the same string.

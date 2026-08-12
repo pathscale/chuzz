@@ -107,9 +107,9 @@ jobs:
           BLITZ_REF: master
         run: |
           cd ..
-          git clone --filter=blob:none https://github.com/pathscale/ps-blitz.git blitz-rust
-          git -C blitz-rust checkout "$BLITZ_REF"
-          git -C blitz-rust log -1 --format='engine at %H %s'
+          git clone --filter=blob:none https://github.com/pathscale/ps-blitz.git ps-blitz
+          git -C ps-blitz checkout "$BLITZ_REF"
+          git -C ps-blitz log -1 --format='engine at %H %s'
           git clone --depth 1 https://github.com/pathscale/endpoint-libs.git endpoint-libs
 
       # For `bunx @tauri-apps/cli signer sign` below. The runner has no bun

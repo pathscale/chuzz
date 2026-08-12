@@ -147,8 +147,12 @@ fn app() -> Element {
     // and that only exists once `launch_cfg` has created the event loop. A
     // `use_hook` runs on the main thread on first render, which is the first
     // moment both are true.
+    //
+    // The handle it returns is kept, not discarded: the hook outlives the app,
+    // and dropping the menu leaves NSApp holding pointers into freed memory.
+    // See `menu::install`.
     #[cfg(target_os = "macos")]
-    use_hook(menu::install);
+    let _menu = use_hook(menu::install);
 
     let startup_url = use_hook(|| try_consume_context::<StartupUrl>().and_then(|ctx| ctx.0));
     let net_provider = use_context::<Arc<NetProvider>>();

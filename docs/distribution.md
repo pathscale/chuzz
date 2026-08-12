@@ -115,7 +115,7 @@ never touches it again.
 
 ## The engine the release builds against
 
-Chuzz path-depends on `../blitz-rust`, which on a developer's machine is a local
+Chuzz path-depends on `../ps-blitz`, which on a developer's machine is a local
 checkout and in CI is a fresh clone of `pathscale/ps-blitz` at the ref named in
 [`release.yml`](../.github/workflows/release.yml).
 
