@@ -59,9 +59,11 @@
     background: var(--color-base-200);
   }
 
-  .chrome-nav-back {
+  .button.chrome-nav-back {
     width: 30px;
     height: 30px;
+    min-height: 0;
+    padding-inline: 0;
     line-height: 30px;
     text-align: center;
     border: 0;
@@ -73,7 +75,7 @@
     cursor: pointer;
   }
 
-  .chrome-nav-back:hover {
+  .button.chrome-nav-back:hover {
     background: var(--color-az-hover);
     color: var(--color-az-body);
   }
@@ -136,9 +138,11 @@
 
   /* Always mounted, only faded: showing it on hover by adding the element
      would resize the pill under the pointer. */
-  .chrome-tab-close {
+  .button.chrome-tab-close {
     width: 18px;
     height: 18px;
+    min-height: 0;
+    padding-inline: 0;
     line-height: 18px;
     text-align: center;
     border: 0;
@@ -151,23 +155,25 @@
     cursor: pointer;
   }
 
-  .chrome-tab-close[data-visible] {
+  .button.chrome-tab-close[data-visible] {
     opacity: 1;
   }
 
-  .chrome-tab:hover .chrome-tab-close {
+  .chrome-tab:hover .button.chrome-tab-close {
     opacity: 1;
   }
 
-  .chrome-tab-close:hover {
+  .button.chrome-tab-close:hover {
     background: var(--color-az-active);
     color: var(--color-az-title);
   }
 
   /* Dashed outline: an empty slot waiting to be filled. */
-  .chrome-new-tab {
+  .button.chrome-new-tab {
     width: 34px;
     height: 34px;
+    min-height: 0;
+    padding-inline: 0;
     line-height: 32px;
     text-align: center;
     border-radius: 17px;
@@ -179,14 +185,16 @@
     flex-shrink: 0;
   }
 
-  .chrome-new-tab:hover {
+  .button.chrome-new-tab:hover {
     border-color: var(--color-primary);
     color: var(--color-az-body);
   }
 
-  .chrome-titlebar-button {
+  .button.chrome-titlebar-button {
     width: 32px;
     height: 32px;
+    min-height: 0;
+    padding-inline: 0;
     line-height: 30px;
     text-align: center;
     border-radius: 16px;
@@ -198,7 +206,7 @@
     cursor: pointer;
   }
 
-  .chrome-titlebar-button:hover {
+  .button.chrome-titlebar-button:hover {
     background: var(--color-az-hover);
     color: var(--color-az-body);
   }
@@ -363,13 +371,14 @@
     overflow: hidden;
   }
 
-  .chrome-section-trigger {
+  .button.chrome-section-trigger {
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
     padding: 10px 12px;
     border: 0;
+    border-radius: 0;
     background: transparent;
     color: var(--color-az-strong);
     font-size: 12.5px;
@@ -378,7 +387,7 @@
     text-align: left;
   }
 
-  .chrome-section-trigger:hover {
+  .button.chrome-section-trigger:hover {
     background: var(--color-az-hover);
   }
 

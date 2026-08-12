@@ -20,7 +20,6 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@pathscale/test-ui": "../../../../solid-layouts/Test-UI/bundle/index.ts",
       "solid-layouts$": "../../../../solid-layouts/packages/solid-layouts/src/index.ts",
       "~": "./src",
     },
