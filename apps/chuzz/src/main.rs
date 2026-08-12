@@ -157,7 +157,15 @@ fn app() -> Element {
     let startup_url = use_hook(|| try_consume_context::<StartupUrl>().and_then(|ctx| ctx.0));
     let net_provider = use_context::<Arc<NetProvider>>();
     let shortcut_net_provider = net_provider.clone();
-    let focus_address_bar = use_signal(|| false);
+    // Opening on a blank page is a request to go somewhere, and the only thing
+    // that can say where is the address bar — so focus it, exactly as opening a
+    // new tab does. Starting unfocused meant every launch began with a click
+    // that had only one sensible target.
+    //
+    // Conditional on there being no startup URL: naming a page on the command
+    // line is already an answer to "where to", and stealing focus from it would
+    // put the caret in front of a page the user asked for.
+    let focus_address_bar = use_signal(|| startup_url.is_none());
 
     let url_input_value = use_signal(String::new);
     // Collapsed by default: the page gets the full width until asked otherwise.
