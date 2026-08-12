@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use blitz_dom::{DocumentConfig, FontContext};
 use blitz_html::{HtmlDocument, HtmlProvider};
-use blitz_traits::net::{AbortController, AbortSignal, Request};
+use blitz_traits::net::{
+    AbortController, AbortSignal, NetHandler, NetProvider as NetProviderTrait, Request,
+};
 use blitz_traits::shell::ShellProvider;
 use dioxus_native::{SubDocumentAttr, prelude::*};
 
@@ -21,6 +23,35 @@ use blitz_traits::net::Url;
 use std::collections::HashMap;
 
 pub type NetProvider = blitz_net::Provider;
+
+/// A document-scoped provider used for a user-requested reload.
+///
+/// The top-level HTML request is made by `DocumentLoader`, while stylesheets,
+/// images, fonts and script-driven fetches are made later through the provider
+/// stored in `DocumentConfig`. Revalidating only the first request can combine
+/// fresh HTML with stale assets, so every request belonging to the replacement
+/// document must carry the same cache directive.
+struct RevalidatingNetProvider {
+    inner: Arc<dyn NetProviderTrait>,
+}
+
+impl NetProviderTrait for RevalidatingNetProvider {
+    fn fetch(&self, doc_id: usize, mut request: Request, handler: Box<dyn NetHandler>) {
+        revalidate_request(&mut request);
+        self.inner.fetch(doc_id, request, handler);
+    }
+
+    fn is_noop(&self) -> bool {
+        self.inner.is_noop()
+    }
+}
+
+fn revalidate_request(request: &mut Request) {
+    request.headers.insert(
+        blitz_traits::net::http::header::CACHE_CONTROL,
+        blitz_traits::net::http::HeaderValue::from_static("no-cache"),
+    );
+}
 
 /// Shown when a page cannot be fetched at all (DNS failure, refused
 /// connection, TLS error). The message node is filled in from the real error.
@@ -337,10 +368,24 @@ impl DocumentLoader {
         signal
     }
 
-    fn doc_config(&self, base_url: Option<String>, signal: AbortSignal) -> DocumentConfig {
+    fn document_net_provider(&self, revalidate: bool) -> Arc<dyn NetProviderTrait> {
+        let inner = Arc::clone(&self.net_provider) as Arc<dyn NetProviderTrait>;
+        if revalidate {
+            Arc::new(RevalidatingNetProvider { inner })
+        } else {
+            inner
+        }
+    }
+
+    fn doc_config(
+        &self,
+        base_url: Option<String>,
+        signal: AbortSignal,
+        revalidate: bool,
+    ) -> DocumentConfig {
         DocumentConfig {
             base_url,
-            net_provider: Some(Arc::clone(&self.net_provider) as _),
+            net_provider: Some(self.document_net_provider(revalidate)),
             navigation_provider: Some(Arc::new(TabNavProvider {
                 history: self.history,
             })),
@@ -355,7 +400,7 @@ impl DocumentLoader {
     pub async fn load(&self, req: Request) -> LoadedDocument {
         if req.url.scheme() == "about" {
             let signal = self.install_abort();
-            let config = self.doc_config(None, signal);
+            let config = self.doc_config(None, signal, false);
             let document = HtmlDocument::from_html(BLANK_HTML, config).into_inner();
             return LoadedDocument {
                 document: SubDocumentAttr::new(document),
@@ -368,12 +413,10 @@ impl DocumentLoader {
         // does and what the cache would otherwise prevent. `no-cache` asks for
         // revalidation rather than refusing the cache outright, so an unchanged
         // page still costs a 304 and not a full re-download.
+        let revalidate = self.take_revalidate();
         let mut req = req.signal(signal.clone());
-        if self.take_revalidate() {
-            req.headers.insert(
-                blitz_traits::net::http::header::CACHE_CONTROL,
-                blitz_traits::net::http::HeaderValue::from_static("no-cache"),
-            );
+        if revalidate {
+            revalidate_request(&mut req);
         }
         let response = self.net_provider.fetch_async(req).await;
 
@@ -384,11 +427,11 @@ impl DocumentLoader {
                 } else {
                     decode_body(&bytes)
                 };
-                let config = self.doc_config(Some(resolved_url), signal.clone());
-                self.build_page(&html, config, &signal).await
+                let config = self.doc_config(Some(resolved_url), signal.clone(), revalidate);
+                self.build_page(&html, config, &signal, revalidate).await
             }
             Err(error) => {
-                let config = self.doc_config(None, signal);
+                let config = self.doc_config(None, signal, false);
                 let mut document = HtmlDocument::from_html(ERROR_HTML, config).into_inner();
                 if let Some(text_node) = document
                     .get_element_by_id("error")
@@ -416,6 +459,7 @@ impl DocumentLoader {
         html: &str,
         config: DocumentConfig,
         _signal: &AbortSignal,
+        _revalidate: bool,
     ) -> LoadedDocument {
         let document = HtmlDocument::from_html(html, config).into_inner();
         let title = document
@@ -441,6 +485,7 @@ impl DocumentLoader {
         html: &str,
         config: DocumentConfig,
         signal: &AbortSignal,
+        revalidate: bool,
     ) -> LoadedDocument {
         use blitz_dom::Document as _;
 
@@ -451,7 +496,10 @@ impl DocumentLoader {
             if scripts.contains_key(&url) {
                 continue;
             }
-            let request = Request::get(url.clone()).signal(signal.clone());
+            let mut request = Request::get(url.clone()).signal(signal.clone());
+            if revalidate {
+                revalidate_request(&mut request);
+            }
             if let Ok((_, bytes)) = self.net_provider.fetch_async(request).await {
                 scripts.insert(url, decode_body(&bytes));
             }
@@ -638,5 +686,48 @@ impl CapturedDocument {
 impl Drop for DocumentLoader {
     fn drop(&mut self) {
         self.abort_current();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingProvider {
+        cache_controls: Mutex<Vec<Option<String>>>,
+    }
+
+    impl NetProviderTrait for RecordingProvider {
+        fn fetch(&self, _doc_id: usize, request: Request, _handler: Box<dyn NetHandler>) {
+            let value = request
+                .headers
+                .get(blitz_traits::net::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            self.cache_controls.lock().unwrap().push(value);
+        }
+    }
+
+    struct IgnoreResponse;
+
+    impl NetHandler for IgnoreResponse {
+        fn bytes(self: Box<Self>, _resolved_url: String, _bytes: blitz_traits::net::Bytes) {}
+    }
+
+    #[test]
+    fn reload_provider_revalidates_document_subresources() {
+        let recorded = Arc::new(RecordingProvider::default());
+        let provider = RevalidatingNetProvider {
+            inner: Arc::clone(&recorded) as Arc<dyn NetProviderTrait>,
+        };
+        let url = blitz_traits::net::Url::parse("https://example.com/app.css").unwrap();
+
+        provider.fetch(7, Request::get(url), Box::new(IgnoreResponse));
+
+        assert_eq!(
+            recorded.cache_controls.lock().unwrap().as_slice(),
+            &[Some(String::from("no-cache"))]
+        );
     }
 }
