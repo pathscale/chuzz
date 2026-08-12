@@ -242,6 +242,7 @@ mod tests {
         let request = serde_json::to_string(&AgentControlRequest::Inspect {
             root: None,
             max_depth: 2,
+            include_attrs: crate::AttrScope::None,
         })
         .unwrap();
         client.send(WireMessage::Text(request)).await.unwrap();
