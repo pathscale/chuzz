@@ -2,9 +2,9 @@ import { createSignal, Show, type JSX } from "solid-js";
 import { PageArea } from "~/features/page/PageArea";
 import { SidePanel } from "~/features/panel";
 import { SettingsPanel } from "~/features/settings/SettingsPanel";
-import { StatusStrip } from "~/features/status/StatusStrip";
+import { StatusStrip } from "~/features/status";
 import { TitleBar } from "~/features/tabs/TitleBar";
-import { Toolbar } from "~/features/toolbar/Toolbar";
+import { Toolbar } from "~/features/toolbar";
 import { BrowserProvider, useBrowser } from "~/stores/browser";
 
 /**

@@ -268,7 +268,11 @@
 
   /* A refused address is not a failed navigation, it is a string the shell
      declined to interpret. Saying so beats looking inert. */
-  .chrome-url-bar[data-refused] {
+  /* Both, deliberately. The recipe reports `refused` in both directions
+     rather than omitting the attribute when false, so a bare-presence
+     selector would match an idle field. */
+  .chrome-url-bar[data-refused="true"],
+  .chrome-url-bar--refused {
     border-color: var(--color-error);
   }
 
@@ -433,7 +437,11 @@
     flex-shrink: 0;
   }
 
-  .chrome-status-dot[data-loading] {
+  /* Both selectors, deliberately. The recipe emits `data-loading` on every
+     slot and a modifier class on the dot; keeping the original attribute rule
+     means this file did not have to change when the markup was ported. */
+  .chrome-status-dot[data-loading="true"],
+  .chrome-status-dot--loading {
     background: var(--color-primary);
   }
 
