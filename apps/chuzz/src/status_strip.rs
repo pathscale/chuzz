@@ -27,6 +27,18 @@ pub fn StatusStrip(is_loading: bool, current_url: String, tab_count: usize) -> E
             span { "18 nodes" }
             span { "\u{b7}" }
             span { class: "status-accent", "1.2 kB" }
+            span { "\u{b7}" }
+            // Which build this is, in the window itself.
+            //
+            // AgencyZero reports the same three facts through an About menu
+            // item; there is no menu bar here, so they live in the strip where
+            // they cost no click. The version is bumped by hand and a stale
+            // bundle looks identical to a fresh one, so the sha and the
+            // timestamp are what actually answer "am I testing the fix?".
+            span {
+                title: "built {env!(\"CHUZZ_BUILT_AT\")}",
+                "v{env!(\"CARGO_PKG_VERSION\")} {env!(\"CHUZZ_GIT_SHA\")}"
+            }
         }
     )
 }

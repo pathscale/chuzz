@@ -24,6 +24,8 @@ mod document_loader;
 #[cfg(feature = "capture")]
 mod dump;
 mod history;
+#[cfg(target_os = "macos")]
+mod menu;
 mod nav;
 mod shortcuts;
 mod side_panel;
@@ -140,6 +142,14 @@ fn app() -> Element {
     // `Url::parse` of a constant literal cannot fail.
     #[allow(clippy::expect_used)]
     let new_tab_url = use_hook(|| Url::parse(NEW_TAB_URL).expect("blank URL is a valid constant"));
+
+    // Built here rather than in `main`: attaching a menu needs a live NSApp,
+    // and that only exists once `launch_cfg` has created the event loop. A
+    // `use_hook` runs on the main thread on first render, which is the first
+    // moment both are true.
+    #[cfg(target_os = "macos")]
+    use_hook(menu::install);
+
     let startup_url = use_hook(|| try_consume_context::<StartupUrl>().and_then(|ctx| ctx.0));
     let net_provider = use_context::<Arc<NetProvider>>();
     let shortcut_net_provider = net_provider.clone();
@@ -156,9 +166,14 @@ fn app() -> Element {
         Signal::new(open_tab(tabs, first_url, net_provider.clone()).tab_id())
     });
 
+    let mut focus_new_tab_bar = focus_address_bar;
     let open_new_tab = use_callback(move |url: Url| {
         let opened = open_tab(tabs, url, net_provider.clone());
         active_tab_id.set(opened.tab_id());
+        // A new tab is a request to go somewhere, and the only thing that can
+        // say where is the address bar. Opening one focused means typing works
+        // immediately, instead of needing a click first.
+        focus_new_tab_bar.set(true);
     });
 
     // The control socket is opened once and polled on a timer.

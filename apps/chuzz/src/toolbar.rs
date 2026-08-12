@@ -2,7 +2,7 @@
 
 use dioxus_native::prelude::*;
 
-use crate::nav::request_from_input;
+use crate::nav::{NEW_TAB_URL, request_from_input};
 use crate::tab::{Tab, TabId, TabStoreImplExt, active_tab};
 
 fn is_enter(key: &Key) -> bool {
@@ -39,7 +39,15 @@ pub fn Toolbar(
     // the current URL, and the field could never hold anything typed.
     let current_url = active_tab(tabs, active_tab_id()).current_url().to_string();
     use_effect(use_reactive!(|current_url| {
-        *url_input_value.write_unchecked() = current_url;
+        // A blank tab shows a blank bar. `about:blank` is the truthful answer to
+        // "what is this tab showing", but it is not an address anyone typed or
+        // wants to keep, and leaving it there means every new tab starts by
+        // selecting and deleting it.
+        *url_input_value.write_unchecked() = if current_url == NEW_TAB_URL {
+            String::new()
+        } else {
+            current_url
+        };
     }));
 
     let tab = active_tab(tabs, active_tab_id());
