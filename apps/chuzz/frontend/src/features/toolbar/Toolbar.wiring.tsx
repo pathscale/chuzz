@@ -1,10 +1,12 @@
-import type { JSX } from "solid-js";
+import { defineComponent } from "solid-layouts";
 import { ToolbarLayout } from "./Toolbar.layout";
+import { toolbar } from "./Toolbar.recipe";
 import { createToolbar } from "./toolbar";
 
-/** Build the model in the component body, hand it to the layout. Generated,
- * once the generator exists. */
-export function Toolbar(): JSX.Element {
-  const model = createToolbar();
-  return <ToolbarLayout model={model} />;
-}
+/** Generated, once the generator exists. */
+export const Toolbar = defineComponent({
+  recipe: toolbar,
+  name: "Toolbar",
+  setup: createToolbar as never,
+  layout: ToolbarLayout as never,
+});

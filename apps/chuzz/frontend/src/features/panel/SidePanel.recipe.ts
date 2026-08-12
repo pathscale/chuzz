@@ -21,6 +21,10 @@ export const sidePanel = recipe({
   },
   state: {
     collapsed: { true: { root: "chrome-side-panel--collapsed" } },
+    // Values the layout reads, not classes. `model` is absent: it carries the
+    // per-section handlers, and a declared state key would be called rather
+    // than passed through.
+    sections: {},
   },
 });
 

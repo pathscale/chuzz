@@ -56,16 +56,25 @@ const SECTIONS: InspectorSection[] = [
 export function createSidePanel() {
   const browser = useBrowser();
 
+  const model = {
+    isOpen: (key: string) =>
+      Boolean(browser.state.panel.sections[key as keyof PanelSections]),
+    toggle: (key: string) => browser.toggleSection(key as keyof PanelSections),
+  };
+
   return {
     // A `state` key of the `sidePanel` recipe, so it reaches the class map by
     // name rather than by a hand-written `data-collapsed` on one element.
     collapsed: () => browser.state.panel.collapsed,
     sections: () => SECTIONS,
-    isOpen: (key: string) =>
-      Boolean(browser.state.panel.sections[key as keyof PanelSections]),
-    toggle: (key: string) =>
-      browser.toggleSection(key as keyof PanelSections),
+    // The per-section helpers, handed over as the object rather than an
+    // accessor to it. Only names the recipe declares as state are unwrapped,
+    // so an accessor here would arrive as the function itself.
+    model,
   };
 }
 
-export type SidePanelModel = ReturnType<typeof createSidePanel>;
+export type SidePanelModel = {
+  isOpen: (key: string) => boolean;
+  toggle: (key: string) => void;
+};

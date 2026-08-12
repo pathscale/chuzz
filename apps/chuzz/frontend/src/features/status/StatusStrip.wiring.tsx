@@ -1,10 +1,12 @@
-import type { JSX } from "solid-js";
+import { defineComponent } from "solid-layouts";
 import { StatusStripLayout } from "./StatusStrip.layout";
+import { statusStrip } from "./StatusStrip.recipe";
 import { createStatusStrip } from "./statusStrip";
 
-/** Build the model in the component body, hand it to the layout. Generated,
- * once the generator exists. */
-export function StatusStrip(): JSX.Element {
-  const model = createStatusStrip();
-  return <StatusStripLayout model={model} />;
-}
+/** Generated, once the generator exists. */
+export const StatusStrip = defineComponent({
+  recipe: statusStrip,
+  name: "StatusStrip",
+  setup: createStatusStrip as never,
+  layout: StatusStripLayout as never,
+});

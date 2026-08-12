@@ -20,8 +20,15 @@ export const statusStrip = recipe({
   },
   state: {
     // Reaches the dot's class and, because state mirrors to every slot, puts
-    // `data-loading` on the root as well. The existing rule
-    // `.chrome-status-dot[data-loading]` keeps working unchanged.
+    // `data-loading` on the root as well. The existing rule pins `="true"`,
+    // since a recipe reports both directions rather than omitting the
+    // attribute when false.
     loading: { true: { dot: "chrome-status-dot--loading" } },
+    // Read by the layout rather than turned into classes. Declaring them keeps
+    // the readout on `p` where a layout can reach it without a `model` prop.
+    url: {},
+    tabCount: {},
+    nodeCount: {},
+    transferred: {},
   },
 });

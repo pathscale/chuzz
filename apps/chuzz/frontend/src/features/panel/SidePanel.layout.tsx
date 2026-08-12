@@ -1,4 +1,5 @@
 import { Chip, Icon } from "@pathscale/ui";
+import type { Layout } from "solid-layouts";
 import { For, Show, type JSX } from "solid-js";
 import { t } from "~/stores/i18n";
 import type { InspectorSection } from "~/types";
@@ -9,33 +10,28 @@ import type { SidePanelModel } from "./sidePanel";
  * The inspector's markup, and nothing else.
  *
  * Nothing here computes a class, writes a `data-` attribute by hand, or
- * decides anything. Every value arrives already resolved: the model from
+ * decides anything. Every value arrives already resolved: the readout from
  * `sidePanel.ts`, the attributes from the recipes.
  */
-
-export function SidePanelLayout(props: { model: SidePanelModel }): JSX.Element {
-  const slot = () => sidePanel.resolve({ collapsed: props.model.collapsed() });
-
-  return (
-    <Show
-      when={!props.model.collapsed()}
-      fallback={<div {...sidePanel.resolve({ collapsed: true }).root} />}
-    >
-      <div {...slot().root}>
-        <div {...slot().header!}>
-          <div {...slot().title!}>{t("chrome.inspector")}</div>
-        </div>
-        <div {...slot().scroll!}>
-          <For each={props.model.sections()}>
-            {(section) => (
-              <PanelSection section={section} model={props.model} />
-            )}
-          </For>
-        </div>
+export const SidePanelLayout: Layout<typeof sidePanel> = ({ slot }, props) => (
+  <Show
+    when={!props.collapsed}
+    fallback={<div {...sidePanel.resolve({ collapsed: true }).root} />}
+  >
+    <div {...slot.root}>
+      <div {...slot.header}>
+        <div {...slot.title}>{t("chrome.inspector")}</div>
       </div>
-    </Show>
-  );
-}
+      <div {...slot.scroll}>
+        <For each={props.sections as InspectorSection[]}>
+          {(section) => (
+            <PanelSection section={section} model={props.model as SidePanelModel} />
+          )}
+        </For>
+      </div>
+    </div>
+  </Show>
+);
 
 function PanelSection(props: {
   section: InspectorSection;
@@ -90,7 +86,6 @@ function PanelSection(props: {
 
 function PanelRow(props: { label: string; value: string }): JSX.Element {
   const slot = panelRow.resolve({});
-
   return (
     <div {...slot.root}>
       <span {...slot.label!}>{props.label}</span>
