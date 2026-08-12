@@ -35,7 +35,32 @@ pub struct ControlHandle {
 impl ControlHandle {
     /// Start the socket. Returns `None` when it cannot bind, which is not fatal:
     /// a browser without a control socket is still a browser.
+    /// Whether the control socket should exist at all.
+    ///
+    /// **Off unless asked for.** This socket lets any process running as you
+    /// drive the browser: synthesize keys and clicks, read the DOM, set field
+    /// values, relaunch and quit. It carries no authentication — `0o600` on the
+    /// socket is the whole authorization model — so a browser holding live
+    /// sessions should not open it merely because it started.
+    ///
+    /// AgencyZero is an agent app and enables its equivalent deliberately. A
+    /// browser is not, so this is opt-in.
+    ///
+    /// The environment variable is the interim control. It is meant to become a
+    /// Settings toggle persisted in WorkTable; this function is the single
+    /// place that decides, so that change lands here and nowhere else.
+    pub fn enabled() -> bool {
+        matches!(
+            std::env::var("CHUZZ_CONTROL").ok().as_deref(),
+            Some("1") | Some("true") | Some("on")
+        )
+    }
+
     pub fn start() -> Option<Self> {
+        if !Self::enabled() {
+            return None;
+        }
+
         let (sender, pending) = channel::<PendingRequest>();
         let sender: Arc<Sender<PendingRequest>> = Arc::new(sender);
 
