@@ -7,6 +7,8 @@
 //! The command and payload shapes deliberately match AgencyZero's Blitz
 //! control surface, so tooling written against that surface keeps working.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
@@ -20,10 +22,72 @@ pub const DIAGNOSTICS_TOOL: &str = "blitz.diagnostics";
 #[serde(tag = "command", content = "params", rename_all = "camelCase")]
 #[serde(rename_all_fields = "camelCase")]
 pub enum AgentControlRequest {
-    Inspect { root: Option<u64>, max_depth: u32 },
+    Inspect {
+        root: Option<u64>,
+        max_depth: u32,
+        /// Which attributes to report per node. Absent means `None`, so a
+        /// client written against the older shape sees exactly what it did
+        /// before and pays nothing for this field existing.
+        #[serde(default)]
+        include_attrs: AttrScope,
+    },
     Act(AgentAction),
     Relaunch,
     Quit,
+}
+
+/// How much of an element's attribute list to report.
+///
+/// `All` rather than `Semantic` is the right default for a caller that does not
+/// know yet what it needs: an allowlist is a guess about which attributes
+/// matter, and here a wrong guess is only correctable by rebuilding the
+/// browser. `Semantic` exists to cut noise once a caller knows, not to gate
+/// what is reachable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AttrScope {
+    /// Report no attributes. The default, and the pre-existing behaviour.
+    #[default]
+    None,
+    /// Every attribute the document holds on the element.
+    All,
+    /// State and accessibility only: see [`is_semantic_attr`].
+    Semantic,
+}
+
+/// Whether an attribute is part of the state-and-accessibility surface.
+///
+/// This is the set a client needs to tell one state of a component from
+/// another. `class` is in it because design systems put state there, and
+/// `data-*` because that is where component libraries mirror it for CSS to
+/// select on. Deliberately a free function, not a method, so the browser and
+/// any client apply the same rule.
+pub fn is_semantic_attr(name: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "class",
+        "id",
+        "role",
+        "type",
+        "name",
+        "value",
+        "href",
+        "src",
+        "for",
+        "placeholder",
+        "title",
+        "alt",
+        "disabled",
+        "checked",
+        "selected",
+        "readonly",
+        "required",
+        "multiple",
+        "hidden",
+        "open",
+        "tabindex",
+        "contenteditable",
+    ];
+    name.starts_with("data-") || name.starts_with("aria-") || NAMES.contains(&name)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,6 +207,20 @@ pub struct SemanticNode {
     /// on screen is indistinguishable from a missing file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ImageStatus>,
+    /// Attributes as the document holds them, per the request's [`AttrScope`].
+    ///
+    /// Empty unless asked for, and omitted from the wire entirely when empty:
+    /// on a content-heavy page a `class` per node dwarfs everything else in a
+    /// snapshot.
+    ///
+    /// Sorted rather than insertion-ordered so that two snapshots of the same
+    /// document compare equal, which is what makes an assertion over this
+    /// usable in a test.
+    ///
+    /// Keys are local names: an attribute's namespace prefix is dropped, so
+    /// `xlink:href` on inline SVG arrives as `href`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attrs: BTreeMap<String, String>,
 }
 
 /// What an image element resolved to.
@@ -228,6 +306,7 @@ mod tests {
         let encoded = serde_json::to_value(AgentControlRequest::Inspect {
             root: None,
             max_depth: 3,
+            include_attrs: AttrScope::None,
         })
         .unwrap();
         assert_eq!(encoded["params"]["maxDepth"], 3);
@@ -235,6 +314,81 @@ mod tests {
             encoded["params"].get("max_depth").is_none(),
             "snake_case leaked into the wire format"
         );
+    }
+
+    #[test]
+    fn an_inspect_without_include_attrs_still_decodes() {
+        // The compatibility guarantee: a client written against the older
+        // shape omits the field entirely, and must keep working.
+        let request: AgentControlRequest = serde_json::from_value(serde_json::json!({
+            "command": "inspect",
+            "params": { "root": null, "maxDepth": 2 },
+        }))
+        .expect("an inspect without includeAttrs must still decode");
+
+        assert_eq!(
+            request,
+            AgentControlRequest::Inspect {
+                root: None,
+                max_depth: 2,
+                include_attrs: AttrScope::None,
+            }
+        );
+    }
+
+    #[test]
+    fn attr_scope_is_a_plain_string_on_the_wire() {
+        let encoded = serde_json::to_value(AgentControlRequest::Inspect {
+            root: None,
+            max_depth: 1,
+            include_attrs: AttrScope::All,
+        })
+        .unwrap();
+        assert_eq!(encoded["params"]["includeAttrs"], "all");
+    }
+
+    #[test]
+    fn empty_attrs_stay_off_the_wire() {
+        let node = SemanticNode {
+            id: 1,
+            parent: None,
+            role: "div".into(),
+            namespace: None,
+            image: None,
+            name: String::new(),
+            value: None,
+            enabled: true,
+            visible: true,
+            bounds: None,
+            attrs: BTreeMap::new(),
+        };
+        let encoded = serde_json::to_value(&node).unwrap();
+        assert!(
+            encoded.get("attrs").is_none(),
+            "an empty map must not cost bytes on every node of every snapshot"
+        );
+    }
+
+    #[test]
+    fn the_semantic_set_covers_component_state_and_skips_noise() {
+        // The attributes a client reads to tell one component state from
+        // another. `data-*` and `aria-*` are matched by prefix, not by name.
+        for name in [
+            "class",
+            "id",
+            "data-slot",
+            "data-expanded",
+            "aria-expanded",
+            "aria-controls",
+            "disabled",
+            "type",
+        ] {
+            assert!(is_semantic_attr(name), "{name} must be semantic");
+        }
+
+        for name in ["srcset", "loading", "spellcheck", "autocapitalize"] {
+            assert!(!is_semantic_attr(name), "{name} should not be semantic");
+        }
     }
 
     #[test]
@@ -258,6 +412,7 @@ mod tests {
                 enabled: true,
                 visible: true,
                 bounds: Some([16.0, 12.0, 210.0, 44.0]),
+                attrs: BTreeMap::new(),
             }],
         });
         let encoded = serde_json::to_value(&response).unwrap();

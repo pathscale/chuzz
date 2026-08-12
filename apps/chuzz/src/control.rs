@@ -6,13 +6,15 @@
 //! oneshot the caller is already awaiting.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use blitz_dom::{BaseDocument, NodeId};
 use chuzz_control::server::{ControlBridge, ControlServer};
 use chuzz_control::{
-    AgentControlRequest, AgentSnapshot, ControlError, ControlResponse, ImageStatus, SemanticNode,
+    AgentControlRequest, AgentSnapshot, AttrScope, ControlError, ControlResponse, ImageStatus,
+    SemanticNode, is_semantic_attr,
 };
 use tokio::sync::oneshot;
 
@@ -97,9 +99,18 @@ impl ControlHandle {
         self.refill();
         for PendingRequest { request, reply } in self.queued.borrow_mut().drain(..) {
             let response = match request {
-                AgentControlRequest::Inspect { root, max_depth } => ControlResponse::Snapshot(
-                    snapshot(document, root, max_depth, url.clone(), title.clone()),
-                ),
+                AgentControlRequest::Inspect {
+                    root,
+                    max_depth,
+                    include_attrs,
+                } => ControlResponse::Snapshot(snapshot(
+                    document,
+                    root,
+                    max_depth,
+                    include_attrs,
+                    url.clone(),
+                    title.clone(),
+                )),
                 AgentControlRequest::Act(_) => ControlResponse::Error(ControlError::new(
                     "unimplemented",
                     "act is not wired to the document yet",
@@ -125,6 +136,7 @@ fn snapshot(
     document: &BaseDocument,
     root: Option<u64>,
     max_depth: u32,
+    include_attrs: AttrScope,
     url: Option<String>,
     title: Option<String>,
 ) -> AgentSnapshot {
@@ -132,7 +144,15 @@ fn snapshot(
         .map(NodeId::from_u64)
         .unwrap_or(document.root_node().id);
     let mut nodes = Vec::new();
-    collect(document, root_id, None, 0, max_depth, &mut nodes);
+    collect(
+        document,
+        root_id,
+        None,
+        0,
+        max_depth,
+        include_attrs,
+        &mut nodes,
+    );
 
     AgentSnapshot {
         revision: 0,
@@ -149,6 +169,7 @@ fn collect(
     parent: Option<u64>,
     depth: u32,
     max_depth: u32,
+    include_attrs: AttrScope,
     out: &mut Vec<SemanticNode>,
 ) {
     if depth > max_depth {
@@ -211,12 +232,30 @@ fn collect(
             .map(|attr| attr.value.to_string())
     });
 
+    // Everything a client needs to tell one component state from another lives
+    // here: `class`, `data-*` and `aria-*`. Without them an expanded accordion
+    // item and a collapsed one are the same `div` with the same text.
+    let attrs = match include_attrs {
+        AttrScope::None => BTreeMap::new(),
+        scope => element
+            .map(|data| {
+                data.attrs
+                    .iter()
+                    .map(|attr| (attr.name.local.as_ref(), attr))
+                    .filter(|(name, _)| scope == AttrScope::All || is_semantic_attr(name))
+                    .map(|(name, attr)| (name.to_owned(), attr.value.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+
     out.push(SemanticNode {
         id: node_id.as_u64(),
         parent,
         role,
         namespace,
         image,
+        attrs,
         name: name.chars().take(200).collect(),
         value,
         enabled: true,
@@ -233,6 +272,7 @@ fn collect(
             Some(node_id.as_u64()),
             depth + 1,
             max_depth,
+            include_attrs,
             out,
         );
     }
