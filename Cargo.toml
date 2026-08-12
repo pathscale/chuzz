@@ -3,7 +3,7 @@ members = ["apps/chuzz", "crates/chuzz-control"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
@@ -46,6 +46,15 @@ url = "2.5"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# Keep symbols and line tables in the release binary.
+#
+# A crash report is only as useful as what can be resolved from it: az-gui ships
+# stripped, and its stack came back as 73 identical `__mh_execute_header`
+# entries, which says nothing at all. `line-tables-only` is the cheap half of
+# debug info — file and line for every frame, no variable info — so `atos`
+# resolves a report without the size and link time of full `debug = 2`.
+debug = "line-tables-only"
+strip = "none"
 
 # `[patch]` only applies from the top-level workspace, so ps-blitz's own patch
 # section is ignored when chuzz is the root. Its blitz-dom calls
