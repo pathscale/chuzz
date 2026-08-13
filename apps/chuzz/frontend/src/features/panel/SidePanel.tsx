@@ -94,7 +94,8 @@ function Section(props: { section: InspectorSection; isOpen: boolean }): JSX.Ele
         variant="ghost"
         size="sm"
         fullWidth
-        class="chrome-section-trigger"
+        justify="start"
+        radius="none"
         aria-expanded={props.isOpen}
         onClick={toggle}
       >
