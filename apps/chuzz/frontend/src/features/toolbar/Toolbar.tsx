@@ -1,4 +1,4 @@
-import { Flex } from "@pathscale/ui";
+import { Button, Flex } from "@pathscale/test-ui";
 import { createEffect, createSignal, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
@@ -35,32 +35,32 @@ export function Toolbar(): JSX.Element {
 
   return (
     <Flex as="div" align="center" class="chrome-toolbar">
-      <button
-        type="button"
-        class="chrome-tool-button"
+      <Button
+        variant="ghost"
+        squareSize={30}
         title={t("chrome.back")}
-        disabled={!browser.activeTab()?.canGoBack}
+        isDisabled={!browser.activeTab()?.canGoBack}
         onClick={() => browser.goBack()}
       >
         {"←"}
-      </button>
-      <button
-        type="button"
-        class="chrome-tool-button"
+      </Button>
+      <Button
+        variant="ghost"
+        squareSize={30}
         title={t("chrome.forward")}
-        disabled={!browser.activeTab()?.canGoForward}
+        isDisabled={!browser.activeTab()?.canGoForward}
         onClick={() => browser.goForward()}
       >
         {"→"}
-      </button>
-      <button
-        type="button"
-        class="chrome-tool-button"
+      </Button>
+      <Button
+        variant="ghost"
+        squareSize={30}
         title={t("chrome.reload")}
         onClick={() => browser.reload()}
       >
         {"↻"}
-      </button>
+      </Button>
       <input
         class="chrome-url-bar"
         type="text"
