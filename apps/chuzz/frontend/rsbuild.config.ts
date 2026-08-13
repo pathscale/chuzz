@@ -20,7 +20,10 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      "solid-js/web$": "./node_modules/solid-js/web/dist/web.js",
+      "solid-js$": "./node_modules/solid-js/dist/solid.js",
       "solid-layouts$": "../../../../solid-layouts/packages/solid-layouts/src/index.ts",
+      "tailwind-merge$": "./node_modules/tailwind-merge/dist/bundle-mjs.mjs",
       "~": "./src",
     },
   },
@@ -57,18 +60,18 @@ export default defineConfig({
     publicDir: { name: "public" },
   },
   tools: {
-    rspack: {
-      optimization: {
-        // The shell is one document loaded once from disk. Splitting it buys
-        // nothing and costs the Boa path an extra fetch per chunk.
-        splitChunks: false,
-        runtimeChunk: false,
-      },
-      plugins: [
+    rspack(config, { appendPlugins }) {
+      if (config.resolve) delete config.resolve.tsConfig;
+      config.optimization ??= {};
+      // The shell is one document loaded once from disk. Splitting it buys
+      // nothing and costs the Boa path an extra fetch per chunk.
+      config.optimization.splitChunks = false;
+      config.optimization.runtimeChunk = false;
+      appendPlugins(
         new ForkTsCheckerWebpackPlugin({
           typescript: { configFile: "./tsconfig.json" },
         }),
-      ],
+      );
     },
   },
   output: {
