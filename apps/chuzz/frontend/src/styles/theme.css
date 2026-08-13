@@ -372,7 +372,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* The webview is chrome, not a document: nothing here is text to select or drag. */
+  /* The webview is an interface, not a document: nothing here is text to select or drag. */
   body {
     user-select: none;
     -webkit-user-select: none;
@@ -603,7 +603,7 @@
  * values win the cascade even when the root carries `data-color-mode=light`.
  */
 [data-theme="24x-dark"][data-color-mode="light"] {
-  /* Tailwind's `white/N` utilities are translucent chrome in this app. */
+  /* Tailwind's `white/N` utilities are translucent interface surfaces in this app. */
   --color-white: #111827;
 
   --color-az-title: color-mix(

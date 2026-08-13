@@ -1,4 +1,5 @@
-import { Button, Flex } from "@pathscale/test-ui";
+import { SurfaceSwatch, SurfaceWheel } from "@chuzz/ui";
+import { Button, ColorSwatch, Flex, Text } from "@pathscale/ui";
 import { createEffect, For, type JSX, Show } from "solid-js";
 import {
   accentOptions,
@@ -49,12 +50,12 @@ export function ThemePicker(props: {
     `color-mix(in oklab, ${theme.surface || DEFAULT_ACCENT} ${deskStrength(theme.wash)}%, ${deskAnchor(theme.softness)})`;
 
   return (
-    <Flex as="div" align="start" gap="md" class="px-3.5 py-3">
+    <Flex as="div" align="start" gap="md" paddingInline="md" paddingBlock="md">
       <Flex as="div" shrink={false}>
         <SurfaceColorWheel value={props.theme.surface} onPick={props.onSurface} />
       </Flex>
 
-      <Flex as="div" direction="col" grow class="gap-3">
+      <Flex as="div" direction="col" gap="md" grow>
         {/*
          * Strength before softness: it is the one that decides whether the
          * wheel did anything at all, and each swatch previews the desk it
@@ -75,12 +76,10 @@ export function ThemePicker(props: {
           action={
             <Button
               variant="outline"
-              size="xs"
-              radius="md"
+              size="sm"
               aria-label={t("appearance.resetButton")}
               isDisabled={props.isDefault}
               onClick={props.onReset}
-              class="ml-auto"
             >
               {t("appearance.resetButton")}
             </Button>
@@ -158,9 +157,10 @@ function SurfaceColorWheel(props: { value: string; onPick: (value: string) => vo
   });
 
   return (
-    <fieldset
-      aria-label={t("appearance.surfaceColour")}
-      class="relative m-0 size-[190px] rounded-full border border-az-hairline bg-az-inset p-0 shadow-inner"
+    <SurfaceWheel
+      value={props.value}
+      onChange={props.onPick}
+      label={t("appearance.surfaceColour")}
     >
       <For each={colors()}>
         {(color, index) => {
@@ -168,36 +168,17 @@ function SurfaceColorWheel(props: { value: string; onPick: (value: string) => vo
           const angle = ((point.index / point.count) * 360 + point.phase) * (Math.PI / 180);
           const x = Math.cos(angle) * point.radius;
           const y = Math.sin(angle) * point.radius;
-          const selected = () => props.value.trim().toLowerCase() === color.toLowerCase();
           return (
-            <label
-              title={color}
-              class="absolute size-7 cursor-pointer rounded-full"
-              style={{
-                left: `calc(50% + ${x.toFixed(2)}px)`,
-                top: `calc(50% + ${y.toFixed(2)}px)`,
-                transform: "translate(-50%, -50%)",
-              }}
-            >
-              <input
-                type="radio"
-                name="surface-colour"
-                value={color}
-                aria-label={`${t("appearance.surfaceColour")} ${color}`}
-                checked={selected()}
-                onChange={() => props.onPick(color)}
-                class="peer sr-only"
-              />
-              <span
-                aria-hidden="true"
-                class="block size-full rounded-full border-2 border-az-hairline-strong transition-[border-color,box-shadow] hover:border-base-content/45 peer-checked:border-base-content/70 peer-checked:ring-2 peer-checked:ring-primary peer-checked:ring-offset-2 peer-checked:ring-offset-base-200 peer-focus-visible:ring-2 peer-focus-visible:ring-primary"
-                style={{ "background-color": color }}
-              />
-            </label>
+            <SurfaceSwatch
+              color={color}
+              label={`${t("appearance.surfaceColour")} ${color}`}
+              x={x}
+              y={y}
+            />
           );
         }}
       </For>
-    </fieldset>
+    </SurfaceWheel>
   );
 }
 
@@ -231,14 +212,22 @@ function AccentSelector(props: {
     previous = next;
   });
   return (
-    <div class="flex flex-col gap-1.5">
-      <div class="flex items-baseline gap-2">
-        <span class="font-semibold text-[11px] text-az-muted uppercase tracking-[.04em]">
+    <Flex as="div" direction="col" gap="sm">
+      <Flex as="div" align="baseline" gap="sm">
+        <Text
+          size="xs"
+          variant="muted"
+          weight="semibold"
+          transform="uppercase"
+          tracking="wide"
+        >
           {t("appearance.accentColour")}
-        </span>
-        <span class="text-[11px] text-az-faint">{t("appearance.accentColourHint")}</span>
-      </div>
-      <div class="flex items-center gap-2">
+        </Text>
+        <Text size="xs" variant="subtle">
+          {t("appearance.accentColourHint")}
+        </Text>
+      </Flex>
+      <Flex as="div" align="center" gap="sm">
         <For each={options()}>
           {(option, index) => {
             const selected = () => props.accent === option.value;
@@ -247,21 +236,19 @@ function AccentSelector(props: {
                 ? t("appearance.designedYellow")
                 : `${t("appearance.accentColour")} ${index() + 1}`;
             return (
-              <Button
-                variant="outline"
-                squareSize={28}
+              <ColorSwatch
+                color={option.color}
+                colorName={label()}
+                size="md"
                 isSelected={selected()}
-                aria-label={label()}
                 title={label()}
-                aria-pressed={selected()}
-                onClick={() => props.onPick(option.value)}
-                style={{ "background-color": option.color }}
+                onSelect={() => props.onPick(option.value)}
               />
             );
           }}
         </For>
-      </div>
-    </div>
+      </Flex>
+    </Flex>
   );
 }
 
@@ -286,21 +273,31 @@ function Axis(props: {
 }): JSX.Element {
   const selected = (stop: number) => Math.abs(props.value - stop) < 0.01;
   return (
-    <div class="flex flex-col gap-1.5">
-      <div class="flex items-baseline gap-2">
-        <span class="font-semibold text-[11px] text-az-muted uppercase tracking-[.04em]">
-          {props.label}
-        </span>
-        <span class="text-[11px] text-az-faint">{props.hint}</span>
+    <Flex as="div" direction="col" gap="sm">
+      <Flex as="div" align="baseline" gap="sm">
+        <Flex as="span" align="baseline" gap="sm" grow>
+          <Text
+            size="xs"
+            variant="muted"
+            weight="semibold"
+            transform="uppercase"
+            tracking="wide"
+          >
+            {props.label}
+          </Text>
+          <Text size="xs" variant="subtle">
+            {props.hint}
+          </Text>
+        </Flex>
         {props.action}
-      </div>
-      <div class="flex items-center gap-2">
+      </Flex>
+      <Flex as="div" align="center" gap="sm">
         <For each={props.stops}>
           {(stop, index) => (
             <Button
-              variant="outline"
-              squareSize={28}
-              isSelected={selected(stop)}
+              variant={selected(stop) ? "primary" : "outline"}
+              size="sm"
+              isIconOnly
               aria-label={`${props.label} ${props.format(stop, index())}`}
               aria-pressed={selected(stop)}
               onClick={() => props.onPick(stop)}
@@ -308,18 +305,20 @@ function Axis(props: {
             >
               <Show when={props.ink}>
                 {(ink) => (
-                  <span
-                    class="font-semibold text-[12px] leading-none"
+                  <Text
+                    size="xs"
+                    weight="semibold"
+                    leading="none"
                     style={{ color: ink()(stop) }}
                   >
                     A
-                  </span>
+                  </Text>
                 )}
               </Show>
             </Button>
           )}
         </For>
-      </div>
-    </div>
+      </Flex>
+    </Flex>
   );
 }

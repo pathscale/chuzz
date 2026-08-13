@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @source "../node_modules/@pathscale/ui/";
+@source "../local-ui/src/";
 @plugin "@iconify/tailwind4";
 @import "@pathscale/ui/index.css";
 
 @import "./styles/theme.css";
-@import "./styles/chrome.css";

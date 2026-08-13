@@ -1,4 +1,5 @@
-import { Button, Flex } from "@pathscale/test-ui";
+import { AddressBar, NavigationBar } from "@chuzz/ui";
+import { Button } from "@pathscale/ui";
 import { createEffect, createSignal, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
@@ -34,11 +35,12 @@ export function Toolbar(): JSX.Element {
   };
 
   return (
-    <Flex as="div" align="center" class="chrome-toolbar">
+    <NavigationBar>
       <Button
         variant="ghost"
-        squareSize={30}
-        title={t("chrome.back")}
+        size="sm"
+        isIconOnly
+        title={t("browser.back")}
         isDisabled={!browser.activeTab()?.canGoBack}
         onClick={() => browser.goBack()}
       >
@@ -46,8 +48,9 @@ export function Toolbar(): JSX.Element {
       </Button>
       <Button
         variant="ghost"
-        squareSize={30}
-        title={t("chrome.forward")}
+        size="sm"
+        isIconOnly
+        title={t("browser.forward")}
         isDisabled={!browser.activeTab()?.canGoForward}
         onClick={() => browser.goForward()}
       >
@@ -55,18 +58,17 @@ export function Toolbar(): JSX.Element {
       </Button>
       <Button
         variant="ghost"
-        squareSize={30}
-        title={t("chrome.reload")}
+        size="sm"
+        isIconOnly
+        title={t("browser.reload")}
         onClick={() => browser.reload()}
       >
         {"↻"}
       </Button>
-      <input
-        class="chrome-url-bar"
-        type="text"
+      <AddressBar
         value={typed()}
-        data-refused={refused() ? "" : undefined}
-        placeholder={t("chrome.addressPlaceholder")}
+        invalid={refused()}
+        placeholder={t("browser.addressPlaceholder")}
         onInput={(event) => {
           setTyped(event.currentTarget.value);
           setRefused(false);
@@ -75,6 +77,6 @@ export function Toolbar(): JSX.Element {
           if (event.key === "Enter") void submit();
         }}
       />
-    </Flex>
+    </NavigationBar>
   );
 }

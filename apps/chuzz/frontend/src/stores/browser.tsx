@@ -21,7 +21,7 @@ const EMPTY: BrowserState = {
 };
 
 /**
- * Everything the chrome draws, and the only place that talks to the shell.
+ * Everything the interface draws, and the only place that talks to the shell.
  *
  * The store is a mirror, not a source: commands go down and events come back
  * up, and the event is what writes. A command that also wrote here would give

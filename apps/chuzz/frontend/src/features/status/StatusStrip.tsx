@@ -1,4 +1,4 @@
-import { Flex } from "@pathscale/test-ui";
+import { StatusBar } from "@chuzz/ui";
 import type { JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
@@ -16,24 +16,16 @@ export function StatusStrip(): JSX.Element {
   const status = () => browser.state.status;
 
   return (
-    <Flex as="div" align="center" gap="sm" class="chrome-status-strip">
-      <span
-        class="chrome-status-dot"
-        data-loading={status().status === "loading" ? "" : undefined}
-      />
-      <span>{status().status === "loading" ? t("chrome.loading") : t("chrome.idle")}</span>
-      <span>·</span>
-      <span class="chrome-status-url">{status().url}</span>
-      <div class="chrome-status-spacer" />
-      <span>
-        {status().tabCount} {t("chrome.tabs")}
-      </span>
-      <span>·</span>
-      <span>
-        {status().nodeCount} {t("chrome.nodes")}
-      </span>
-      <span>·</span>
-      <span class="chrome-status-accent">{status().transferred}</span>
-    </Flex>
+    <StatusBar
+      loading={status().status === "loading"}
+      loadingLabel={t("browser.loading")}
+      idleLabel={t("browser.idle")}
+      url={status().url}
+      tabCount={status().tabCount}
+      tabsLabel={t("browser.tabs")}
+      nodeCount={status().nodeCount}
+      nodesLabel={t("browser.nodes")}
+      transferred={status().transferred}
+    />
   );
 }

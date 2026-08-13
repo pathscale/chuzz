@@ -30,7 +30,7 @@ const en = {
     resetHint: "back to the designed yellow accent and default surface settings",
     resetButton: "Reset to default",
   },
-  chrome: {
+  browser: {
     back: "Back",
     forward: "Forward",
     reload: "Reload",
