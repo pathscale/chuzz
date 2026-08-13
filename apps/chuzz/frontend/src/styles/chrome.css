@@ -380,18 +380,4 @@
     gap: 6px;
   }
 
-  .chrome-mode-button {
-    padding: 5px 12px;
-    border-radius: var(--radius-field);
-    border: 1px solid var(--color-az-hairline);
-    background: transparent;
-    color: var(--color-az-muted);
-    font-size: 12px;
-    cursor: pointer;
-  }
-
-  .chrome-mode-button[data-selected] {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-  }
 }
