@@ -1,5 +1,4 @@
-import { Button, Icon } from "@pathscale/test-ui";
-import { Flex } from "@pathscale/ui";
+import { Button, Flex, Icon } from "@pathscale/test-ui";
 import { For, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
