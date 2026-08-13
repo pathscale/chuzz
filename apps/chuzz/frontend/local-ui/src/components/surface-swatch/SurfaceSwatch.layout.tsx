@@ -10,17 +10,20 @@ export type SurfaceSwatchProps = {
 };
 
 const SurfaceSwatch: Layout<typeof surfaceSwatch, SurfaceSwatchProps> = () => (
-  <ColorSwatch
-    color={local.color}
-    colorName={local.label}
-    size="md"
-    title={local.color}
+  <span
     style={{
       left: `calc(50% + ${local.x.toFixed(2)}px)`,
       top: `calc(50% + ${local.y.toFixed(2)}px)`,
     }}
     {...slot.root}
-  />
+  >
+    <ColorSwatch
+      color={local.color}
+      colorName={local.label}
+      size="md"
+      title={local.color}
+    />
+  </span>
 );
 
 export const SurfaceSwatchLayout = SurfaceSwatch;
