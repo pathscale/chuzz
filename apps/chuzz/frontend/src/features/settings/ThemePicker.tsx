@@ -1,3 +1,4 @@
+import { Button, Flex } from "@pathscale/test-ui";
 import { createEffect, For, type JSX, Show } from "solid-js";
 import {
   accentOptions,
@@ -48,12 +49,12 @@ export function ThemePicker(props: {
     `color-mix(in oklab, ${theme.surface || DEFAULT_ACCENT} ${deskStrength(theme.wash)}%, ${deskAnchor(theme.softness)})`;
 
   return (
-    <div class="flex items-start gap-4 px-3.5 py-3">
-      <div class="shrink-0">
+    <Flex as="div" align="start" gap="md" class="px-3.5 py-3">
+      <Flex as="div" shrink={false}>
         <SurfaceColorWheel value={props.theme.surface} onPick={props.onSurface} />
-      </div>
+      </Flex>
 
-      <div class="flex flex-1 flex-col gap-3">
+      <Flex as="div" direction="col" grow class="gap-3">
         {/*
          * Strength before softness: it is the one that decides whether the
          * wheel did anything at all, and each swatch previews the desk it
@@ -72,15 +73,17 @@ export function ThemePicker(props: {
           }
           format={(stop) => `${stop}%`}
           action={
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="xs"
+              radius="md"
               aria-label={t("appearance.resetButton")}
-              disabled={props.isDefault}
+              isDisabled={props.isDefault}
               onClick={props.onReset}
-              class="ml-auto rounded-lg border border-az-hairline-strong px-2.5 py-1 text-[11px] text-az-muted transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
+              class="ml-auto"
             >
               {t("appearance.resetButton")}
-            </button>
+            </Button>
           }
         />
 
@@ -124,8 +127,8 @@ export function ThemePicker(props: {
           softness={props.theme.softness}
           onPick={props.onAccent}
         />
-      </div>
-    </div>
+      </Flex>
+    </Flex>
   );
 }
 
@@ -244,17 +247,14 @@ function AccentSelector(props: {
                 ? t("appearance.designedYellow")
                 : `${t("appearance.accentColour")} ${index() + 1}`;
             return (
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                squareSize={28}
+                isSelected={selected()}
                 aria-label={label()}
                 title={label()}
                 aria-pressed={selected()}
                 onClick={() => props.onPick(option.value)}
-                class="size-7 rounded-full border-2 transition-colors"
-                classList={{
-                  "border-primary": selected(),
-                  "border-az-hairline-strong hover:border-primary": !selected(),
-                }}
                 style={{ "background-color": option.color }}
               />
             );
@@ -297,16 +297,13 @@ function Axis(props: {
       <div class="flex items-center gap-2">
         <For each={props.stops}>
           {(stop, index) => (
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              squareSize={28}
+              isSelected={selected(stop)}
               aria-label={`${props.label} ${props.format(stop, index())}`}
               aria-pressed={selected(stop)}
               onClick={() => props.onPick(stop)}
-              class="size-7 rounded-full border-2 transition-colors"
-              classList={{
-                "border-primary": selected(stop),
-                "border-az-hairline-strong hover:border-az-hairline-strong/60": !selected(stop),
-              }}
               style={{ "background-color": props.preview(stop) }}
             >
               <Show when={props.ink}>
@@ -319,7 +316,7 @@ function Axis(props: {
                   </span>
                 )}
               </Show>
-            </button>
+            </Button>
           )}
         </For>
       </div>
