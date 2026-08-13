@@ -442,13 +442,9 @@
 
   .surface-swatch {
     position: absolute;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     transform: translate(-50%, -50%);
-  }
-
-  .surface-swatch:hover:not([data-disabled="true"]) {
-    transform: translate(-50%, -50%) scale(1.03);
   }
 
 }
