@@ -1,14 +1,8 @@
-import { Button, Flex } from "@pathscale/test-ui";
+import { SettingsDialog } from "@chuzz/ui";
 import type { JSX } from "solid-js";
-import { ThemePicker } from "./ThemePicker";
 import { t } from "~/stores/i18n";
-import {
-  isDefaultTheme,
-  prefs,
-  resetTheme,
-  setColorMode,
-  setTheme,
-} from "~/stores/prefs";
+import { isDefaultTheme, prefs, resetTheme, setColorMode, setTheme } from "~/stores/prefs";
+import { ThemePicker } from "./ThemePicker";
 
 /**
  * Settings, which is Appearance and nothing else so far.
@@ -18,53 +12,28 @@ import {
  * which for now is `localStorage` and the document, not the shell. Persisting
  * through Rust is a later change to `stores/prefs`, not to the picker.
  */
-export function SettingsPanel(props: { onClose: () => void }): JSX.Element {
+export function SettingsPanel(props: { isOpen: boolean; onClose: () => void }): JSX.Element {
   return (
-    <div class="chrome-settings-scrim" onClick={props.onClose}>
-      {/* The sheet swallows clicks so a click inside it does not close it. */}
-      <div class="chrome-settings" onClick={(event) => event.stopPropagation()}>
-        <Flex as="div" align="center" justify="between" class="chrome-settings-header">
-          <div class="chrome-settings-title">{t("appearance.title")}</div>
-          <Button variant="ghost" squareSize={24} onClick={props.onClose}>
-            {"×"}
-          </Button>
-        </Flex>
-
-        <Flex as="div" align="center" gap="sm" class="chrome-settings-row">
-          <span class="chrome-settings-label">{t("appearance.mode")}</span>
-          <Flex as="div" class="chrome-mode-group">
-            <Button
-              variant="outline"
-              size="sm"
-              radius="md"
-              isSelected={prefs.colorMode === "dark"}
-              onClick={() => setColorMode("dark")}
-            >
-              {t("appearance.dark")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              radius="md"
-              isSelected={prefs.colorMode === "light"}
-              onClick={() => setColorMode("light")}
-            >
-              {t("appearance.light")}
-            </Button>
-          </Flex>
-        </Flex>
-
-        <ThemePicker
-          theme={prefs.theme}
-          onSurface={(hex) => setTheme("surface", hex)}
-          onAccent={(hex) => setTheme("accent", hex)}
-          onSoftness={(value) => setTheme("softness", value)}
-          onWash={(value) => setTheme("wash", value)}
-          onBrightness={(value) => setTheme("textBrightness", value)}
-          onReset={resetTheme}
-          isDefault={isDefaultTheme()}
-        />
-      </div>
-    </div>
+    <SettingsDialog
+      open={props.isOpen}
+      onClose={props.onClose}
+      title={t("appearance.title")}
+      modeLabel={t("appearance.mode")}
+      darkLabel={t("appearance.dark")}
+      lightLabel={t("appearance.light")}
+      mode={prefs.colorMode}
+      onModeChange={setColorMode}
+    >
+      <ThemePicker
+        theme={prefs.theme}
+        onSurface={(hex) => setTheme("surface", hex)}
+        onAccent={(hex) => setTheme("accent", hex)}
+        onSoftness={(value) => setTheme("softness", value)}
+        onWash={(value) => setTheme("wash", value)}
+        onBrightness={(value) => setTheme("textBrightness", value)}
+        onReset={resetTheme}
+        isDefault={isDefaultTheme()}
+      />
+    </SettingsDialog>
   );
 }

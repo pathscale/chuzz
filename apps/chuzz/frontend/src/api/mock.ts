@@ -4,12 +4,12 @@ import type { PanelState, StatusReadout, Tab, TabId } from "~/types";
 const HOME_URL = "about:blank";
 
 /**
- * An in-memory shell, so the chrome runs under `rsbuild dev` with no engine
+ * An in-memory shell, so the interface runs under `rsbuild dev` with no engine
  * behind it.
  *
  * It is deliberately not a browser: `navigate` accepts anything that parses as
  * a URL or a bare hostname and refuses everything else, which is the one piece
- * of `nav.rs` policy the chrome can observe. Everything else here exists to
+ * of `nav.rs` policy the interface can observe. Everything else here exists to
  * make the layout render with plausible content.
  */
 export function createMockApi(): BrowserApi {
@@ -60,7 +60,7 @@ export function createMockApi(): BrowserApi {
     emit("status-changed", readout());
   }
 
-  /** The subset of `nav.rs` the chrome can see: URL, bare hostname, or nothing. */
+  /** The subset of `nav.rs` the interface can see: URL, bare hostname, or nothing. */
   function resolve(input: string): string | null {
     const typed = input.trim();
     if (typed === "") return null;

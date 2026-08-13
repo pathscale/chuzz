@@ -16,10 +16,8 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@pathscale/test-ui": ["../../../../solid-layouts/Test-UI/bundle/index.ts"],
       "solid-js": ["./node_modules/solid-js"],
       "solid-js/*": ["./node_modules/solid-js/*"],
-      "solid-layouts": ["../../../../solid-layouts/packages/solid-layouts/src/index.ts"],
       "tailwind-merge": ["./node_modules/tailwind-merge"],
       "~/*": ["./src/*"]
     }

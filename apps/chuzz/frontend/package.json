@@ -1,13 +1,23 @@
 {
   "name": "chuzz-frontend",
   "version": "0.1.0",
-  "description": "Chuzz — browser chrome frontend",
+  "description": "Chuzz browser interface frontend",
   "type": "module",
   "private": true,
+  "workspaces": [
+    "local-ui/bundle"
+  ],
   "scripts": {
+    "layouts:local": "solid-layouts-library --root local-ui",
+    "predev": "bun run layouts:local",
+    "prestart": "bun run layouts:local",
+    "prebuild": "bun run layouts:local",
+    "pretypecheck": "bun run layouts:local",
+    "pretest": "bun run layouts:local",
+    "pretest:run": "bun run layouts:local",
     "dev": "rsbuild dev",
     "start": "rsbuild dev",
-    "build": "bun run typecheck && rsbuild build",
+    "build": "tsc --noEmit && rsbuild build",
     "preview": "rsbuild preview",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
@@ -17,12 +27,14 @@
   },
   "license": "MIT OR Apache-2.0",
   "dependencies": {
+    "@chuzz/ui": "workspace:*",
     "@iconify/tailwind4": "^1.0.6",
-    "@pathscale/ui": "^1.3.1",
+    "@pathscale/ui": "^2.0.0",
     "@tauri-apps/api": "^2.1.1",
     "clsx": "^2.1.1",
     "popmotion": "^11.0.5",
     "solid-js": "^1.9.5",
+    "solid-layouts": "^0.1.2",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
@@ -36,6 +48,8 @@
     "@types/node": "^22.15.17",
     "fork-ts-checker-webpack-plugin": "^9.1.0",
     "jsdom": "^30.0.0",
+    "rsbuild-plugin-solid-layouts": "^0.1.2",
+    "solid-layouts-oxc": "^0.1.5",
     "tailwindcss": "^4.0.7",
     "typescript": "^5.7.2",
     "vite-plugin-solid": "^2.11.14",

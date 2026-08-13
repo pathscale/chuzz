@@ -1,5 +1,5 @@
 /*
- * The browser chrome, ported from `apps/chuzz/src/ui.rs`.
+ * The browser interface, ported from `apps/chuzz/src/ui.rs`.
  *
  * Every colour here is a theme token. `ui.rs` could not do that: it wrote the
  * palette out as literals because there was no picker on that side, and the
@@ -38,7 +38,7 @@
 }
 
 @layer components {
-  .chrome-frame {
+  .app-shell {
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -48,46 +48,69 @@
     color: var(--color-az-body);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     font-size: 14px;
+    border: 0;
+    border-radius: 0;
   }
 
   /* Titlebar: tabs sit in the window's title row, beside the traffic lights.
      The left pad clears the macOS window buttons. */
-  .chrome-titlebar {
+  .title-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     height: 52px;
     flex-shrink: 0;
     padding: 0 14px 0 96px;
     background: var(--color-base-200);
   }
 
-  .chrome-tab-strip {
-    flex-grow: 1;
+  .tabs {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .tab-strip {
+    display: flex;
+    align-items: center;
+    width: 100%;
     min-width: 0;
     overflow: hidden;
     gap: 4px;
   }
 
+  .tab-shell {
+    position: relative;
+    min-width: 90px;
+    max-width: 260px;
+    height: 34px;
+    flex: 1 1 160px;
+  }
+
   /* Pills that change surface, not shape, when active. */
-  .chrome-tab {
+  .tab {
     display: flex;
     flex-direction: row;
     align-items: center;
     gap: 9px;
-    min-width: 90px;
-    max-width: 260px;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
     height: 34px;
-    padding: 0 14px;
+    padding: 0 34px 0 14px;
     border-radius: 17px;
     border: 1px solid transparent;
     color: var(--color-az-muted);
     cursor: pointer;
   }
 
-  .chrome-tab:hover {
+  .tab:hover {
     background: var(--color-az-hover);
     color: var(--color-az-body);
   }
 
-  .chrome-tab[data-active] {
+  .tab[data-selected="true"] {
     background: var(--color-az-tab);
     border-color: var(--color-az-hairline);
     color: var(--color-az-title);
@@ -95,19 +118,17 @@
   }
 
   /* Per-tab status dot: the point is seeing a background tab change state. */
-  .chrome-tab-dot {
+  .tab-dot {
     width: 7px;
     height: 7px;
+    min-height: 7px;
+    padding: 0;
+    border: 0;
     border-radius: 4px;
-    background: var(--color-success);
     flex-shrink: 0;
   }
 
-  .chrome-tab-dot[data-loading] {
-    background: var(--color-primary);
-  }
-
-  .chrome-tab-title {
+  .tab-title {
     flex-grow: 1;
     overflow: hidden;
     white-space: nowrap;
@@ -117,44 +138,48 @@
 
   /* Always mounted, only faded: showing it on hover by adding the element
      would resize the pill under the pointer. */
-  .button.chrome-tab-close {
+  .button.tab-close {
+    position: absolute;
+    right: 9px;
+    top: 8px;
+    z-index: 2;
+    width: 18px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0;
     opacity: 0;
   }
 
-  .button.chrome-tab-close[data-visible] {
+  .button.tab-close-visible {
     opacity: 1;
   }
 
-  .chrome-tab:hover .button.chrome-tab-close {
+  .tab-shell:hover .button.tab-close {
     opacity: 1;
   }
 
-  .chrome-avatar {
-    width: 32px;
-    height: 32px;
-    line-height: 30px;
-    text-align: center;
-    border-radius: 16px;
+  .avatar {
     border: 1px solid var(--color-az-hairline-strong);
-    background: var(--color-base-100);
-    color: var(--color-az-body);
-    font-size: 12.5px;
-    font-weight: 600;
-    flex-shrink: 0;
   }
 
   /* Toolbar */
 
-  .chrome-toolbar {
+  .navigation-bar {
+    display: flex;
+    align-items: center;
     padding: 0 14px 10px 14px;
     flex-shrink: 0;
     gap: 4px;
   }
 
-  .chrome-url-bar {
+  .navigation-bar .input-root {
     flex-grow: 1;
     min-width: 0;
+  }
+
+  .navigation-bar .input-control {
     height: 32px;
+    min-height: 32px;
     padding: 0 14px;
     border-radius: var(--radius-field);
     border: 1px solid var(--color-az-hairline);
@@ -163,26 +188,28 @@
     font-size: 13px;
   }
 
-  .chrome-url-bar:focus {
-    outline: none;
-    border-color: var(--color-primary);
+  .address-bar {
+    padding: 0;
   }
 
-  /* A refused address is not a failed navigation, it is a string the shell
-     declined to interpret. Saying so beats looking inert. */
-  .chrome-url-bar[data-refused] {
-    border-color: var(--color-error);
-  }
-
-  .chrome-loading-bar {
+  .loading-bar {
     height: 2px;
     flex-shrink: 0;
-    background: var(--color-primary);
+    gap: 0;
+  }
+
+  .loading-bar-hidden {
+    visibility: hidden;
+  }
+
+  .loading-bar .progress-bar__track {
+    height: 2px;
+    border-radius: 0;
   }
 
   /* Content row */
 
-  .chrome-content-row {
+  .main-content {
     display: flex;
     flex-direction: row;
     flex-grow: 1;
@@ -190,66 +217,78 @@
     overflow: hidden;
   }
 
-  .chrome-page-area {
+  .viewport {
     position: relative;
     flex-grow: 1;
     min-width: 0;
     overflow: hidden;
     background: var(--color-base-100);
+    border: 0;
+    border-radius: 0;
   }
 
-  .chrome-page {
-    display: block;
+  .page {
     width: 100%;
     height: 100%;
   }
 
-  .chrome-panel-handle {
+  .page-active {
+    display: block;
+  }
+
+  .page-hidden {
+    display: none;
+  }
+
+  .panel-handle {
     width: 5px;
     flex-shrink: 0;
     border: 0;
     padding: 0;
     background: var(--color-az-hairline-soft);
     cursor: col-resize;
+    border-radius: 0;
   }
 
-  .chrome-panel-handle:hover {
+  .panel-handle:hover {
     background: var(--color-primary);
   }
 
   /* Inspector */
 
-  .chrome-side-panel {
+  .side-panel {
     display: flex;
     flex-direction: column;
     width: 320px;
     flex-shrink: 0;
     overflow: hidden;
     background: var(--color-base-200);
+    border: 0;
+    border-radius: 0;
   }
 
   /* Collapsed keeps the seam and the handle attached to it, and gives up its
      width entirely. `min-width: 0` matters: a flex item at width 0 still sizes
      to its content without it, so the panel would refuse to close. */
-  .chrome-side-panel[data-collapsed] {
+  .side-panel-collapsed {
     width: 0;
     min-width: 0;
     border: 0;
   }
 
-  .chrome-side-panel-header {
+  .side-panel-header {
     height: 38px;
     flex-shrink: 0;
     padding: 0 14px;
   }
 
-  .chrome-side-panel-title {
+  .side-panel-title {
     font-size: 12.5px;
     font-weight: 600;
     color: var(--color-az-title);
   }
 
-  .chrome-side-panel-scroll {
+  .side-panel-scroll {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -258,46 +297,62 @@
     flex-grow: 1;
   }
 
-  .chrome-section {
+  .inspector-section {
     border-radius: var(--radius-box);
     border: 1px solid var(--color-az-hairline);
     background: var(--color-base-100);
     overflow: hidden;
   }
 
-  .chrome-section-title {
+  .inspector-trigger {
+    width: 100%;
+    min-height: 36px;
+    padding: 0 12px;
+  }
+
+  .inspector-title {
     flex-grow: 1;
   }
 
-  .chrome-section-indicator {
+  .inspector-indicator {
     color: var(--color-az-muted);
     flex-shrink: 0;
   }
 
-  .chrome-section-body {
+  .inspector-body {
     display: flex;
     flex-direction: column;
     gap: 2px;
     padding: 0 12px 10px 12px;
   }
 
-  .chrome-section-row {
+  .inspector-body .disclosure__body-inner {
+    padding: 0;
+  }
+
+  .inspector-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     padding: 4px 0;
     font-size: 11.5px;
   }
 
-  .chrome-section-row-label {
+  .inspector-row__label {
     color: var(--color-az-muted);
   }
 
-  .chrome-section-row-value {
+  .inspector-row__value {
     color: var(--color-az-body);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   /* Status strip */
 
-  .chrome-status-strip {
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     height: 26px;
     flex-shrink: 0;
     padding: 0 14px;
@@ -308,76 +363,92 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
-  .chrome-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 3px;
-    background: var(--color-success);
-    flex-shrink: 0;
+  .status-bar > [aria-hidden="true"] {
+    flex-grow: 1;
   }
 
-  .chrome-status-dot[data-loading] {
-    background: var(--color-primary);
+  .status-separator {
+    height: 12px;
+    align-self: center;
   }
 
-  .chrome-status-url {
+  .status-url {
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
     max-width: 40%;
   }
 
-  .chrome-status-spacer {
-    flex-grow: 1;
-  }
-
-  .chrome-status-accent {
+  .status-accent {
     color: var(--color-primary);
   }
 
   /* Settings */
 
-  .chrome-settings-scrim {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--color-az-void);
-  }
-
-  .chrome-settings {
+  .settings-dialog {
     width: 520px;
     max-width: calc(100vw - 48px);
     border-radius: var(--radius-box);
     border: 1px solid var(--color-az-hairline);
     background: var(--color-base-100);
     overflow: hidden;
+    padding: 0;
   }
 
-  .chrome-settings-header {
+  .settings-header {
     padding: 12px 14px;
     border-bottom: 1px solid var(--color-az-hairline-soft);
   }
 
-  .chrome-settings-title {
+  .settings-body {
+    padding: 0;
+  }
+
+  .settings-title {
     font-size: 13px;
     font-weight: 600;
     color: var(--color-az-title);
   }
 
-  .chrome-settings-row {
+  .settings-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 12px 14px;
   }
 
-  .chrome-settings-label {
+  .settings-label {
     font-size: 12.5px;
     color: var(--color-az-muted);
     min-width: 96px;
   }
 
-  .chrome-mode-group {
+  .settings-mode {
+    display: flex;
     gap: 6px;
+  }
+
+  .surface-wheel {
+    position: relative;
+    display: block;
+    width: 190px;
+    height: 190px;
+    flex-wrap: nowrap;
+    border-radius: 9999px;
+    border: 1px solid var(--color-az-hairline);
+    background: var(--color-az-inset);
+    box-shadow: inset 0 1px 3px var(--color-az-void);
+  }
+
+  .surface-swatch {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    transform: translate(-50%, -50%);
+  }
+
+  .surface-swatch:hover:not([data-disabled="true"]) {
+    transform: translate(-50%, -50%) scale(1.03);
   }
 
 }

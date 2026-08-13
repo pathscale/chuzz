@@ -1,12 +1,13 @@
-import { Button } from "@pathscale/test-ui";
-import { createSignal, Show, type JSX } from "solid-js";
+import { AppShell, LoadingBar, MainContent, PanelHandle } from "@chuzz/ui";
+import { createSignal, type JSX } from "solid-js";
 import { PageArea } from "~/features/page/PageArea";
 import { SidePanel } from "~/features/panel/SidePanel";
 import { SettingsPanel } from "~/features/settings/SettingsPanel";
 import { StatusStrip } from "~/features/status/StatusStrip";
-import { TitleBar } from "~/features/tabs/TitleBar";
+import { BrowserHeader } from "~/features/tabs/BrowserHeader";
 import { Toolbar } from "~/features/toolbar/Toolbar";
 import { BrowserProvider, useBrowser } from "~/stores/browser";
+import { t } from "~/stores/i18n";
 
 /**
  * The window, in the order `main.rs` lays it out: titlebar, toolbar, an
@@ -25,28 +26,23 @@ function Shell(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = createSignal(false);
 
   return (
-    <div class="chrome-frame" tabindex={0}>
-      <TitleBar onOpenSettings={() => setSettingsOpen(true)} />
+    <AppShell tabindex={0}>
+      <BrowserHeader onOpenSettings={() => setSettingsOpen(true)} />
       <Toolbar />
-      <Show when={browser.state.status.status === "loading"}>
-        <div class="chrome-loading-bar" />
-      </Show>
-      <div class="chrome-content-row">
+      <LoadingBar
+        loading={browser.state.status.status === "loading"}
+        label={t("browser.loading")}
+      />
+      <MainContent>
         <PageArea />
-        <Button
-          variant="ghost"
-          radius="none"
-          fillHeight
-          class="chrome-panel-handle"
+        <PanelHandle
           title="Toggle inspector"
           onClick={() => browser.setPanelCollapsed(!browser.state.panel.collapsed)}
         />
         <SidePanel />
-      </div>
+      </MainContent>
       <StatusStrip />
-      <Show when={settingsOpen()}>
-        <SettingsPanel onClose={() => setSettingsOpen(false)} />
-      </Show>
-    </div>
+      <SettingsPanel isOpen={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+    </AppShell>
   );
 }

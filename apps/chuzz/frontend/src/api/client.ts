@@ -1,7 +1,7 @@
 import type { PanelState, StatusReadout, Tab, TabId } from "~/types";
 
 /**
- * The shell surface, as the chrome sees it.
+ * The shell surface, as the interface sees it.
  *
  * Commands are `invoke()` calls; {@link BrowserEvent} names are `listen()`
  * topics. The browser mutates its own state without being asked (a load
@@ -10,7 +10,7 @@ import type { PanelState, StatusReadout, Tab, TabId } from "~/types";
  * optimistically and the event is what keeps the rest of the window honest.
  *
  * Two implementations satisfy this: `./tauri` talks to Rust, `./mock` is an
- * in-memory stand-in that lets the chrome run under `rsbuild dev` with no
+ * in-memory stand-in that lets the interface run under `rsbuild dev` with no
  * browser engine behind it. Nothing above this file knows which one it has.
  */
 export interface BrowserApi {
@@ -34,7 +34,7 @@ export interface BrowserApi {
   closeTab(id: TabId): Promise<void>;
 
   /**
-   * What a typed string means is Rust's decision, not the chrome's: a URL, a
+   * What a typed string means is Rust's decision, not the interface's: a URL, a
    * bare hostname, or nothing at all. A string that is neither is **not** a
    * search, and this resolves `false` so the address bar can show it was
    * refused rather than silently doing nothing.

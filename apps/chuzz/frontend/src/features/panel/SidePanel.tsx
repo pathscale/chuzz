@@ -1,5 +1,5 @@
-import { Button, Chip, Flex, Icon } from "@pathscale/test-ui";
-import { For, Show, type JSX } from "solid-js";
+import { InspectorRow, InspectorSection, SidePanel as Panel } from "@chuzz/ui";
+import { For, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 import type { InspectorSection, PanelSections } from "~/types";
@@ -63,23 +63,11 @@ export function SidePanel(): JSX.Element {
   const panel = () => browser.state.panel;
 
   return (
-    <Show
-      when={!panel().collapsed}
-      fallback={<div class="chrome-side-panel" data-collapsed="" />}
-    >
-      <div class="chrome-side-panel">
-        <Flex as="div" align="center" class="chrome-side-panel-header">
-          <div class="chrome-side-panel-title">{t("chrome.inspector")}</div>
-        </Flex>
-        <div class="chrome-side-panel-scroll">
-          <For each={SECTIONS}>
-            {(section) => (
-              <Section section={section} isOpen={panel().sections[section.key]} />
-            )}
-          </For>
-        </div>
-      </div>
-    </Show>
+    <Panel title={t("browser.inspector")} collapsed={panel().collapsed}>
+      <For each={SECTIONS}>
+        {(section) => <Section section={section} isOpen={panel().sections[section.key]} />}
+      </For>
+    </Panel>
   );
 }
 
@@ -88,46 +76,19 @@ function Section(props: { section: InspectorSection; isOpen: boolean }): JSX.Ele
   const toggle = () => browser.toggleSection(props.section.key as keyof PanelSections);
 
   return (
-    <div class="chrome-section" data-open={props.isOpen ? "" : undefined}>
-      <Button
-        variant="ghost"
-        size="sm"
-        fullWidth
-        justify="start"
-        radius="none"
-        aria-expanded={props.isOpen}
-        onClick={toggle}
-      >
-        <span class="chrome-section-title">{props.section.title}</span>
-        {/* Chip, not Badge: Badge defaults to `placement: top-right`, which
-            positions it absolutely as an overlay on a host element. This is an
-            inline count beside a title. */}
-        <Chip
-          variant="flat"
-          color={props.section.tone === "primary" ? "primary" : "default"}
-          size="sm"
-        >
-          {props.section.count}
-        </Chip>
-        <Icon
-          class="chrome-section-indicator"
-          name={props.isOpen ? "icon-[mdi--chevron-down]" : "icon-[mdi--chevron-right]"}
-          width={16}
-          height={16}
-        />
-      </Button>
-      <Show when={props.isOpen}>
-        <div class="chrome-section-body">
-          <For each={props.section.rows}>
-            {(row) => (
-              <Flex as="div" align="center" justify="between" class="chrome-section-row">
-                <span class="chrome-section-row-label">{row.label}</span>
-                <span class="chrome-section-row-value">{row.value}</span>
-              </Flex>
-            )}
-          </For>
-        </div>
-      </Show>
-    </div>
+    <InspectorSection
+      id={`inspector-${props.section.key}`}
+      title={props.section.title}
+      count={props.section.count}
+      tone={props.section.tone}
+      open={props.isOpen}
+      onOpenChange={(open) => {
+        if (open !== props.isOpen) toggle();
+      }}
+    >
+      <For each={props.section.rows}>
+        {(row) => <InspectorRow label={row.label} value={row.value} />}
+      </For>
+    </InspectorSection>
   );
 }

@@ -3,7 +3,7 @@
  *
  * These mirror the Rust types the shell exposes over IPC. Browser policy
  * (what a typed string means, what the back stack looks like, when a load is
- * abandoned) stays in Rust; this is only what the chrome has to draw.
+ * abandoned) stays in Rust; this is only what the interface has to draw.
  */
 
 export type TabId = number;
@@ -11,10 +11,10 @@ export type TabId = number;
 export type LoadStatus = "idle" | "loading";
 
 /**
- * A tab as the chrome sees it.
+ * A tab as the interface sees it.
  *
  * `title` is already resolved by the Rust side: it falls back to the host, then
- * to "New Tab", so the chrome never has to decide what an untitled page is
+ * to "New Tab", so the interface never has to decide what an untitled page is
  * called. Two places deciding that is how a tab strip and a window title end up
  * disagreeing.
  */
@@ -27,7 +27,7 @@ export interface Tab {
   canGoForward: boolean;
 }
 
-/** Which inspector sections are open. Persisted by the shell, not the chrome. */
+/** Which inspector sections are open. Persisted by the shell, not the interface. */
 export interface PanelSections {
   page: boolean;
   history: boolean;
