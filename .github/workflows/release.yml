@@ -104,7 +104,7 @@ jobs:
       # re-test the pages in docs/ when you do.
       - name: Check out the engine and endpoint-libs
         env:
-          BLITZ_REF: ae85b08afde3ef4c784b25c2d8c11111416c129a
+          BLITZ_REF: 08be9c6d458aff825689114f0a0fe0ced2c32f62
         run: |
           cd ..
           git clone --filter=blob:none https://github.com/pathscale/ps-blitz.git ps-blitz
