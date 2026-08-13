@@ -50,8 +50,15 @@ export function ThemePicker(props: {
     `color-mix(in oklab, ${theme.surface || DEFAULT_ACCENT} ${deskStrength(theme.wash)}%, ${deskAnchor(theme.softness)})`;
 
   return (
-    <Flex as="div" align="start" gap="md" paddingInline="md" paddingBlock="md">
-      <Flex as="div" shrink={false}>
+    <Flex
+      as="div"
+      direction="col"
+      align="stretch"
+      gap="md"
+      paddingInline="md"
+      paddingBlock="md"
+    >
+      <Flex as="div" justify="center" shrink={false}>
         <SurfaceColorWheel value={props.theme.surface} onPick={props.onSurface} />
       </Flex>
 
@@ -227,7 +234,7 @@ function AccentSelector(props: {
           {t("appearance.accentColourHint")}
         </Text>
       </Flex>
-      <Flex as="div" align="center" gap="sm">
+      <Flex as="div" align="center" wrap="wrap" gap="sm">
         <For each={options()}>
           {(option, index) => {
             const selected = () => props.accent === option.value;
@@ -274,8 +281,8 @@ function Axis(props: {
   const selected = (stop: number) => Math.abs(props.value - stop) < 0.01;
   return (
     <Flex as="div" direction="col" gap="sm">
-      <Flex as="div" align="baseline" gap="sm">
-        <Flex as="span" align="baseline" gap="sm" grow>
+      <Flex as="div" align="baseline" wrap="wrap" gap="sm">
+        <Flex as="span" align="baseline" wrap="wrap" gap="sm" grow>
           <Text
             size="xs"
             variant="muted"
