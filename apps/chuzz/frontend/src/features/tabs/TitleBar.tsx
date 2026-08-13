@@ -20,9 +20,7 @@ export function TitleBar(props: { onOpenSettings: () => void }): JSX.Element {
     <Flex as="div" align="center" gap="sm" class="chrome-titlebar">
       <Button
         variant="ghost"
-        size="sm"
-        isIconOnly
-        class="chrome-nav-back"
+        squareSize={30}
         title={t("chrome.back")}
         onClick={() => browser.goBack()}
       >
@@ -36,10 +34,8 @@ export function TitleBar(props: { onOpenSettings: () => void }): JSX.Element {
           {(tab) => <TabPill tab={tab} isActive={tab.id === browser.state.activeTabId} />}
         </For>
         <Button
-          variant="ghost"
-          size="sm"
-          isIconOnly
-          class="chrome-new-tab"
+          variant="outline"
+          squareSize={34}
           title={t("chrome.newTab")}
           onClick={() => browser.openTab()}
         >
@@ -48,30 +44,24 @@ export function TitleBar(props: { onOpenSettings: () => void }): JSX.Element {
       </Flex>
 
       <Button
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        class="chrome-titlebar-button"
+        variant="outline"
+        squareSize={32}
         title={t("chrome.forward")}
         onClick={() => browser.goForward()}
       >
         {"›"}
       </Button>
       <Button
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        class="chrome-titlebar-button"
+        variant="outline"
+        squareSize={32}
         title={t("chrome.reload")}
         onClick={() => browser.reload()}
       >
         {"↻"}
       </Button>
       <Button
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        class="chrome-titlebar-button"
+        variant="outline"
+        squareSize={32}
         title={t("chrome.settings")}
         onClick={props.onOpenSettings}
       >
@@ -95,8 +85,7 @@ function TabPill(props: { tab: Tab; isActive: boolean }): JSX.Element {
       <span class="chrome-tab-title">{props.tab.title}</span>
       <Button
         variant="ghost"
-        size="sm"
-        isIconOnly
+        squareSize={18}
         class="chrome-tab-close"
         data-visible={props.isActive ? "" : undefined}
         title={t("chrome.closeTab")}
