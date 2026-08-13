@@ -1,4 +1,4 @@
-import { Flex } from "@pathscale/ui";
+import { Flex } from "@pathscale/test-ui";
 import type { JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
