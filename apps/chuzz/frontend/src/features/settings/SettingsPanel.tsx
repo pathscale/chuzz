@@ -1,4 +1,4 @@
-import { Flex } from "@pathscale/ui";
+import { Button, Flex } from "@pathscale/test-ui";
 import type { JSX } from "solid-js";
 import { ThemePicker } from "./ThemePicker";
 import { t } from "~/stores/i18n";
@@ -25,30 +25,32 @@ export function SettingsPanel(props: { onClose: () => void }): JSX.Element {
       <div class="chrome-settings" onClick={(event) => event.stopPropagation()}>
         <Flex as="div" align="center" justify="between" class="chrome-settings-header">
           <div class="chrome-settings-title">{t("appearance.title")}</div>
-          <button type="button" class="chrome-titlebar-button" onClick={props.onClose}>
+          <Button variant="ghost" squareSize={24} onClick={props.onClose}>
             {"×"}
-          </button>
+          </Button>
         </Flex>
 
         <Flex as="div" align="center" gap="sm" class="chrome-settings-row">
           <span class="chrome-settings-label">{t("appearance.mode")}</span>
           <Flex as="div" class="chrome-mode-group">
-            <button
-              type="button"
-              class="chrome-mode-button"
-              data-selected={prefs.colorMode === "dark" ? "" : undefined}
+            <Button
+              variant="outline"
+              size="sm"
+              radius="md"
+              isSelected={prefs.colorMode === "dark"}
               onClick={() => setColorMode("dark")}
             >
               {t("appearance.dark")}
-            </button>
-            <button
-              type="button"
-              class="chrome-mode-button"
-              data-selected={prefs.colorMode === "light" ? "" : undefined}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              radius="md"
+              isSelected={prefs.colorMode === "light"}
               onClick={() => setColorMode("light")}
             >
               {t("appearance.light")}
-            </button>
+            </Button>
           </Flex>
         </Flex>
 
