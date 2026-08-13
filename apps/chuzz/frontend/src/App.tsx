@@ -1,3 +1,4 @@
+import { Button } from "@pathscale/test-ui";
 import { createSignal, Show, type JSX } from "solid-js";
 import { PageArea } from "~/features/page/PageArea";
 import { SidePanel } from "~/features/panel/SidePanel";
@@ -32,8 +33,10 @@ function Shell(): JSX.Element {
       </Show>
       <div class="chrome-content-row">
         <PageArea />
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          radius="none"
+          fillHeight
           class="chrome-panel-handle"
           title="Toggle inspector"
           onClick={() => browser.setPanelCollapsed(!browser.state.panel.collapsed)}
