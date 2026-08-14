@@ -42,9 +42,6 @@ const en = {
     locked: "held on by CHUZZ_CONTROL for this run",
   },
   browser: {
-    back: "Back",
-    forward: "Forward",
-    reload: "Reload",
     newTab: "New tab",
     closeTab: "Close tab",
     settings: "Settings",
@@ -56,10 +53,6 @@ const en = {
     history: "History",
     network: "Network",
     console: "Console",
-    idle: "idle",
-    loading: "loading",
-    tabs: "tabs",
-    nodes: "nodes",
   },
 } as const;
 

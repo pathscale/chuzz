@@ -17,7 +17,7 @@ import type { InspectorSection as InspectorSectionModel, PanelSections } from "~
 const SECTIONS: InspectorSectionModel[] = [
   {
     key: "page",
-    title: "Page",
+    title: t("browser.page"),
     count: 4,
     tone: "primary",
     rows: [
@@ -29,7 +29,7 @@ const SECTIONS: InspectorSectionModel[] = [
   },
   {
     key: "history",
-    title: "History",
+    title: t("browser.history"),
     count: 3,
     tone: "neutral",
     rows: [
@@ -40,7 +40,7 @@ const SECTIONS: InspectorSectionModel[] = [
   },
   {
     key: "network",
-    title: "Network",
+    title: t("browser.network"),
     count: 6,
     tone: "neutral",
     rows: [
@@ -51,7 +51,7 @@ const SECTIONS: InspectorSectionModel[] = [
   },
   {
     key: "console",
-    title: "Console",
+    title: t("browser.console"),
     count: 0,
     tone: "neutral",
     rows: [{ label: "Messages", value: "0" }],
