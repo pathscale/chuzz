@@ -155,7 +155,13 @@ function createBrowserStore() {
     goBack: () => void api.goBack(state.activeTabId),
     goForward: () => void api.goForward(state.activeTabId),
     reload: () => void api.reload(state.activeTabId),
-    setPanelCollapsed: (collapsed: boolean) => void api.setPanelCollapsed(collapsed),
+    setPanelCollapsed: (collapsed: boolean) => {
+      // The panel is window-local UI. Apply it immediately, then persist the
+      // same state through Rust. Waiting for the event round trip made the
+      // handle appear dead whenever event delivery lagged or was unavailable.
+      setState("panel", "collapsed", collapsed);
+      void api.setPanelCollapsed(collapsed);
+    },
     toggleSection: (section: keyof PanelSections) => void api.toggleSection(section),
   };
 }
