@@ -1,5 +1,5 @@
-import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
 import type { DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
 
 const HOME_URL = "about:blank";
 

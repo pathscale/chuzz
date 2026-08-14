@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
 import type { DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
 
 /**
  * The real client: `invoke()` for commands, `listen()` for events.

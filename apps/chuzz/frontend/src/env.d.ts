@@ -6,8 +6,6 @@ declare global {
   }
 }
 
-export {};
-
 import type { JSX } from "solid-js";
 
 declare module "solid-js" {
