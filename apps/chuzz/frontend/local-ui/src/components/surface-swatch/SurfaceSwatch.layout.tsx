@@ -17,12 +17,7 @@ const SurfaceSwatch: Layout<typeof surfaceSwatch, SurfaceSwatchProps> = () => (
     }}
     {...slot.root}
   >
-    <ColorSwatch
-      color={local.color}
-      colorName={local.label}
-      size="md"
-      title={local.color}
-    />
+    <ColorSwatch color={local.color} colorName={local.label} size="md" title={local.color} />
   </span>
 );
 
