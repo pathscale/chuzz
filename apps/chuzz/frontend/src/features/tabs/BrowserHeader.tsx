@@ -1,4 +1,3 @@
-import type { TabsRootProps } from "@pathscale/ui";
 import { Avatar, Tab as BrowserTab, TabList, TitleBar } from "@chuzz/ui";
 import { Button, Icon } from "@pathscale/ui";
 import { For, type JSX } from "solid-js";
@@ -16,12 +15,14 @@ import type { Tab } from "~/types";
  */
 export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Element {
   const browser = useBrowser();
-  const tabsControl: Omit<TabsRootProps, "children"> = {
+  const tabsControl: {
+    readonly selectedKey: string | number;
+    onSelectionChange: (key: string | number) => void;
+  } = {
     get selectedKey() {
       return browser.state.activeTabId;
     },
-    onSelectionChange: ((key: string | number) =>
-      browser.selectTab(Number(key))) as TabsRootProps["onSelectionChange"],
+    onSelectionChange: (key) => browser.selectTab(Number(key)),
   };
 
   return (
@@ -42,9 +43,14 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
         {/* Tabs.List currently requires ResizeObserver, which Blitz does not
             expose. The UI tab primitives retain selection, ARIA state, and
             keyboard navigation without its animated measurement layer. */}
-        <For each={browser.state.tabs}>
-          {(tab) => <TabPill tab={tab} isActive={tab.id === browser.state.activeTabId} />}
-        </For>
+        {/* Wrapped for the same reason as `PageArea`: a Layout resolves its
+            children once, so a `For` sitting directly here would be frozen at
+            the empty tab list it saw on the first render. */}
+        <div class="tab-strip__items">
+          <For each={browser.state.tabs}>
+            {(tab) => <TabPill tab={tab} isActive={tab.id === browser.state.activeTabId} />}
+          </For>
+        </div>
         <Button
           variant="outline"
           size="sm"
