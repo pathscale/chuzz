@@ -1,11 +1,11 @@
 /*
- * The browser interface, ported from `apps/chuzz/src/ui.rs`.
+ * The browser interface.
  *
- * Every colour here is a theme token. `ui.rs` could not do that: it wrote the
- * palette out as literals because there was no picker on that side, and the
- * comment at the top of that file says so. The result was AgencyZero's ladder
- * transcribed by hand into a Rust string, drifting from the moment it was
- * written. This file exists so that copy can be deleted rather than translated.
+ * Every colour here is a theme token. The Rust stylesheet this replaced could
+ * not do that: it wrote the palette out as literals because there was no picker
+ * on that side, so it was AgencyZero's ladder transcribed by hand into a string,
+ * drifting from the moment it was written. That file is gone rather than
+ * translated, which was the point of this one.
  *
  * State lives on data attributes rather than class names, matching
  * `@pathscale/ui`'s own components, so a rule and a test target the same thing.
@@ -15,13 +15,13 @@
   /*
    * The height chain the frame needs.
    *
-   * `ui.rs` used viewport units instead and said why: a percentage height only
-   * resolves when every ancestor has a resolved height, and a broken chain
-   * collapses the frame to its content. Viewport units cannot be used here,
-   * though — `@pathscale/ui` puts `zoom` on `#root` for interface size, and
-   * under zoom `100vw` still resolves to the unscaled viewport and then gets
-   * scaled past it, clipping the right edge of the window. So the chain is
-   * declared properly instead.
+   * The Rust stylesheet used viewport units instead, and said why: a percentage
+   * height only resolves when every ancestor has a resolved height, and a
+   * broken chain collapses the frame to its content. Viewport units cannot be
+   * used here, though. `@pathscale/ui` puts `zoom` on `#root` for interface
+   * size, and under zoom `100vw` still resolves to the unscaled viewport and
+   * then gets scaled past it, clipping the right edge of the window. So the
+   * chain is declared properly instead.
    */
   html,
   body,
@@ -203,21 +203,6 @@
     padding: 0;
   }
 
-  .loading-bar {
-    height: 2px;
-    flex-shrink: 0;
-    gap: 0;
-  }
-
-  .loading-bar-hidden {
-    visibility: hidden;
-  }
-
-  .loading-bar .progress-bar__track {
-    height: 2px;
-    border-radius: 0;
-  }
-
   /* Content row */
 
   .main-content {
@@ -298,7 +283,9 @@
     font-size: 14px;
     line-height: 1;
     opacity: 0.75;
-    transition: opacity 120ms ease, background-color 120ms ease;
+    transition:
+      opacity 120ms ease,
+      background-color 120ms ease;
     pointer-events: none;
   }
 
@@ -406,42 +393,6 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
-  /* Status strip */
-
-  .status-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 26px;
-    flex-shrink: 0;
-    padding: 0 14px;
-    border-top: 1px solid var(--color-az-hairline-soft);
-    background: var(--color-base-200);
-    color: var(--color-az-muted);
-    font-size: 11px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-
-  .status-bar > [aria-hidden="true"] {
-    flex-grow: 1;
-  }
-
-  .status-separator {
-    height: 12px;
-    align-self: center;
-  }
-
-  .status-url {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    max-width: 40%;
-  }
-
-  .status-accent {
-    color: var(--color-primary);
-  }
-
   /* Settings */
 
   .settings-dialog {
@@ -505,5 +456,4 @@
     height: 32px;
     transform: translate(-50%, -50%);
   }
-
 }

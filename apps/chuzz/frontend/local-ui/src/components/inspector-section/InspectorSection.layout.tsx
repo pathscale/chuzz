@@ -14,22 +14,13 @@ export type InspectorSectionProps = {
 };
 
 const InspectorSection: Layout<typeof inspectorSection, InspectorSectionProps> = () => (
-  <Disclosure
-    id={local.id}
-    isOpen={local.open}
-    onOpenChange={local.onOpenChange}
-    {...slot.root}
-  >
+  <Disclosure id={local.id} isOpen={local.open} onOpenChange={local.onOpenChange} {...slot.root}>
     <Disclosure.Heading>
       <Disclosure.Trigger {...slot.trigger}>
         <Text size="sm" {...slot.title}>
           {local.title}
         </Text>
-        <Chip
-          variant="flat"
-          color={local.tone === "primary" ? "primary" : "default"}
-          size="sm"
-        >
+        <Chip variant="flat" color={local.tone === "primary" ? "primary" : "default"} size="sm">
           {local.count}
         </Chip>
         <Disclosure.Indicator {...slot.indicator} />
