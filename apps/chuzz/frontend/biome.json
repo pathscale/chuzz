@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
@@ -59,6 +59,28 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["**/*.layout.tsx"],
+      "linter": {
+        "rules": {
+          "style": {
+            "useImportType": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["scripts/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    }
+  ],
   "files": {
     "includes": [
       "**",
