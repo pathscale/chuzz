@@ -13,3 +13,7 @@ docs/HANDOVER-*.md
 
 # Local-only renderer patch, see the file itself.
 .cargo/config.toml
+.cargo/config.toml.disabled
+
+# Tauri generates capability schemas during Cargo builds.
+apps/chuzz/gen/

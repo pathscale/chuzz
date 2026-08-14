@@ -42,6 +42,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = "1"
 url = "2.5"
+tauri = { version = "=2.11.5", default-features = false }
+tauri-runtime-blitz = { path = "../tauri-runtime-blitz/crates/tauri-runtime-blitz" }
 
 [profile.release]
 lto = "thin"
@@ -63,3 +65,20 @@ strip = "none"
 # Keep this in step with `ps-blitz/Cargo.toml`'s `[patch.crates-io]`.
 [patch.crates-io]
 usvg = { git = "https://github.com/DioxusLabs/resvg", branch = "devin/1785858271-intrinsic-dimensions" }
+
+# tauri-runtime-blitz pins ps-blitz by git rev, while this workspace consumes it
+# by path. Without this patch the two resolve to *different* engines in one
+# build, and the symptom is not a version warning but a missing method:
+#
+#   error: cannot find function `set_deep_profiling_enabled` in crate `blitz_shell`
+#   error: no method named `add_poll_hook` found for `&mut ScriptDocument`
+#
+# Both exist on the local checkout and neither exists at the pinned rev, so the
+# error reads as "the engine is broken" when it is really "there are two".
+# Redirect the git source at the same paths this workspace already uses, so
+# every crate in the graph links one engine.
+[patch."https://github.com/pathscale/ps-blitz.git"]
+ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
+ps-blitz-script = { path = "../ps-blitz/packages/blitz-script" }
+ps-blitz-shell = { path = "../ps-blitz/packages/blitz-shell" }
+ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }

@@ -1,4 +1,12 @@
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use brotli::CompressorWriter;
+
+const CSS_MARKER: &str = "__CHUZZ_EMBEDDED_CSS__";
+const JS_URL: &str = "chuzz://ui/__chuzz__/app.js";
 
 /// First line of a command's stdout, or `None` when it fails or prints nothing.
 fn first_line(cmd: &str, args: &[&str]) -> Option<String> {
@@ -43,6 +51,99 @@ fn stamp_build() {
     println!("cargo:rerun-if-changed=src");
 }
 
+fn only_file_with_extension(directory: &Path, extension: &str) -> PathBuf {
+    let mut matches = fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some(extension));
+    let path = matches
+        .next()
+        .unwrap_or_else(|| panic!("no .{extension} asset in {}", directory.display()));
+    assert!(
+        matches.next().is_none(),
+        "expected one .{extension} asset in {}",
+        directory.display()
+    );
+    path
+}
+
+fn compress_asset(path: &Path, output: &Path, quality: u32) -> usize {
+    let input =
+        fs::read(path).unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let mut compressed = Vec::new();
+    {
+        let mut encoder = CompressorWriter::new(&mut compressed, 4096, quality, 22);
+        encoder
+            .write_all(&input)
+            .unwrap_or_else(|error| panic!("cannot compress {}: {error}", path.display()));
+    }
+    fs::write(output, compressed).expect("write embedded Chuzz UI asset");
+    input.len()
+}
+
+/// Compile and Brotli-embed the Solid browser chrome using the same asset
+/// loading shape as AgencyZero's Blitz document factory.
+fn build_frontend() {
+    let manifest_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR"),
+    );
+    let frontend = manifest_dir.join("frontend");
+    let output = Command::new("bun")
+        .args(["run", "build"])
+        .current_dir(&frontend)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to start system bun: {error}"));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr.lines().rev().take(30).collect::<Vec<_>>();
+        panic!(
+            "Solid frontend build failed:\n{}",
+            tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    let dist = manifest_dir.join("dist");
+    let css_path = only_file_with_extension(&dist.join("static/css"), "css");
+    let js_path = only_file_with_extension(&dist.join("static/js"), "js");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
+    let quality = if std::env::var("PROFILE").as_deref() == Ok("release") {
+        9
+    } else {
+        2
+    };
+    let css_len = compress_asset(&css_path, &out_dir.join("embedded.css.br"), quality);
+    let js_len = compress_asset(&js_path, &out_dir.join("embedded.js.br"), quality);
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"dark light\"><title>Chuzz</title><style>{CSS_MARKER}</style></head><body><div id=\"root\"></div><script>globalThis.__CHUZZ_BLITZ__=true</script><script src=\"{JS_URL}\"></script></body></html>"
+    );
+    let generated = format!(
+        "const CHUZZ_SHELL_HTML: &str = {html:?};\n\
+         const CHUZZ_CSS_MARKER: &str = {CSS_MARKER:?};\n\
+         const CHUZZ_JS_URL: &str = {JS_URL:?};\n\
+         const CHUZZ_CSS_LEN: usize = {css_len};\n\
+         const CHUZZ_JS_LEN: usize = {js_len};\n\
+         const CHUZZ_CSS_BROTLI: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/embedded.css.br\"));\n\
+         const CHUZZ_JS_BROTLI: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/embedded.js.br\"));\n"
+    );
+    fs::write(out_dir.join("chuzz_embedded.rs"), generated)
+        .expect("write embedded Chuzz UI module");
+
+    for path in [
+        "frontend/src",
+        "frontend/local-ui/src",
+        "frontend/local-ui/package.json",
+        "frontend/package.json",
+        "frontend/bun.lock",
+        "frontend/rsbuild.config.ts",
+        "frontend/tsconfig.json",
+    ] {
+        println!("cargo:rerun-if-changed={path}");
+    }
+}
+
 fn main() {
     stamp_build();
+    build_frontend();
+    tauri_build::build();
 }

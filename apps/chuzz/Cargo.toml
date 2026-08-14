@@ -13,7 +13,7 @@ publish = false
 
 [[bin]]
 name = "chuzz-gui"
-path = "src/main.rs"
+path = "src/tauri_main.rs"
 
 [features]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
@@ -68,6 +68,14 @@ dioxus-native = { workspace = true, features = [
 ] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-runtime-blitz.workspace = true
+
+[build-dependencies]
+brotli.workspace = true
+tauri-build = { version = "2", features = [] }
 
 # Native menu, macOS only. Pure Rust under MIT/Apache-2.0, and the same
 # crate Tauri builds its menus on, so this does not bring a C++ toolkit in.
