@@ -5,7 +5,12 @@
 
 use blitz_traits::net::{Request, Url};
 
-/// Page opened by the home button.
+/// Where a capture goes when the command line names no URL.
+///
+/// The home button it was written for is gone: the window's history controls
+/// are keyboard actions now. Only `--capture` still needs a default, so this
+/// follows that feature rather than standing on its own.
+#[cfg(feature = "capture")]
 pub const HOME_URL: &str = "https://24x.ai/";
 
 /// Page opened by a new tab: nothing at all.
