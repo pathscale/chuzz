@@ -23,7 +23,12 @@ export function resolveBrowserShortcut(event: ShortcutInput): BrowserShortcut | 
   if (event.key === "F5" || event.code === "F5") return "reload";
 
   const key = event.key.toLowerCase();
-  if (event.ctrlKey && !event.metaKey && !event.shiftKey && (key === "t" || event.code === "KeyT")) {
+  if (
+    event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    (key === "t" || event.code === "KeyT")
+  ) {
     return "new-tab";
   }
   if (!event.metaKey) return undefined;

@@ -50,6 +50,8 @@ const en = {
     settings: "Settings",
     addressPlaceholder: "Search or enter address",
     inspector: "Inspector",
+    showInspector: "Show inspector",
+    hideInspector: "Hide inspector",
     page: "Page",
     history: "History",
     network: "Network",
@@ -62,9 +64,7 @@ const en = {
 } as const;
 
 type Leaves<T, Prefix extends string = ""> = {
-  [K in keyof T & string]: T[K] extends string
-    ? `${Prefix}${K}`
-    : Leaves<T[K], `${Prefix}${K}.`>;
+  [K in keyof T & string]: T[K] extends string ? `${Prefix}${K}` : Leaves<T[K], `${Prefix}${K}.`>;
 }[keyof T & string];
 
 export type UiMessage = Leaves<typeof en>;

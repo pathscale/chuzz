@@ -1,8 +1,8 @@
-import { createContext, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
+import { createContext, onCleanup, onMount, type ParentProps, useContext } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { api } from "~/api";
+import { type BrowserShortcut, resolveBrowserShortcut } from "~/lib/shortcuts";
 import { syncDiagnostics } from "~/stores/diagnostics";
-import { resolveBrowserShortcut, type BrowserShortcut } from "~/lib/shortcuts";
 import type { PanelSections, PanelState, StatusReadout, Tab, TabId } from "~/types";
 
 interface BrowserState {

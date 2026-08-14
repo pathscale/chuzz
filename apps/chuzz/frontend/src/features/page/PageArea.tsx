@@ -35,9 +35,7 @@ export function PageArea(): JSX.Element {
           working. Same rule applies in `BrowserHeader`. */}
       <div class="page-stack">
         <For each={browser.state.tabs}>
-          {(tab) => (
-            <Page tabId={String(tab.id)} active={tab.id === browser.state.activeTabId} />
-          )}
+          {(tab) => <Page tabId={String(tab.id)} active={tab.id === browser.state.activeTabId} />}
         </For>
       </div>
     </Viewport>
