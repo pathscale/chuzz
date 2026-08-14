@@ -43,8 +43,25 @@ type Node = {
   bounds: [number, number, number, number];
 };
 
-const nodes = (response: Record<string, any>): Node[] =>
+/** What the control plane answers with. Only the part these scripts read. */
+type ControlResponse = {
+  id?: number;
+  result?: { structuredContent?: { value?: { nodes?: Node[] } } };
+};
+
+const nodes = (response: ControlResponse): Node[] =>
   response.result?.structuredContent?.value?.nodes ?? [];
+
+/**
+ * The inspector handle, by the labels it actually carries.
+ *
+ * It names its direction rather than its target now, so matching one fixed
+ * string finds it in only one of its two states. A script that silently fails
+ * to find a control reports "the control did nothing", which is the wrong bug
+ * to go looking for.
+ */
+const isPanelHandle = (node: Node) =>
+  node.visible && (node.name === "Show inspector" || node.name === "Hide inspector");
 
 const socket = net.createConnection(socketPath);
 let buffer = Buffer.alloc(0);
@@ -55,6 +72,10 @@ let initialVisible = 0;
 let typedAfterSet: string | null | undefined;
 let setResult: unknown;
 let initialAddress: string | null | undefined;
+let pageResult: { address: string | null | undefined; loaded: boolean } = {
+  address: undefined,
+  loaded: false,
+};
 const send = (value: unknown) => socket.write(frame(value));
 
 socket.on("connect", () =>
@@ -72,7 +93,7 @@ socket.on("data", (data) => {
   while (buffer.length >= 4) {
     const length = buffer.readUInt32BE();
     if (buffer.length < length + 4) return;
-    const response = JSON.parse(buffer.subarray(5, 4 + length).toString());
+    const response: ControlResponse = JSON.parse(buffer.subarray(5, 4 + length).toString());
     buffer = buffer.subarray(4 + length);
 
     switch (response.id) {
@@ -83,7 +104,7 @@ socket.on("data", (data) => {
         const tree = nodes(response);
         addressId = tree.find((node) => node.visible && node.role === "textbox")?.id ?? 0;
         initialAddress = tree.find((node) => node.visible && node.role === "textbox")?.value;
-        panelId = tree.find((node) => node.visible && node.name === "Toggle inspector")?.id ?? 0;
+        panelId = tree.find(isPanelHandle)?.id ?? 0;
         initialVisible = tree.filter((node) => node.visible).length;
         if (!addressId || !panelId) throw new Error("address or panel control missing");
         send(act(3, "setValue", { nodeId: addressId, value: "https://example.com" }));
@@ -117,17 +138,17 @@ socket.on("data", (data) => {
         const tree = nodes(response);
         const address = tree.find((node) => node.visible && node.role === "textbox")?.value;
         const loaded = tree.some((node) => node.visible && node.name.includes("Example Domain"));
-        panelId = tree.find((node) => node.visible && node.name === "Toggle inspector")?.id ?? 0;
+        panelId = tree.find(isPanelHandle)?.id ?? 0;
         send(act(8, "click", { nodeId: panelId }));
         setTimeout(() => send(inspect(9)), 200);
-        (globalThis as any).__result = { address, loaded };
+        pageResult = { address, loaded };
         break;
       }
       case 8:
         break;
       case 9: {
         const tree = nodes(response);
-        const result = (globalThis as any).__result;
+        const result = pageResult;
         const panelChanged = tree.filter((node) => node.visible).length !== initialVisible;
         console.log(
           JSON.stringify({
