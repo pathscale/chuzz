@@ -739,6 +739,37 @@ mod tests {
         assert!(stored.inspection, "an explicit true is still honoured");
     }
 
+    /// A reload has to ask the network, not the cache.
+    ///
+    /// This replaces a test that lived on the old loader, where a wrapping
+    /// provider stamped `no-cache` on *every* request a reloaded document made.
+    /// That guarantee is gone: `fetch_page` stamps the document request and each
+    /// prefetched script, and anything the document goes on to fetch for itself
+    /// once attached — stylesheets, images, fonts — is served under the ordinary
+    /// policy. Reloading a page whose HTML is unchanged but whose CSS moved will
+    /// still show the old CSS. Worth knowing before someone debugs it twice.
+    #[test]
+    fn a_reload_asks_the_network_for_the_document() {
+        let mut request = Request::get(Url::parse("https://example.com/").unwrap());
+        assert!(
+            request
+                .headers
+                .get(blitz_traits::net::http::header::CACHE_CONTROL)
+                .is_none(),
+            "an ordinary navigation carries no cache directive"
+        );
+
+        revalidate(&mut request);
+
+        assert_eq!(
+            request
+                .headers
+                .get(blitz_traits::net::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+    }
+
     #[test]
     fn browser_starts_with_one_blank_tab() {
         let browser = Browser::new(None);

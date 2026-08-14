@@ -1,90 +1,33 @@
-//! Fetching a URL and turning the bytes into a renderable page document.
+//! The shared parts of turning a URL into a renderable document.
 //!
-//! Each tab owns one loader. A loader holds at most one in-flight request: a
-//! new navigation aborts the previous one, so a slow page cannot land after
-//! the user has already moved on.
+//! Tab loading itself lives in `browser.rs`, next to the state it mutates.
+//! What stays here is what more than one caller needs: the net provider type,
+//! the web-API shim Boa cannot supply for itself, and the headless capture
+//! path, which has to load a page the same way a tab does without a window to
+//! do it in.
 
-use std::sync::{Arc, Mutex};
+// Everything but the shim and the provider alias belongs to `load_for_capture`,
+// which is off by default: it pulls in the CPU rasteriser the windowed browser
+// never needs.
+#[cfg(feature = "capture")]
+use std::sync::Arc;
 
-use blitz_dom::{DocumentConfig, FontContext};
-use blitz_html::{HtmlDocument, HtmlProvider};
-use blitz_traits::net::{
-    AbortController, AbortSignal, NetHandler, NetProvider as NetProviderTrait, Request,
-};
-use blitz_traits::shell::ShellProvider;
-use dioxus_native::prelude::*;
+#[cfg(feature = "capture")]
+use blitz_dom::DocumentConfig;
+#[cfg(feature = "capture")]
+use blitz_html::HtmlProvider;
+#[cfg(feature = "capture")]
+use blitz_traits::net::Request;
 
+#[cfg(feature = "capture")]
 use crate::decode::decode_body;
-use crate::history::{History, SyncStore, TabNavProvider};
 
-#[cfg(feature = "javascript")]
+#[cfg(all(feature = "capture", feature = "javascript"))]
 use blitz_traits::net::Url;
-#[cfg(feature = "javascript")]
+#[cfg(all(feature = "capture", feature = "javascript"))]
 use std::collections::HashMap;
 
 pub type NetProvider = blitz_net::Provider;
-
-/// A document-scoped provider used for a user-requested reload.
-///
-/// The top-level HTML request is made by `DocumentLoader`, while stylesheets,
-/// images, fonts and script-driven fetches are made later through the provider
-/// stored in `DocumentConfig`. Revalidating only the first request can combine
-/// fresh HTML with stale assets, so every request belonging to the replacement
-/// document must carry the same cache directive.
-struct RevalidatingNetProvider {
-    inner: Arc<dyn NetProviderTrait>,
-}
-
-impl NetProviderTrait for RevalidatingNetProvider {
-    fn fetch(&self, doc_id: usize, mut request: Request, handler: Box<dyn NetHandler>) {
-        revalidate_request(&mut request);
-        self.inner.fetch(doc_id, request, handler);
-    }
-
-    fn is_noop(&self) -> bool {
-        self.inner.is_noop()
-    }
-}
-
-fn revalidate_request(request: &mut Request) {
-    request.headers.insert(
-        blitz_traits::net::http::header::CACHE_CONTROL,
-        blitz_traits::net::http::HeaderValue::from_static("no-cache"),
-    );
-}
-
-/// Shown when a page cannot be fetched at all (DNS failure, refused
-/// connection, TLS error). The message node is filled in from the real error.
-const ERROR_HTML: &str = r#"<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>Page not available</title>
-    <style>
-      body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 12vh 10vw; color: #202124; background: #fff; }
-      h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; }
-      p { margin: 0 0 8px; color: #5f6368; }
-      #error { font-family: ui-monospace, monospace; font-size: 13px; color: #b3261e; word-break: break-word; }
-    </style>
-  </head>
-  <body>
-    <h1>This page could not be loaded</h1>
-    <p>Chuzz could not reach the site.</p>
-    <p id="error"></p>
-  </body>
-</html>
-"#;
-
-/// Shown when the server answered but sent nothing back.
-const EMPTY_HTML: &str = r#"<!doctype html>
-<html>
-  <head><meta charset="utf-8"><title>Empty response</title></head>
-  <body style="font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 12vh 10vw; color: #5f6368;">
-    <h1 style="font-size: 22px; color: #202124;">Empty response</h1>
-    <p>The server returned no content for this address.</p>
-  </body>
-</html>
-"#;
 
 /// Web APIs the script engine does not provide.
 ///
@@ -272,298 +215,14 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   }
 })();
 "#;
-
-/// A new tab: an empty document, not a failed load.
-const BLANK_HTML: &str = r#"<!doctype html>
-<html><head><meta charset="utf-8"><title></title></head>
-<body style="margin:0;background:#0f1622"></body></html>
-"#;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum LoadStatus {
-    Loading,
-    Idle,
-}
-
-/// A page that finished loading and is ready to be swapped into its tab.
-pub struct LoadedDocument {
-    pub document: Box<dyn blitz_dom::Document>,
-    pub title: String,
-}
-
-pub struct DocumentLoader {
-    pub font_ctx: FontContext,
-    pub net_provider: Arc<NetProvider>,
-    pub status: Signal<LoadStatus>,
-    pub history: SyncStore<History>,
-    /// Bumped by `reload`. The tab's load resource reads it, so reloading the
-    /// same URL still re-runs the fetch.
-    pub reload_generation: Signal<u64>,
-    /// Set by `reload`, consumed by the next top-level fetch.
-    ///
-    /// Bumping the generation only re-runs the fetch; it does not make that
-    /// fetch reach the network. `blitz-net` is built with the `cache` feature at
-    /// `CacheMode::Default`, so a still-fresh entry is served without
-    /// contacting the server and a reload could not pick up a new deploy until
-    /// the cached copy expired on its own.
-    revalidate_next_load: Mutex<bool>,
-    current_abort: Mutex<Option<AbortController>>,
-}
-
-impl DocumentLoader {
-    pub fn new(net_provider: Arc<NetProvider>, history: SyncStore<History>) -> Self {
-        Self {
-            font_ctx: FontContext::default(),
-            net_provider,
-            status: Signal::new(LoadStatus::Idle),
-            history,
-            reload_generation: Signal::new(0),
-            revalidate_next_load: Mutex::new(false),
-            current_abort: Mutex::new(None),
-        }
-    }
-
-    pub fn reload(&self) {
-        self.abort_current();
-        if let Ok(mut flag) = self.revalidate_next_load.lock() {
-            *flag = true;
-        }
-        let mut generation = self.reload_generation;
-        *generation.write() += 1;
-    }
-
-    /// Whether the load about to start was asked for by the user, clearing the
-    /// request so an ordinary navigation afterwards uses the cache normally.
-    fn take_revalidate(&self) -> bool {
-        self.revalidate_next_load
-            .lock()
-            .map(|mut flag| std::mem::replace(&mut *flag, false))
-            .unwrap_or(false)
-    }
-
-    pub fn reload_generation(&self) -> u64 {
-        *self.reload_generation.read()
-    }
-
-    pub fn abort_current(&self) {
-        // A poisoned lock here would mean a panic while swapping abort
-        // handles; dropping the stale handle is still the right recovery.
-        if let Ok(mut slot) = self.current_abort.lock()
-            && let Some(controller) = slot.take()
-        {
-            controller.abort();
-        }
-    }
-
-    fn install_abort(&self) -> AbortSignal {
-        let controller = AbortController::default();
-        let signal = controller.signal.clone();
-        if let Ok(mut slot) = self.current_abort.lock() {
-            if let Some(previous) = slot.take() {
-                previous.abort();
-            }
-            *slot = Some(controller);
-        }
-        signal
-    }
-
-    fn document_net_provider(&self, revalidate: bool) -> Arc<dyn NetProviderTrait> {
-        let inner = Arc::clone(&self.net_provider) as Arc<dyn NetProviderTrait>;
-        if revalidate {
-            Arc::new(RevalidatingNetProvider { inner })
-        } else {
-            inner
-        }
-    }
-
-    fn doc_config(
-        &self,
-        base_url: Option<String>,
-        signal: AbortSignal,
-        revalidate: bool,
-    ) -> DocumentConfig {
-        DocumentConfig {
-            base_url,
-            net_provider: Some(self.document_net_provider(revalidate)),
-            navigation_provider: Some(Arc::new(TabNavProvider {
-                history: self.history,
-            })),
-            shell_provider: Some(consume_context::<Arc<dyn ShellProvider>>()),
-            html_parser_provider: Some(Arc::new(HtmlProvider)),
-            font_ctx: Some(self.font_ctx.clone()),
-            abort_signal: Some(signal),
-            ..Default::default()
-        }
-    }
-
-    pub async fn load(&self, req: Request) -> LoadedDocument {
-        if req.url.scheme() == "about" {
-            let signal = self.install_abort();
-            let config = self.doc_config(None, signal, false);
-            let document = HtmlDocument::from_html(BLANK_HTML, config).into_inner();
-            return LoadedDocument {
-                document: Box::new(document),
-                title: String::new(),
-            };
-        }
-
-        let signal = self.install_abort();
-        // A reload means "check with the server", which is what every browser
-        // does and what the cache would otherwise prevent. `no-cache` asks for
-        // revalidation rather than refusing the cache outright, so an unchanged
-        // page still costs a 304 and not a full re-download.
-        let revalidate = self.take_revalidate();
-        let mut req = req.signal(signal.clone());
-        if revalidate {
-            revalidate_request(&mut req);
-        }
-        let response = self.net_provider.fetch_async(req).await;
-
-        match response {
-            Ok((resolved_url, bytes)) => {
-                let html = if bytes.is_empty() {
-                    EMPTY_HTML.to_string()
-                } else {
-                    decode_body(&bytes)
-                };
-                let config = self.doc_config(Some(resolved_url), signal.clone(), revalidate);
-                self.build_page(&html, config, &signal, revalidate).await
-            }
-            Err(error) => {
-                let config = self.doc_config(None, signal, false);
-                let mut document = HtmlDocument::from_html(ERROR_HTML, config).into_inner();
-                if let Some(text_node) = document
-                    .get_element_by_id("error")
-                    .and_then(|id| document.get_node(id))
-                    .and_then(|node| node.children.first().copied())
-                {
-                    document
-                        .mutate()
-                        .set_node_text(text_node, &format!("{error:?}"));
-                }
-                LoadedDocument {
-                    document: Box::new(document),
-                    title: String::from("Page not available"),
-                }
-            }
-        }
-    }
-}
-
-impl DocumentLoader {
-    /// Parse a page. Without JavaScript the parsed DOM is the final DOM.
-    #[cfg(not(feature = "javascript"))]
-    async fn build_page(
-        &self,
-        html: &str,
-        config: DocumentConfig,
-        _signal: &AbortSignal,
-        _revalidate: bool,
-    ) -> LoadedDocument {
-        let document = HtmlDocument::from_html(html, config).into_inner();
-        let title = document
-            .find_title_node()
-            .map(|node| node.text_content())
-            .unwrap_or_default();
-        LoadedDocument {
-            document: Box::new(document),
-            title,
-        }
-    }
-
-    /// Parse a page and run its scripts.
-    ///
-    /// Most of the web ships an empty body and builds the DOM in JavaScript, so
-    /// without this step such a page paints nothing at all. The script fetcher
-    /// is synchronous, so external sources are prefetched through the browser's
-    /// own net provider (keeping cookies and caching) and then served from
-    /// memory.
-    #[cfg(feature = "javascript")]
-    async fn build_page(
-        &self,
-        html: &str,
-        config: DocumentConfig,
-        signal: &AbortSignal,
-        revalidate: bool,
-    ) -> LoadedDocument {
-        use blitz_dom::Document as _;
-
-        let document = blitz_script::ScriptDocument::from_html(html, config);
-
-        let mut scripts: HashMap<Url, String> = HashMap::new();
-        for url in document.external_script_urls() {
-            if scripts.contains_key(&url) {
-                continue;
-            }
-            let mut request = Request::get(url.clone()).signal(signal.clone());
-            if revalidate {
-                revalidate_request(&mut request);
-            }
-            if let Ok((_, bytes)) = self.net_provider.fetch_async(request).await {
-                scripts.insert(url, decode_body(&bytes));
-            }
-        }
-
-        let mut document = document.with_fetcher(PrefetchedScripts { scripts });
-        // Installed before the page's own scripts, which read these at startup.
-        document.eval(WEB_API_SHIM);
-        document.execute_scripts();
-
-        // Scripts keep working after the first pass: timers, microtasks and
-        // fetches all land later. Drive the document until it settles, or the
-        // page swaps in as the empty mount point the server actually sent.
-        for _ in 0..24 {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            document.eval("void 0");
-            document.poll(None);
-            // Settle once the page has built something worth painting.
-            //
-            // Checking `body > *` was wrong: a script-rendered page ships an
-            // empty mount point, so that matches on the first iteration and
-            // the loop exits before any script has run. A framework mounts
-            // *into* that element, so the test is whether the tree has grown
-            // below it.
-            let built = document
-                .inner()
-                .query_selector("body > * > *")
-                .ok()
-                .flatten()
-                .is_some();
-            if built {
-                break;
-            }
-        }
-
-        // Resolve style and layout before handing the document over.
-        // AgencyZero's blitz-preview does the same after its poll loop: without
-        // it the tree is built but unmeasured, so anything whose size comes
-        // from layout (an inline SVG sized `w-auto` from its viewBox, a flex
-        // child) is swapped in at the wrong size or not painted at all.
-        document.inner_mut().resolve(0.0);
-
-        let title = {
-            let inner = document.inner();
-            inner
-                .find_title_node()
-                .map(|node| node.text_content())
-                .unwrap_or_default()
-        };
-
-        LoadedDocument {
-            document: Box::new(document),
-            title,
-        }
-    }
-}
-
 /// Serves the sources prefetched above, falling back to the default fetcher
 /// for `file:` and `data:` URLs.
-#[cfg(feature = "javascript")]
+#[cfg(all(feature = "capture", feature = "javascript"))]
 struct PrefetchedScripts {
     scripts: HashMap<Url, String>,
 }
 
-#[cfg(feature = "javascript")]
+#[cfg(all(feature = "capture", feature = "javascript"))]
 impl blitz_script::ScriptFetcher for PrefetchedScripts {
     fn fetch(&self, url: &Url) -> Result<String, blitz_script::FetchError> {
         if let Some(source) = self.scripts.get(url) {
@@ -575,10 +234,12 @@ impl blitz_script::ScriptFetcher for PrefetchedScripts {
 
 /// Load a page outside the browser, for headless capture.
 ///
-/// Shares the fetch, decompression, script execution and web-API shims with
-/// the browser's own loader, so a capture shows what a tab would show. It
-/// cannot reuse `DocumentLoader` itself, which is built around Dioxus signals
-/// that only exist inside a running UI.
+/// Shares the fetch, decompression, script execution and web-API shim with the
+/// browser's own loading, so a capture shows what a tab would show. It is a
+/// separate path rather than the same one because `browser.rs` loads into a
+/// live window: it attaches the result to a `<web-view>` and emits events, and
+/// there is no window here to attach to. **A capture therefore proves the
+/// engine renders and does not prove the shell's mount rendezvous.**
 #[cfg(feature = "capture")]
 pub async fn load_for_capture(
     request: Request,
@@ -679,54 +340,5 @@ impl CapturedDocument {
             Self::Script(document) => callback(&mut document.inner_mut()),
             Self::Html(document) => callback(document),
         }
-    }
-}
-
-impl Drop for DocumentLoader {
-    fn drop(&mut self) {
-        self.abort_current();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Default)]
-    struct RecordingProvider {
-        cache_controls: Mutex<Vec<Option<String>>>,
-    }
-
-    impl NetProviderTrait for RecordingProvider {
-        fn fetch(&self, _doc_id: usize, request: Request, _handler: Box<dyn NetHandler>) {
-            let value = request
-                .headers
-                .get(blitz_traits::net::http::header::CACHE_CONTROL)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned);
-            self.cache_controls.lock().unwrap().push(value);
-        }
-    }
-
-    struct IgnoreResponse;
-
-    impl NetHandler for IgnoreResponse {
-        fn bytes(self: Box<Self>, _resolved_url: String, _bytes: blitz_traits::net::Bytes) {}
-    }
-
-    #[test]
-    fn reload_provider_revalidates_document_subresources() {
-        let recorded = Arc::new(RecordingProvider::default());
-        let provider = RevalidatingNetProvider {
-            inner: Arc::clone(&recorded) as Arc<dyn NetProviderTrait>,
-        };
-        let url = blitz_traits::net::Url::parse("https://example.com/app.css").unwrap();
-
-        provider.fetch(7, Request::get(url), Box::new(IgnoreResponse));
-
-        assert_eq!(
-            recorded.cache_controls.lock().unwrap().as_slice(),
-            &[Some(String::from("no-cache"))]
-        );
     }
 }
