@@ -2,7 +2,7 @@ import { InspectorRow, InspectorSection, SidePanel as Panel } from "@chuzz/ui";
 import { For, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
-import type { InspectorSection, PanelSections } from "~/types";
+import type { InspectorSection as InspectorSectionModel, PanelSections } from "~/types";
 
 /**
  * The right-hand inspector, ported from `side_panel.rs` (itself a port of
@@ -14,7 +14,7 @@ import type { InspectorSection, PanelSections } from "~/types";
  *
  * Rows are still mock, exactly as they were in Rust. The shape is real.
  */
-const SECTIONS: InspectorSection[] = [
+const SECTIONS: InspectorSectionModel[] = [
   {
     key: "page",
     title: "Page",
@@ -71,7 +71,7 @@ export function SidePanel(): JSX.Element {
   );
 }
 
-function Section(props: { section: InspectorSection; isOpen: boolean }): JSX.Element {
+function Section(props: { section: InspectorSectionModel; isOpen: boolean }): JSX.Element {
   const browser = useBrowser();
   const toggle = () => browser.toggleSection(props.section.key as keyof PanelSections);
 
