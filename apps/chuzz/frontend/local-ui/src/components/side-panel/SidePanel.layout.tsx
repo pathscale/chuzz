@@ -1,9 +1,10 @@
 import { Text } from "@pathscale/ui";
-import { Show } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import type { Layout } from "solid-layouts";
 import { sidePanel } from "./SidePanel.recipe";
 
 export type SidePanelProps = {
+  children: JSX.Element;
   title: string;
   collapsed: boolean;
 };
