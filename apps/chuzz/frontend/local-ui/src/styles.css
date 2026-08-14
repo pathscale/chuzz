@@ -247,9 +247,13 @@
     height: 100%;
   }
 
+  /* The viewing area carries the themed surface. The blank document the shell
+     loads is transparent, so an empty tab shows this rather than a colour
+     hardcoded in Rust that no theme could reach. */
   .page {
     width: 100%;
     height: 100%;
+    background: var(--color-base-200);
   }
 
   .page-active {
