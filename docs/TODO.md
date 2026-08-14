@@ -55,6 +55,47 @@ The descriptors are captured (`blitz-dom/src/net.rs:390`), mapped correctly
 is something the real page does that the fixtures do not — the `@import` inside the
 stylesheet is the next thing to eliminate.
 
+### ebay.com crashes, and the three symptoms say why
+
+Deterministic, headless:
+
+```bash
+./target/release/chuzz-gui --capture /tmp/out.png https://www.ebay.com
+```
+
+```
+panicked at stylo-0.20.0/values/computed/length_percentage.rs:658
+  <Dimension as MaybeResolve>::maybe_resolve::<blitz_dom::layout::resolve_calc_value>
+```
+
+Line 658 is an `unreachable!()` in `CalcLengthPercentage::resolve`, reached when a `calc()`
+resolves to something that is not a length. The interesting part is that **the same path
+produced three different symptoms**, which is why the leading hypothesis is a use-after-free
+rather than a bad `calc()`:
+
+| | Symptom | Faulting value |
+|---|---|---|
+| SIGSEGV in taffy layout | dereference | `0x4475800000000031` — `0x44758000` is the f32 bit pattern for `981.0` |
+| SIGBUS in the GUI | `pc = lr = 0x1`, zero frames | jumped to address `0x1` |
+| Rust panic, headless | `unreachable!()` | a non-length `calc()` leaf |
+
+`blitz-dom/src/layout/mod.rs:205` does
+`unsafe { &*(calc_ptr as *const CalcLengthPercentage) }` — a raw pointer into Stylo's computed
+style, handed to taffy and cached. Reading a float as a pointer, jumping to `0x1`, and
+decoding the wrong enum variant are all what you would expect if that pointer outlives the
+style it points into. **Not proven. Treat as hypothesis**, and reach for a fixture that
+recomputes style under an existing layout cache rather than for the ebay page.
+
+Release builds keep symbols and line tables (`debug = "line-tables-only"`, `strip = "none"`),
+so a fresh report symbolicates with `atos`.
+
+### Housekeeping
+
+Stale `chuzz-*.sock` and `.json` descriptors accumulate in `$TMPDIR` — 61 of them at one
+count. `Drop` cleans up; `SIGKILL` does not. Sweep descriptors whose pid is gone, at startup.
+**Never trust a count of files as a test** here: the socket gate was verified per-pid
+precisely because that directory was already full of dead ones.
+
 
 Written 2026-08-11, revised the same day after the first round of measurement. A
 high-level index: every line points at the document carrying the evidence and the line
