@@ -10,8 +10,8 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use blitz_dom::NodeId;
 use blitz_dom::BaseDocument;
+use blitz_dom::NodeId;
 
 /// Write the tree rooted at the document root to `output`.
 pub fn write_tree(document: &BaseDocument, output: &Path) -> std::io::Result<()> {
@@ -62,8 +62,7 @@ fn census(document: &BaseDocument) -> String {
         fanout.push(node.children.len());
         nodes += 1;
         let layout = has_layout(node).then(|| *node.final_layout());
-        let has_box = layout
-            .is_some_and(|l| l.size.width > 0.0 || l.size.height > 0.0);
+        let has_box = layout.is_some_and(|l| l.size.width > 0.0 || l.size.height > 0.0);
         match node.element_data() {
             Some(data) => {
                 elements += 1;
@@ -102,7 +101,11 @@ fn census(document: &BaseDocument) -> String {
     let twos = fanout.iter().filter(|n| **n == 2).count();
     let max_fanout = fanout.iter().copied().max().unwrap_or(0);
     let total_children: usize = fanout.iter().sum();
-    let mean = if nodes == 0 { 0.0 } else { total_children as f64 / nodes as f64 };
+    let mean = if nodes == 0 {
+        0.0
+    } else {
+        total_children as f64 / nodes as f64
+    };
     format!(
         "# fanout\n\
          #   leaves (0 kids) {leaves}  ({})\n\

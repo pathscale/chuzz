@@ -1,4 +1,4 @@
-import type { PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type { DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
 
 /**
  * The shell surface, as the interface sees it.
@@ -49,6 +49,14 @@ export interface BrowserApi {
   toggleSection(section: keyof PanelState["sections"]): Promise<void>;
 
   status(): Promise<StatusReadout>;
+
+  /** What the inspection and profiling switches are doing right now. */
+  diagnostics(): Promise<DiagnosticsState>;
+  /**
+   * Apply both switches and report what actually took effect. Ignored, rather
+   * than rejected, while the environment holds them.
+   */
+  setDiagnostics(inspection: boolean, profiling: boolean): Promise<DiagnosticsState>;
 
   on<K extends keyof BrowserEvents>(
     event: K,

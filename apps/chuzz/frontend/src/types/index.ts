@@ -98,3 +98,23 @@ export interface StatusReadout {
   nodeCount: number;
   transferred: string;
 }
+
+/**
+ * What the diagnostics plane is doing, as reported by the runtime.
+ *
+ * Read back rather than remembered: the runtime refuses deep profiling while
+ * inspection is off, so the pair a caller asked for is not always the pair in
+ * effect.
+ */
+export interface DiagnosticsState {
+  /** The local inspection and agent-control socket is listening. */
+  inspection: boolean;
+  /** Intrusive performance collection is running. */
+  profiling: boolean;
+  /**
+   * `CHUZZ_CONTROL` decided this run, so the switches are held and the window
+   * shows them as such. It is also the way back in: a window whose stored
+   * setting left inspection off can always be started with it again.
+   */
+  locked: boolean;
+}

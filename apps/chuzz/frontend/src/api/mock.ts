@@ -1,5 +1,5 @@
 import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
-import type { PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type { DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
 
 const HOME_URL = "about:blank";
 
@@ -32,6 +32,10 @@ export function createMockApi(): BrowserApi {
     collapsed: true,
     sections: { page: true, history: true, network: false, console: false },
   };
+
+  // Off by default, as in the real window: the inspection plane lets any local
+  // process drive the browser, so it is asked for rather than assumed.
+  let diagnostics: DiagnosticsState = { inspection: false, profiling: false, locked: false };
 
   const handlers: { [K in keyof BrowserEvents]: Set<(payload: BrowserEvents[K]) => void> } = {
     "tabs-changed": new Set(),
@@ -160,6 +164,16 @@ export function createMockApi(): BrowserApi {
     },
 
     status: async () => readout(),
+
+    // There is no runtime under `rsbuild dev`, so these only remember what
+    // they were told. Never `locked`: the environment override is a property
+    // of the real process, and pretending otherwise would make the switches
+    // untestable in the browser.
+    diagnostics: async () => diagnostics,
+    setDiagnostics: async (inspection, profiling) => {
+      diagnostics = { inspection, profiling: inspection && profiling, locked: false };
+      return diagnostics;
+    },
 
     async on<K extends keyof BrowserEvents>(
       event: K,
