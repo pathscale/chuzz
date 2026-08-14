@@ -36,7 +36,8 @@ function Shell(): JSX.Element {
       <MainContent>
         <PageArea />
         <PanelHandle
-          title="Toggle inspector"
+          title={browser.state.panel.collapsed ? "Show inspector" : "Hide inspector"}
+          collapsed={browser.state.panel.collapsed}
           onClick={() => browser.setPanelCollapsed(!browser.state.panel.collapsed)}
         />
         <SidePanel />
