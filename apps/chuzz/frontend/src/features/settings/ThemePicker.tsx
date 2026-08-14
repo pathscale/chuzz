@@ -50,14 +50,7 @@ export function ThemePicker(props: {
     `color-mix(in oklab, ${theme.surface || DEFAULT_ACCENT} ${deskStrength(theme.wash)}%, ${deskAnchor(theme.softness)})`;
 
   return (
-    <Flex
-      as="div"
-      direction="col"
-      align="stretch"
-      gap="md"
-      paddingInline="md"
-      paddingBlock="md"
-    >
+    <Flex as="div" direction="col" align="stretch" gap="md" paddingInline="md" paddingBlock="md">
       <Flex as="div" justify="center" shrink={false}>
         <SurfaceColorWheel value={props.theme.surface} onPick={props.onSurface} />
       </Flex>
@@ -164,11 +157,7 @@ function SurfaceColorWheel(props: { value: string; onPick: (value: string) => vo
   });
 
   return (
-    <SurfaceWheel
-      value={props.value}
-      onChange={props.onPick}
-      label={t("appearance.surfaceColour")}
-    >
+    <SurfaceWheel value={props.value} onChange={props.onPick} label={t("appearance.surfaceColour")}>
       <For each={colors()}>
         {(color, index) => {
           const point = layout[index()];
@@ -221,13 +210,7 @@ function AccentSelector(props: {
   return (
     <Flex as="div" direction="col" gap="sm">
       <Flex as="div" align="baseline" gap="sm">
-        <Text
-          size="xs"
-          variant="muted"
-          weight="semibold"
-          transform="uppercase"
-          tracking="wide"
-        >
+        <Text size="xs" variant="muted" weight="semibold" transform="uppercase" tracking="wide">
           {t("appearance.accentColour")}
         </Text>
         <Text size="xs" variant="subtle">
@@ -283,13 +266,7 @@ function Axis(props: {
     <Flex as="div" direction="col" gap="sm">
       <Flex as="div" align="baseline" wrap="wrap" gap="sm">
         <Flex as="span" align="baseline" wrap="wrap" gap="sm" grow>
-          <Text
-            size="xs"
-            variant="muted"
-            weight="semibold"
-            transform="uppercase"
-            tracking="wide"
-          >
+          <Text size="xs" variant="muted" weight="semibold" transform="uppercase" tracking="wide">
             {props.label}
           </Text>
           <Text size="xs" variant="subtle">
@@ -312,12 +289,7 @@ function Axis(props: {
             >
               <Show when={props.ink}>
                 {(ink) => (
-                  <Text
-                    size="xs"
-                    weight="semibold"
-                    leading="none"
-                    style={{ color: ink()(stop) }}
-                  >
+                  <Text size="xs" weight="semibold" leading="none" style={{ color: ink()(stop) }}>
                     A
                   </Text>
                 )}
