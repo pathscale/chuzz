@@ -20,11 +20,26 @@ export function PageArea(): JSX.Element {
 
   return (
     <Viewport>
-      <For each={browser.state.tabs}>
-        {(tab) => (
-          <Page tabId={String(tab.id)} active={tab.id === browser.state.activeTabId} />
-        )}
-      </For>
+      {/* The inner element is load-bearing, not decoration. A Layout component
+          resolves `children` once, when it is first rendered, so whatever the
+          children evaluate to at that instant is what stays in the document.
+          `tabs` is empty until the shell answers `list_tabs`, so a `For` placed
+          directly here resolves to nothing and never runs again: no
+          `<web-view>` is ever created, the shell's `page_node` lookup finds no
+          mount, and every page loads into a document that is never attached.
+          That is the blank window.
+
+          Keeping a plain element between the Layout and the `For` fixes it.
+          The element is what gets resolved and inserted once; the `For` lives
+          inside it, where its updates are ordinary Solid inserts that keep
+          working. Same rule applies in `BrowserHeader`. */}
+      <div class="page-stack">
+        <For each={browser.state.tabs}>
+          {(tab) => (
+            <Page tabId={String(tab.id)} active={tab.id === browser.state.activeTabId} />
+          )}
+        </For>
+      </div>
     </Viewport>
   );
 }

@@ -7,7 +7,7 @@ export type PageProps = {
 };
 
 const Page: Layout<typeof page, PageProps> = () => (
-  <web-view {...slot.root} data-tab-id={local.tabId} />
+  <web-view {...slot.root} id={`chuzz-page-${local.tabId}`} data-tab-id={local.tabId} />
 );
 
 export const PageLayout = Page;
