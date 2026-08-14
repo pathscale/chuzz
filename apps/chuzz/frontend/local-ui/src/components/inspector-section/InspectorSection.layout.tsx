@@ -1,8 +1,10 @@
 import { Chip, Disclosure, Text } from "@pathscale/ui";
+import type { JSX } from "solid-js";
 import type { Layout } from "solid-layouts";
 import { inspectorSection } from "./InspectorSection.recipe";
 
 export type InspectorSectionProps = {
+  children: JSX.Element;
   id: string;
   title: string;
   count: number;

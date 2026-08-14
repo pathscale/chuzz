@@ -1,8 +1,10 @@
 import { Button, Modal, Text } from "@pathscale/ui";
+import type { JSX } from "solid-js";
 import type { Layout } from "solid-layouts";
 import { settingsDialog } from "./SettingsDialog.recipe";
 
 export type SettingsDialogProps = {
+  children: JSX.Element;
   open: boolean;
   onClose: () => void;
   title: string;
