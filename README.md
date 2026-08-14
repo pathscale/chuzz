@@ -44,28 +44,34 @@ The window is a Chrome-shaped shell: tab strip on top, toolbar under it, page fi
 
 ```text
 apps/chuzz/src
-  main.rs             window, startup URL, and the shell layout
-  tab_strip.rs        tab row: select, close, new tab
-  toolbar.rs          back, forward, reload, address bar
-  tab.rs              one tab: history + loader + the document on screen
-  document_loader.rs  fetch a URL, parse it into a page document, abort the previous load
-  history.rs          per-tab session history and the engine's navigation hook
-  nav.rs              what a typed string means: URL, bare hostname, or search
-  ui.rs               stylesheet for the browser UI
+  tauri_main.rs       the Tauri app: command surface, runtime, window
+  browser.rs          tabs, session history, page fetching, and the commands the chrome calls
+  frontend.rs         the interface document: embedded Solid bundle, web-API shims
+  document_loader.rs  the net provider, the web-API shim, and the headless capture path
+  decode.rs           response bodies: gzip, brotli, and undecodable bytes
+  nav.rs              what a typed string means: URL, bare hostname, or neither
+  capture.rs          render a page to a PNG without a window (feature: capture)
+  dump.rs             write the node tree beside a capture (feature: capture)
 
+apps/chuzz/frontend   the interface itself: Solid, @pathscale/ui, and the local Layouts
 crates/chuzz-control  built-in diagnostics and agent-control interface (in-process, no server)
 ```
 
 ## Two documents, not one
 
-The browser UI is itself a Blitz document, driven by Dioxus Native. Each tab's page is a
-separate child document mounted inside the UI's `web-view` element. Page markup and browser
-markup never share a DOM, so a site's CSS cannot restyle the toolbar and the toolbar's CSS
-cannot leak into the site.
+The browser UI is itself a Blitz document: a Solid application, compiled to a bundle and
+embedded in the binary, running under Boa inside the window's own document. Each tab's page is
+a separate child document mounted inside a `<web-view>` element in that UI. Page markup and
+browser markup never share a DOM, so a site's CSS cannot restyle the chrome and the chrome's
+CSS cannot leak into the site.
+
+The rendezvous between the two is an element id, `chuzz-page-{tabId}`. That lookup is what
+decides whether a fetched page is ever attached, so it has a regression test rather than a
+comment: when the identifier drifted, every site loaded correctly and rendered nothing.
 
 Everything a browser decides rather than renders stays in this binary: tabs, session history,
 address-bar interpretation, and error pages. The engine only reports that a navigation was
-requested; `history.rs` decides what the back and forward stacks look like afterwards.
+requested; `browser.rs` decides what the back and forward stacks look like afterwards.
 
 ## Engine
 
