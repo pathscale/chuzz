@@ -1,5 +1,5 @@
 import { Text } from "@pathscale/ui";
-import { Show, type JSX } from "solid-js";
+import { type JSX, Show } from "solid-js";
 import type { Layout } from "solid-layouts";
 import { sidePanel } from "./SidePanel.recipe";
 
