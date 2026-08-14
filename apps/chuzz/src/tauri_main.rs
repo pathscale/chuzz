@@ -13,7 +13,6 @@ mod document_loader;
 #[cfg(feature = "capture")]
 mod dump;
 mod frontend;
-mod history;
 mod nav;
 
 use browser::Browser;
