@@ -1,11 +1,11 @@
 import { AddressBar, NavigationBar } from "@chuzz/ui";
-import { Button } from "@pathscale/ui";
 import { createEffect, createSignal, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 
 /**
- * Back, forward, reload, and the address bar.
+ * The address bar. History navigation and reload remain keyboard actions; the
+ * old buttons were inert visual duplicates in the accelerated chrome.
  *
  * Ported from `toolbar.rs`, including the one subtlety there: the field tracks
  * the active tab's URL, but only when that URL actually changes. An effect that
@@ -15,66 +15,24 @@ import { t } from "~/stores/i18n";
 export function Toolbar(): JSX.Element {
   const browser = useBrowser();
   const [typed, setTyped] = createSignal("");
-  const [refused, setRefused] = createSignal(false);
 
   createEffect((previous: string | undefined) => {
     const url = browser.activeTab()?.url ?? "";
     if (url !== previous) {
-      setTyped(url);
-      setRefused(false);
+      setTyped(url === "about:blank" ? "" : url);
     }
     return url;
   });
 
-  const submit = async () => {
-    // `nav.rs` decides what a typed string means. A value that is neither a URL
-    // nor a bare hostname is not a search, and the shell says so rather than
-    // navigating somewhere unrelated; showing that beats looking broken.
-    const accepted = await browser.navigate(typed());
-    setRefused(!accepted);
-  };
-
   return (
     <NavigationBar>
-      <Button
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        title={t("browser.back")}
-        isDisabled={!browser.activeTab()?.canGoBack}
-        onClick={() => browser.goBack()}
-      >
-        {"←"}
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        title={t("browser.forward")}
-        isDisabled={!browser.activeTab()?.canGoForward}
-        onClick={() => browser.goForward()}
-      >
-        {"→"}
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        title={t("browser.reload")}
-        onClick={() => browser.reload()}
-      >
-        {"↻"}
-      </Button>
       <AddressBar
+        id="chuzz-address-bar"
         value={typed()}
-        invalid={refused()}
+        invalid={false}
         placeholder={t("browser.addressPlaceholder")}
         onInput={(event) => {
-          setTyped(event.currentTarget.value);
-          setRefused(false);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") void submit();
+          setTyped((event.target as HTMLInputElement).value);
         }}
       />
     </NavigationBar>
