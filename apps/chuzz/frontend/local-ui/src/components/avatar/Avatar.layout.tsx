@@ -1,4 +1,4 @@
-import { Avatar } from "@pathscale/ui";
+import { Avatar as PathscaleAvatar } from "@pathscale/ui";
 import type { Layout } from "solid-layouts";
 import { avatar } from "./Avatar.recipe";
 
@@ -7,9 +7,9 @@ export type AvatarProps = {
 };
 
 const Avatar: Layout<typeof avatar, AvatarProps> = () => (
-  <Avatar size="sm" variant="soft" {...slot.root}>
-    <Avatar.Fallback>{local.label}</Avatar.Fallback>
-  </Avatar>
+  <PathscaleAvatar size="sm" variant="soft" {...slot.root}>
+    <PathscaleAvatar.Fallback>{local.label}</PathscaleAvatar.Fallback>
+  </PathscaleAvatar>
 );
 
 export const AvatarLayout = Avatar;
