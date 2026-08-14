@@ -264,7 +264,11 @@
     display: none;
   }
 
+  /* The seam is still the hit target; the chevron sits on it so the control
+     is visible and says which way it will go. Matches AgencyZero's round
+     chevron affordance rather than the bare strip this had become. */
   .panel-handle {
+    position: relative;
     width: 5px;
     flex-shrink: 0;
     border: 0;
@@ -272,10 +276,41 @@
     background: var(--color-az-hairline-soft);
     cursor: col-resize;
     border-radius: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .panel-handle:hover {
     background: var(--color-primary);
+  }
+
+  .panel-handle-chevron {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 1.75rem;
+    width: 1.75rem;
+    border-radius: 9999px;
+    background: var(--color-base-300);
+    color: var(--color-base-content);
+    font-size: 14px;
+    line-height: 1;
+    opacity: 0.75;
+    transition: opacity 120ms ease, background-color 120ms ease;
+    pointer-events: none;
+  }
+
+  .panel-handle:hover .panel-handle-chevron {
+    opacity: 1;
+    background: var(--color-primary);
+    color: var(--color-primary-content);
+  }
+
+  .panel-handle:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
   }
 
   /* Inspector */
