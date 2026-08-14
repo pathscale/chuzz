@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "chuzz-control"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "endpoint-libs 2.1.5",
  "serde",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "chuzz-gui"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "blitz-html",
  "blitz-net",
