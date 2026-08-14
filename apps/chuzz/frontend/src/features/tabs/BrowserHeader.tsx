@@ -27,16 +27,6 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
 
   return (
     <TitleBar>
-      <Button
-        variant="ghost"
-        size="sm"
-        isIconOnly
-        title={t("browser.back")}
-        onClick={() => browser.goBack()}
-      >
-        {"‹"}
-      </Button>
-
       {/* Spacing lives in the Layout with the rest of the strip's geometry,
           rather than half here and half there. */}
       <TabList {...tabsControl}>
@@ -62,24 +52,6 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
         </Button>
       </TabList>
 
-      <Button
-        variant="outline"
-        size="sm"
-        isIconOnly
-        title={t("browser.forward")}
-        onClick={() => browser.goForward()}
-      >
-        {"›"}
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        isIconOnly
-        title={t("browser.reload")}
-        onClick={() => browser.reload()}
-      >
-        {"↻"}
-      </Button>
       <Button
         variant="outline"
         size="sm"
