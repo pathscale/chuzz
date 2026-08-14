@@ -7,8 +7,4 @@ export const tabList = recipe({
     root: { base: "tabs" },
     strip: { base: "tab-strip" },
   },
-  props: {
-    selectedKey: {},
-    onSelectionChange: {},
-  },
 });

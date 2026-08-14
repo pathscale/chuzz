@@ -5,10 +5,10 @@ export const addressBar = recipe({
   element: "input",
   slots: { root: { base: "address-bar" } },
   props: {
+    id: {},
     value: {},
     invalid: {},
     placeholder: {},
     onInput: {},
-    onKeyDown: {},
   },
 });
