@@ -30,6 +30,17 @@ const en = {
     resetHint: "back to the designed yellow accent and default surface settings",
     resetButton: "Reset to default",
   },
+  diagnostics: {
+    title: "Diagnostics",
+    inspection: "Inspection and agent control",
+    inspectionHint:
+      "opens a local socket that lets any program running as you read this window and drive it",
+    profiling: "Deep performance profiling",
+    profilingHint: "intrusive collectors; costs frame time, and needs inspection on to be read",
+    on: "On",
+    off: "Off",
+    locked: "held on by CHUZZ_CONTROL for this run",
+  },
   browser: {
     back: "Back",
     forward: "Forward",

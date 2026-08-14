@@ -2,10 +2,11 @@ import { SettingsDialog } from "@chuzz/ui";
 import type { JSX } from "solid-js";
 import { t } from "~/stores/i18n";
 import { isDefaultTheme, prefs, resetTheme, setColorMode, setTheme } from "~/stores/prefs";
+import { DiagnosticsSection } from "./DiagnosticsSection";
 import { ThemePicker } from "./ThemePicker";
 
 /**
- * Settings, which is Appearance and nothing else so far.
+ * Settings: Appearance, and the two diagnostics switches.
  *
  * `ThemePicker` is AgencyZero's, taken unmodified. Everything it needs arrives
  * as props, so the only thing this file owns is where a picked value goes —
@@ -34,6 +35,7 @@ export function SettingsPanel(props: { isOpen: boolean; onClose: () => void }): 
         onReset={resetTheme}
         isDefault={isDefaultTheme()}
       />
+      <DiagnosticsSection />
     </SettingsDialog>
   );
 }

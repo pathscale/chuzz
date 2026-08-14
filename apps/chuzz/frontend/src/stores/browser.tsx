@@ -1,6 +1,7 @@
 import { createContext, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { api } from "~/api";
+import { syncDiagnostics } from "~/stores/diagnostics";
 import { resolveBrowserShortcut, type BrowserShortcut } from "~/lib/shortcuts";
 import type { PanelSections, PanelState, StatusReadout, Tab, TabId } from "~/types";
 
@@ -45,6 +46,10 @@ function createBrowserStore() {
         else unlisteners.push(unlisten);
       });
     };
+
+    // The diagnostics switches are window-wide rather than per-tab, so they
+    // are adopted here alongside the rest of the startup read.
+    void syncDiagnostics();
 
     void (async () => {
       const [tabs, activeTabId, panel, status] = await Promise.all([
