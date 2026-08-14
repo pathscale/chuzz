@@ -14,7 +14,9 @@ const key = (patch: Partial<ShortcutInput>): ShortcutInput => ({
 describe("browser shortcuts", () => {
   it("keeps the AgencyZero tab accelerators", () => {
     expect(resolveBrowserShortcut(key({ key: "t", code: "KeyT", metaKey: true }))).toBe("new-tab");
-    expect(resolveBrowserShortcut(key({ key: "w", code: "KeyW", metaKey: true }))).toBe("close-tab");
+    expect(resolveBrowserShortcut(key({ key: "w", code: "KeyW", metaKey: true }))).toBe(
+      "close-tab",
+    );
     expect(resolveBrowserShortcut(key({ key: "1", code: "Digit1", metaKey: true }))).toBe(
       "previous-tab",
     );

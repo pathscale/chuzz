@@ -9,8 +9,8 @@ import { BrowserProvider, useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 
 /**
- * The window, in the order `main.rs` lays it out: titlebar, toolbar, an
- * content row. Loading is represented by each tab's live backend status.
+ * The window: titlebar, toolbar, then the content row. Loading is each tab's
+ * live backend status rather than a bar of its own.
  */
 export function App(): JSX.Element {
   return (
@@ -31,7 +31,9 @@ function Shell(): JSX.Element {
       <MainContent>
         <PageArea />
         <PanelHandle
-          title={browser.state.panel.collapsed ? "Show inspector" : "Hide inspector"}
+          title={t(
+            browser.state.panel.collapsed ? "browser.showInspector" : "browser.hideInspector",
+          )}
           collapsed={browser.state.panel.collapsed}
           onClick={() => browser.setPanelCollapsed(!browser.state.panel.collapsed)}
         />
