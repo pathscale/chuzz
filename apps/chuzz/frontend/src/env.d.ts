@@ -1,5 +1,13 @@
 /// <reference types="@rsbuild/core/types" />
 
+declare global {
+  interface Window {
+    __CHUZZ_BLITZ__?: boolean;
+  }
+}
+
+export {};
+
 import type { JSX } from "solid-js";
 
 declare module "solid-js" {

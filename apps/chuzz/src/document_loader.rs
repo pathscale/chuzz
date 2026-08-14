@@ -12,7 +12,7 @@ use blitz_traits::net::{
     AbortController, AbortSignal, NetHandler, NetProvider as NetProviderTrait, Request,
 };
 use blitz_traits::shell::ShellProvider;
-use dioxus_native::{SubDocumentAttr, prelude::*};
+use dioxus_native::prelude::*;
 
 use crate::decode::decode_body;
 use crate::history::{History, SyncStore, TabNavProvider};
@@ -97,7 +97,7 @@ const EMPTY_HTML: &str = r#"<!doctype html>
 /// policy: it needs an origin-keyed store on disk and a quota, and pretending
 /// otherwise would silently lose a site's data on reload.
 #[cfg(feature = "javascript")]
-const WEB_API_SHIM: &str = r#"
+pub(crate) const WEB_API_SHIM: &str = r#"
 (function () {
   function MemoryStorage() {
     var entries = Object.create(null);
@@ -286,9 +286,8 @@ pub enum LoadStatus {
 }
 
 /// A page that finished loading and is ready to be swapped into its tab.
-#[derive(Clone)]
 pub struct LoadedDocument {
-    pub document: SubDocumentAttr,
+    pub document: Box<dyn blitz_dom::Document>,
     pub title: String,
 }
 
@@ -403,7 +402,7 @@ impl DocumentLoader {
             let config = self.doc_config(None, signal, false);
             let document = HtmlDocument::from_html(BLANK_HTML, config).into_inner();
             return LoadedDocument {
-                document: SubDocumentAttr::new(document),
+                document: Box::new(document),
                 title: String::new(),
             };
         }
@@ -443,7 +442,7 @@ impl DocumentLoader {
                         .set_node_text(text_node, &format!("{error:?}"));
                 }
                 LoadedDocument {
-                    document: SubDocumentAttr::new(document),
+                    document: Box::new(document),
                     title: String::from("Page not available"),
                 }
             }
@@ -467,7 +466,7 @@ impl DocumentLoader {
             .map(|node| node.text_content())
             .unwrap_or_default();
         LoadedDocument {
-            document: SubDocumentAttr::new(document),
+            document: Box::new(document),
             title,
         }
     }
@@ -551,7 +550,7 @@ impl DocumentLoader {
         };
 
         LoadedDocument {
-            document: SubDocumentAttr::new(document),
+            document: Box::new(document),
             title,
         }
     }
