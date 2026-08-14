@@ -40,12 +40,18 @@ function frame(value: unknown): Buffer {
   return Buffer.concat([header, payload]);
 }
 
-function semanticNodeCount(response: Record<string, any>): number {
+/** What the control plane answers with. Only the part this script reads. */
+type ControlResponse = {
+  id?: number;
+  result?: { structuredContent?: { value?: { nodes?: Record<string, unknown>[] } } };
+};
+
+function semanticNodeCount(response: ControlResponse): number {
   const nodes = response.result?.structuredContent?.value?.nodes ?? [];
   return nodes.length;
 }
 
-function addressNode(response: Record<string, any>): Record<string, unknown> | undefined {
+function addressNode(response: ControlResponse): Record<string, unknown> | undefined {
   const nodes = response.result?.structuredContent?.value?.nodes ?? [];
   return nodes.find((node: Record<string, unknown>) =>
     JSON.stringify(node).includes("chuzz-address-bar"),
@@ -64,7 +70,7 @@ socket.on("data", (data) => {
   while (buffer.length >= 4) {
     const length = buffer.readUInt32BE();
     if (buffer.length < length + 4) return;
-    const response = JSON.parse(buffer.subarray(5, 4 + length).toString());
+    const response: ControlResponse = JSON.parse(buffer.subarray(5, 4 + length).toString());
     buffer = buffer.subarray(4 + length);
     switch (response.id) {
       case 1:
