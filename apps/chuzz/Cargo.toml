@@ -76,8 +76,3 @@ tauri-runtime-blitz.workspace = true
 [build-dependencies]
 brotli.workspace = true
 tauri-build = { version = "2", features = [] }
-
-# Native menu, macOS only. Pure Rust under MIT/Apache-2.0, and the same
-# crate Tauri builds its menus on, so this does not bring a C++ toolkit in.
-[target.'cfg(target_os = "macos")'.dependencies]
-muda = "0.19"
