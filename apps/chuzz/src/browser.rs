@@ -119,9 +119,21 @@ enum PageSource {
     Html {
         html: String,
         scripts: HashMap<Url, String>,
+        /// A module the page asked for with `<script type="application/wasm">`,
+        /// already fetched and vetted. Fetching happens with the rest of the
+        /// page because only that half is async; mounting is done later,
+        /// against the parsed document.
+        wasm: Option<PageModule>,
     },
     /// Built by a WebAssembly guest. Nothing is fetched and no JavaScript runs.
     Wasm { module: std::path::PathBuf },
+}
+
+/// A module a page declared, fetched alongside it.
+struct PageModule {
+    bytes: Vec<u8>,
+    /// The `mount` selector, resolved against the parsed document later.
+    selector: String,
 }
 
 /// A page served from a module on disk rather than from the network.
@@ -335,14 +347,17 @@ impl Browser {
             };
 
             let shell_provider = ui.inner().shell_provider.clone();
-            let config = DocumentConfig {
+            // A factory rather than a value: a module that fails to mount is
+            // re-parsed from the same bytes, and that second parse needs its own
+            // config because `DocumentConfig` is consumed by the first.
+            let make_config = || DocumentConfig {
                 base_url: Some(bundle.resolved_url.clone()),
                 net_provider: Some(Arc::clone(&self.0.net) as _),
                 navigation_provider: Some(Arc::new(PageNavigation {
                     browser: Arc::downgrade(&self.0),
                     tab_id: bundle.tab_id,
                 })),
-                shell_provider: Some(shell_provider),
+                shell_provider: Some(shell_provider.clone()),
                 html_parser_provider: Some(Arc::new(HtmlProvider)),
                 font_ctx: Some(FontContext::default()),
                 ..Default::default()
@@ -352,8 +367,41 @@ impl Browser {
             // everything downstream — layout, paint, the tab strip, the toolbar
             // — cannot tell them apart and did not have to change.
             let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
-                PageSource::Html { html, scripts } => {
-                    let mut page = blitz_script::ScriptDocument::from_html(&html, config)
+                // A page that declared a module gets it mounted here, against
+                // the document as parsed. Everything up to this point is an
+                // ordinary page load.
+                PageSource::Html {
+                    html,
+                    scripts,
+                    wasm: Some(module),
+                } => match mount_page_module(&html, &module, make_config()) {
+                    Some(page) => (Box::new(page), String::new()),
+                    None => {
+                        // Re-parsed rather than repaired. The guest appends into
+                        // the mount as it builds, so a run that fails part way
+                        // leaves a half-built tree next to the fallback, and
+                        // there is no way to tell the two apart afterwards.
+                        // Parsing the same bytes again is the only way to be
+                        // certain the document is exactly what the page said.
+                        let mut page =
+                            blitz_script::ScriptDocument::from_html(&html, make_config())
+                                .with_fetcher(PrefetchedScripts { scripts });
+                        page.eval(WEB_API_SHIM);
+                        page.execute_scripts();
+                        let title = page
+                            .inner()
+                            .find_title_node()
+                            .map(|node| node.text_content())
+                            .unwrap_or_default();
+                        (Box::new(page), title)
+                    }
+                },
+                PageSource::Html {
+                    html,
+                    scripts,
+                    wasm: None,
+                } => {
+                    let mut page = blitz_script::ScriptDocument::from_html(&html, make_config())
                         .with_fetcher(PrefetchedScripts { scripts });
                     page.eval(WEB_API_SHIM);
                     page.execute_scripts();
@@ -364,7 +412,7 @@ impl Browser {
                         .unwrap_or_default();
                     (Box::new(page), title)
                 }
-                PageSource::Wasm { module } => match build_wasm_page(&module, config) {
+                PageSource::Wasm { module } => match build_wasm_page(&module, make_config()) {
                     // A bare `BaseDocument`, not a `ScriptDocument`. The mount
                     // takes `Box<dyn Document>` and `BaseDocument` implements
                     // it, so no wrapper is needed and no JavaScript runtime is
@@ -467,6 +515,138 @@ fn module_title(module: &std::path::Path) -> String {
         .unwrap_or_else(|| module.display().to_string())
 }
 
+/// Parse the page, then let the guest take over its mount element.
+///
+/// Returns `None` on every failure, and the caller then re-parses the same
+/// bytes. Nothing here repairs a document: a guest appends into the mount as it
+/// builds, so a run that fails part way leaves its own half-built tree beside
+/// the fallback with no way to tell them apart.
+///
+/// The fallback is removed only after the entry export has returned `OK`, which
+/// is the whole point. Emptying first and failing after turns a working static
+/// page into a blank one.
+#[cfg(feature = "wasm")]
+fn mount_page_module(
+    html: &str,
+    module: &PageModule,
+    config: DocumentConfig,
+) -> Option<blitz_dom::BaseDocument> {
+    // Parsed without a script runtime. A page that hands its interface to a
+    // guest has no JavaScript in the path by construction, and attaching an
+    // engine to run none would be dead weight.
+    let document = blitz_html::HtmlDocument::from_html(html, config).into_inner();
+
+    let mount = match document.query_selector(&module.selector) {
+        Ok(Some(node)) => node,
+        Ok(None) => {
+            eprintln!(
+                "chuzz: wasm: mount selector {:?} matched nothing; keeping the page as parsed",
+                module.selector
+            );
+            return None;
+        }
+        Err(error) => {
+            eprintln!(
+                "chuzz: wasm: mount selector {:?} is not valid: {error:?}",
+                module.selector
+            );
+            return None;
+        }
+    };
+
+    // What the fallback consists of, recorded before the guest adds anything.
+    let fallback: Vec<NodeId> = document.get_node(mount)?.children.to_vec();
+
+    let mut document = match crate::wasm_page::run_guest_bytes(&module.bytes, document, mount) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("chuzz: wasm: {error}");
+            return None;
+        }
+    };
+
+    // Only now. Everything above can fail, and every one of those failures
+    // leaves the document with its fallback intact.
+    let mut changes = document.mutate();
+    let replaced = fallback.len();
+    for node in fallback {
+        changes.remove_and_drop_node(node);
+    }
+    drop(changes);
+    // Said out loud, because the alternative is indistinguishable from a page
+    // that never declared a module: both are silent and both render something.
+    eprintln!(
+        "chuzz: wasm: mounted a guest on {:?}, replacing {replaced} fallback node(s)",
+        module.selector
+    );
+    Some(document)
+}
+
+/// Without the `wasm` feature there is no interpreter, so the page keeps its
+/// fallback and says why.
+#[cfg(not(feature = "wasm"))]
+fn mount_page_module(
+    _html: &str,
+    _module: &PageModule,
+    _config: DocumentConfig,
+) -> Option<blitz_dom::BaseDocument> {
+    eprintln!("chuzz: wasm: this build has no wasm support; keeping the page as parsed");
+    None
+}
+
+/// Fetch the module a page's wasm script tag names, and vet it.
+///
+/// Returns `None` on every failure, having said why. `None` means the page
+/// keeps the fallback content inside its mount element, which is the entire
+/// degradation story: a browser that cannot run the module shows the static
+/// document instead of a broken one.
+async fn fetch_page_module(
+    net: &Arc<NetProvider>,
+    document_url: &str,
+    script: &crate::wasm_page::WasmScript,
+) -> Option<PageModule> {
+    let base = Url::parse(document_url).ok()?;
+    let src = match base.join(&script.src) {
+        Ok(src) => src,
+        Err(error) => {
+            eprintln!("chuzz: wasm: cannot resolve src {:?}: {error}", script.src);
+            return None;
+        }
+    };
+
+    // Same origin only. The module runs against the host ABI with the whole
+    // document reachable, which is a materially different trust decision from a
+    // local file named on the command line. Cross-origin loading needs a
+    // deliberate policy, not a default.
+    if src.origin() != base.origin() {
+        eprintln!(
+            "chuzz: wasm: refusing to load {src} into {base}: a module must come from \
+             the page's own origin"
+        );
+        return None;
+    }
+
+    let bytes = match net.fetch_async(Request::get(src.clone())).await {
+        Ok((_, bytes)) => bytes,
+        Err(error) => {
+            // Covers a non-2xx status: the provider turns that into
+            // `ProviderError::HttpStatus` rather than handing back a body.
+            eprintln!("chuzz: wasm: could not fetch {src}: {error:?}");
+            return None;
+        }
+    };
+
+    if let Err(problem) = crate::wasm_page::validate_module(&bytes) {
+        eprintln!("chuzz: wasm: {src}: {problem}");
+        return None;
+    }
+
+    Some(PageModule {
+        bytes: bytes.to_vec(),
+        selector: script.mount.clone(),
+    })
+}
+
 pub(crate) fn page_node(document: &blitz_dom::BaseDocument, tab_id: u64) -> Option<NodeId> {
     if let Some(node) = document.get_element_by_id(&format!("chuzz-page-{tab_id}")) {
         return Some(node);
@@ -510,6 +690,7 @@ async fn fetch_page(
             source: PageSource::Html {
                 html: BLANK_HTML.to_owned(),
                 scripts: HashMap::new(),
+                wasm: None,
             },
         };
     }
@@ -528,6 +709,7 @@ async fn fetch_page(
                 source: PageSource::Html {
                     html: error_html(&format!("{error:?}")),
                     scripts: HashMap::new(),
+                    wasm: None,
                 },
             };
         }
@@ -537,7 +719,9 @@ async fn fetch_page(
     } else {
         decode_body(&bytes)
     };
-    let urls = {
+    // One parse serves both: the external script urls and the wasm script tag.
+    // Parsing twice would be wasteful and, worse, could disagree.
+    let (urls, wasm_script) = {
         let document = blitz_script::ScriptDocument::from_html(
             &html,
             DocumentConfig {
@@ -545,7 +729,12 @@ async fn fetch_page(
                 ..Default::default()
             },
         );
-        document.external_script_urls()
+        let wasm_script = crate::wasm_page::find_wasm_script(&document.inner());
+        (document.external_script_urls(), wasm_script)
+    };
+    let wasm = match wasm_script {
+        Some(script) => fetch_page_module(net, &resolved_url, &script).await,
+        None => None,
     };
     let mut scripts = HashMap::new();
     for url in urls {
@@ -564,7 +753,11 @@ async fn fetch_page(
         tab_id,
         generation,
         resolved_url,
-        source: PageSource::Html { html, scripts },
+        source: PageSource::Html {
+            html,
+            scripts,
+            wasm,
+        },
     }
 }
 
@@ -902,6 +1095,77 @@ mod tests {
                 .get(blitz_traits::net::http::header::CACHE_CONTROL)
                 .and_then(|value| value.to_str().ok()),
             Some("no-cache")
+        );
+    }
+
+    /// The fallback is the whole degradation story, so each way of failing has
+    /// to leave it standing. A partial mount, or an emptied mount after a
+    /// failed instantiate, turns a working static page into a blank one.
+    #[test]
+    fn a_failed_module_leaves_the_fallback_standing() {
+        const HTML: &str = r#"<!doctype html><html><body>
+            <div id="root"><p id="fallback">fallback</p></div>
+            </body></html>"#;
+
+        let config = || DocumentConfig {
+            html_parser_provider: Some(Arc::new(HtmlProvider)),
+            ..Default::default()
+        };
+        let good = std::fs::read(crate::wasm_page::fixture_module()).expect("fixture module");
+
+        let cases: Vec<(&str, PageModule)> = vec![
+            (
+                "a selector matching nothing",
+                PageModule {
+                    bytes: good.clone(),
+                    selector: "#nowhere".to_owned(),
+                },
+            ),
+            (
+                "bytes that are not a module",
+                PageModule {
+                    bytes: b"<!doctype html>".to_vec(),
+                    selector: "#root".to_owned(),
+                },
+            ),
+            (
+                "a module whose entry export is missing",
+                PageModule {
+                    // Valid wasm, no `run` export: instantiates, then fails.
+                    bytes: wat::parse_str("(module (memory (export \"memory\") 1))").unwrap(),
+                    selector: "#root".to_owned(),
+                },
+            ),
+        ];
+
+        for (what, module) in cases {
+            assert!(
+                mount_page_module(HTML, &module, config()).is_none(),
+                "{what} should not mount"
+            );
+        }
+
+        // And the success case does replace it, so the assertions above are not
+        // passing because nothing ever mounts.
+        let mounted = mount_page_module(
+            HTML,
+            &PageModule {
+                bytes: good,
+                selector: "#root".to_owned(),
+            },
+            config(),
+        )
+        .expect("the fixture module should mount");
+        let mount = mounted.query_selector("#root").unwrap().unwrap();
+        let children = mounted.get_node(mount).unwrap().children.to_vec();
+        assert!(!children.is_empty(), "the guest built nothing");
+        assert!(
+            mounted.query_selector("#fallback").unwrap().is_none(),
+            "the fallback survived a successful mount"
+        );
+        assert!(
+            mounted.query_selector(".panel").unwrap().is_some(),
+            "the guest's tree is not in the document"
         );
     }
 
