@@ -95,44 +95,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Chuzz path-depends on sibling checkouts, so the engine has to sit beside
-      # it on the runner exactly as it does on a developer's machine.
+      # The engine is not checked out here any more. It was, and the revision
+      # lived in a BLITZ_REF env var on this step while the workspace took the
+      # same crates by path from a sibling checkout — two sources of truth that
+      # nothing reconciled. The pin sat 44 commits behind, and the job broke the
+      # day a new engine package was added, because a path dependency resolves
+      # against whatever is on disk and no local build could notice.
       #
-      # BLITZ_REF is pinned rather than floating: a release has to be
-      # reproducible, and tracking a branch would make the same Chuzz version
-      # mean different engines on different days. Move it deliberately, and
-      # re-test the pages in docs/ when you do.
-      #
-      # It rotted once, and the failure is worth recognising. This pin sat at
-      # 926298dd while the local checkouts everyone builds against moved 44
-      # commits ahead, so `apps/chuzz` gained a path dependency on
-      # `blitz-wasm` — a package that does not exist at the pinned rev. Every
-      # local build passed and the release job died before compiling anything:
-      #
-      #   failed to load manifest for dependency `blitz-wasm`
-      #   failed to read `../ps-blitz/packages/blitz-wasm/Cargo.toml`
-      #
-      # A path dependency is resolved against whatever is on disk, so nothing
-      # local can catch this. When you add a path dependency on a new engine
-      # package, move this pin in the same change.
-      - name: Check out the engine, the runtime and endpoint-libs
-        env:
-          BLITZ_REF: 6e6649bae2a5392f382726e920cea4646d93027b
-          # The window runs on Tauri through this, so it is a path dependency
-          # exactly like the engine and needs the same pin and the same
-          # checkout. It was missing here entirely: the Tauri migration added
-          # the dependency and this step was never taught about it, which only
-          # stayed invisible because the job died on `blitz-wasm` first.
-          RUNTIME_REF: 9d8c6318bc57b442e11fab289d0fa27c40aa087b
-        run: |
-          cd ..
-          git clone --filter=blob:none https://github.com/pathscale/ps-blitz.git ps-blitz
-          git -C ps-blitz checkout "$BLITZ_REF"
-          git -C ps-blitz log -1 --format='engine at %H %s'
-          git clone --filter=blob:none https://github.com/pathscale/tauri-runtime-blitz.git tauri-runtime-blitz
-          git -C tauri-runtime-blitz checkout "$RUNTIME_REF"
-          git -C tauri-runtime-blitz log -1 --format='runtime at %H %s'
-          git clone --depth 1 https://github.com/pathscale/endpoint-libs.git endpoint-libs
+      # `Cargo.toml` now pins ps-blitz, tauri-runtime-blitz and endpoint-libs by
+      # revision, so cargo fetches them and `Cargo.lock` records them. An
+      # ordinary `cargo build` on any machine resolves exactly what this job
+      # does. See scripts/local-engine.sh for building against a working
+      # checkout, which is opt-in so the default keeps testing these pins.
 
       # For `bunx @tauri-apps/cli signer sign` below. The runner has no bun
       # preinstalled, and without this the release builds, bundles and packs
