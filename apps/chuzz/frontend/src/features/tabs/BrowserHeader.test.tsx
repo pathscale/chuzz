@@ -240,6 +240,24 @@ describe("the title bar's round buttons", () => {
   });
 });
 
+describe("the inspector sections", () => {
+  /**
+   * A section that will not close is a section whose trigger does nothing.
+   * `Collapsible` animates `grid-template-rows` between `1fr` and `0fr`, and
+   * the body kept its full height in both states, so all five sections were
+   * permanently open.
+   */
+  it("gives a closed section no height at all", () => {
+    expect(
+      styles,
+      "a closed section has to be removed from layout, not animated to zero",
+    ).toContain('.inspector-section .collapsible__content[data-expanded="false"]');
+    expect(ruleFor('.inspector-section .collapsible__content[data-expanded="false"]')).toContain(
+      "display: none",
+    );
+  });
+});
+
 describe("the title bar", () => {
   /**
    * Bug 6. The "N" was `<Avatar label="N" />`, a placeholder for an account
