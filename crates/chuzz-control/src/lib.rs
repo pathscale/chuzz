@@ -11,6 +11,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Talking to a browser that is already running.
+///
+/// Shares the `server` feature because it needs the same transport: the
+/// framing is the protocol, and a build that cannot listen cannot speak it
+/// either.
+#[cfg(feature = "server")]
+pub mod client;
 #[cfg(feature = "server")]
 pub mod server;
 
