@@ -4,6 +4,7 @@ import { page } from "./Page.recipe";
 export type PageProps = {
   tabId: string;
   active: boolean;
+  blank: boolean;
 };
 
 const Page: Layout<typeof page, PageProps> = () => (
