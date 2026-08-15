@@ -29,15 +29,15 @@ homepage = "https://github.com/pathscale/chuzz"
 # `tauri-runtime-blitz` pins this same revision, which is what keeps one engine
 # in the graph. Move the two together, or `PaintScene` becomes two unrelated
 # traits and the errors read as a broken engine rather than as two of them.
-blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
-blitz-html = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
-blitz-net = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
-blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
-blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18" }
+blitz-html = { git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18" }
+blitz-net = { git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18" }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18" }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
-dioxus-native = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b", default-features = false }
+blitz-wasm = { git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18" }
+dioxus-native = { git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"] }
@@ -56,11 +56,17 @@ image = { version = "=0.25.6", default-features = false }
 #   note: there are multiple different versions of crate `ps_anyrender_vello_cpu`
 #
 # reading as a broken painter when it was really two of them.
-anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "076f8a03318f4436bf9961e1a26a6e33356750db" }
+anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "cd8b39c6fb10eec914334b526721cc7e7387a793" }
 # `filters` is off by default in the backend, and with it off `push_layer`
 # discards both the element's `filter:` and its `backdrop-filter:`.
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "076f8a03318f4436bf9961e1a26a6e33356750db" }
-blitz-paint = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
+#
+# It was compiled out here for a while because leaving it on aborted the
+# process on any page with a backdrop: `paint_filtered_backdrop` snapshots with
+# `render_to_pixmap`, which asserts no layer is open, and blitz-paint reaches
+# `push_layer` several frames deep. Fixed upstream in anyrender cd8b39c, so it
+# is back on and plain `filter:` works again with it.
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "cd8b39c6fb10eec914334b526721cc7e7387a793", features = ["filters"] }
+blitz-paint = { git = "https://github.com/pathscale/ps-blitz.git", rev = "7e1f0bb096c19a24599b017c6bef0b18616c2d18" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -74,7 +80,7 @@ serde_json = "1"
 tokio = "1"
 url = "2.5"
 tauri = { version = "=2.11.5", default-features = false }
-tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "9d8c6318bc57b442e11fab289d0fa27c40aa087b" }
+tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "2087cfa542e303ad37c21e4ba4337a52497a8c2a" }
 
 [profile.release]
 lto = "thin"
