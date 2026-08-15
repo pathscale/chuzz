@@ -108,6 +108,16 @@ function createBrowserStore() {
         case "focus-address":
           focusAddress();
           break;
+        case "view-source": {
+          const url = state.tabs.find((tab) => tab.id === state.activeTabId)?.url;
+          // Inert on a source tab rather than recursive. The naive version
+          // opens `view-source:view-source:https://...`, which the address bar
+          // happily accepts and nothing can render.
+          if (url && !url.startsWith("view-source:")) {
+            void api.openTab(`view-source:${url}`);
+          }
+          break;
+        }
         case "back":
           void api.goBack(state.activeTabId);
           break;

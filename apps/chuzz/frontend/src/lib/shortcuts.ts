@@ -6,7 +6,8 @@ export type BrowserShortcut =
   | "reload"
   | "focus-address"
   | "back"
-  | "forward";
+  | "forward"
+  | "view-source";
 
 export interface ShortcutInput {
   key: string;
@@ -47,6 +48,8 @@ export function resolveBrowserShortcut(event: ShortcutInput): BrowserShortcut | 
   if (key === "l" || key === "d" || event.code === "KeyL" || event.code === "KeyD") {
     return "focus-address";
   }
+  // Cmd-U, the same binding Chrome and Safari use.
+  if (key === "u" || event.code === "KeyU") return "view-source";
   if (key === "[" || event.code === "BracketLeft") return "back";
   if (key === "]" || event.code === "BracketRight") return "forward";
   return undefined;
