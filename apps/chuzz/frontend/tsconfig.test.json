@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The one place Node types belong. The app's own compilation excludes
+    // these files precisely so that `process` and `node:fs` cannot be reached
+    // from code that ships in a browser bundle.
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-setup.ts", "vitest.config.ts"]
+}
