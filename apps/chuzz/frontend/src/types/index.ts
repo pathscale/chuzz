@@ -8,7 +8,21 @@
 
 export type TabId = number;
 
-export type LoadStatus = "idle" | "loading";
+/**
+ * What a tab's dot says, in the order severity increases.
+ *
+ * Mirrors `PageOutcome` in `browser.rs`, plus `loading`, which is a phase
+ * rather than an outcome and so lives only here and on the wire. The strings
+ * are the contract: the dot looks its colour up by this value, and a rename on
+ * either side turns every tab grey with nothing to say it happened.
+ *
+ *   blank    nothing loaded, a new tab
+ *   loading  in flight
+ *   ready    loaded, nothing missing
+ *   warning  loaded, something it asked for did not arrive
+ *   error    the page itself did not arrive
+ */
+export type LoadStatus = "blank" | "loading" | "ready" | "warning" | "error";
 
 /**
  * A tab as the interface sees it.

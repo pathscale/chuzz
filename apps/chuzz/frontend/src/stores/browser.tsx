@@ -19,7 +19,7 @@ const EMPTY: BrowserState = {
     collapsed: true,
     sections: { page: true, history: true, network: false, console: false },
   },
-  status: { status: "idle", url: "", tabCount: 0, nodeCount: 0, transferred: "0 B" },
+  status: { status: "blank", url: "", tabCount: 0, nodeCount: 0, transferred: "0 B" },
 };
 
 /**

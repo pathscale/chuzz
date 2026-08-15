@@ -76,6 +76,10 @@ struct TabState {
     current: usize,
     title: String,
     loading: bool,
+    /// How the last completed load went. `loading` wins over it while a load
+    /// is in flight, so the previous page's outcome never shows against the
+    /// new one's address.
+    outcome: PageOutcome,
     generation: u64,
 }
 
@@ -89,7 +93,11 @@ impl TabState {
             id: self.id,
             title: display_title(&self.title, &self.request().url),
             url: self.request().url.to_string(),
-            status: if self.loading { "loading" } else { "idle" },
+            status: if self.loading {
+                "loading"
+            } else {
+                self.outcome.name()
+            },
             can_go_back: self.current > 0,
             can_go_forward: self.current + 1 < self.history.len(),
         }
@@ -108,6 +116,40 @@ struct PageBundle {
     generation: u64,
     resolved_url: String,
     source: PageSource,
+    outcome: PageOutcome,
+}
+
+/// How a load went, in the five states the tab indicator can show.
+///
+/// Ordered by severity so a page with more than one thing wrong reports the
+/// worst of them. Deliberately not a boolean pair: "loaded" and "loaded with
+/// something missing" are the states a person actually wants to tell apart at
+/// a glance, and a browser that only says loading/not-loading makes a page
+/// whose scripts all 404'd look exactly like one that worked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PageOutcome {
+    /// Nothing has been asked for. `about:blank`, a new tab.
+    Blank,
+    /// The document arrived and everything it named arrived with it.
+    Ready,
+    /// The document arrived; something it named did not. A script that could
+    /// not be fetched, a module that would not validate, an empty body.
+    Warning,
+    /// The document itself did not arrive.
+    Error,
+}
+
+impl PageOutcome {
+    /// The name the window uses. Kept next to the variants so the two cannot
+    /// drift, and matched by `LoadStatus` in the frontend's `types`.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Blank => "blank",
+            Self::Ready => "ready",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
 }
 
 /// Where a page's document comes from.
@@ -199,6 +241,7 @@ impl Browser {
                     current: 0,
                     title: String::new(),
                     loading: false,
+                    outcome: PageOutcome::Blank,
                     generation: 0,
                 }],
                 active: 0,
@@ -241,11 +284,10 @@ impl Browser {
         let active = state.active;
         let active_tab = state.tabs.iter().find(|tab| tab.id == active).unwrap();
         let status = StatusReadout {
-            status: if active_tab.loading {
-                "loading"
-            } else {
-                "idle"
-            },
+            // The same vocabulary the tab dot uses. Two names for the same
+            // state is how a strip and a dot end up disagreeing about the tab
+            // they are both describing.
+            status: active_tab.snapshot().status,
             url: active_tab.request().url.to_string(),
             tab_count: tabs.len(),
             node_count: 0,
@@ -293,6 +335,9 @@ impl Browser {
                 source: PageSource::Wasm {
                     module: page.module.clone(),
                 },
+                // A guest that will not build becomes an error page where it is
+                // mounted, which is also where that outcome is decided.
+                outcome: PageOutcome::Ready,
             });
             self.wake_document();
             return;
@@ -368,6 +413,8 @@ impl Browser {
             // a `Box<dyn Document>` on the same `chuzz-page-{tab_id}` mount, so
             // everything downstream — layout, paint, the tab strip, the toolbar
             // — cannot tell them apart and did not have to change.
+            // What the fetch concluded, which mounting can only make worse.
+            let mut outcome = bundle.outcome;
             let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
                 // A page that declared a module gets it mounted here, against
                 // the document as parsed. Everything up to this point is an
@@ -379,6 +426,11 @@ impl Browser {
                 } => match mount_page_module(&html, &module, make_config()) {
                     Some(page) => (Box::new(page), String::new()),
                     None => {
+                        // The module fetched and vetted, then would not run.
+                        // The page still shows its fallback, so this is the
+                        // same "arrived, but not what was asked for" reading as
+                        // a script that never came.
+                        outcome = outcome.max(PageOutcome::Warning);
                         // Re-parsed rather than repaired. The guest appends into
                         // the mount as it builds, so a run that fails part way
                         // leaves a half-built tree next to the fallback, and
@@ -428,6 +480,7 @@ impl Browser {
                     Ok(page) => (Box::new(page), module_title(&module)),
                     Err(error) => {
                         eprintln!("chuzz: --wasm: {error}");
+                        outcome = PageOutcome::Error;
                         let page = blitz_script::ScriptDocument::from_html(
                             &error_html(&error),
                             DocumentConfig::default(),
@@ -446,6 +499,7 @@ impl Browser {
                     }
                     tab.title = title;
                     tab.loading = false;
+                    tab.outcome = outcome;
                 }
             }
             changed = true;
@@ -718,6 +772,7 @@ async fn fetch_page(
                 scripts: HashMap::new(),
                 wasm: None,
             },
+            outcome: PageOutcome::Blank,
         };
     }
     // `view-source:` is answered by fetching what it names and showing the
@@ -725,18 +780,26 @@ async fn fetch_page(
     // history and the address bar hold it like any other address.
     if request.url.scheme() == "view-source" {
         let inner = request.url.path().to_owned();
-        let source = match Url::parse(&inner) {
+        // The outcome tracks whether the *bytes arrived*, not whether the
+        // source document rendered. A view-source tab that shows a fetch
+        // failure is a red tab showing what went wrong, which is the same
+        // reading as an ordinary failed page.
+        let (source, outcome) = match Url::parse(&inner) {
             Ok(url) => match net.fetch_async(Request::get(url)).await {
-                Ok((_, bytes)) => decode_body(&bytes),
-                Err(error) => format!("could not fetch {inner}: {error:?}"),
+                Ok((_, bytes)) => (decode_body(&bytes), PageOutcome::Ready),
+                Err(error) => (
+                    format!("could not fetch {inner}: {error:?}"),
+                    PageOutcome::Error,
+                ),
             },
-            Err(error) => format!("{inner} is not a URL: {error}"),
+            Err(error) => (format!("{inner} is not a URL: {error}"), PageOutcome::Error),
         };
         return PageBundle {
             tab_id,
             generation,
             resolved_url: request.url.to_string(),
             source: PageSource::Source { text: source },
+            outcome,
         };
     }
     if force_revalidate {
@@ -756,10 +819,17 @@ async fn fetch_page(
                     scripts: HashMap::new(),
                     wasm: None,
                 },
+                outcome: PageOutcome::Error,
             };
         }
     };
+    // Worst-wins from here: the document arrived, so the floor is Ready, and
+    // each thing the page named that did not arrive can only raise it.
+    let mut outcome = PageOutcome::Ready;
     let html = if bytes.is_empty() {
+        // A 200 with nothing in it is not a failed load and not a good one.
+        // The reader gets a page explaining that, and a tab that says so.
+        outcome = outcome.max(PageOutcome::Warning);
         EMPTY_HTML.to_owned()
     } else {
         decode_body(&bytes)
@@ -778,7 +848,16 @@ async fn fetch_page(
         (document.external_script_urls(), wasm_script)
     };
     let wasm = match wasm_script {
-        Some(script) => fetch_page_module(net, &resolved_url, &script).await,
+        Some(script) => {
+            let module = fetch_page_module(net, &resolved_url, &script).await;
+            if module.is_none() {
+                // The page declared a module and it did not load. The fallback
+                // inside the mount is shown instead, which is the designed
+                // degradation and still not what the page asked for.
+                outcome = outcome.max(PageOutcome::Warning);
+            }
+            module
+        }
         None => None,
     };
     let mut scripts = HashMap::new();
@@ -790,8 +869,17 @@ async fn fetch_page(
         if force_revalidate {
             revalidate(&mut script_request);
         }
-        if let Ok((_, bytes)) = net.fetch_async(script_request).await {
-            scripts.insert(url, decode_body(&bytes));
+        match net.fetch_async(script_request).await {
+            Ok((_, bytes)) => {
+                scripts.insert(url, decode_body(&bytes));
+            }
+            // A script that never arrives is the single most common reason a
+            // page renders but does nothing, and it used to be swallowed here
+            // without a trace anywhere in the window.
+            Err(error) => {
+                eprintln!("chuzz: could not fetch script {url}: {error:?}");
+                outcome = outcome.max(PageOutcome::Warning);
+            }
         }
     }
     PageBundle {
@@ -803,6 +891,7 @@ async fn fetch_page(
             scripts,
             wasm,
         },
+        outcome,
     }
 }
 
@@ -844,6 +933,7 @@ pub fn open_tab(browser: State<'_, Browser>, url: Option<String>) -> Result<Fron
             current: 0,
             title: String::new(),
             loading: false,
+            outcome: PageOutcome::Blank,
             generation: 0,
         });
         state.active = id;
@@ -1084,6 +1174,65 @@ pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The five names the tab indicator draws, and the order that decides
+    /// which one a page with several problems gets.
+    ///
+    /// The names are a contract with `types/index.ts`: the dot's colour is
+    /// looked up by this string, and a rename on either side turns every tab
+    /// grey with nothing to say it happened.
+    #[test]
+    fn an_outcome_reports_the_worst_thing_that_happened() {
+        assert_eq!(PageOutcome::Blank.name(), "blank");
+        assert_eq!(PageOutcome::Ready.name(), "ready");
+        assert_eq!(PageOutcome::Warning.name(), "warning");
+        assert_eq!(PageOutcome::Error.name(), "error");
+
+        // `max` is how a load accumulates: the document arriving sets the
+        // floor at Ready, and each thing that failed after that can only raise
+        // it. A page whose scripts 404'd must not report Ready because the
+        // HTML was fine.
+        assert_eq!(
+            PageOutcome::Ready.max(PageOutcome::Warning),
+            PageOutcome::Warning
+        );
+        assert_eq!(
+            PageOutcome::Warning.max(PageOutcome::Ready),
+            PageOutcome::Warning
+        );
+        assert_eq!(
+            PageOutcome::Warning.max(PageOutcome::Error),
+            PageOutcome::Error
+        );
+        assert!(
+            PageOutcome::Blank < PageOutcome::Ready,
+            "an untouched tab must not outrank a loaded one, or a new tab \
+             would go green"
+        );
+    }
+
+    /// A tab that is loading says so, whatever it used to be.
+    ///
+    /// Without this, navigating from a working page to a broken one shows the
+    /// old page's green against the new page's address for the whole fetch,
+    /// which is the one moment the indicator is being watched.
+    #[test]
+    fn loading_outranks_the_previous_outcome() {
+        let mut tab = TabState {
+            id: 0,
+            history: vec![Request::get(Url::parse("https://example.com/").unwrap())],
+            current: 0,
+            title: String::new(),
+            loading: true,
+            outcome: PageOutcome::Ready,
+            generation: 0,
+        };
+        assert_eq!(tab.snapshot().status, "loading");
+        tab.loading = false;
+        assert_eq!(tab.snapshot().status, "ready");
+        tab.outcome = PageOutcome::Error;
+        assert_eq!(tab.snapshot().status, "error");
+    }
 
     /// Anything but an explicit `true` has to mean "closed".
     ///
