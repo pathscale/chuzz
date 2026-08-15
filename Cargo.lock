@@ -78,7 +78,7 @@ dependencies = [
 [[package]]
 name = "accesskit_xplat"
 version = "0.1.1"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -427,7 +427,7 @@ checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
 [[package]]
 name = "blitz-control-protocol"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=9d8c6318bc57b442e11fab289d0fa27c40aa087b#9d8c6318bc57b442e11fab289d0fa27c40aa087b"
+source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=2087cfa542e303ad37c21e4ba4337a52497a8c2a#2087cfa542e303ad37c21e4ba4337a52497a8c2a"
 dependencies = [
  "endpoint-libs 2.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
@@ -437,7 +437,7 @@ dependencies = [
 [[package]]
 name = "blitz-dom-api"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "markup5ever 0.39.0",
  "ps-blitz-dom",
@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "blitz-html"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "html5ever 0.39.0",
  "ps-blitz-dom",
@@ -457,7 +457,7 @@ dependencies = [
 [[package]]
 name = "blitz-net"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "data-url",
  "directories",
@@ -473,7 +473,7 @@ dependencies = [
 [[package]]
 name = "blitz-paint"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "color",
  "euclid",
@@ -493,7 +493,7 @@ dependencies = [
 [[package]]
 name = "blitz-wasm"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "blitz-dom-api",
  "ps-blitz-dom",
@@ -1551,7 +1551,7 @@ checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
 [[package]]
 name = "debug_timer"
 version = "0.1.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 
 [[package]]
 name = "defmt"
@@ -1776,7 +1776,7 @@ dependencies = [
 [[package]]
 name = "dioxus-native"
 version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "android-activity",
  "blitz-net",
@@ -1815,7 +1815,7 @@ dependencies = [
 [[package]]
 name = "dioxus-native-dom"
 version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "dioxus-core",
  "dioxus-html",
@@ -4931,7 +4931,7 @@ dependencies = [
 [[package]]
 name = "pixels_window_renderer"
 version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "pixels",
@@ -5179,7 +5179,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender"
 version = "0.12.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "kurbo",
  "peniko",
@@ -5190,7 +5190,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-svg"
 version = "0.14.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "image",
  "kurbo",
@@ -5202,7 +5202,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello"
 version = "0.13.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-channel",
@@ -5220,7 +5220,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello-cpu"
 version = "0.15.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "glifo",
@@ -5235,7 +5235,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello-hybrid"
 version = "0.9.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-channel",
@@ -5255,7 +5255,7 @@ dependencies = [
 [[package]]
 name = "ps-blitz-debug-control"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -5265,7 +5265,7 @@ dependencies = [
 [[package]]
 name = "ps-blitz-dom"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5274,7 +5274,7 @@ dependencies = [
  "color",
  "cssparser 0.37.0",
  "cursor-icon",
- "debug_timer 0.1.3 (git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b)",
+ "debug_timer 0.1.3 (git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18)",
  "euclid",
  "html-escape",
  "image",
@@ -5310,7 +5310,7 @@ dependencies = [
 [[package]]
 name = "ps-blitz-script"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "base64 0.22.1",
  "blitz-html",
@@ -5337,7 +5337,7 @@ dependencies = [
 [[package]]
 name = "ps-blitz-shell"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "accesskit",
  "accesskit_xplat",
@@ -5360,7 +5360,7 @@ dependencies = [
 [[package]]
 name = "ps-blitz-traits"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.1",
@@ -5387,7 +5387,7 @@ dependencies = [
 [[package]]
 name = "ps-wgpu-context"
 version = "0.8.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "futures-intrusive",
  "wgpu",
@@ -6723,7 +6723,7 @@ dependencies = [
 [[package]]
 name = "stylo_taffy"
 version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=6e6649bae2a5392f382726e920cea4646d93027b#6e6649bae2a5392f382726e920cea4646d93027b"
+source = "git+https://github.com/pathscale/ps-blitz.git?rev=7e1f0bb096c19a24599b017c6bef0b18616c2d18#7e1f0bb096c19a24599b017c6bef0b18616c2d18"
 dependencies = [
  "ps-taffy",
  "stylo",
@@ -7031,7 +7031,7 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-blitz"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=9d8c6318bc57b442e11fab289d0fa27c40aa087b#9d8c6318bc57b442e11fab289d0fa27c40aa087b"
+source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=2087cfa542e303ad37c21e4ba4337a52497a8c2a#2087cfa542e303ad37c21e4ba4337a52497a8c2a"
 dependencies = [
  "blitz-control-protocol",
  "endpoint-libs 2.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
