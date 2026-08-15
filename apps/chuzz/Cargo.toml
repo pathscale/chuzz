@@ -28,7 +28,19 @@ javascript = ["dep:blitz-script"]
 webp = ["image/webp"]
 # Render a page headlessly to a PNG. Off by default: it pulls in the CPU
 # rasteriser, which the windowed browser never needs.
-capture = ["dep:anyrender", "dep:anyrender_vello_cpu", "dep:blitz-paint", "dep:png"]
+#
+# `--capture-wasm` is the sibling entry point and rides the same flag: it needs
+# the same rasteriser and PNG encoder, and adds the wasm host binding. Optional
+# rather than unconditional, so the shipped browser does not carry a wasm
+# interpreter it never instantiates.
+capture = [
+  "dep:anyrender",
+  "dep:anyrender_vello_cpu",
+  "dep:blitz-paint",
+  "dep:png",
+  "dep:blitz-wasm",
+  "dep:wasmi",
+]
 avif = ["image/avif"]
 vello = ["dioxus-native/vello"]
 vello-hybrid = ["dioxus-native/vello-hybrid"]
@@ -41,7 +53,17 @@ scrollbars = ["blitz-dom/scrollbars"]
 # measured or painted without it, so a logo silently collapses),
 # accessibility, system-fonts, file-input and custom-widget. Stripping them
 # and re-adding one by hand was how the logo broke.
-blitz-dom = { workspace = true, default-features = true, features = ["woff"] }
+#
+# `system-fonts` is already in that default set, and it is named again on
+# purpose. Without it parley finds no face, every line shapes to zero height,
+# and a capture comes out blank while every assertion about the tree still
+# passes. blitz-wasm's own layout test carries the same dependency for the same
+# reason. Re-adding the defaults by hand once broke SVG this way; naming this
+# one alongside them is the note that it must not be dropped.
+blitz-dom = { workspace = true, default-features = true, features = [
+  "woff",
+  "system-fonts",
+] }
 blitz-html = { workspace = true, default-features = true }
 # compression: reqwest only sends Accept-Encoding for codecs it was built
 # with, so without it every response arrives uncompressed and a page costs
@@ -50,6 +72,8 @@ blitz-html = { workspace = true, default-features = true }
 blitz-net = { workspace = true, features = ["http2", "cookies", "compression", "cache"] }
 blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
 blitz-traits = { workspace = true, default-features = true }
+blitz-wasm = { workspace = true, optional = true }
+wasmi = { workspace = true, optional = true }
 chuzz-control = { path = "../../crates/chuzz-control" }
 brotli.workspace = true
 image = { workspace = true, default-features = false }
@@ -72,6 +96,12 @@ serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
 tauri-runtime-blitz.workspace = true
+
+[dev-dependencies]
+# Assembles `fixtures/panel.wat` into a module in-process, so the capture test
+# owns its guest instead of borrowing blitz-wasm's demo, and so it needs no
+# wasm32 target and no nested cargo build. See the header of that file.
+wat = "1"
 
 [build-dependencies]
 brotli.workspace = true
