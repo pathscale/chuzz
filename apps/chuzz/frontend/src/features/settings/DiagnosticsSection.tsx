@@ -61,19 +61,19 @@ function Switch(props: {
       </Flex>
       <Flex as="div" align="center" gap="sm" shrink={false}>
         <Button
-          variant={props.value ? "primary" : "outline"}
+          variant={props.value ? "solid" : "outline"}
           size="sm"
           aria-pressed={props.value}
-          isDisabled={props.disabled}
+          state={props.disabled ? "disabled" : undefined}
           onClick={() => props.onPick(true)}
         >
           {t("diagnostics.on")}
         </Button>
         <Button
-          variant={props.value ? "outline" : "primary"}
+          variant={props.value ? "outline" : "solid"}
           size="sm"
           aria-pressed={!props.value}
-          isDisabled={props.disabled}
+          state={props.disabled ? "disabled" : undefined}
           onClick={() => props.onPick(false)}
         >
           {t("diagnostics.off")}

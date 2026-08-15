@@ -44,8 +44,7 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
         <Button
           variant="outline"
           size="sm"
-          isIconOnly
-          title={t("browser.newTab")}
+          width="square" title={t("browser.newTab")}
           onClick={() => browser.openTab()}
         >
           +
@@ -55,11 +54,10 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
       <Button
         variant="outline"
         size="sm"
-        isIconOnly
-        title={t("browser.settings")}
+        width="square" title={t("browser.settings")}
         onClick={props.onOpenSettings}
       >
-        <Icon name="icon-[mdi--cog]" width={15} height={15} />
+        <Icon src="icon-[mdi--cog]" width={15} height={15} />
       </Button>
       <Avatar label="N" />
     </TitleBar>

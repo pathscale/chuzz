@@ -1,4 +1,4 @@
-import { ColorSwatchPicker } from "@pathscale/ui";
+import { ColorSwatchPicker } from "@pathscale/ui/lab";
 import type { JSX } from "solid-js";
 import type { Layout } from "solid-layouts";
 import { surfaceWheel } from "./SurfaceWheel.recipe";

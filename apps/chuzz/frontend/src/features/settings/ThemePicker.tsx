@@ -78,7 +78,7 @@ export function ThemePicker(props: {
               variant="outline"
               size="sm"
               aria-label={t("appearance.resetButton")}
-              isDisabled={props.isDefault}
+              state={props.isDefault ? "disabled" : undefined}
               onClick={props.onReset}
             >
               {t("appearance.resetButton")}
@@ -279,10 +279,9 @@ function Axis(props: {
         <For each={props.stops}>
           {(stop, index) => (
             <Button
-              variant={selected(stop) ? "primary" : "outline"}
+              variant={selected(stop) ? "solid" : "outline"}
               size="sm"
-              isIconOnly
-              aria-label={`${props.label} ${props.format(stop, index())}`}
+              width="square" aria-label={`${props.label} ${props.format(stop, index())}`}
               aria-pressed={selected(stop)}
               onClick={() => props.onPick(stop)}
               style={{ "background-color": props.preview(stop) }}
