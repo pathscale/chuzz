@@ -3,6 +3,13 @@
 Written 2026-08-11. Companion to
 [TODO-plan-what-exists-in-open-source.md](TODO-plan-what-exists-in-open-source.md).
 
+> **Stale anchors, 2026-08-15.** The code references below predate the Tauri
+> migration: `apps/chuzz/src/main.rs` no longer exists, and the `launch_cfg`
+> and `app()`/`use_hook` seams it describes went with it. The window is now
+> `tauri_main.rs` on `tauri-runtime-blitz`. The argument still holds; the line
+> numbers and the insertion points do not, and need re-siting before anyone
+> works from them.
+
 CSP is not the answer and neither is copying Chrome. Both are shaped by constraints we do
 not have, and we have one they do not: **we are Rust, and we own the only choke point.**
 

@@ -10,6 +10,7 @@ it is Rust.
 ```sh
 cargo run -p chuzz-gui                  # opens a blank tab
 cargo run -p chuzz-gui -- example.com   # opens a bare hostname over HTTPS
+cargo run -p chuzz-gui -- --wasm demo.wasm   # a tab a WebAssembly guest builds
 ```
 
 A non-URL argument is not a search: anything that is neither a URL nor a hostname
@@ -45,13 +46,14 @@ The window is a Chrome-shaped shell: tab strip on top, toolbar under it, page fi
 ```text
 apps/chuzz/src
   tauri_main.rs       the Tauri app: command surface, runtime, window
-  browser.rs          tabs, session history, page fetching, and the commands the chrome calls
+  browser.rs          tabs, session history, page sources, and the commands the chrome calls
   frontend.rs         the interface document: embedded Solid bundle, web-API shims
   document_loader.rs  the net provider, the web-API shim, and the headless capture path
   decode.rs           response bodies: gzip, brotli, and undecodable bytes
   nav.rs              what a typed string means: URL, bare hostname, or neither
-  capture.rs          render a page to a PNG without a window (feature: capture)
-  dump.rs             write the node tree beside a capture (feature: capture)
+  wasm_page.rs        build a document by running a WebAssembly guest (feature: wasm, default on)
+  capture.rs          render a page to a PNG without a window (feature: capture, default on)
+  dump.rs             write the node tree beside a capture (feature: capture, default on)
 
 apps/chuzz/frontend   the interface itself: Solid, @pathscale/ui, and the local Layouts
 crates/chuzz-control  built-in diagnostics and agent-control interface (in-process, no server)
@@ -72,6 +74,44 @@ comment: when the identifier drifted, every site loaded correctly and rendered n
 Everything a browser decides rather than renders stays in this binary: tabs, session history,
 address-bar interpretation, and error pages. The engine only reports that a navigation was
 requested; `browser.rs` decides what the back and forward stacks look like afterwards.
+
+## Two ways to build a page
+
+A page document is normally fetched and parsed. It can also be built by a WebAssembly
+guest, which reaches the DOM through the `blitz-wasm` ABI: no URL, nothing fetched, no
+HTML parsed, and no JavaScript anywhere in the path.
+
+```sh
+chuzz-gui --wasm demo.wasm       # a tab whose document the guest builds
+```
+
+The guest is handed an empty `<html><body>` and the body as its mount point, and the
+result attaches at the same `chuzz-page-{tabId}` rendezvous a fetched page uses. It is
+an ordinary tab addressed by a `file:` URL, so history, the address bar and the back and
+forward stacks hold it without knowing what it is. The guest's entry export is `run`,
+overridable with `CHUZZ_WASM_ENTRY`.
+
+Events are not wired up yet: the page renders and does not respond.
+
+## Rendering without a window
+
+```sh
+chuzz-gui --capture out.png https://example.com          # a fetched page
+chuzz-gui --capture-wasm demo.wasm --out out.png --tree out.txt
+```
+
+`CHUZZ_CAPTURE_TREE` is a path, not a flag: it writes the laid-out tree beside the PNG,
+one line per node with absolute boxes, which is the only way to tell a layout fault from
+a paint fault. `CHUZZ_CAPTURE_SCALE` sets the device pixel ratio, defaulting to 1; the
+window runs at 2 on a retina display, so a capture at 1 cannot reproduce a whole class of
+paint fault.
+
+`scripts/render-check.sh` runs a corpus of pages through this and writes a PNG, a tree
+dump and a log per page.
+
+Both flags need the `capture` feature, which is on by default. It used to be off, and a
+plain `cargo build` then produced a binary where `--capture` was silently not a flag at
+all, which reads as the flag being broken rather than absent.
 
 ## Engine
 

@@ -13,8 +13,9 @@
 #     easier to commit.
 #   - macOS has no `timeout(1)`, so a page that never finishes loading hangs the
 #     caller. The watchdog below is the portable stand-in.
-#   - `--features capture` is not a default feature, so a plain `cargo build`
-#     produces a binary where `--capture` is silently not a flag at all.
+#   - `--capture` needs the `capture` feature. It is on by default now, so a
+#     plain `cargo build` carries it; the build below still names it so this
+#     script keeps working for anyone building with `--no-default-features`.
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
