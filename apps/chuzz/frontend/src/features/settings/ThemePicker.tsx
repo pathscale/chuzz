@@ -281,7 +281,8 @@ function Axis(props: {
             <Button
               variant={selected(stop) ? "solid" : "outline"}
               size="sm"
-              width="square" aria-label={`${props.label} ${props.format(stop, index())}`}
+              width="square"
+              aria-label={`${props.label} ${props.format(stop, index())}`}
               aria-pressed={selected(stop)}
               onClick={() => props.onPick(stop)}
               style={{ "background-color": props.preview(stop) }}
