@@ -142,7 +142,6 @@ fn build_frontend() {
     }
 }
 
-
 /// Drop framework load commands that nothing in this binary references.
 ///
 /// This workspace takes `tauri` with `default-features = false`, so there is no
