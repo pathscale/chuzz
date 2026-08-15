@@ -117,6 +117,24 @@ jobs:
         with:
           bun-version: latest
 
+      # `bun install` before anything touches cargo, because the Rust build
+      # script shells out to `bun run build`, whose `prebuild` step runs
+      # `solid-layouts-library` from `node_modules/.bin`. On a fresh checkout
+      # that binary does not exist and the build script panics with
+      #
+      #   solid-layouts-library: command not found
+      #   error: script "prebuild" exited with code 127
+      #
+      # which reads as a missing tool rather than a missing install. It never
+      # showed up locally because every developer machine already has
+      # node_modules from an earlier build.
+      #
+      # `--frozen-lockfile` so a release cannot quietly resolve a different tree
+      # from the committed bun.lock.
+      - name: Install frontend dependencies
+        working-directory: apps/chuzz/frontend
+        run: bun install --frozen-lockfile
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
