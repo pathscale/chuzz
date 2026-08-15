@@ -65,6 +65,10 @@ pub struct PanelSections {
     history: bool,
     network: bool,
     console: bool,
+    /// The verbose stream: every fetch, script, module and mount, as it
+    /// happens. Open by default, because the reason it exists is that nobody
+    /// knew to go looking for the information it carries.
+    debugging: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -113,6 +117,67 @@ impl TabState {
             },
             can_go_back: self.current > 0,
             can_go_forward: self.current + 1 < self.history.len(),
+        }
+    }
+}
+
+/// One line in the debugging panel.
+///
+/// The browser already said most of this on stderr, where nobody watching the
+/// window could see it. A page that renders and then does nothing is almost
+/// always a script or a module that never arrived, and that fact existed only
+/// in a terminal the person looking at the blank page did not have open.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugEntry {
+    /// Monotonic, so the window can ask for everything after what it has
+    /// rather than re-reading the buffer and guessing what is new.
+    seq: u64,
+    /// `info`, `warn` or `error`. Drives the colour and nothing else.
+    level: &'static str,
+    /// Which part of the browser said it: `net`, `page`, `script`, `wasm`.
+    source: &'static str,
+    message: String,
+}
+
+/// The last [`DEBUG_LOG_CAPACITY`] things the browser did.
+///
+/// A ring rather than a growing list: this records every subresource of every
+/// page for the life of the process, and a browser that leaks a line per
+/// request is a browser that eventually stops.
+struct DebugLog {
+    next_seq: u64,
+    entries: VecDeque<DebugEntry>,
+}
+
+const DEBUG_LOG_CAPACITY: usize = 500;
+
+impl DebugLog {
+    fn push(&mut self, level: &'static str, source: &'static str, message: String) -> DebugEntry {
+        let entry = DebugEntry {
+            seq: self.next_seq,
+            level,
+            source,
+            message,
+        };
+        self.next_seq += 1;
+        if self.entries.len() == DEBUG_LOG_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(entry.clone());
+        entry
+    }
+
+    /// Everything the caller has not seen. `since` is the last `seq` it holds.
+    fn since(&self, since: Option<u64>) -> Vec<DebugEntry> {
+        match since {
+            Some(seq) => self
+                .entries
+                .iter()
+                .filter(|entry| entry.seq > seq)
+                .cloned()
+                .collect(),
+            None => self.entries.iter().cloned().collect(),
         }
     }
 }
@@ -211,6 +276,7 @@ struct WasmPage {
 
 struct BrowserInner {
     state: Mutex<BrowserState>,
+    log: Mutex<DebugLog>,
     net: Arc<NetProvider>,
     completed: Mutex<VecDeque<PageBundle>>,
     app: Mutex<Option<ChuzzAppHandle>>,
@@ -266,8 +332,13 @@ impl Browser {
                         history: true,
                         network: false,
                         console: false,
+                        debugging: true,
                     },
                 },
+            }),
+            log: Mutex::new(DebugLog {
+                next_seq: 1,
+                entries: VecDeque::new(),
             }),
             net: Arc::new(NetProvider::new(None)),
             completed: Mutex::new(VecDeque::new()),
@@ -307,6 +378,20 @@ impl Browser {
             transferred: "0 B",
         };
         (tabs, active, state.panel.clone(), status)
+    }
+
+    /// Record something the browser did, for the debugging panel.
+    ///
+    /// Also goes to stderr, because a browser that only says what happened
+    /// inside its own window is unusable from a script and from CI. The panel
+    /// is the copy for whoever is looking at the window.
+    fn note(&self, level: &'static str, source: &'static str, message: impl Into<String>) {
+        let message = message.into();
+        eprintln!("chuzz: {source}: {message}");
+        let entry = self.0.log.lock().unwrap().push(level, source, message);
+        if let Some(app) = self.app() {
+            let _ = app.emit("debug-entry", entry);
+        }
     }
 
     fn emit_state(&self) {
@@ -358,7 +443,7 @@ impl Browser {
 
         let browser = self.clone();
         tauri::async_runtime::spawn(async move {
-            let bundle = fetch_page(&browser.0.net, tab_id, generation, request, revalidate).await;
+            let bundle = fetch_page(&browser, tab_id, generation, request, revalidate).await;
             browser.0.completed.lock().unwrap().push_back(bundle);
             browser.wake_document();
         });
@@ -437,13 +522,32 @@ impl Browser {
                     scripts,
                     wasm: Some(module),
                 } => match mount_page_module(&html, &module, make_config()) {
-                    Some(page) => (Box::new(page), String::new()),
+                    Some(page) => {
+                        self.note(
+                            "info",
+                            "wasm",
+                            format!(
+                                "guest mounted on {:?}, {} nodes in the document",
+                                module.selector,
+                                page.tree().len()
+                            ),
+                        );
+                        (Box::new(page), String::new())
+                    }
                     None => {
                         // The module fetched and vetted, then would not run.
                         // The page still shows its fallback, so this is the
                         // same "arrived, but not what was asked for" reading as
                         // a script that never came.
                         outcome = outcome.max(PageOutcome::Warning);
+                        self.note(
+                            "warn",
+                            "wasm",
+                            format!(
+                                "the guest did not mount on {:?}; keeping the page's fallback",
+                                module.selector
+                            ),
+                        );
                         // Re-parsed rather than repaired. The guest appends into
                         // the mount as it builds, so a run that fails part way
                         // leaves a half-built tree next to the fallback, and
@@ -502,6 +606,16 @@ impl Browser {
                     }
                 },
             };
+            self.note(
+                "info",
+                "page",
+                format!(
+                    "attached {} to tab {} as {}",
+                    bundle.resolved_url,
+                    bundle.tab_id,
+                    outcome.name()
+                ),
+            );
             ui.inner_mut().set_sub_document(target, page);
 
             {
@@ -676,15 +790,20 @@ fn mount_page_module(
 /// degradation story: a browser that cannot run the module shows the static
 /// document instead of a broken one.
 async fn fetch_page_module(
-    net: &Arc<NetProvider>,
+    browser: &Browser,
     document_url: &str,
     script: &crate::wasm_page::WasmScript,
 ) -> Option<PageModule> {
+    let net = &browser.0.net;
     let base = Url::parse(document_url).ok()?;
     let src = match base.join(&script.src) {
         Ok(src) => src,
         Err(error) => {
-            eprintln!("chuzz: wasm: cannot resolve src {:?}: {error}", script.src);
+            browser.note(
+                "error",
+                "wasm",
+                format!("cannot resolve src {:?}: {error}", script.src),
+            );
             return None;
         }
     };
@@ -706,16 +825,21 @@ async fn fetch_page_module(
         Err(error) => {
             // Covers a non-2xx status: the provider turns that into
             // `ProviderError::HttpStatus` rather than handing back a body.
-            eprintln!("chuzz: wasm: could not fetch {src}: {error:?}");
+            browser.note("error", "wasm", format!("could not fetch {src}: {error:?}"));
             return None;
         }
     };
 
     if let Err(problem) = crate::wasm_page::validate_module(&bytes) {
-        eprintln!("chuzz: wasm: {src}: {problem}");
+        browser.note("error", "wasm", format!("{src}: {problem}"));
         return None;
     }
 
+    browser.note(
+        "info",
+        "wasm",
+        format!("module {src} validated, {} bytes", bytes.len()),
+    );
     Some(PageModule {
         bytes: bytes.to_vec(),
         selector: script.mount.clone(),
@@ -769,12 +893,14 @@ fn revalidate(request: &mut Request) {
 }
 
 async fn fetch_page(
-    net: &Arc<NetProvider>,
+    browser: &Browser,
     tab_id: u64,
     generation: u64,
     mut request: Request,
     force_revalidate: bool,
 ) -> PageBundle {
+    let net = &browser.0.net;
+    browser.note("info", "nav", format!("navigating to {}", request.url));
     if request.url.scheme() == "about" {
         return PageBundle {
             tab_id,
@@ -799,11 +925,25 @@ async fn fetch_page(
         // reading as an ordinary failed page.
         let (source, outcome) = match Url::parse(&inner) {
             Ok(url) => match net.fetch_async(Request::get(url)).await {
-                Ok((_, bytes)) => (decode_body(&bytes), PageOutcome::Ready),
-                Err(error) => (
-                    format!("could not fetch {inner}: {error:?}"),
-                    PageOutcome::Error,
-                ),
+                Ok((_, bytes)) => {
+                    browser.note(
+                        "info",
+                        "net",
+                        format!("fetched {inner} for view-source, {} bytes", bytes.len()),
+                    );
+                    (decode_body(&bytes), PageOutcome::Ready)
+                }
+                Err(error) => {
+                    browser.note(
+                        "error",
+                        "net",
+                        format!("could not fetch {inner}: {error:?}"),
+                    );
+                    (
+                        format!("could not fetch {inner}: {error:?}"),
+                        PageOutcome::Error,
+                    )
+                }
             },
             Err(error) => (format!("{inner} is not a URL: {error}"), PageOutcome::Error),
         };
@@ -823,6 +963,11 @@ async fn fetch_page(
     let (resolved_url, bytes) = match net.fetch_async(request).await {
         Ok(response) => response,
         Err(error) => {
+            browser.note(
+                "error",
+                "net",
+                format!("{requested_url} did not load: {error:?}"),
+            );
             return PageBundle {
                 tab_id,
                 generation,
@@ -839,10 +984,16 @@ async fn fetch_page(
     // Worst-wins from here: the document arrived, so the floor is Ready, and
     // each thing the page named that did not arrive can only raise it.
     let mut outcome = PageOutcome::Ready;
+    browser.note(
+        "info",
+        "net",
+        format!("loaded {resolved_url}, {} bytes", bytes.len()),
+    );
     let html = if bytes.is_empty() {
         // A 200 with nothing in it is not a failed load and not a good one.
         // The reader gets a page explaining that, and a tab that says so.
         outcome = outcome.max(PageOutcome::Warning);
+        browser.note("warn", "net", "the server returned an empty body");
         EMPTY_HTML.to_owned()
     } else {
         decode_body(&bytes)
@@ -862,7 +1013,15 @@ async fn fetch_page(
     };
     let wasm = match wasm_script {
         Some(script) => {
-            let module = fetch_page_module(net, &resolved_url, &script).await;
+            browser.note(
+                "info",
+                "wasm",
+                format!(
+                    "page declares a module: {} mounting on {}",
+                    script.src, script.mount
+                ),
+            );
+            let module = fetch_page_module(browser, &resolved_url, &script).await;
             if module.is_none() {
                 // The page declared a module and it did not load. The fallback
                 // inside the mount is shown instead, which is the designed
@@ -884,13 +1043,22 @@ async fn fetch_page(
         }
         match net.fetch_async(script_request).await {
             Ok((_, bytes)) => {
+                browser.note(
+                    "info",
+                    "script",
+                    format!("fetched {url}, {} bytes", bytes.len()),
+                );
                 scripts.insert(url, decode_body(&bytes));
             }
             // A script that never arrives is the single most common reason a
             // page renders but does nothing, and it used to be swallowed here
             // without a trace anywhere in the window.
             Err(error) => {
-                eprintln!("chuzz: could not fetch script {url}: {error:?}");
+                browser.note(
+                    "error",
+                    "script",
+                    format!("could not fetch {url}: {error:?}"),
+                );
                 outcome = outcome.max(PageOutcome::Warning);
             }
         }
@@ -1057,12 +1225,23 @@ pub fn toggle_section(browser: State<'_, Browser>, section: String) -> Result<()
         "history" => &mut state.panel.sections.history,
         "network" => &mut state.panel.sections.network,
         "console" => &mut state.panel.sections.console,
+        "debugging" => &mut state.panel.sections.debugging,
         _ => return Err(format!("unknown panel section {section}")),
     };
     *value = !*value;
     drop(state);
     browser.emit_state();
     Ok(())
+}
+
+/// Everything the panel has not seen yet.
+///
+/// A pull as well as the `debug-entry` push, so a window that opens the panel
+/// after a page has already loaded still sees what happened, and so a dropped
+/// event cannot leave the panel permanently behind.
+#[tauri::command]
+pub fn debug_log(browser: State<'_, Browser>, since: Option<u64>) -> Vec<DebugEntry> {
+    browser.0.log.lock().unwrap().since(since)
 }
 
 #[tauri::command]

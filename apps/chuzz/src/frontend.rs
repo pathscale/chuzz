@@ -76,7 +76,7 @@ pub(crate) const TAURI_TEST_BRIDGE: &str = r#"
   }];
   var panel = {
     collapsed: true,
-    sections: { page: true, history: true, network: false, console: false }
+    sections: { page: true, history: true, network: false, console: false, debugging: true }
   };
   var status = {
     status: 'complete',
@@ -100,6 +100,7 @@ pub(crate) const TAURI_TEST_BRIDGE: &str = r#"
         case 'active_tab_id': return Promise.resolve(0);
         case 'panel_state': return Promise.resolve(panel);
         case 'status': return Promise.resolve(status);
+        case 'debug_log': return Promise.resolve([]);
         default: return Promise.resolve(null);
       }
     }

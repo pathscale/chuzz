@@ -58,6 +58,8 @@ const en = {
     history: "History",
     network: "Network",
     console: "Console",
+    debugging: "Debugging",
+    debuggingEmpty: "Nothing yet. Load a page.",
   },
 } as const;
 

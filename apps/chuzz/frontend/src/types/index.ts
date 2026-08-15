@@ -47,6 +47,23 @@ export interface PanelSections {
   history: boolean;
   network: boolean;
   console: boolean;
+  debugging: boolean;
+}
+
+/**
+ * One line of the debugging stream.
+ *
+ * Mirrors `DebugEntry` in `browser.rs`. `seq` is monotonic and is what the
+ * window asks from: a panel opened after a page has loaded pulls everything it
+ * missed rather than starting blank, and a dropped event cannot leave it
+ * permanently behind.
+ */
+export interface DebugEntry {
+  seq: number;
+  level: "info" | "warn" | "error";
+  /** Which part of the browser said it: `nav`, `net`, `script`, `wasm`, `page`. */
+  source: string;
+  message: string;
 }
 
 export interface PanelState {

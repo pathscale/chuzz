@@ -1,4 +1,4 @@
-import type { DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type { DebugEntry, DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
 
 /**
  * The shell surface, as the interface sees it.
@@ -58,6 +58,12 @@ export interface BrowserApi {
    */
   setDiagnostics(inspection: boolean, profiling: boolean): Promise<DiagnosticsState>;
 
+  /**
+   * Everything the debugging panel has not seen. `since` is the highest `seq`
+   * it holds; omitting it asks for the whole buffer.
+   */
+  debugLog(since?: number): Promise<DebugEntry[]>;
+
   on<K extends keyof BrowserEvents>(
     event: K,
     handler: (payload: BrowserEvents[K]) => void,
@@ -78,6 +84,7 @@ export interface BrowserEvents {
   "active-tab-changed": TabId;
   "status-changed": StatusReadout;
   "panel-changed": PanelState;
+  "debug-entry": DebugEntry;
 }
 
 export type BrowserEvent = keyof BrowserEvents;

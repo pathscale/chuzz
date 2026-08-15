@@ -176,6 +176,7 @@ fn main() {
             browser::set_panel_collapsed,
             browser::toggle_section,
             browser::status,
+            browser::debug_log,
             browser::diagnostics,
             browser::set_diagnostics,
         ])

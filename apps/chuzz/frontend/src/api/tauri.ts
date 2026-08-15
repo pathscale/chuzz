@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type { DebugEntry, DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
 import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
 
 /**
@@ -31,6 +31,8 @@ export function createTauriApi(): BrowserApi {
     toggleSection: (section) => invoke<void>("toggle_section", { section }),
 
     status: () => invoke<StatusReadout>("status"),
+
+    debugLog: (since) => invoke<DebugEntry[]>("debug_log", { since: since ?? null }),
 
     diagnostics: () => invoke<DiagnosticsState>("diagnostics"),
     setDiagnostics: (inspection, profiling) =>
