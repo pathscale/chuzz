@@ -433,6 +433,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "blitz-dom-api"
+version = "0.3.0-beta.3"
+dependencies = [
+ "markup5ever 0.39.0",
+ "ps-blitz-dom",
+]
+
+[[package]]
 name = "blitz-html"
 version = "0.3.0-beta.3"
 dependencies = [
@@ -474,6 +482,16 @@ dependencies = [
  "smallvec",
  "stylo",
  "usvg",
+]
+
+[[package]]
+name = "blitz-wasm"
+version = "0.3.0-beta.3"
+dependencies = [
+ "blitz-dom-api",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+ "wasmi",
 ]
 
 [[package]]
@@ -977,6 +995,7 @@ dependencies = [
  "blitz-html",
  "blitz-net",
  "blitz-paint",
+ "blitz-wasm",
  "brotli",
  "chuzz-control",
  "dioxus-native",
@@ -995,6 +1014,8 @@ dependencies = [
  "tauri-runtime-blitz",
  "tokio",
  "url",
+ "wasmi",
+ "wat",
 ]
 
 [[package]]
@@ -3833,6 +3854,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51cdaa5abc885e2d606e6985281ace220778bde190be20aab1ec2346ed8bd1fa"
 
 [[package]]
+name = "leb128fmt"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4893,7 +4920,7 @@ dependencies = [
 [[package]]
 name = "pixels_window_renderer"
 version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=acb9714cedfa2a6adbac76f8e494f75af60ccc6e#acb9714cedfa2a6adbac76f8e494f75af60ccc6e"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "pixels",
@@ -5141,7 +5168,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender"
 version = "0.12.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=acb9714cedfa2a6adbac76f8e494f75af60ccc6e#acb9714cedfa2a6adbac76f8e494f75af60ccc6e"
 dependencies = [
  "kurbo",
  "peniko",
@@ -5152,7 +5179,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-svg"
 version = "0.14.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=acb9714cedfa2a6adbac76f8e494f75af60ccc6e#acb9714cedfa2a6adbac76f8e494f75af60ccc6e"
 dependencies = [
  "image",
  "kurbo",
@@ -5164,7 +5191,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello"
 version = "0.13.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=acb9714cedfa2a6adbac76f8e494f75af60ccc6e#acb9714cedfa2a6adbac76f8e494f75af60ccc6e"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-channel",
@@ -5182,7 +5209,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello-cpu"
 version = "0.15.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=acb9714cedfa2a6adbac76f8e494f75af60ccc6e#acb9714cedfa2a6adbac76f8e494f75af60ccc6e"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "glifo",
@@ -5197,7 +5224,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello-hybrid"
 version = "0.9.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=acb9714cedfa2a6adbac76f8e494f75af60ccc6e#acb9714cedfa2a6adbac76f8e494f75af60ccc6e"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-channel",
@@ -5343,7 +5370,7 @@ dependencies = [
 [[package]]
 name = "ps-wgpu-context"
 version = "0.8.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=acb9714cedfa2a6adbac76f8e494f75af60ccc6e#acb9714cedfa2a6adbac76f8e494f75af60ccc6e"
 dependencies = [
  "futures-intrusive",
  "wgpu",
@@ -6445,6 +6472,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+
+[[package]]
 name = "spirv"
 version = "0.4.0+sdk-1.4.341.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6489,6 +6522,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 dependencies = [
  "float-cmp",
+]
+
+[[package]]
+name = "string-interner"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23de088478b31c349c9ba67816fa55d9355232d63c3afea8bf513e31f0f1d2c0"
+dependencies = [
+ "hashbrown 0.15.5",
+ "serde",
 ]
 
 [[package]]
@@ -8018,6 +8061,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-encoder"
+version = "0.256.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec1492381bfd5ea51c2a99a919b676662559925cb8d7490547ec2e14c1ad3eb1"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.256.0",
+]
+
+[[package]]
 name = "wasm-streams"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8028,6 +8081,90 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "wasmi"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2300d0f78cba12f14e29e8dd157ea64050c0a688179aefdb2050105805594a0c"
+dependencies = [
+ "spin",
+ "wasmi_collections",
+ "wasmi_core",
+ "wasmi_ir",
+ "wasmparser 0.239.0",
+ "wat",
+]
+
+[[package]]
+name = "wasmi_collections"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8a8c42a2a76148d43097b1d7cc2a5bf33d5c23bd4dd69015fc887e311767884"
+dependencies = [
+ "string-interner",
+]
+
+[[package]]
+name = "wasmi_core"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9013136083d988725953390bf668b64b7a218fabf26f8b913bbc59546b97ee27"
+dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "wasmi_ir"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba1fa003f79156f406d62ef0e1464dc03e11ace37170e9fa7524299a75ad8f68"
+dependencies = [
+ "wasmi_core",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.239.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c9d90bb93e764f6beabf1d02028c70a2156a6583e63ac4218dd07ef733368b0"
+dependencies = [
+ "bitflags 2.13.1",
+ "indexmap 2.14.0",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.256.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60bd825ffedc6cba8a642924ba7ae424afbc47811cffbcb7b92031ec24e59b4c"
+dependencies = [
+ "bitflags 2.13.1",
+ "indexmap 2.14.0",
+ "semver 1.0.28",
+]
+
+[[package]]
+name = "wast"
+version = "256.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ad42723fc9222da007f05812a3249c9a4ee7af79d497fc2a2079579ad7efe6"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width 0.2.2",
+ "wasm-encoder",
+]
+
+[[package]]
+name = "wat"
+version = "1.256.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37cc86c54d8011b3202e265bfebada440733ea3a788ffaf46d395f7d2fdeacfb"
+dependencies = [
+ "wast",
 ]
 
 [[package]]
