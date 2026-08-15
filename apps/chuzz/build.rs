@@ -142,7 +142,32 @@ fn build_frontend() {
     }
 }
 
+
+/// Drop framework load commands that nothing in this binary references.
+///
+/// This workspace takes `tauri` with `default-features = false`, so there is no
+/// `wry` and no webview here at all. That is not enough. On macOS `tauri` and
+/// `tauri-runtime` depend on `objc2-web-kit` unconditionally, because
+/// `tauri-runtime`'s public API names WKWebView types, and that crate carries
+/// `#[link(name = "WebKit", kind = "framework")]`. The directive travels in
+/// rlib metadata rather than on the rustc command line, so it does not show up
+/// in `cargo build -v` and it does not follow feature selection.
+///
+/// The result was a shipped binary declaring a dependency on a framework it
+/// never calls, which dyld then loaded at every launch: `otool -L` on
+/// `target/release/chuzz-gui` listed WebKit before this.
+///
+/// `-dead_strip_dylibs` drops load commands nothing references, so the decision
+/// is made per link by the linker rather than guessed here.
+fn strip_unused_frameworks() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    println!("cargo::rustc-link-arg-bins=-Wl,-dead_strip_dylibs");
+}
+
 fn main() {
+    strip_unused_frameworks();
     stamp_build();
     build_frontend();
     tauri_build::build();
