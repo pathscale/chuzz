@@ -147,9 +147,11 @@ fn walk(
     let Some(node) = document.get_node(node_id) else {
         return;
     };
-    let layout = has_layout(node)
-        .then(|| *node.final_layout())
-        .unwrap_or_default();
+    let layout = if has_layout(node) {
+        *node.final_layout()
+    } else {
+        Default::default()
+    };
     // Taffy stores each box relative to its parent's border box, so an absolute
     // position is only available by accumulating on the way down. Without that
     // the numbers cannot be compared against a browser's client rects.
