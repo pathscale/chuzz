@@ -21,7 +21,20 @@ use crate::nav::{NEW_TAB_URL, display_title, request_from_input};
 /// tab stayed blue whatever they picked. The shell paints `.page` with the
 /// themed surface and this lets it through.
 const BLANK_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title></title></head><body style="margin:0;background:transparent"></body></html>"#;
-const EMPTY_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Empty response</title></head><body><h1>Empty response</h1><p>The server returned no content.</p></body></html>"#;
+/// Colours for the pages the browser writes itself.
+///
+/// Explicit, and light, like every other browser's error and source pages.
+/// These documents declare no colours of their own, so they inherited the
+/// engine's defaults: black text on a transparent background, over a viewport
+/// the shell paints with the dark theme surface. The source of a page was
+/// therefore rendered, laid out, and unreadable, which is indistinguishable
+/// from not being rendered at all and was reported as exactly that.
+///
+/// Not a theme token. These are documents in a page viewport, not part of the
+/// chrome, and nothing in a page can reach the shell's custom properties.
+const INTERNAL_PAGE_STYLE: &str = "margin:0;background:#f6f6f7;color:#16181d";
+
+const EMPTY_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Empty response</title></head><body style="margin:0;background:#f6f6f7;color:#16181d"><h1>Empty response</h1><p>The server returned no content.</p></body></html>"#;
 
 fn error_html(error: &str) -> String {
     let escaped = error
@@ -29,7 +42,7 @@ fn error_html(error: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;");
     format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>Page not available</title></head><body><h1>Page not available</h1><p>{escaped}</p></body></html>"#
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Page not available</title></head><body style="{INTERNAL_PAGE_STYLE};padding:2rem;font:14px system-ui,sans-serif"><h1>Page not available</h1><p>{escaped}</p></body></html>"#
     )
 }
 
@@ -723,7 +736,7 @@ fn source_html(text: &str) -> String {
         .replace('>', "&gt;");
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>Source</title></head>
-<body style="margin:0"><pre style="margin:0;padding:1rem;font:13px ui-monospace,monospace;white-space:pre-wrap;word-break:break-word">{escaped}</pre></body></html>"#
+<body style="{INTERNAL_PAGE_STYLE}"><pre style="margin:0;padding:1rem;font:13px ui-monospace,monospace;white-space:pre-wrap;word-break:break-word">{escaped}</pre></body></html>"#
     )
 }
 
@@ -1174,6 +1187,40 @@ pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The browser's own pages have to be legible on their own.
+    ///
+    /// They declare no colours, so they took the engine's default black text
+    /// and transparent background, over a viewport the shell paints with the
+    /// dark theme surface. `view-source:` produced a document that was fetched,
+    /// parsed, laid out and painted, and looked like a black rectangle. It was
+    /// reported as the source not showing, which is exactly what it looked
+    /// like.
+    #[test]
+    fn the_pages_the_browser_writes_carry_their_own_colours() {
+        for html in [
+            error_html("something went wrong"),
+            source_html("<b>hi</b>"),
+            EMPTY_HTML.to_owned(),
+        ] {
+            assert!(
+                html.contains("background:#f6f6f7") && html.contains("color:#16181d"),
+                "an internal page with no colours of its own is invisible on a dark \
+                 viewport: {html}"
+            );
+        }
+    }
+
+    /// Source is shown, never re-serialised.
+    #[test]
+    fn source_is_escaped_rather_than_rendered() {
+        let html = source_html("<script>alert(1)</script>& <b>");
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;&amp; &lt;b&gt;"));
+        assert!(
+            !html.contains("<script>alert"),
+            "view source must not be able to run what it is showing"
+        );
+    }
 
     /// The five names the tab indicator draws, and the order that decides
     /// which one a page with several problems gets.
