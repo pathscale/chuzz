@@ -260,10 +260,10 @@
      put the × back under the title this change is meant to clear. */
   .title-bar .button.button--width-square:not(.tab-close) {
     aspect-ratio: auto;
-    width: 26px;
-    min-width: 26px;
-    height: 26px;
-    min-height: 26px;
+    width: 22px;
+    min-width: 22px;
+    height: 22px;
+    min-height: 22px;
     padding: 0;
     font-size: 14px;
     line-height: 1;
@@ -328,12 +328,26 @@
     height: 100%;
   }
 
-  /* The viewing area carries the themed surface. The blank document the shell
-     loads is transparent, so an empty tab shows this rather than a colour
-     hardcoded in Rust that no theme could reach. */
+  /*
+   * What sits behind a page's document.
+   *
+   * White, because that is the canvas every engine gives a document and what
+   * every page that declares no background of its own is written against. This
+   * carried the theme's dark surface instead, and any such page rendered its
+   * default black text straight onto it: the site was fetched, its module ran,
+   * 36 nodes were built and laid out, and what reached the screen was black on
+   * black. It reads as a page that did not load.
+   *
+   * A blank tab is the exception and keeps the surface, because an empty tab is
+   * part of the window rather than a document.
+   */
   .page {
     width: 100%;
     height: 100%;
+    background: #ffffff;
+  }
+
+  .page-blank {
     background: var(--color-base-200);
   }
 
@@ -350,39 +364,51 @@
      chevron affordance rather than the bare strip this had become. */
   .panel-handle {
     position: relative;
-    width: 5px;
+    width: 18px;
     flex-shrink: 0;
     border: 0;
     padding: 0;
-    background: var(--color-az-hairline-soft);
-    cursor: col-resize;
+    background: transparent;
+    cursor: pointer;
     border-radius: 0;
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
-  .panel-handle:hover {
+  /* The hairline is drawn rather than being the element, so the hit target can
+     be as wide as a control while the seam stays a line. */
+  .panel-handle::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--color-az-hairline-soft);
+  }
+
+  .panel-handle:hover::before {
     background: var(--color-primary);
   }
 
   .panel-handle-chevron {
-    position: absolute;
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 1.75rem;
-    width: 1.75rem;
+    height: 24px;
+    width: 24px;
     border-radius: 9999px;
+    border: 1px solid var(--color-az-hairline);
     background: var(--color-base-300);
     color: var(--color-base-content);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
-    opacity: 0.75;
+    opacity: 0.9;
     transition:
       opacity 120ms ease,
       background-color 120ms ease;
-    pointer-events: none;
   }
 
   .panel-handle:hover .panel-handle-chevron {
@@ -416,6 +442,12 @@
     width: 0;
     min-width: 0;
     border: 0;
+  }
+
+  /* The panel stops short of the frame so the handle has room to sit on
+     rather than being pinned against the window edge. */
+  .main-content > .side-panel:not(.side-panel-collapsed) {
+    margin-right: 8px;
   }
 
   .side-panel-header {
@@ -461,6 +493,22 @@
     flex-shrink: 0;
   }
 
+  /*
+   * A closed section takes no room.
+   *
+   * `Collapsible` collapses by animating `grid-template-rows` from `1fr` to
+   * `0fr`, which is elegant and did not happen: the section's body stayed its
+   * full height in both states, so every section was permanently open and the
+   * triggers only moved a chevron. Measured in the window, collapsing the
+   * debugging section left the one below it at y=544 both times.
+   *
+   * `display: none` on the closed state is unambiguous in any engine, and this
+   * one has to work in two. The animation is the part worth losing.
+   */
+  .inspector-section .collapsible__content[data-expanded="false"] {
+    display: none;
+  }
+
   .inspector-body {
     display: flex;
     flex-direction: column;
@@ -487,6 +535,73 @@
   .inspector-row__value {
     color: var(--color-az-body);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /*
+   * The debugging stream.
+   *
+   * A console, so it reads like one: monospace, one line per event, newest at
+   * the bottom, and a source tag in front so a wall of them can be skimmed by
+   * where it came from rather than by reading every message. It scrolls on its
+   * own rather than growing the panel, because five hundred lines of a page
+   * load would otherwise push every other section off the bottom.
+   */
+  /* Same reason as `.page-stack`: it exists so the sections stay reactive
+     inside a Layout's children, so it must not introduce a box of its own. */
+  .side-panel__sections {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .debug-log {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    max-height: 320px;
+    overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .debug-line {
+    display: flex;
+    gap: 6px;
+    padding: 2px 0;
+    align-items: baseline;
+    border-bottom: 1px solid var(--color-az-hairline-soft);
+    word-break: break-word;
+  }
+
+  .debug-line__source {
+    flex-shrink: 0;
+    min-width: 44px;
+    text-align: right;
+    color: var(--color-az-dim);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+
+  .debug-line__message {
+    flex-grow: 1;
+    min-width: 0;
+    color: var(--color-az-body);
+  }
+
+  .debug-line-warn .debug-line__message {
+    color: var(--color-warning);
+  }
+
+  .debug-line-error .debug-line__message {
+    color: var(--color-error);
+  }
+
+  .debug-empty {
+    padding: 6px 0;
+    font-size: 11.5px;
+    color: var(--color-az-muted);
   }
 
   /* Settings */
