@@ -3,12 +3,10 @@
 Written 2026-08-11. Companion to
 [TODO-plan-what-exists-in-open-source.md](TODO-plan-what-exists-in-open-source.md).
 
-> **Stale anchors, 2026-08-15.** The code references below predate the Tauri
-> migration: `apps/chuzz/src/main.rs` no longer exists, and the `launch_cfg`
-> and `app()`/`use_hook` seams it describes went with it. The window is now
-> `tauri_main.rs` on `tauri-runtime-blitz`. The argument still holds; the line
-> numbers and the insertion points do not, and need re-siting before anyone
-> works from them.
+> **Re-sited 2026-08-15.** The code anchors below were written against
+> `apps/chuzz/src/main.rs` and `dioxus_native::launch_cfg`, neither of which
+> survived the Tauri migration. They now point at `tauri_main.rs`. The argument
+> is unchanged; only the insertion points moved.
 
 CSP is not the answer and neither is copying Chrome. Both are shaped by constraints we do
 not have, and we have one they do not: **we are Rust, and we own the only choke point.**
@@ -222,21 +220,22 @@ an `extern "C"` declaration and `libc`.
 So: initialise the window, renderer and font stack, then apply the profile, **then** load the
 first page.
 
-**There is no seam in `main` for that.** `apps/chuzz/src/main.rs:131` is
-`dioxus_native::launch_cfg(app, contexts, vec![Box::new(window_attributes)])`, and it blocks
-— it owns the event loop, the window and the renderer. Everything before it is pre-graphics;
+**There is no seam in `main` for that.** `apps/chuzz/src/tauri_main.rs:203` is
+`.run(|_, _| {})` on the end of the `tauri_runtime_blitz::builder()` chain, and it blocks —
+it owns the event loop, the window and the renderer. Everything before it is pre-graphics;
 everything after it is exit. So the two obvious options are:
 
-1. **Before `launch_cfg:131`**, and let Metal, the WindowServer connection and fontconfig
-   initialise *inside* the sandbox. Simplest by far, and it puts the profile on before
-   anything else runs. The cost is that the profile must permit graphics and font
-   initialisation, which is the fiddly part of an SBPL profile — but it is also precisely
-   what WebKit's `com.apple.WebProcess.sb.in` already spells out, so we are copying the
-   answer rather than deriving it.
-2. **Inside `app()` at `main.rs:134`**, in a `use_hook` that runs once on first render, after
-   the window exists. Narrower profile needed, but it runs after arbitrary dioxus and wgpu
-   initialisation and it is easy for a future refactor to move content loading earlier than
-   the hook.
+1. **Before the builder chain at `tauri_main.rs:163`**, and let Metal, the WindowServer
+   connection and fontconfig initialise *inside* the sandbox. Simplest by far, and it puts
+   the profile on before anything else runs. The cost is that the profile must permit
+   graphics and font initialisation, which is the fiddly part of an SBPL profile — but it is
+   also precisely what WebKit's `com.apple.WebProcess.sb.in` already spells out, so we are
+   copying the answer rather than deriving it.
+2. **Inside the `.setup` closure at `tauri_main.rs:182`**, which runs once after the app is
+   built and before `window.show()` at line 197. Narrower profile needed, but it runs after
+   arbitrary Tauri and wgpu initialisation, and it is easy for a future refactor to move
+   content loading earlier than the closure. Note the first page is already scheduled from
+   here: `setup_browser.attach_app(...)` calls `schedule_current`.
 
 **Take 1.** The whole reason to prefer WebKit's profile over one we write is that it already
 covers what a Darwin rendering process needs at startup. Option 2 trades that advantage away
@@ -245,9 +244,11 @@ to save profile lines.
 `chuzz::sandbox` as a new module in `apps/chuzz/src/`, `#[cfg(target_os = "macos")]`, called
 on the first line of `main`.
 
-Note the `--capture` path at `main.rs:57` returns before ever reaching `launch_cfg`. It takes
-a URL and renders headlessly, so it needs its own call or it becomes the unsandboxed way to
-render a hostile page.
+Note the headless paths return before ever reaching the builder: `--capture-wasm` at
+`tauri_main.rs:41` and `--capture` at `tauri_main.rs:81`. Both render without a window —
+one from a URL, one from a WebAssembly module — so each needs its own call or they become
+the unsandboxed way to render hostile input. `--wasm` does *not* need separate handling: it
+goes through the ordinary window path.
 
 #### The probe matters more than the profile
 
