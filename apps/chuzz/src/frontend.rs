@@ -64,7 +64,7 @@ pub fn document(browser: Browser, url: &str) -> Result<blitz_script::ScriptDocum
 /// nothing. Canned answers here put one tab on screen so the rendezvous is
 /// exercised for real.
 #[cfg(test)]
-const TAURI_TEST_BRIDGE: &str = r#"
+pub(crate) const TAURI_TEST_BRIDGE: &str = r#"
 (function () {
   var tabs = [{
     id: 0,

@@ -14,6 +14,10 @@ mod document_loader;
 mod dump;
 mod frontend;
 mod nav;
+// Shared by `--wasm` in the window and `--capture-wasm` headlessly, so a
+// guest-built page cannot render one way in a tab and another in a capture.
+#[cfg(feature = "wasm")]
+mod wasm_page;
 
 use browser::Browser;
 
@@ -24,8 +28,7 @@ fn control_override_enabled() -> bool {
     )
 }
 
-/// The value following `flag`, for the capture paths' hand-rolled parsing.
-#[cfg(feature = "capture")]
+/// The value following `flag`, for the hand-rolled argument parsing.
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     let index = args.iter().position(|arg| arg == flag)?;
     args.get(index + 1).cloned()
@@ -110,10 +113,31 @@ fn main() {
         return;
     }
 
-    let startup = std::env::args()
-        .skip(1)
-        .find_map(|argument| nav::request_from_input(&argument).map(|request| request.url));
-    let browser = Browser::new(startup);
+    // `--wasm <module.wasm>`: the first tab's document is built by a
+    // WebAssembly guest instead of fetched. Everything after this point is the
+    // ordinary browser: the tab, the strip, the toolbar and the mount are the
+    // same ones a fetched page uses.
+    let arguments: Vec<String> = std::env::args().collect();
+    if arguments.iter().any(|arg| arg == "--wasm") && flag_value(&arguments, "--wasm").is_none() {
+        eprintln!("chuzz: --wasm needs a path to a .wasm module");
+        std::process::exit(2);
+    }
+    let browser = match flag_value(&arguments, "--wasm") {
+        Some(module) => match Browser::with_wasm_page(std::path::PathBuf::from(module)) {
+            Ok(browser) => browser,
+            Err(error) => {
+                eprintln!("chuzz: {error}");
+                std::process::exit(2);
+            }
+        },
+        None => {
+            let startup = arguments
+                .iter()
+                .skip(1)
+                .find_map(|argument| nav::request_from_input(argument).map(|request| request.url));
+            Browser::new(startup)
+        }
+    };
     let document_browser = browser.clone();
     tauri_runtime_blitz::set_document_factory(move |url| {
         frontend::document(document_browser.clone(), url)
