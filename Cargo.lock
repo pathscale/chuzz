@@ -5276,6 +5276,7 @@ dependencies = [
  "ps-blitz-traits",
  "ps-taffy",
  "rayon",
+ "rustc-hash 2.1.3",
  "selectors 0.40.0",
  "skrifa 0.42.1",
  "slotmap",
