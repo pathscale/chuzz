@@ -98,7 +98,9 @@ fn build_frontend() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail = stderr.lines().rev().take(30).collect::<Vec<_>>();
         panic!(
-            "Solid frontend build failed:\n{}",
+            "Solid frontend build failed (if this says a `solid-layouts-*` \
+             binary is not found, run `bun install` in apps/chuzz/frontend; \
+             the prebuild step needs node_modules/.bin):\n{}",
             tail.into_iter().rev().collect::<Vec<_>>().join("\n")
         );
     }
