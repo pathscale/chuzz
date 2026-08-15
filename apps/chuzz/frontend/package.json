@@ -19,7 +19,7 @@
     "start": "rsbuild dev",
     "build": "tsc --noEmit && rsbuild build",
     "preview": "rsbuild preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "lint": "biome check .",
     "format": "biome format . --write",
     "test": "vitest",
