@@ -21,6 +21,11 @@ blitz-html = { path = "../ps-blitz/packages/blitz-html" }
 blitz-net = { path = "../ps-blitz/packages/blitz-net" }
 blitz-script = { package = "ps-blitz-script", path = "../ps-blitz/packages/blitz-script" }
 blitz-traits = { package = "ps-blitz-traits", path = "../ps-blitz/packages/blitz-traits" }
+# The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
+# document with no JavaScript and no URL in the path. Same shape as the other
+# engine crates above: a path into the local Blitz checkout, so the DOM types it
+# hands back are the same ones the painter and the dump already understand.
+blitz-wasm = { path = "../ps-blitz/packages/blitz-wasm" }
 dioxus-native = { path = "../ps-blitz/packages/dioxus-native", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
@@ -30,13 +35,28 @@ image = { version = "=0.25.6", default-features = false }
 # Headless capture: renders a page to a buffer with the CPU rasteriser, so the
 # result can be inspected without a window.
 # Must be the same anyrender blitz-paint links against, or PaintScene is two
-# unrelated traits and the painter cannot be passed to paint_scene.
-anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+# unrelated traits and the painter cannot be passed to paint_scene. blitz-paint
+# is a path dependency, so the rev it uses is whatever
+# `ps-blitz/Cargo.toml` pins, and this rev has to be kept equal to that one by
+# hand. It rotted once: ps-blitz moved to acb9714 and this stayed on 0e4122b,
+# which broke every `--capture` build with
+#
+#   error[E0277]: the trait bound `VelloCpuScenePainter: PaintScene` is not satisfied
+#   note: there are multiple different versions of crate `ps_anyrender_vello_cpu`
+#
+# reading as a broken painter when it was really two of them.
+anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
 # `filters` is off by default in the backend, and with it off `push_layer`
 # discards both the element's `filter:` and its `backdrop-filter:`.
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea", features = ["filters"] }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e", features = ["filters"] }
 blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
 png = "=0.18.1"
+# Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
+# and blitz-wasm does not re-export the runtime. This must stay on the same
+# semver line blitz-wasm pins (1.x, not 2.0.0-beta), or cargo links two wasmi
+# crates and the `Linker<Host>` built here is a different type from the one that
+# function accepts.
+wasmi = "1.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
