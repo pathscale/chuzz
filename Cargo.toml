@@ -12,34 +12,45 @@ repository = "https://github.com/pathscale/chuzz"
 homepage = "https://github.com/pathscale/chuzz"
 
 [workspace.dependencies]
-# Path dependencies into the local Blitz checkout, the way AgencyZero's
-# blitz-preview consumes it. The crates there are namespaced `ps-blitz-*`.
-# A git rev cannot be used instead: the fix for compressed responses lives in
-# that tree, and mixing the two would put two copies of the DOM types in play.
-blitz-dom = { package = "ps-blitz-dom", path = "../ps-blitz/packages/blitz-dom" }
-blitz-html = { path = "../ps-blitz/packages/blitz-html" }
-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
-blitz-script = { package = "ps-blitz-script", path = "../ps-blitz/packages/blitz-script" }
-blitz-traits = { package = "ps-blitz-traits", path = "../ps-blitz/packages/blitz-traits" }
+# The engine, by revision rather than by path.
+#
+# These were `path = "../ps-blitz/..."`, which made the sibling checkout on each
+# machine the real dependency and left the revision CI used declared separately,
+# in a `BLITZ_REF` env var in release.yml. Two sources of truth that nothing
+# reconciled: the pin sat 44 commits behind while local builds moved on, and the
+# release job broke the moment a new engine package was added, because a path
+# dependency resolves against whatever is on disk and no local build can notice.
+#
+# A rev here is the single declaration. `Cargo.lock` records it, CI needs no
+# clone step, and an ordinary `cargo build` fetches exactly what a release does.
+# To build against a working checkout, see `scripts/local-engine.sh`; it is
+# opt-in precisely so that the default exercises these pins.
+#
+# `tauri-runtime-blitz` pins this same revision, which is what keeps one engine
+# in the graph. Move the two together, or `PaintScene` becomes two unrelated
+# traits and the errors read as a broken engine rather than as two of them.
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
+blitz-html = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
+blitz-net = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
-# document with no JavaScript and no URL in the path. Same shape as the other
-# engine crates above: a path into the local Blitz checkout, so the DOM types it
-# hands back are the same ones the painter and the dump already understand.
-blitz-wasm = { path = "../ps-blitz/packages/blitz-wasm" }
-dioxus-native = { path = "../ps-blitz/packages/dioxus-native", default-features = false }
+# document with no JavaScript and no URL in the path.
+blitz-wasm = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
+dioxus-native = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
-endpoint-libs = { path = "../endpoint-libs", default-features = false, features = ["agent-control"] }
+endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
 image = { version = "=0.25.6", default-features = false }
 # Headless capture: renders a page to a buffer with the CPU rasteriser, so the
 # result can be inspected without a window.
 # Must be the same anyrender blitz-paint links against, or PaintScene is two
 # unrelated traits and the painter cannot be passed to paint_scene. blitz-paint
-# is a path dependency, so the rev it uses is whatever
-# `ps-blitz/Cargo.toml` pins, and this rev has to be kept equal to that one by
-# hand. It rotted once: ps-blitz moved to acb9714 and this stayed on 0e4122b,
-# which broke every `--capture` build with
+# takes it from whatever `ps-blitz/Cargo.toml` pins at the revision above, so
+# this rev has to be kept equal to that one by hand. It rotted once: ps-blitz
+# moved to acb9714 and this stayed on 0e4122b, which broke every `--capture`
+# build with
 #
 #   error[E0277]: the trait bound `VelloCpuScenePainter: PaintScene` is not satisfied
 #   note: there are multiple different versions of crate `ps_anyrender_vello_cpu`
@@ -49,7 +60,7 @@ anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-a
 # `filters` is off by default in the backend, and with it off `push_layer`
 # discards both the element's `filter:` and its `backdrop-filter:`.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "076f8a03318f4436bf9961e1a26a6e33356750db", features = ["filters"] }
-blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
+blitz-paint = { git = "https://github.com/pathscale/ps-blitz.git", rev = "6e6649bae2a5392f382726e920cea4646d93027b" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -63,7 +74,7 @@ serde_json = "1"
 tokio = "1"
 url = "2.5"
 tauri = { version = "=2.11.5", default-features = false }
-tauri-runtime-blitz = { path = "../tauri-runtime-blitz/crates/tauri-runtime-blitz" }
+tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "9d8c6318bc57b442e11fab289d0fa27c40aa087b" }
 
 [profile.release]
 lto = "thin"
@@ -85,20 +96,3 @@ strip = "none"
 # Keep this in step with `ps-blitz/Cargo.toml`'s `[patch.crates-io]`.
 [patch.crates-io]
 usvg = { git = "https://github.com/DioxusLabs/resvg", branch = "devin/1785858271-intrinsic-dimensions" }
-
-# tauri-runtime-blitz pins ps-blitz by git rev, while this workspace consumes it
-# by path. Without this patch the two resolve to *different* engines in one
-# build, and the symptom is not a version warning but a missing method:
-#
-#   error: cannot find function `set_deep_profiling_enabled` in crate `blitz_shell`
-#   error: no method named `add_poll_hook` found for `&mut ScriptDocument`
-#
-# Both exist on the local checkout and neither exists at the pinned rev, so the
-# error reads as "the engine is broken" when it is really "there are two".
-# Redirect the git source at the same paths this workspace already uses, so
-# every crate in the graph links one engine.
-[patch."https://github.com/pathscale/ps-blitz.git"]
-ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
-ps-blitz-script = { path = "../ps-blitz/packages/blitz-script" }
-ps-blitz-shell = { path = "../ps-blitz/packages/blitz-shell" }
-ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
