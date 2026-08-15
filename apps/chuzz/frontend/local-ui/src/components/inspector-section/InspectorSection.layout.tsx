@@ -1,4 +1,4 @@
-import { Chip, Disclosure, Text } from "@pathscale/ui";
+import { Chip, Collapsible, Text } from "@pathscale/ui";
 import type { JSX } from "solid-js";
 import type { Layout } from "solid-layouts";
 import { inspectorSection } from "./InspectorSection.recipe";
@@ -14,22 +14,22 @@ export type InspectorSectionProps = {
 };
 
 const InspectorSection: Layout<typeof inspectorSection, InspectorSectionProps> = () => (
-  <Disclosure id={local.id} isOpen={local.open} onOpenChange={local.onOpenChange} {...slot.root}>
-    <Disclosure.Heading>
-      <Disclosure.Trigger {...slot.trigger}>
+  <Collapsible id={local.id} open={local.open} onOpenChange={local.onOpenChange} {...slot.root}>
+    <Collapsible.Heading>
+      <Collapsible.Trigger {...slot.trigger}>
         <Text size="sm" {...slot.title}>
           {local.title}
         </Text>
-        <Chip variant="flat" color={local.tone === "primary" ? "primary" : "default"} size="sm">
+        <Chip variant="flat" flavor={local.tone === "primary" ? "primary" : "neutral"} size="sm">
           {local.count}
         </Chip>
-        <Disclosure.Indicator {...slot.indicator} />
-      </Disclosure.Trigger>
-    </Disclosure.Heading>
-    <Disclosure.Content>
-      <Disclosure.Body {...slot.body}>{children}</Disclosure.Body>
-    </Disclosure.Content>
-  </Disclosure>
+        <Collapsible.Indicator {...slot.indicator} />
+      </Collapsible.Trigger>
+    </Collapsible.Heading>
+    <Collapsible.Content>
+      <Collapsible.Body {...slot.body}>{children}</Collapsible.Body>
+    </Collapsible.Content>
+  </Collapsible>
 );
 
 export const InspectorSectionLayout = InspectorSection;

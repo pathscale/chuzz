@@ -17,7 +17,7 @@ const AddressBar: Layout<typeof addressBar, AddressBarProps> = () => (
     id={local.id}
     type="text"
     value={local.value}
-    isInvalid={local.invalid}
+    issues={local.invalid ? [{ code: "invalid-url" }] : undefined}
     fullWidth
     placeholder={local.placeholder}
     onInput={local.onInput}
