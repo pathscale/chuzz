@@ -19,7 +19,7 @@ export function createMockApi(): BrowserApi {
       id: nextId++,
       title: "New Tab",
       url: HOME_URL,
-      status: "idle",
+      status: "blank",
       canGoBack: false,
       canGoForward: false,
     },
@@ -51,7 +51,7 @@ export function createMockApi(): BrowserApi {
   function readout(): StatusReadout {
     const active = tabs.find((tab) => tab.id === activeId);
     return {
-      status: active?.status ?? "idle",
+      status: active?.status ?? "blank",
       url: active?.url ?? HOME_URL,
       tabCount: tabs.length,
       nodeCount: 18,
@@ -98,7 +98,7 @@ export function createMockApi(): BrowserApi {
         id: nextId++,
         title: titleFor(target),
         url: target,
-        status: "idle",
+        status: "blank",
         canGoBack: false,
         canGoForward: false,
       };
