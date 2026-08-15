@@ -24,7 +24,56 @@ fn control_override_enabled() -> bool {
     )
 }
 
+/// The value following `flag`, for the capture paths' hand-rolled parsing.
+#[cfg(feature = "capture")]
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    let index = args.iter().position(|arg| arg == flag)?;
+    args.get(index + 1).cloned()
+}
+
 fn main() {
+    // Before `--capture`, and matched by equality rather than by prefix, so the
+    // two flags cannot be confused for each other in either direction.
+    #[cfg(feature = "capture")]
+    if let Some(index) = std::env::args().position(|arg| arg == "--capture-wasm") {
+        let args: Vec<String> = std::env::args().collect();
+        let module = args.get(index + 1).cloned().unwrap_or_else(|| {
+            eprintln!("chuzz: --capture-wasm needs a path to a .wasm module");
+            std::process::exit(2);
+        });
+        let output = flag_value(&args, "--out").unwrap_or_else(|| {
+            eprintln!("chuzz: --capture-wasm needs --out <page.png>");
+            std::process::exit(2);
+        });
+        // `--tree` is a real flag here rather than the environment variable
+        // `--capture` has to use: that path takes the URL as a positional, so a
+        // second one would have been ambiguous. This one does not.
+        let tree = flag_value(&args, "--tree").or_else(|| {
+            std::env::var("CHUZZ_CAPTURE_TREE")
+                .ok()
+                .filter(|path| !path.is_empty())
+        });
+        // No tokio runtime: nothing here is fetched, so nothing here awaits.
+        let result = capture::capture_wasm(
+            std::path::Path::new(&module),
+            1440,
+            960,
+            std::path::Path::new(&output),
+            tree.as_deref().map(std::path::Path::new),
+        );
+        match result {
+            Ok(()) => match &tree {
+                Some(tree) => println!("chuzz: wrote {output} and {tree}"),
+                None => println!("chuzz: wrote {output}"),
+            },
+            Err(error) => {
+                eprintln!("chuzz: wasm capture failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     #[cfg(feature = "capture")]
     if let Some(index) = std::env::args().position(|arg| arg == "--capture") {
         let args: Vec<String> = std::env::args().collect();
