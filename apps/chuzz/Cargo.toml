@@ -18,7 +18,7 @@ path = "src/tauri_main.rs"
 [features]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
-default = ["vello", "scrollbars", "javascript", "wasm", "webp", "avif"]
+default = ["vello", "scrollbars", "javascript", "wasm", "capture", "webp", "avif"]
 # Let a WebAssembly guest build a page, through `--wasm` in the window and
 # `--capture-wasm` headlessly. On by default because it is a way of opening a
 # page rather than a diagnostic: with it off, `--wasm` is not a flag the binary
@@ -32,13 +32,26 @@ javascript = ["dep:blitz-script"]
 # .webp or .avif downloads fine and then cannot be decoded: the element simply
 # never paints, which reads as a missing asset rather than a missing codec.
 webp = ["image/webp"]
-# Render a page headlessly to a PNG. Off by default: it pulls in the CPU
-# rasteriser, which the windowed browser never needs.
+# Render a page headlessly to a PNG, through `--capture` and `--capture-wasm`.
+#
+# On by default. It was off, on the reasoning that the windowed browser never
+# needs the CPU rasteriser, and that reasoning cost more than it saved: a plain
+# `cargo build` produced a binary where `--capture` was silently not a flag,
+# which reads as the flag being broken rather than absent. Every build script
+# that wanted it had to remember to ask, and `build-app.sh` — the one the
+# release workflow runs — did not, so the shipped app could not capture at all.
+#
+# The cost is the rasteriser, blitz-paint and the PNG encoder in every build.
+# None of it is reachable from the window, so it is size, not behaviour.
 #
 # `--capture-wasm` is the sibling entry point and rides the same flag, so this
 # pulls in `wasm` for the guest binding on top of the rasteriser and the PNG
-# encoder. `wasm` is default-on, but naming it here keeps
-# `--no-default-features --features capture` building.
+# encoder.
+#
+# This is not a standalone feature set: `--no-default-features --features
+# capture` does not build, because dioxus-native rejects a build with no
+# renderer and `capture` names none. Add `vello` if you want a capture-only
+# binary.
 capture = [
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
