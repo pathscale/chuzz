@@ -45,6 +45,28 @@ fn capture_scale() -> f32 {
         .unwrap_or(1.0)
 }
 
+/// Which colour scheme to render at. Defaults to dark.
+///
+/// A site that respects `prefers-color-scheme` is a different page in each, so
+/// a capture fixed at one of them cannot be compared against a reference
+/// browser sitting in the other: the diff is all theme and no signal.
+///
+/// Dark rather than light, because the window this exists to explain follows
+/// the OS appearance and the machines here are dark. A capture that disagreed
+/// with the window on the first pixel would be answering a question nobody
+/// asked. Set `CHUZZ_CAPTURE_SCHEME=light` for the other one.
+///
+/// This reports the hint; it does not impose a theme. A page that picks its
+/// palette from a stored preference rather than from the media query renders
+/// the same either way, which is worth knowing before reading a diff as a
+/// rendering fault. support.cafe is exactly that case.
+fn capture_color_scheme() -> ColorScheme {
+    match std::env::var("CHUZZ_CAPTURE_SCHEME").ok().as_deref() {
+        Some("light") | Some("Light") => ColorScheme::Light,
+        _ => ColorScheme::Dark,
+    }
+}
+
 /// Render `url` at the given size and write a PNG to `output`.
 pub async fn capture(
     url: &str,
@@ -133,7 +155,7 @@ pub fn capture_wasm(
             device_width,
             device_height,
             scale,
-            ColorScheme::Light,
+            capture_color_scheme(),
         )),
         ..Default::default()
     });
@@ -167,7 +189,7 @@ fn paint(
         device_width,
         device_height,
         scale,
-        ColorScheme::Light,
+        capture_color_scheme(),
     ));
     document.resolve(0.0);
     // Written from the same settled document the pixels come from, so a box in
