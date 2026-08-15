@@ -127,6 +127,8 @@ enum PageSource {
     },
     /// Built by a WebAssembly guest. Nothing is fetched and no JavaScript runs.
     Wasm { module: std::path::PathBuf },
+    /// The bytes a server sent, shown rather than rendered.
+    Source { text: String },
 }
 
 /// A module a page declared, fetched alongside it.
@@ -412,6 +414,12 @@ impl Browser {
                         .unwrap_or_default();
                     (Box::new(page), title)
                 }
+                PageSource::Source { text } => {
+                    let page =
+                        blitz_html::HtmlDocument::from_html(&source_html(&text), make_config())
+                            .into_inner();
+                    (Box::new(page), format!("source of {}", bundle.resolved_url))
+                }
                 PageSource::Wasm { module } => match build_wasm_page(&module, make_config()) {
                     // A bare `BaseDocument`, not a `ScriptDocument`. The mount
                     // takes `Box<dyn Document>` and `BaseDocument` implements
@@ -647,6 +655,24 @@ async fn fetch_page_module(
     })
 }
 
+/// Wrap a server's bytes in the smallest document that shows them verbatim.
+///
+/// Escaped and put in a `<pre>`, which is the whole job: the point of view
+/// source is that what you read is what arrived, so nothing here may reformat,
+/// pretty-print or re-serialise it. A document that showed a parsed and
+/// re-emitted tree would be answering a different question, and for a page
+/// whose claim is "there is no script here" it would be the wrong answer.
+fn source_html(text: &str) -> String {
+    let escaped = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Source</title></head>
+<body style="margin:0"><pre style="margin:0;padding:1rem;font:13px ui-monospace,monospace;white-space:pre-wrap;word-break:break-word">{escaped}</pre></body></html>"#
+    )
+}
+
 pub(crate) fn page_node(document: &blitz_dom::BaseDocument, tab_id: u64) -> Option<NodeId> {
     if let Some(node) = document.get_element_by_id(&format!("chuzz-page-{tab_id}")) {
         return Some(node);
@@ -692,6 +718,25 @@ async fn fetch_page(
                 scripts: HashMap::new(),
                 wasm: None,
             },
+        };
+    }
+    // `view-source:` is answered by fetching what it names and showing the
+    // bytes instead of rendering them. The prefix stays on the tab's URL, so
+    // history and the address bar hold it like any other address.
+    if request.url.scheme() == "view-source" {
+        let inner = request.url.path().to_owned();
+        let source = match Url::parse(&inner) {
+            Ok(url) => match net.fetch_async(Request::get(url)).await {
+                Ok((_, bytes)) => decode_body(&bytes),
+                Err(error) => format!("could not fetch {inner}: {error:?}"),
+            },
+            Err(error) => format!("{inner} is not a URL: {error}"),
+        };
+        return PageBundle {
+            tab_id,
+            generation,
+            resolved_url: request.url.to_string(),
+            source: PageSource::Source { text: source },
         };
     }
     if force_revalidate {
@@ -1166,6 +1211,35 @@ mod tests {
         assert!(
             mounted.query_selector(".panel").unwrap().is_some(),
             "the guest's tree is not in the document"
+        );
+    }
+
+    /// What you read has to be what arrived. For a page whose whole claim is
+    /// "there is no script here", a source view that re-serialised a parsed
+    /// tree would be answering a different question.
+    #[test]
+    fn view_source_shows_the_bytes_verbatim() {
+        let page = r##"<div id="root"><p>fallback</p></div>
+<script type="application/wasm" src="/demo.wasm" mount="#root"></script>"##;
+        let shown = source_html(page);
+
+        // The tag survives, escaped, so a reader can see there is exactly one
+        // script and what type it is.
+        assert!(shown.contains("&lt;script type=\"application/wasm\""));
+        assert!(shown.contains("mount=\"#root\"&gt;"));
+
+        // Escaped, not executed or parsed away.
+        assert!(
+            !shown.contains("<div id=\"root\">"),
+            "the source was interpolated as markup instead of escaped"
+        );
+        assert!(shown.contains("&lt;div id=\"root\"&gt;"));
+
+        // Ampersands first, or `&lt;` would come back out as `&amp;lt;`.
+        assert_eq!(
+            source_html("a & b < c").matches("&amp;").count(),
+            1,
+            "escaping order mangles ampersands"
         );
     }
 
