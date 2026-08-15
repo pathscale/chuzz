@@ -80,7 +80,23 @@ serde_json = "1"
 tokio = "1"
 url = "2.5"
 tauri = { version = "=2.11.5", default-features = false }
-tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "2087cfa542e303ad37c21e4ba4337a52497a8c2a" }
+# `diagnostics`, always, rather than behind a cargo feature.
+#
+# It is two runtime planes, and neither costs anything until it is switched on
+# in Settings. The first is `agent-control`, the default: an Inspect/Act socket
+# that reads the semantic tree and drives the pointer and keyboard, which is enough for
+# an agent to browse. The second is `debug-control`, which this adds: DOM,
+# layout and computed-style snapshots, renderer metrics, and the CPU screenshot
+# of the live window. That one binds nothing unless `TAURI_BLITZ_DRIVER` names
+# an address, so a build carrying it and a build without it do the same work on
+# a run where nobody asks.
+#
+# Compiled out, the second plane is not a switch that is off. It is a switch
+# that is not there, and the difference only shows when something needs
+# explaining. A window that would not paint could not be photographed by the
+# one thing that could photograph it, because the capability had been optimised
+# out of the binary that needed it.
+tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "2087cfa542e303ad37c21e4ba4337a52497a8c2a", features = ["diagnostics"] }
 
 [profile.release]
 lto = "thin"
