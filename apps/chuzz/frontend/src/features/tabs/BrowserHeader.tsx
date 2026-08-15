@@ -1,4 +1,4 @@
-import { Avatar, Tab as BrowserTab, TabList, TitleBar } from "@chuzz/ui";
+import { Tab as BrowserTab, TabList, TitleBar } from "@chuzz/ui";
 import { Button, Icon } from "@pathscale/ui";
 import { For, type JSX } from "solid-js";
 import { useBrowser } from "~/stores/browser";
@@ -44,7 +44,8 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
         <Button
           variant="outline"
           size="sm"
-          width="square" title={t("browser.newTab")}
+          width="square"
+          title={t("browser.newTab")}
           onClick={() => browser.openTab()}
         >
           +
@@ -54,12 +55,16 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
       <Button
         variant="outline"
         size="sm"
-        width="square" title={t("browser.settings")}
+        width="square"
+        title={t("browser.settings")}
         onClick={props.onOpenSettings}
       >
         <Icon src="icon-[mdi--cog]" width={15} height={15} />
       </Button>
-      <Avatar label="N" />
+      {/* No avatar. There was one, showing a hardcoded "N": a placeholder for
+          an account system this browser does not have, which read as a letter
+          nobody could explain sitting next to Settings. It goes back when there
+          is an account to put in it. */}
     </TitleBar>
   );
 }

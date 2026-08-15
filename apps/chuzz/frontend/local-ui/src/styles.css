@@ -99,8 +99,18 @@
     flex: 1 1 160px;
   }
 
-  /* Pills that change surface, not shape, when active. */
-  .tab {
+  /*
+   * Pills that change surface, not shape, when active.
+   *
+   * `.tab-shell .tab` rather than `.tab`, and the extra class is load-bearing.
+   * `@pathscale/ui` styles the same element as `.tabs__tab` with its own
+   * `padding: 0 16px`, which is a single class like the bare `.tab` was and
+   * wins on source order. The right pad was therefore 16px, not the 30px
+   * declared here, and the title's box ran to within 16px of the pill edge:
+   * straight under the close button. Measured in Chromium against the shipped
+   * bundle, title ending at x=199.6 with the button starting at x=192.1.
+   */
+  .tab-shell .tab {
     display: flex;
     flex-direction: row;
     align-items: center;
@@ -109,7 +119,9 @@
     min-width: 0;
     max-width: none;
     height: 34px;
-    padding: 0 34px 0 14px;
+    /* The right pad is the close button's width plus its inset plus a gap, so
+       the title's box ends before the × begins rather than under it. */
+    padding: 0 30px 0 14px;
     border-radius: 17px;
     border: 1px solid transparent;
     color: var(--color-az-muted);
@@ -128,19 +140,63 @@
     font-weight: 600;
   }
 
-  /* Per-tab status dot: the point is seeing a background tab change state. */
-  .tab-dot {
+  /*
+   * Per-tab status dot: the point is seeing a background tab change state.
+   *
+   * A dot, not a pill. The size has to beat the component's own metrics: a
+   * badge is built to hold a count, so it ships a min-width, a line-height and
+   * inline padding, and the previous 7px square lost to all three and rendered
+   * as a 15x22 capsule. Zeroing them is what makes it round.
+   */
+  .badge.tab-dot {
+    /*
+     * Inline, not anchored. A badge defaults to `top-right`, which is absolute
+     * positioning meant for a `badge-anchor` parent, and nothing in a tab is
+     * one: the dot rendered against the pill's right edge, past the title,
+     * measured at x=210 in a pill that ends at 217.
+     */
+    position: static;
+    transform: none;
     width: 7px;
+    min-width: 7px;
     height: 7px;
     min-height: 7px;
     padding: 0;
     border: 0;
-    border-radius: 4px;
+    border-radius: 9999px;
+    line-height: 0;
+    font-size: 0;
     flex-shrink: 0;
   }
 
+  /*
+   * Five states, five colours, in the meanings AgencyZero uses:
+   *
+   *   grey    nothing loaded, a new tab
+   *   orange  loading
+   *   green   loaded, nothing missing
+   *   blue    loaded, something it asked for did not arrive
+   *   red     the page itself did not arrive
+   *
+   * The badge flavours supply these; the halo is what marks the one state that
+   * is happening *now*, so a strip of green tabs and one loading tab reads at a
+   * glance rather than by colour-matching.
+   */
+  .badge.tab-dot-loading {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-warning) 22%, transparent);
+  }
+
   .tab-title {
+    /*
+     * `min-width: 0` is the whole fix for the title running under the close
+     * button. A flex item's default minimum is its content, so `flex-grow: 1`
+     * grew it and nothing ever shrank it: a long title pushed straight through
+     * the shell's padding and out the other side, where the × sits. `overflow`
+     * and `text-overflow` were already here and had nothing to act on, because
+     * the box was never smaller than the text.
+     */
     flex-grow: 1;
+    min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -148,20 +204,38 @@
   }
 
   /* Always mounted, only faded: showing it on hover by adding the element
-     would resize the pill under the pointer. */
-  .button.tab-close {
+     would resize the pill under the pointer.
+
+     Sized explicitly, because `size="sm"` on a Button is 36px, as tall as the
+     tab it sits inside. */
+  .tab-shell .button.tab-close {
+    /*
+     * `aspect-ratio: auto` matters. `button--width-square` sets `width: auto;
+     * aspect-ratio: 1`, and the engine resolved that ratio against the
+     * component's own 36px height rather than the 16px set here: the button
+     * came out 38.88 wide and 17.28 tall, and the × landed back under the
+     * title. Taking the ratio out leaves the explicit width to decide.
+     *
+     * `.tab-shell` in front for the same reason: PostCSS expands that ratio
+     * into `.button--width-square.button--sm { width: 2.25rem }`, two classes,
+     * which ties with a bare `.button.tab-close` and wins on source order.
+     */
+    aspect-ratio: auto;
     position: absolute;
-    right: 9px;
-    top: 8px;
+    right: 7px;
+    top: 9px;
     z-index: 2;
-    width: 18px;
-    min-width: 18px;
-    height: 18px;
+    width: 16px;
+    min-width: 16px;
+    height: 16px;
+    min-height: 16px;
     padding: 0;
+    font-size: 13px;
+    line-height: 1;
     opacity: 0;
   }
 
-  .button.tab-close-visible {
+  .tab-shell .button.tab-close-visible {
     opacity: 1;
   }
 
@@ -169,8 +243,30 @@
     opacity: 1;
   }
 
-  .avatar {
-    border: 1px solid var(--color-az-hairline-strong);
+  /*
+   * New tab and Settings.
+   *
+   * A Button at `size="sm"` is 36px tall and, squared, 36px round. Against a
+   * 52px title bar carrying 34px tabs that reads as two large rings bolted to
+   * the end of the strip rather than as two controls. 26px sits under the tab
+   * height and keeps a comfortable target.
+   *
+   * Scoped to the title bar rather than applied to every small square button,
+   * because the size is a fact about this row and not about the component.
+   */
+  /* `:not(.tab-close)`, because the close button is also a small square button
+     inside this row and its own 16px rule has no more specificity than this
+     one. Without the exclusion it grew to 26px, outgrew the tab it sits in, and
+     put the × back under the title this change is meant to clear. */
+  .title-bar .button.button--width-square:not(.tab-close) {
+    aspect-ratio: auto;
+    width: 26px;
+    min-width: 26px;
+    height: 26px;
+    min-height: 26px;
+    padding: 0;
+    font-size: 14px;
+    line-height: 1;
   }
 
   /* Toolbar */
