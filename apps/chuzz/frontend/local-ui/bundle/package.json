@@ -21,7 +21,7 @@
     "**/*"
   ],
   "peerDependencies": {
-    "@pathscale/ui": "^2.1.1",
+    "@pathscale/ui": "^2.2.1",
     "solid-js": "^1.9.5",
     "solid-layouts": "^0.1.2"
   },

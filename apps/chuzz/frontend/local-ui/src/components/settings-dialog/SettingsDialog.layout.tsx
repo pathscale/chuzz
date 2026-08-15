@@ -1,4 +1,4 @@
-import { Button, Modal, Text } from "@pathscale/ui";
+import { Button, Dialog, Text } from "@pathscale/ui";
 import type { JSX } from "solid-js";
 import type { Layout } from "solid-layouts";
 import { settingsDialog } from "./SettingsDialog.recipe";
@@ -16,9 +16,9 @@ export type SettingsDialogProps = {
 };
 
 const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () => (
-  <Modal
+  <Dialog
     {...slot.root}
-    isOpen={local.open}
+    open={local.open}
     onOpenChange={(open) => {
       if (!open) local.onClose();
     }}
@@ -26,19 +26,19 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
     size="lg"
     backdrop="opaque"
   >
-    <Modal.Content {...slot.content}>
-      <Modal.Header {...slot.header}>
-        <Modal.Heading {...slot.title}>{local.title}</Modal.Heading>
-        <Modal.CloseTrigger aria-label={local.title} />
-      </Modal.Header>
-      <Modal.Body {...slot.body}>
+    <Dialog.Content {...slot.content}>
+      <Dialog.Header {...slot.header}>
+        <Dialog.Heading {...slot.title}>{local.title}</Dialog.Heading>
+        <Dialog.CloseTrigger aria-label={local.title} />
+      </Dialog.Header>
+      <Dialog.Body {...slot.body}>
         <div {...slot.row}>
           <Text size="sm" variant="muted" {...slot.label}>
             {local.modeLabel}
           </Text>
           <div {...slot.modeGroup}>
             <Button
-              variant={local.mode === "dark" ? "primary" : "outline"}
+              variant={local.mode === "dark" ? "solid" : "outline"}
               size="sm"
               aria-pressed={local.mode === "dark"}
               onClick={() => local.onModeChange("dark")}
@@ -46,7 +46,7 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
               {local.darkLabel}
             </Button>
             <Button
-              variant={local.mode === "light" ? "primary" : "outline"}
+              variant={local.mode === "light" ? "solid" : "outline"}
               size="sm"
               aria-pressed={local.mode === "light"}
               onClick={() => local.onModeChange("light")}
@@ -56,9 +56,9 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
           </div>
         </div>
         {children}
-      </Modal.Body>
-    </Modal.Content>
-  </Modal>
+      </Dialog.Body>
+    </Dialog.Content>
+  </Dialog>
 );
 
 export const SettingsDialogLayout = SettingsDialog;

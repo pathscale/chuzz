@@ -16,7 +16,7 @@ const Tab: Layout<typeof tab, TabProps> = () => (
     <Tabs.Tab id={local.id} {...slot.tab}>
       <Chip
         variant="solid"
-        color={local.status === "loading" ? "primary" : "success"}
+        flavor={local.status === "loading" ? "primary" : "success"}
         size="sm"
         aria-label={local.status}
         {...slot.dot}
@@ -28,8 +28,7 @@ const Tab: Layout<typeof tab, TabProps> = () => (
     <Button
       variant="ghost"
       size="sm"
-      isIconOnly
-      title={local.closeLabel}
+      width="square" title={local.closeLabel}
       onClick={(event) => {
         event.stopPropagation();
         local.onClose();
