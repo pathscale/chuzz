@@ -59,9 +59,21 @@ pub fn run_guest(
 ) -> Result<BaseDocument, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(module_path)
         .map_err(|error| format!("could not read {}: {error}", module_path.display()))?;
+    run_guest_bytes(&bytes, document, mount)
+}
 
+/// The same, for a module that is already in memory.
+///
+/// Split out because a module fetched from a page never touches the disk, and
+/// two copies of the instantiate sequence would drift. Everything that decides
+/// whether a guest ran correctly lives here and nowhere else.
+pub fn run_guest_bytes(
+    bytes: &[u8],
+    document: BaseDocument,
+    mount: NodeId,
+) -> Result<BaseDocument, Box<dyn std::error::Error>> {
     let engine = Engine::default();
-    let module = Module::new(&engine, &bytes[..])?;
+    let module = Module::new(&engine, bytes)?;
     let mut store = Store::new(&engine, Host::new(document, mount));
     let mut linker = <Linker<Host>>::new(&engine);
     blitz_wasm::add_to_linker(&mut linker)?;
