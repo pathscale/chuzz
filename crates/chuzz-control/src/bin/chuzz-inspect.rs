@@ -8,28 +8,34 @@
 //! cargo run -p chuzz-control --bin chuzz-inspect -- press 1362 28
 //! ```
 //!
-//! This machine grants no screen recording and no assistive access, so nothing
-//! in the window can be confirmed by looking at it. That is not an
-//! inconvenience to route around with screenshots: it is the reason a stderr
-//! line saying a document had been built was once taken as proof that it
-//! painted, and two bugs reached the user on the strength of it. Reading the
-//! boxes back out of the live document is a stronger claim than a screenshot
-//! anyway — a control the wrong size, or a title overlapping the button beside
-//! it, is a number here rather than a judgement call.
+//! Two layers, matching the two switches in Settings.
 //!
-//! Start the browser with the plane on:
+//! The first is agent control: the semantic tree with every box, and pointer
+//! and keyboard input through real hit testing. It is what a program driving
+//! this window as a browser needs, and for most questions it is the better
+//! evidence: a control the wrong size, or a title overlapping the button
+//! beside it, is a number here rather than a judgement call.
+//!
+//! The second is deep debugging, and it exists because the first cannot answer
+//! one question: whether any of it was *painted*. A stderr line saying a
+//! document had been built was once taken as proof that it had, and two bugs
+//! reached the user on the strength of it. `screenshot` closes that gap.
 //!
 //! ```text
-//! CHUZZ_CONTROL=1 target/release/chuzz-gui
+//! CHUZZ_CONTROL=1 target/release/chuzz-gui                       # layer one
+//! TAURI_BLITZ_DRIVER=127.0.0.1:0 \
+//! TAURI_BLITZ_DRIVER_DESCRIPTOR=/tmp/chuzz-driver.json \
+//! CHUZZ_CONTROL=1 target/release/chuzz-gui                       # both
 //! ```
 
 use std::collections::BTreeMap;
 
 use chuzz_control::client::{Client, bounds, newest_descriptor, overlaps};
+use chuzz_control::driver::{Driver, descriptor_from_env};
 use serde_json::Value;
 
 const USAGE: &str = "\
-chuzz-inspect — read and drive a running chuzz window
+chuzz-inspect: read and drive a running chuzz window
 
     tree                       the semantic tree, indented, with boxes
     nodes                      the same nodes, one per line, unindented
@@ -42,8 +48,12 @@ chuzz-inspect — read and drive a running chuzz window
     overlap <node-a> <node-b>  whether two boxes intersect
     raw <json>                 one request, verbatim, answer printed as JSON
 
+Deep debugging (needs the driver; see --driver):
+    screenshot <out.png>       the window as it was painted, not as it is laid out
+
 Options:
     --descriptor <path>        a specific control descriptor (default: newest)
+    --driver <path>            the driver descriptor (default: $TAURI_BLITZ_DRIVER_DESCRIPTOR)
     --depth <n>                tree depth to request (default: 40)
     --root <node-id>           subtree to report (default: the document)
     --all                      keep zero-sized and hidden nodes (default: drop)
@@ -51,6 +61,7 @@ Options:
 
 struct Options {
     descriptor: Option<String>,
+    driver: Option<String>,
     depth: u32,
     root: Option<u64>,
     all: bool,
@@ -60,6 +71,7 @@ struct Options {
 fn parse_options() -> Result<Options, String> {
     let mut options = Options {
         descriptor: None,
+        driver: None,
         depth: 40,
         root: None,
         all: false,
@@ -70,6 +82,7 @@ fn parse_options() -> Result<Options, String> {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
             "--descriptor" => options.descriptor = Some(value("--descriptor")?),
+            "--driver" => options.driver = Some(value("--driver")?),
             "--depth" => {
                 options.depth = value("--depth")?
                     .parse()
@@ -191,7 +204,36 @@ fn print_tree(nodes: &[Value], all: bool) {
     }
 }
 
+/// The deep-debugging commands, which use the driver rather than the control
+/// socket and so are answered before a control connection is even opened.
+fn run_driver(options: &Options) -> Result<bool, Box<dyn std::error::Error>> {
+    if options.command[0] != "screenshot" {
+        return Ok(false);
+    }
+    let descriptor = options
+        .driver
+        .clone()
+        .map(std::path::PathBuf::from)
+        .or_else(descriptor_from_env)
+        .ok_or(
+            "no driver descriptor. Start the browser with TAURI_BLITZ_DRIVER=127.0.0.1:0 and \
+             TAURI_BLITZ_DRIVER_DESCRIPTOR=<path>, or pass --driver <path>.",
+        )?;
+    let output = options
+        .command
+        .get(1)
+        .ok_or("screenshot needs an output path")?;
+    let driver = Driver::connect(&descriptor)?;
+    let png = driver.screenshot()?;
+    std::fs::write(output, &png)?;
+    println!("wrote {output} ({} bytes)", png.len());
+    Ok(true)
+}
+
 async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    if run_driver(&options)? {
+        return Ok(());
+    }
     let descriptor = match &options.descriptor {
         Some(path) => std::path::PathBuf::from(path),
         None => newest_descriptor()?,

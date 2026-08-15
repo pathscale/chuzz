@@ -32,11 +32,16 @@ const en = {
   },
   diagnostics: {
     title: "Diagnostics",
-    inspection: "Inspection and agent control",
+    // Two layers, named for what each one is for rather than for what it is
+    // made of. The first is what an agent needs to use the browser; the second
+    // is what someone needs to work out why the browser is misbehaving. Both
+    // are compiled in and both are off until asked for.
+    inspection: "Agent control",
     inspectionHint:
-      "opens a local socket that lets any program running as you read this window and drive it",
-    profiling: "Deep performance profiling",
-    profilingHint: "intrusive collectors; costs frame time, and needs inspection on to be read",
+      "read the page and drive the pointer and keyboard, over a local socket only you can open",
+    profiling: "Deep debugging",
+    profilingHint:
+      "screenshots, layout and style snapshots, renderer metrics and intrusive profiling; costs frame time, and needs agent control on to be read",
     on: "On",
     off: "Off",
     locked: "held on by CHUZZ_CONTROL for this run",

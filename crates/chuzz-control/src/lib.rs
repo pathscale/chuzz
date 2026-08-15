@@ -18,6 +18,12 @@ use serde::{Deserialize, Serialize};
 /// either.
 #[cfg(feature = "server")]
 pub mod client;
+/// The deeper plane: the window's own pixels.
+///
+/// Unconditional. It speaks plain HTTP over loopback and needs no transport
+/// from this crate, and the point of the second layer is that it is there when
+/// something has already gone wrong.
+pub mod driver;
 #[cfg(feature = "server")]
 pub mod server;
 

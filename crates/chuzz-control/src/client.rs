@@ -3,7 +3,7 @@
 //! The server side of this lives in `tauri-runtime-blitz`, which speaks MCP
 //! JSON-RPC over endpoint-libs' length-delimited framing. Nothing in this repo
 //! could speak it, which meant the one interface built for checking the window
-//! without looking at it had no caller — so UI work was being reported on the
+//! without looking at it had no caller, so UI work was being reported on the
 //! strength of log lines instead.
 //!
 //! Requests are built as JSON here rather than reusing this crate's own request
@@ -168,7 +168,7 @@ impl Client {
     /// Synthesise a click on a node.
     ///
     /// The runtime resolves layout, takes the node's centre and dispatches a
-    /// real pointer move, down and up at those coordinates — so this goes
+    /// real pointer move, down and up at those coordinates, so this goes
     /// through hit testing rather than calling a handler directly. A control
     /// covered by something else fails here exactly as it fails under a mouse,
     /// which is what makes it a test.
