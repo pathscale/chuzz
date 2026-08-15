@@ -3,13 +3,21 @@ import { createStore, reconcile } from "solid-js/store";
 import { api } from "~/api";
 import { type BrowserShortcut, resolveBrowserShortcut } from "~/lib/shortcuts";
 import { syncDiagnostics } from "~/stores/diagnostics";
-import type { PanelSections, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type { DebugEntry, PanelSections, PanelState, StatusReadout, Tab, TabId } from "~/types";
 
 interface BrowserState {
   tabs: Tab[];
   activeTabId: TabId;
   panel: PanelState;
   status: StatusReadout;
+  /**
+   * The debugging stream, oldest first, capped at what the shell keeps.
+   *
+   * Held here rather than in the panel so it survives the panel being closed:
+   * a log that starts empty every time you open it cannot answer "what
+   * happened just now", which is the only question anyone asks of it.
+   */
+  debug: DebugEntry[];
 }
 
 const EMPTY: BrowserState = {
@@ -17,10 +25,14 @@ const EMPTY: BrowserState = {
   activeTabId: 0,
   panel: {
     collapsed: true,
-    sections: { page: true, history: true, network: false, console: false },
+    sections: { page: true, history: true, network: false, console: false, debugging: true },
   },
   status: { status: "blank", url: "", tabCount: 0, nodeCount: 0, transferred: "0 B" },
+  debug: [],
 };
+
+/** Matches `DEBUG_LOG_CAPACITY` in `browser.rs`. */
+const DEBUG_LIMIT = 500;
 
 /**
  * Everything the interface draws, and the only place that talks to the shell.
@@ -52,13 +64,22 @@ function createBrowserStore() {
     void syncDiagnostics();
 
     void (async () => {
-      const [tabs, activeTabId, panel, status] = await Promise.all([
+      const [tabs, activeTabId, panel, status, debug] = await Promise.all([
         api.listTabs(),
         api.activeTabId(),
         api.panelState(),
         api.status(),
+        // Everything that happened before the window finished starting. The
+        // first page load is usually already over by now.
+        //
+        // Defended, because it is the one value here the window does not need
+        // in order to draw. A shell whose bridge answers `null` for an unknown
+        // command put `null` in `debug`, the debugging section read `.length`
+        // off it, and the whole interface failed to render: no tab strip, no
+        // toolbar, no page mount. A missing log has to cost the log.
+        api.debugLog().catch(() => []),
       ]);
-      setState({ tabs, activeTabId, panel, status });
+      setState({ tabs, activeTabId, panel, status, debug: debug ?? [] });
     })();
 
     /*
@@ -71,6 +92,19 @@ function createBrowserStore() {
     track(api.on("active-tab-changed", (id) => setState("activeTabId", id)));
     track(api.on("status-changed", (status) => setState("status", status)));
     track(api.on("panel-changed", (panel) => setState("panel", panel)));
+    track(
+      api.on("debug-entry", (entry) =>
+        setState("debug", (entries) => {
+          // Dropped by seq rather than appended blindly: the startup backfill
+          // and the live stream overlap by however long the listener took to
+          // register, and the same line arriving twice reads as the browser
+          // doing the work twice.
+          if (entries.some((seen) => seen.seq === entry.seq)) return entries;
+          const next = [...entries, entry];
+          return next.length > DEBUG_LIMIT ? next.slice(next.length - DEBUG_LIMIT) : next;
+        }),
+      ),
+    );
 
     const focusAddress = () => {
       const address = document.getElementById("chuzz-address-bar");

@@ -30,7 +30,7 @@ export function createMockApi(): BrowserApi {
   // window before you have looked at anything.
   let panel: PanelState = {
     collapsed: true,
-    sections: { page: true, history: true, network: false, console: false },
+    sections: { page: true, history: true, network: false, console: false, debugging: true },
   };
 
   // Off by default, as in the real window: the inspection plane lets any local
@@ -41,6 +41,7 @@ export function createMockApi(): BrowserApi {
     "tabs-changed": new Set(),
     "active-tab-changed": new Set(),
     "status-changed": new Set(),
+    "debug-entry": new Set(),
     "panel-changed": new Set(),
   };
 
@@ -164,6 +165,11 @@ export function createMockApi(): BrowserApi {
     },
 
     status: async () => readout(),
+
+    // The mock has no engine behind it, so there is nothing to narrate. An
+    // empty stream is the honest answer, and the panel renders its own empty
+    // state for it.
+    debugLog: async () => [],
 
     // There is no runtime under `rsbuild dev`, so these only remember what
     // they were told. Never `locked`: the environment override is a property
