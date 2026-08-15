@@ -107,8 +107,37 @@ struct PageBundle {
     tab_id: u64,
     generation: u64,
     resolved_url: String,
-    html: String,
-    scripts: HashMap<Url, String>,
+    source: PageSource,
+}
+
+/// Where a page's document comes from.
+///
+/// An enum rather than an optional module path beside the HTML, so the two
+/// cannot both be set or both be missing. A wasm page has no HTML and no
+/// scripts, and an HTML page has no module; there is no state in between.
+enum PageSource {
+    Html {
+        html: String,
+        scripts: HashMap<Url, String>,
+    },
+    /// Built by a WebAssembly guest. Nothing is fetched and no JavaScript runs.
+    Wasm { module: std::path::PathBuf },
+}
+
+/// A page served from a module on disk rather than from the network.
+///
+/// The URL is kept alongside the path because a tab is addressed by URL
+/// everywhere else in the browser: history, the address bar and the back and
+/// forward stack all hold `Request`s, and giving the wasm tab a `file:` URL
+/// lets it sit in those unchanged. Navigating away from it is then an ordinary
+/// navigation, and coming back re-runs the guest.
+///
+/// Not behind `feature = "wasm"`: a path and a URL need no wasm runtime. Only
+/// running the guest does, so that is the only thing gated, and a build without
+/// the feature reports the fact on the page instead of silently lacking a flag.
+struct WasmPage {
+    url: Url,
+    module: std::path::PathBuf,
 }
 
 struct BrowserInner {
@@ -116,6 +145,8 @@ struct BrowserInner {
     net: Arc<NetProvider>,
     completed: Mutex<VecDeque<PageBundle>>,
     app: Mutex<Option<ChuzzAppHandle>>,
+    /// Set by `--wasm`. Immutable for the life of the process.
+    wasm: Option<WasmPage>,
 }
 
 #[derive(Clone)]
@@ -123,6 +154,28 @@ pub struct Browser(Arc<BrowserInner>);
 
 impl Browser {
     pub fn new(startup: Option<Url>) -> Self {
+        Self::build(startup, None)
+    }
+
+    /// A browser whose first tab is built by the guest in `module` rather than
+    /// fetched.
+    ///
+    /// The tab is an ordinary tab addressed by an ordinary `file:` URL. Only
+    /// the source of its document differs, which is why nothing downstream of
+    /// the mount — the tab strip, the toolbar, history, layout, paint — needs
+    /// to know this flag exists.
+    pub fn with_wasm_page(module: std::path::PathBuf) -> Result<Self, String> {
+        let module = std::fs::canonicalize(&module)
+            .map_err(|error| format!("--wasm: cannot read {}: {error}", module.display()))?;
+        let url = Url::from_file_path(&module)
+            .map_err(|()| format!("--wasm: {} is not an absolute path", module.display()))?;
+        Ok(Self::build(
+            Some(url.clone()),
+            Some(WasmPage { url, module }),
+        ))
+    }
+
+    fn build(startup: Option<Url>, wasm: Option<WasmPage>) -> Self {
         let first = startup.unwrap_or_else(|| Url::parse(NEW_TAB_URL).unwrap());
         Self(Arc::new(BrowserInner {
             state: Mutex::new(BrowserState {
@@ -149,6 +202,7 @@ impl Browser {
             net: Arc::new(NetProvider::new(None)),
             completed: Mutex::new(VecDeque::new()),
             app: Mutex::new(None),
+            wasm,
         }))
     }
 
@@ -213,6 +267,23 @@ impl Browser {
         };
         self.emit_state();
 
+        // A wasm page has nothing to fetch, so its bundle is complete the
+        // moment it is made and never goes near the network or the runtime.
+        // Matched on the URL rather than the tab id, so navigating this tab
+        // elsewhere is an ordinary navigation and coming back re-runs the guest.
+        if let Some(page) = self.0.wasm.as_ref().filter(|page| page.url == request.url) {
+            self.0.completed.lock().unwrap().push_back(PageBundle {
+                tab_id,
+                generation,
+                resolved_url: page.url.to_string(),
+                source: PageSource::Wasm {
+                    module: page.module.clone(),
+                },
+            });
+            self.wake_document();
+            return;
+        }
+
         let browser = self.clone();
         tauri::async_runtime::spawn(async move {
             let bundle = fetch_page(&browser.0.net, tab_id, generation, request, revalidate).await;
@@ -276,18 +347,40 @@ impl Browser {
                 font_ctx: Some(FontContext::default()),
                 ..Default::default()
             };
-            let mut page = blitz_script::ScriptDocument::from_html(&bundle.html, config)
-                .with_fetcher(PrefetchedScripts {
-                    scripts: bundle.scripts,
-                });
-            page.eval(WEB_API_SHIM);
-            page.execute_scripts();
-            let title = page
-                .inner()
-                .find_title_node()
-                .map(|node| node.text_content())
-                .unwrap_or_default();
-            ui.inner_mut().set_sub_document(target, Box::new(page));
+            // The two document sources meet here and nowhere else. Both end as
+            // a `Box<dyn Document>` on the same `chuzz-page-{tab_id}` mount, so
+            // everything downstream — layout, paint, the tab strip, the toolbar
+            // — cannot tell them apart and did not have to change.
+            let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
+                PageSource::Html { html, scripts } => {
+                    let mut page = blitz_script::ScriptDocument::from_html(&html, config)
+                        .with_fetcher(PrefetchedScripts { scripts });
+                    page.eval(WEB_API_SHIM);
+                    page.execute_scripts();
+                    let title = page
+                        .inner()
+                        .find_title_node()
+                        .map(|node| node.text_content())
+                        .unwrap_or_default();
+                    (Box::new(page), title)
+                }
+                PageSource::Wasm { module } => match build_wasm_page(&module, config) {
+                    // A bare `BaseDocument`, not a `ScriptDocument`. The mount
+                    // takes `Box<dyn Document>` and `BaseDocument` implements
+                    // it, so no wrapper is needed and no JavaScript runtime is
+                    // attached to a page that has no scripts to run.
+                    Ok(page) => (Box::new(page), module_title(&module)),
+                    Err(error) => {
+                        eprintln!("chuzz: --wasm: {error}");
+                        let page = blitz_script::ScriptDocument::from_html(
+                            &error_html(&error),
+                            DocumentConfig::default(),
+                        );
+                        (Box::new(page), module_title(&module))
+                    }
+                },
+            };
+            ui.inner_mut().set_sub_document(target, page);
 
             {
                 let mut state = self.0.state.lock().unwrap();
@@ -337,6 +430,43 @@ impl blitz_script::ScriptFetcher for PrefetchedScripts {
     }
 }
 
+/// Build a page document by letting a WebAssembly guest construct it.
+///
+/// The config is the page config the HTML path uses, so the guest's document
+/// gets the same shell provider and the same navigation provider and sits in
+/// the window on the same terms. It gets no html parser and no script runtime
+/// because it needs neither.
+#[cfg(feature = "wasm")]
+fn build_wasm_page(
+    module: &std::path::Path,
+    config: DocumentConfig,
+) -> Result<blitz_dom::BaseDocument, String> {
+    let (document, mount) = crate::wasm_page::empty_document(config);
+    crate::wasm_page::run_guest(module, document, mount).map_err(|error| error.to_string())
+}
+
+/// Without the `wasm` feature there is no interpreter to run the guest, so the
+/// page says so rather than coming up blank.
+#[cfg(not(feature = "wasm"))]
+fn build_wasm_page(
+    module: &std::path::Path,
+    _config: DocumentConfig,
+) -> Result<blitz_dom::BaseDocument, String> {
+    Err(format!(
+        "this build has no wasm support, so {} cannot be run. \
+         Rebuild with the `wasm` feature, which is on by default.",
+        module.display()
+    ))
+}
+
+/// A wasm page has no `<title>`, so the module's file name stands in.
+fn module_title(module: &std::path::Path) -> String {
+    module
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| module.display().to_string())
+}
+
 pub(crate) fn page_node(document: &blitz_dom::BaseDocument, tab_id: u64) -> Option<NodeId> {
     if let Some(node) = document.get_element_by_id(&format!("chuzz-page-{tab_id}")) {
         return Some(node);
@@ -377,8 +507,10 @@ async fn fetch_page(
             tab_id,
             generation,
             resolved_url: request.url.to_string(),
-            html: BLANK_HTML.to_owned(),
-            scripts: HashMap::new(),
+            source: PageSource::Html {
+                html: BLANK_HTML.to_owned(),
+                scripts: HashMap::new(),
+            },
         };
     }
     if force_revalidate {
@@ -393,8 +525,10 @@ async fn fetch_page(
                 tab_id,
                 generation,
                 resolved_url: requested_url,
-                html: error_html(&format!("{error:?}")),
-                scripts: HashMap::new(),
+                source: PageSource::Html {
+                    html: error_html(&format!("{error:?}")),
+                    scripts: HashMap::new(),
+                },
             };
         }
     };
@@ -430,8 +564,7 @@ async fn fetch_page(
         tab_id,
         generation,
         resolved_url,
-        html,
-        scripts,
+        source: PageSource::Html { html, scripts },
     }
 }
 
@@ -667,7 +800,9 @@ pub fn stored_diagnostics() -> StoredDiagnostics {
 }
 
 fn store_diagnostics(value: StoredDiagnostics) {
-    let Some(path) = diagnostics_path() else { return };
+    let Some(path) = diagnostics_path() else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -777,5 +912,85 @@ mod tests {
         assert_eq!(tabs.len(), 1);
         assert_eq!(active, 0);
         assert_eq!(status.url, NEW_TAB_URL);
+    }
+
+    /// `--wasm` puts a guest-built document on the real tab mount.
+    ///
+    /// The window cannot be screenshotted on every machine, and "the process
+    /// stayed alive" is not evidence that anything rendered. This drives the
+    /// actual path instead — `schedule_current`, the bundle queue,
+    /// `poll_document`, `page_node`, `set_sub_document` — against the real
+    /// chrome document, and then reads the page back out of the mount.
+    ///
+    /// It asserts through `page_node` rather than a CSS query for the same
+    /// reason the frontend test does: that lookup is what decides whether a
+    /// page is ever attached, and it is the thing that regressed once.
+    #[test]
+    fn a_wasm_page_is_attached_to_the_tab_mount() {
+        // Boa needs the stack, the same as the frontend test.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let module = crate::wasm_page::fixture_module();
+                let browser = Browser::with_wasm_page(module).expect("the fixture module exists");
+
+                let mut chrome = crate::frontend::document(browser.clone(), "chuzz://ui/").unwrap();
+                chrome.set_ipc_handler(|_| {});
+                chrome.eval(crate::frontend::TAURI_TEST_BRIDGE);
+                chrome.execute_scripts();
+                for _ in 0..64 {
+                    chrome.poll(None);
+                }
+
+                // No app handle in a test, so `emit_state` and `wake_document`
+                // return early; the wasm branch still queues the bundle, which
+                // is the part under test.
+                browser.schedule_current(0, false);
+                let mut pending = VecDeque::new();
+                assert!(
+                    browser.poll_document(&mut chrome, &mut pending),
+                    "the bundle should have been attached, not retained"
+                );
+
+                let mut inner = chrome.inner_mut();
+                inner.set_viewport(blitz_traits::shell::Viewport::new(
+                    1440,
+                    960,
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Dark,
+                ));
+                inner.resolve(0.0);
+
+                let mount = page_node(&inner, 0).expect("page mount");
+                let page = inner
+                    .get_node(mount)
+                    .and_then(|node| node.element_data())
+                    .and_then(|element| element.sub_doc_data())
+                    .expect("a document should be attached to the tab mount");
+
+                // The guest's tree, read out of the document the window holds.
+                let page = page.inner();
+                let panel = page
+                    .query_selector(".panel")
+                    .ok()
+                    .flatten()
+                    .expect("the guest's panel should be in the attached document");
+                let rows = page.query_selector_all(".row").unwrap();
+                assert_eq!(rows.len(), 3, "the guest's three rows should be there");
+
+                // Attached is not the same as rendered. Without a box the
+                // document would be correct and the window would look empty,
+                // which is the failure the frontend test exists to catch on the
+                // mount and this one catches on the page.
+                let layout = page.get_node(panel).unwrap().final_layout();
+                assert!(
+                    layout.size.width > 0.0 && layout.size.height > 0.0,
+                    "the guest's panel has no box: {:?}",
+                    layout.size
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

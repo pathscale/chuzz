@@ -18,11 +18,9 @@ use std::path::{Path, PathBuf};
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, DocumentConfig, qual_name};
+use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use blitz_wasm::Host;
-use wasmi::{Engine, Linker, Module, Store};
 
 /// Where to write the laid-out tree alongside the PNG, when asked.
 ///
@@ -101,14 +99,6 @@ pub async fn capture(
     write_png(&buffer, device_width, device_height, output)
 }
 
-/// The entry point a guest module is expected to export.
-///
-/// `run`, to match the demo guest and ABI.md. Overridable because the name is a
-/// convention rather than part of the ABI: nothing in `blitz-wasm` knows it.
-fn wasm_entry() -> String {
-    std::env::var("CHUZZ_WASM_ENTRY").unwrap_or_else(|_| "run".to_owned())
-}
-
 /// Render a document built by a WebAssembly guest and write a PNG to `png_out`.
 ///
 /// The sibling of [`capture`], not a variant of it. That function renders a
@@ -132,12 +122,13 @@ pub fn capture_wasm(
     let device_width = (width as f32 * scale).round() as u32;
     let device_height = (height as f32 * scale).round() as u32;
 
-    // 1. An empty document, and the node the guest will mount on.
-    //
     // The viewport goes in at construction because it is what the style device
     // is built from, so a document created without one resolves media queries
     // and viewport units against a default that is not the size being captured.
-    let mut document = BaseDocument::new(DocumentConfig {
+    //
+    // The seeding and the guest run are `wasm_page`'s, shared with `--wasm` in
+    // the window, so the two cannot render the same module differently.
+    let (document, mount) = crate::wasm_page::empty_document(DocumentConfig {
         viewport: Some(Viewport::new(
             device_width,
             device_height,
@@ -146,59 +137,15 @@ pub fn capture_wasm(
         )),
         ..Default::default()
     });
-    let root_id = document.root_node().id;
-    let mut changes = document.mutate();
-    let html = changes.create_element(qual_name!("html"), vec![]);
-    let body = changes.create_element(qual_name!("body"), vec![]);
-    changes.append_children(html, &[body]);
-    changes.append_children(root_id, &[html]);
-    drop(changes);
+    let mut document = crate::wasm_page::run_guest(module_path, document, mount)?;
 
-    // 2. Instantiate under wasmi, with the host bound to that document.
-    let bytes = std::fs::read(module_path)
-        .map_err(|error| format!("could not read {}: {error}", module_path.display()))?;
-    let engine = Engine::default();
-    let module = Module::new(&engine, &bytes[..])?;
-    let mut store = Store::new(&engine, Host::new(document, body));
-    let mut linker = <Linker<Host>>::new(&engine);
-    blitz_wasm::add_to_linker(&mut linker)?;
-    // `instantiate_and_start`, not `instantiate`: the start section runs the
-    // module's static initialisers, and a guest whose statics fail to set up
-    // would otherwise build a partial tree and report success.
-    let instance = linker.instantiate_and_start(&mut store, &module)?;
-
-    // 3. The guest's entry export.
-    let entry = wasm_entry();
-    let status = instance
-        .get_typed_func::<(), i32>(&store, &entry)
-        .map_err(|error| format!("the module does not export `{entry}`: {error}"))?
-        .call(&mut store, ())?;
-    if status != blitz_wasm::OK {
-        return Err(format!(
-            "`{entry}` reported {} ({status}): {:?}",
-            blitz_wasm::status::name(status),
-            store.data().counters().last_dom_error
-        )
-        .into());
-    }
-    // The guest can return OK having built nothing at all, and the result of
-    // that is a blank PNG with no error anywhere to explain it. Say so here,
-    // where the reason is still known.
-    if !store.data().mutated() {
-        eprintln!(
-            "chuzz: warning: `{entry}` returned OK without mutating the document, \
-             so the capture will be empty"
-        );
-    }
-
-    // 4. Resolve once, then paint.
+    // Resolve once, then paint.
     //
     // Deliberately not the settling loop `capture` runs. That loop waits on
     // `pending_image_count` and `has_pending_critical_resources`, which count
     // subresources discovered by parsing HTML. Nothing here parses HTML and the
     // guest cannot request a subresource, so both are zero from the first pass
     // and every iteration would be a sleep with nothing to wait for.
-    let mut document = store.into_data().into_document();
     let buffer = paint(&mut document, scale, device_width, device_height, tree_out);
 
     write_png(&buffer, device_width, device_height, png_out)
@@ -273,37 +220,6 @@ fn write_png(
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::OnceLock;
-
-    /// chuzz's own guest, assembled from `fixtures/panel.wat`.
-    ///
-    /// Deliberately not `blitz-wasm`'s demo guest. That one is a fixture for
-    /// *its* tests and is free to change into whatever proves the binding next;
-    /// borrowing it would make this test fail for reasons that have nothing to
-    /// do with capture. This module belongs to chuzz and is pinned to the ABI
-    /// rather than to a binding crate: change a signature in `add_to_linker`
-    /// and it stops instantiating, which is the drift worth catching.
-    ///
-    /// `CHUZZ_TEST_WASM` swaps in another module, which is how a real guest can
-    /// be pointed at this path by hand.
-    fn fixture_module() -> PathBuf {
-        static MODULE: OnceLock<PathBuf> = OnceLock::new();
-        MODULE
-            .get_or_init(|| {
-                if let Some(path) = std::env::var_os("CHUZZ_TEST_WASM") {
-                    return PathBuf::from(path);
-                }
-                // Assembled to a real `.wasm` on disk rather than passed as
-                // bytes, so the test goes in through the same door the CLI
-                // does, file read included.
-                let wasm = wat::parse_str(include_str!("../fixtures/panel.wat"))
-                    .expect("fixtures/panel.wat should assemble");
-                let path = scratch("panel.wasm");
-                std::fs::write(&path, wasm).expect("the fixture module should be writable");
-                path
-            })
-            .clone()
-    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("chuzz-capture-wasm-tests");
@@ -387,7 +303,7 @@ mod tests {
     fn a_wasm_built_page_paints_something() {
         let png = scratch("paints.png");
         let _ = std::fs::remove_file(&png);
-        super::capture_wasm(&fixture_module(), 1440, 960, &png, None)
+        super::capture_wasm(&crate::wasm_page::fixture_module(), 1440, 960, &png, None)
             .expect("the wasm capture should succeed");
 
         let painted = non_background_pixels(&png);
@@ -428,8 +344,14 @@ mod tests {
         let png = scratch("tree.png");
         let tree = scratch("tree.txt");
         let _ = std::fs::remove_file(&tree);
-        super::capture_wasm(&fixture_module(), 1440, 960, &png, Some(&tree))
-            .expect("the wasm capture should succeed");
+        super::capture_wasm(
+            &crate::wasm_page::fixture_module(),
+            1440,
+            960,
+            &png,
+            Some(&tree),
+        )
+        .expect("the wasm capture should succeed");
 
         let dump = std::fs::read_to_string(&tree).expect("the tree dump should have been written");
         let boxes = boxes(&dump);

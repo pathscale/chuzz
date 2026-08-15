@@ -18,7 +18,13 @@ path = "src/tauri_main.rs"
 [features]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
-default = ["vello", "scrollbars", "javascript", "webp", "avif"]
+default = ["vello", "scrollbars", "javascript", "wasm", "webp", "avif"]
+# Let a WebAssembly guest build a page, through `--wasm` in the window and
+# `--capture-wasm` headlessly. On by default because it is a way of opening a
+# page rather than a diagnostic: with it off, `--wasm` is not a flag the binary
+# has. The wasm interpreter it pulls in is small and never instantiated unless
+# a module is named.
+wasm = ["dep:blitz-wasm", "dep:wasmi"]
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
 # page parses to an empty mount point and paints nothing.
 javascript = ["dep:blitz-script"]
@@ -29,17 +35,16 @@ webp = ["image/webp"]
 # Render a page headlessly to a PNG. Off by default: it pulls in the CPU
 # rasteriser, which the windowed browser never needs.
 #
-# `--capture-wasm` is the sibling entry point and rides the same flag: it needs
-# the same rasteriser and PNG encoder, and adds the wasm host binding. Optional
-# rather than unconditional, so the shipped browser does not carry a wasm
-# interpreter it never instantiates.
+# `--capture-wasm` is the sibling entry point and rides the same flag, so this
+# pulls in `wasm` for the guest binding on top of the rasteriser and the PNG
+# encoder. `wasm` is default-on, but naming it here keeps
+# `--no-default-features --features capture` building.
 capture = [
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
   "dep:blitz-paint",
   "dep:png",
-  "dep:blitz-wasm",
-  "dep:wasmi",
+  "wasm",
 ]
 avif = ["image/avif"]
 vello = ["dioxus-native/vello"]
