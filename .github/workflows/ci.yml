@@ -1,0 +1,172 @@
+name: CI
+
+# The gate on pull requests. Until this existed, chuzz ran nothing on a PR:
+# `release.yml` fires on push to master and is the only other workflow, so the
+# first build of any change was the macOS release job, after the merge.
+#
+# What this can and cannot check, and why it is split that way:
+#
+# `chuzz-control` is platform-neutral (serde, tokio, a unix socket) and builds
+# and tests on Linux. `chuzz-gui` pulls the Blitz engine, which is a macOS
+# preview runtime; nothing in either manifest is target-gated, so a Linux runner
+# would try to build the whole windowing stack and fail for reasons no PR
+# introduced. Making it build on Linux is separate portability work. So the
+# Linux jobs cover what genuinely is portable, and the macOS job covers the app.
+#
+# Runners are `ubicloud-standard-*` throughout, except the macOS one: Ubicloud
+# offers Linux only, so the app build uses the same Namespace profile
+# `release.yml` does.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A force-push supersedes the run it interrupted. Unlike the release job, which
+# must never be cancelled halfway, a cancelled PR check costs nothing.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Formatting needs no dependency graph, so it answers in seconds on the
+  # smallest runner and fails fast before anything expensive starts.
+  fmt:
+    runs-on: ubicloud-standard-2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # Reads Cargo.lock only, so it needs neither a toolchain nor a network. This
+  # is the check that would have caught the engine cascade being repinned
+  # halfway; see the script's own header for why that failure reads as a broken
+  # engine rather than as two of them.
+  one-rev:
+    runs-on: ubicloud-standard-2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: One rev per git source
+        run: scripts/check-one-rev-per-git-source.sh
+
+  # The portable half of the workspace, linted and tested for real.
+  control:
+    runs-on: ubicloud-standard-4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: chuzz-control-ci
+
+      # `--all-targets` so the tests and the `chuzz-inspect` binary are linted
+      # too, not just the library. Warnings are denied here rather than in a
+      # config file so a local `cargo clippy` stays quiet and advisory.
+      - name: Clippy
+        run: cargo clippy -p chuzz-control --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test -p chuzz-control --all-features
+
+  # The frontend, which is where most changes actually land. Independent of the
+  # Rust jobs, so a TypeScript error does not wait on a cargo build.
+  #
+  # `bun install` must precede any build: the `prebuild` script runs
+  # `solid-layouts-library` from `node_modules/.bin`, and that binary arrives
+  # only because `solid-layouts-oxc` is a direct devDependency. Bun links the
+  # bins of direct dependencies into the root `.bin` and leaves a transitive one
+  # under its own dependent, which is how the release job failed for fourteen
+  # releases while `bun install` reported success. `--frozen-lockfile` so a PR
+  # cannot quietly resolve a different tree from the committed bun.lock.
+  frontend:
+    runs-on: ubicloud-standard-4
+    defaults:
+      run:
+        working-directory: apps/chuzz/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Proves the binary the release job needs is actually on PATH, and names
+      # it plainly if it is not. Cheap, and it turns the one failure that has
+      # historically reached master into a PR-time error with an obvious cause.
+      - name: Confirm the layouts CLI is linked
+        run: |
+          if [ ! -x node_modules/.bin/solid-layouts-library ]; then
+            echo "::error::solid-layouts-library is missing from node_modules/.bin."
+            echo "solid-layouts-oxc must stay a *direct* devDependency: bun links"
+            echo "the bins of direct dependencies only. See release.yml."
+            ls -la node_modules/.bin || true
+            exit 1
+          fi
+          echo "solid-layouts-library is linked"
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test:run
+
+  # The app itself, on the platform it targets. This is the job that proves a
+  # change compiles against the pinned engine, which no Linux runner can do.
+  #
+  # `build-app.sh` is deliberately not used: bundling, signing and stamping are
+  # the release job's business. A PR only needs to know the code compiles and
+  # its tests pass.
+  app:
+    runs-on: namespace-profile-agency-tahoe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # The Rust build script shells out to `bun run build`, so the frontend
+      # dependencies have to be present before cargo starts.
+      - name: Install frontend dependencies
+        working-directory: apps/chuzz/frontend
+        run: bun install --frozen-lockfile
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          components: clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: chuzz-macos-ci
+
+      - name: Clippy
+        run: cargo clippy -p chuzz-gui --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
