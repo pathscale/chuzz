@@ -129,6 +129,20 @@ jobs:
       # showed up locally because every developer machine already has
       # node_modules from an earlier build.
       #
+      # `solid-layouts-oxc` is a direct devDependency for this step's sake, even
+      # though nothing imports it. It ships the `solid-layouts-library` binary
+      # the `prebuild` script runs, and it arrived only as a transitive
+      # dependency of `rsbuild-plugin-solid-layouts`. Bun links the bins of
+      # direct dependencies into the root `node_modules/.bin` and leaves a
+      # transitive one under its own dependent, so this step succeeded, reported
+      # 800 packages, and the build then failed with
+      #
+      #     solid-layouts-library: command not found
+      #
+      # for fourteen releases. It worked on a developer machine because an older
+      # install had hoisted it there by luck, which is also why the local tree
+      # was compiling with 0.1.5 while the lockfile said 0.1.6.
+      #
       # `--frozen-lockfile` so a release cannot quietly resolve a different tree
       # from the committed bun.lock.
       - name: Install frontend dependencies
