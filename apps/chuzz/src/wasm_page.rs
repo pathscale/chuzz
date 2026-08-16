@@ -248,4 +248,50 @@ mod tests {
         assert!(validate_module(b"\0as").is_err());
         assert!(validate_module(b"").is_err());
     }
+
+    /// A guest that instantiates, exports `run` and returns `OK` without
+    /// touching the document is the one failure that looks like a success.
+    ///
+    /// It is not an error, so `run_guest_bytes` must return the document rather
+    /// than refusing, and the three cases in
+    /// `browser::tests::a_failed_module_leaves_the_fallback_standing` do not
+    /// reach it: each of those fails before or during the call, and this one
+    /// gets all the way to `Ok`. The warning at the top of this file is the
+    /// only thing standing between a blank page and no explanation for it, so
+    /// what is pinned here is that the inert guest is distinguishable from a
+    /// guest that built something.
+    #[test]
+    fn a_guest_returning_ok_without_mutating_is_not_an_error() {
+        let inert = wat::parse_str(
+            r#"(module
+                 (memory (export "memory") 1)
+                 (func (export "run") (result i32) (i32.const 0)))"#,
+        )
+        .expect("the inert guest should assemble");
+
+        let (document, mount) = empty_document(DocumentConfig::default());
+        let built = run_guest_bytes(&inert, document, mount)
+            .expect("a guest that returns OK is not a failure, however little it did");
+
+        // The mount is still childless, which is exactly the state the warning
+        // describes and the reason the page would come out blank.
+        assert_eq!(
+            built.get_node(mount).map(|node| node.children.len()),
+            Some(0),
+            "the inert guest must not have built anything"
+        );
+
+        // And the fixture guest, through the same door, does mutate. Without
+        // this half the assertion above would also pass if `run_guest_bytes`
+        // had quietly stopped running guests at all.
+        let fixture = std::fs::read(fixture_module()).expect("fixture module");
+        let (document, mount) = empty_document(DocumentConfig::default());
+        let built = run_guest_bytes(&fixture, document, mount).expect("the fixture guest runs");
+        assert!(
+            built
+                .get_node(mount)
+                .is_some_and(|node| !node.children.is_empty()),
+            "the fixture guest should have built a tree, so the check above means something"
+        );
+    }
 }
