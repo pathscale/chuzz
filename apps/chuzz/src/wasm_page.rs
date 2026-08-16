@@ -87,10 +87,15 @@ pub fn run_guest_bytes(
         .get_typed_func::<(), i32>(&store, &entry)
         .map_err(|error| format!("the module does not export `{entry}`: {error}"))?
         .call(&mut store, ())?;
-    if status != blitz_wasm::OK {
+    // `Status` is a newtype over the raw `i32` the guest returns, and the ABI
+    // moved to it from a bare constant and a free function. Wrapping here keeps
+    // the comparison and the name reading from the same source.
+    let status = blitz_wasm::Status(status);
+    if status != blitz_wasm::Status::OK {
         return Err(format!(
-            "`{entry}` reported {} ({status}): {:?}",
-            blitz_wasm::status::name(status),
+            "`{entry}` reported {} ({}): {:?}",
+            status.name(),
+            status.0,
             store.data().counters().last_dom_error
         )
         .into());
