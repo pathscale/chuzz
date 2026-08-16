@@ -853,7 +853,7 @@ async fn fetch_page_module(
 /// pretty-print or re-serialise it. A document that showed a parsed and
 /// re-emitted tree would be answering a different question, and for a page
 /// whose claim is "there is no script here" it would be the wrong answer.
-fn source_html(text: &str) -> String {
+pub(crate) fn source_html(text: &str) -> String {
     let escaped = text
         .replace('&', "&amp;")
         .replace('<', "&lt;")
