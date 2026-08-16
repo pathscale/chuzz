@@ -424,4 +424,79 @@ mod tests {
             "the rows do not stack in order: {rows:?}"
         );
     }
+
+    /// `view-source:` renders through the capture path, escaped rather than
+    /// parsed.
+    ///
+    /// Hermetic on purpose. The loader's `view-source:` branch fetches the
+    /// inner URL, so driving it end to end would put a network round trip in
+    /// the suite and make this test fail for reasons that have nothing to do
+    /// with rendering. What the branch does *after* the fetch is wrap the bytes
+    /// with `browser::source_html` and parse that, and it is the wrapping that
+    /// can regress: escaping that stopped escaping would render the source as a
+    /// page, which is the one thing view source must never do.
+    ///
+    /// So this paints exactly what the loader would hand to the renderer, and
+    /// reads the pixels back the way the wasm test does.
+    #[test]
+    fn a_source_document_paints_its_markup_rather_than_rendering_it() {
+        use blitz_dom::{BaseDocument, DocumentConfig};
+
+        // A page whose rendered form is unmistakably different from its source:
+        // an <h1> would paint large and bold, and the tags would vanish.
+        const PAGE: &str = "<h1>Example Domain</h1><p>a &amp; b</p>";
+        let html = crate::browser::source_html(PAGE);
+
+        // The escaping is the contract the picture depends on, so assert it
+        // before painting: a failure here explains a failure below.
+        assert!(
+            html.contains("&lt;h1&gt;") && !html.contains("<h1>"),
+            "the markup must be escaped, not embedded: {html}"
+        );
+        assert!(
+            html.contains("&amp;amp;"),
+            "an entity in the source must itself be escaped, or the picture \
+             shows `&` where the server sent `&amp;`: {html}"
+        );
+
+        let document = blitz_html::HtmlDocument::from_html(
+            &html,
+            DocumentConfig {
+                html_parser_provider: Some(std::sync::Arc::new(blitz_html::HtmlProvider)),
+                ..Default::default()
+            },
+        );
+        let mut document: BaseDocument = document.into_inner();
+
+        let png = scratch("view-source.png");
+        let _ = std::fs::remove_file(&png);
+        let tree = scratch("view-source-tree.txt");
+        let _ = std::fs::remove_file(&tree);
+        let buffer = super::paint(&mut document, 1.0, 1440, 960, Some(&tree));
+        super::write_png(&buffer, 1440, 960, &png).expect("the png should be written");
+
+        // The same reasoning as the wasm test: a blank image would satisfy any
+        // weaker assertion, and blank is this path's characteristic failure.
+        let painted = non_background_pixels(&png);
+        assert!(
+            painted.differing > 250,
+            "the source document painted almost nothing ({} of {}), which is \
+             what a missing font looks like",
+            painted.differing,
+            painted.total
+        );
+
+        // And the tree proves it is *source*, not a rendered page: the text
+        // sits in a <pre>, and no <h1> was ever created from the escaped input.
+        let dump = std::fs::read_to_string(&tree).expect("the tree dump should be written");
+        assert!(
+            boxes(&dump).iter().any(|box_| box_.name == "pre"),
+            "the source should be laid out in a <pre>: {dump}"
+        );
+        assert!(
+            !boxes(&dump).iter().any(|box_| box_.name == "h1"),
+            "an <h1> in the tree means the markup was rendered rather than \
+             shown: {dump}"
+        );
+    }
 }

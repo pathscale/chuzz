@@ -247,6 +247,40 @@ pub async fn load_for_capture(
 ) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
     use blitz_dom::Document as _;
 
+    // `view-source:` is the browser's, and a capture that could not take it was
+    // the one address a tab could show and a PNG could not. The scheme is not a
+    // fetchable one, so this has to come before the net provider sees it: the
+    // inner URL is what gets fetched, and the bytes are escaped rather than
+    // parsed.
+    //
+    // `browser::source_html` rather than a second copy of the escaping. What
+    // the capture writes has to be byte-for-byte what the tab shows, or the PNG
+    // stops being evidence about the browser and becomes evidence about this
+    // function.
+    //
+    // Nothing below applies to a source document: it has no scripts to run and
+    // no images to wait for, so it returns here rather than falling through to
+    // the script pump.
+    if request.url.scheme() == "view-source" {
+        let inner = request.url.path().to_owned();
+        let url = Url::parse(&inner).map_err(|error| format!("{inner} is not a URL: {error}"))?;
+        let (_, bytes) = net_provider
+            .fetch_async(Request::get(url))
+            .await
+            .map_err(|error| format!("could not fetch {inner}: {error:?}"))?;
+        let html = crate::browser::source_html(&decode_body(&bytes));
+        return Ok(CapturedDocument::Html(Box::new(
+            blitz_html::HtmlDocument::from_html(
+                &html,
+                DocumentConfig {
+                    html_parser_provider: Some(Arc::new(HtmlProvider)),
+                    ..Default::default()
+                },
+            )
+            .into_inner(),
+        )));
+    }
+
     let (resolved_url, bytes) = net_provider
         .fetch_async(request)
         .await
