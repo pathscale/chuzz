@@ -85,6 +85,14 @@ export interface BrowserEvents {
   "status-changed": StatusReadout;
   "panel-changed": PanelState;
   "debug-entry": DebugEntry;
+  /**
+   * The macOS View > View Source item was chosen.
+   *
+   * Carries no payload on purpose. What view source means depends on the active
+   * tab, which the chrome already knows and already decides for Cmd-U; sending
+   * a URL from the menu handler would be a second answer to the same question.
+   */
+  "menu-view-source": null;
 }
 
 export type BrowserEvent = keyof BrowserEvents;
