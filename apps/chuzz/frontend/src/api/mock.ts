@@ -43,6 +43,10 @@ export function createMockApi(): BrowserApi {
     "status-changed": new Set(),
     "debug-entry": new Set(),
     "panel-changed": new Set(),
+    // Never emitted by the mock: there is no menu bar in a browser dev build.
+    // Present because the shell subscribes to it unconditionally, and an
+    // absent Set would throw on registration rather than simply stay quiet.
+    "menu-view-source": new Set(),
   };
 
   function emit<K extends keyof BrowserEvents>(event: K, payload: BrowserEvents[K]): void {

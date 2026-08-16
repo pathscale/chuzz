@@ -181,6 +181,12 @@ function createBrowserStore() {
     };
     window.addEventListener("keydown", onKeyDown, true);
 
+    // The macOS menu item runs the keystroke's action rather than its own, so
+    // the two cannot drift. Tracked like every other listener: registration is
+    // async, and an unmount mid-flight would otherwise leave it holding this
+    // owner.
+    track(api.on("menu-view-source", () => runShortcut("view-source")));
+
     onCleanup(() => {
       disposed = true;
       window.removeEventListener("keydown", onKeyDown, true);
