@@ -299,14 +299,15 @@ mod tests {
         assert_eq!(info.bit_depth, png::BitDepth::Eight);
 
         let pixels = &buffer[..info.buffer_size()];
-        let background = &pixels[0..4];
+        let (rgba, _) = pixels.as_chunks::<4>();
+        let background = rgba.first().copied().unwrap_or_default();
         let mut painted = Painted {
             differing: 0,
             total: pixels.len() / 4,
             lowest: 0,
         };
-        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
-            if pixel != background {
+        for (index, pixel) in rgba.iter().enumerate() {
+            if *pixel != background {
                 painted.differing += 1;
                 painted.lowest = painted.lowest.max(index as u32 / info.width);
             }
