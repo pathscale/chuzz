@@ -6,9 +6,9 @@ declare global {
   }
 }
 
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 
-declare module "solid-js" {
+declare module "@solidjs/web" {
   namespace JSX {
     interface IntrinsicElements {
       /**

@@ -1,5 +1,6 @@
 import { AddressBar, NavigationBar } from "@chuzz/ui";
-import { createEffect, createSignal, type JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
+import { createEffect, createSignal } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 
@@ -31,7 +32,7 @@ export function Toolbar(): JSX.Element {
         value={typed()}
         invalid={false}
         placeholder={t("browser.addressPlaceholder")}
-        onInput={(event) => {
+        onInput={(event: Event) => {
           setTyped((event.target as HTMLInputElement).value);
         }}
       />

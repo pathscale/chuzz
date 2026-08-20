@@ -1,6 +1,7 @@
 import { Tab as BrowserTab, TabList, TitleBar } from "@chuzz/ui";
 import { Button } from "@pathscale/ui";
-import { For, type JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
+import { For } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 import type { Tab } from "~/types";
