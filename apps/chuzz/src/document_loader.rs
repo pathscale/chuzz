@@ -200,6 +200,103 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     };
     globalThis.cancelIdleCallback = function (handle) { clearTimeout(handle); };
   }
+  // A dev server's live-reload client is the first script on the page, and it
+  // runs at bundle top-level rather than behind an event. Anything it throws
+  // takes the whole bundle down with it, so an app served by `rsbuild`, Vite or
+  // `webpack-dev-server` renders as an empty mount point while the same app
+  // built for production renders fine. That asymmetry is the symptom to
+  // recognise: the page is not at fault, its reload client is.
+  //
+  // Both shims below are deliberately inert rather than functional. Live reload
+  // needs a socket the engine does not have; what it must not do is prevent the
+  // page from rendering once. A constructor that reports a failed connection is
+  // the shape these clients already handle, because a dev server that has gone
+  // away is an ordinary thing for them to survive.
+  if (typeof globalThis.WebSocket === 'undefined') {
+    globalThis.WebSocket = function (url, protocols) {
+      var socket = this;
+      this.url = String(url);
+      this.protocol = '';
+      this.extensions = '';
+      this.bufferedAmount = 0;
+      this.binaryType = 'blob';
+      // CLOSED, not CONNECTING: a client that reads readyState synchronously
+      // should see a socket that is already finished, not one it will wait on.
+      this.readyState = 3;
+      this.onopen = null;
+      this.onmessage = null;
+      this.onerror = null;
+      this.onclose = null;
+      this.send = function () {};
+      this.close = function () {};
+      this.addEventListener = function (type, handler) {
+        if (type === 'error' || type === 'close') { listeners.push([type, handler]); }
+      };
+      this.removeEventListener = function () {};
+      this.dispatchEvent = function () { return false; };
+      var listeners = [];
+      // Report the failure asynchronously, the way a real refused connection
+      // arrives. Firing during construction would reach a handler the caller
+      // has not attached yet.
+      setTimeout(function () {
+        var error = { type: 'error', target: socket };
+        if (typeof socket.onerror === 'function') { socket.onerror(error); }
+        var close = { type: 'close', target: socket, code: 1006, reason: '', wasClean: false };
+        if (typeof socket.onclose === 'function') { socket.onclose(close); }
+        for (var i = 0; i < listeners.length; i++) {
+          listeners[i][1](listeners[i][0] === 'error' ? error : close);
+        }
+      }, 0);
+    };
+    globalThis.WebSocket.CONNECTING = 0;
+    globalThis.WebSocket.OPEN = 1;
+    globalThis.WebSocket.CLOSING = 2;
+    globalThis.WebSocket.CLOSED = 3;
+  }
+  // `location.port` is absent rather than empty on a document the engine built,
+  // and a reload client reads it to work out where to reconnect. Reading a
+  // missing property is not itself fatal, but it puts `undefined` into a URL
+  // the client then parses, so fill it in from the href. Defined only when
+  // missing, so a real port keeps whatever the engine reported.
+  if (typeof globalThis.location === 'object' && globalThis.location !== null
+      && globalThis.location.port === undefined) {
+    var located = String(globalThis.location.href || '').match(
+      /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/?#:]*:(\d+)/
+    );
+    try {
+      globalThis.location.port = located ? located[1] : '';
+    } catch (e) {
+      // A frozen location is fine to leave alone; the read above is what matters.
+    }
+  }
+  // Boa supplies a `URL` constructor, so the fuller one above never installs.
+  // What it leaves out is `searchParams`, and the omission is not survivable:
+  // `url.searchParams.append(...)` is a property access on undefined, which is
+  // a TypeError at bundle top-level rather than a missing query string. Attach
+  // one to the prototype instead of replacing `URL`, so the engine's parsing
+  // stays authoritative and only the gap is filled.
+  if (typeof globalThis.URL === 'function' && globalThis.URL.prototype
+      && !('searchParams' in globalThis.URL.prototype)) {
+    Object.defineProperty(globalThis.URL.prototype, 'searchParams', {
+      configurable: true,
+      get: function () {
+        // Rebuilt per read from the current search, because the engine's setters
+        // may have moved it since. Mutating the returned object updates `search`
+        // here; it does not write back through to `href`, which this cannot do
+        // without reimplementing serialisation.
+        var url = this;
+        var params = new globalThis.URLSearchParams(String(url.search || ''));
+        var write = function () {
+          try { url.search = '?' + params.toString(); } catch (e) {}
+        };
+        var set = params.set;
+        var append = params.append;
+        params.set = function (key, value) { set.call(params, key, value); write(); };
+        params.append = function (key, value) { append.call(params, key, value); write(); };
+        return params;
+      }
+    });
+  }
   if (typeof globalThis.matchMedia === 'undefined') {
     globalThis.matchMedia = function (query) {
       return {
