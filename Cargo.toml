@@ -29,15 +29,15 @@ homepage = "https://github.com/pathscale/chuzz"
 # `tauri-runtime-blitz` pins this same revision, which is what keeps one engine
 # in the graph. Move the two together, or `PaintScene` becomes two unrelated
 # traits and the errors read as a broken engine rather than as two of them.
-blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874" }
-blitz-html = { git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874" }
-blitz-net = { git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874" }
-blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874" }
-blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874" }
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
+blitz-html = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
+blitz-net = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874" }
-dioxus-native = { git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874", default-features = false }
+blitz-wasm = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
+dioxus-native = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"] }
@@ -68,7 +68,7 @@ anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-a
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef", features = ["filters"] }
-blitz-paint = { git = "https://github.com/pathscale/ps-blitz.git", rev = "a81bea599c2f67a9a1568e0f8911435c59af8874" }
+blitz-paint = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -98,7 +98,7 @@ tauri = { version = "=2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "070ab3a2fd460d7c9b2f3f341e7d6c50af669682", features = ["diagnostics"] }
+tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "b23402616df4f7fa819de389451b5edd87c6dfbe", features = ["diagnostics"] }
 
 [profile.release]
 lto = "thin"
