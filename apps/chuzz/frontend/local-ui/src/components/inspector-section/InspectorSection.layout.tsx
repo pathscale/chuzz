@@ -1,5 +1,5 @@
 import { Chip, Collapsible, Text } from "@pathscale/ui";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import type { Layout } from "solid-layouts";
 import { inspectorSection } from "./InspectorSection.recipe";
 
