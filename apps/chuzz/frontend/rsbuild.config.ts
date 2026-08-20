@@ -35,18 +35,18 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      // solid-layouts ships one build arm per Solid major and defaults its
-      // bare entry to the 1.9 one, which calls `splitProps`. Solid 2 replaced
-      // that with `omit`, and a bundler links both arms of the package's
-      // runtime check, so the default entry fails at link time with
-      // "export 'splitProps' was not found in 'solid-js'". `./solid-2` is the
-      // arm built against this major.
-      // The boundary specifier stays the 1.9 spelling because
-      // `solid-layouts-oxc`'s validator greps the generated entry for that
-      // exact string (it hardcodes it rather than asking `boundaryFor`), so a
-      // solid-2 library build fails validation with "no application compiler
-      // boundary". Aliasing it keeps the marker the validator wants and loads
-      // the Solid 2 implementation.
+      /*
+       * solid-layouts ships one build arm per Solid major, and its bare entry
+       * is the 1.9 one, which calls `splitProps`. Solid 2 replaced that with
+       * `omit`, and a bundler links both arms of the package's runtime check,
+       * so the default entry fails at link time with "export 'splitProps' was
+       * not found in 'solid-js'". `./solid-2` is the arm built against this
+       * major, and these aliases are how a consumer selects it.
+       */
+      // Paired with the rewrite in `scripts/solid-2-boundary.ts`: the entry on
+      // disk carries the 1.9 spelling the validator greps for, and this sends
+      // that specifier to the Solid 2 implementation. Both halves go when a
+      // release carries pathscale/solid-layouts#9.
       "solid-layouts/application-boundary$": "solid-layouts/solid-2/application-boundary",
       "solid-layouts$": "solid-layouts/solid-2",
       "solid-layouts/recipe$": "solid-layouts/solid-2/recipe",
