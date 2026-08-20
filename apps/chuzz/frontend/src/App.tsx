@@ -1,5 +1,6 @@
 import { AppShell, MainContent, PanelHandle } from "@chuzz/ui";
-import { createSignal, type JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
+import { createSignal } from "solid-js";
 import { PageArea } from "~/features/page/PageArea";
 import { SidePanel } from "~/features/panel/SidePanel";
 import { SettingsPanel } from "~/features/settings/SettingsPanel";

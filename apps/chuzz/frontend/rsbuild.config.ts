@@ -1,21 +1,56 @@
+import { createRequire } from "node:module";
 import { defineConfig } from "@rsbuild/core";
 import { pluginBabel } from "@rsbuild/plugin-babel";
-import { pluginSolid } from "@rsbuild/plugin-solid";
 import ForkTsCheckerWebpackPlugin from "fork-ts-checker-webpack-plugin";
 import { pluginSolidLayoutsApplication } from "rsbuild-plugin-solid-layouts";
+
+// Resolves from this file, so the preset is the project's own 2.0 copy.
+const localRequire = createRequire(import.meta.url);
 
 export default defineConfig({
   plugins: [
     pluginSolidLayoutsApplication({
       layouts: ["@pathscale/ui", "@chuzz/ui"],
     }),
-    pluginBabel({ include: /\.(?:jsx|tsx|ts)$/ }),
-    pluginSolid(),
+    /*
+     * The Solid preset is named here rather than through `pluginSolid()`.
+     *
+     * That plugin depends on `babel-preset-solid@^1.9.12` and resolves it with
+     * its own `require`, so it loads the 1.9 preset out of the package store
+     * even when the project's own is 2.0. The 1.9 JSX transform emits imports
+     * from `solid-js/web`, a subpath Solid 2 does not export, and the build
+     * stops at "Package subpath './web' is not defined by exports" pointing at
+     * a generated file whose source imports nothing of the kind.
+     *
+     * Resolving from this directory pins the transform to the same major as
+     * the runtime, which is the whole requirement.
+     */
+    pluginBabel({
+      include: /\.(?:jsx|tsx|ts)$/,
+      babelLoaderOptions: (config) => {
+        config.presets ??= [];
+        config.presets.push(localRequire.resolve("babel-preset-solid"));
+      },
+    }),
   ],
   resolve: {
     alias: {
-      "solid-js/web$": "./node_modules/solid-js/web/dist/web.js",
-      "solid-js$": "./node_modules/solid-js/dist/solid.js",
+      // solid-layouts ships one build arm per Solid major and defaults its
+      // bare entry to the 1.9 one, which calls `splitProps`. Solid 2 replaced
+      // that with `omit`, and a bundler links both arms of the package's
+      // runtime check, so the default entry fails at link time with
+      // "export 'splitProps' was not found in 'solid-js'". `./solid-2` is the
+      // arm built against this major.
+      // The boundary specifier stays the 1.9 spelling because
+      // `solid-layouts-oxc`'s validator greps the generated entry for that
+      // exact string (it hardcodes it rather than asking `boundaryFor`), so a
+      // solid-2 library build fails validation with "no application compiler
+      // boundary". Aliasing it keeps the marker the validator wants and loads
+      // the Solid 2 implementation.
+      "solid-layouts/application-boundary$": "solid-layouts/solid-2/application-boundary",
+      "solid-layouts$": "solid-layouts/solid-2",
+      "solid-layouts/recipe$": "solid-layouts/solid-2/recipe",
+      "solid-layouts/cx$": "solid-layouts/solid-2/cx",
       "tailwind-merge$": "./node_modules/tailwind-merge/dist/bundle-mjs.mjs",
       "~": "./src",
     },
