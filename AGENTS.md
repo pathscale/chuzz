@@ -12,15 +12,26 @@
 - Keep browser policy separate from the renderer. The browser app owns tabs, navigation, history, permissions, persistence, and downloads.
 - Keep the local control surface protocol-compatible with AgencyZero's Blitz interface: `blitz.agent.control` and `blitz.diagnostics` over local MCP framing.
 - Control is opt-in, local-only, and unauthenticated only because the socket and descriptor are owner-readable. Never bind it to a network interface.
-- **The engine is a pinned revision, not a sibling checkout.** `ps-blitz`,
-  `tauri-runtime-blitz` and `endpoint-libs` are git dependencies with a `rev` in
-  `Cargo.toml`, so `Cargo.lock` records exactly what a release builds and an
-  ordinary `cargo build` fetches it. Do not turn them back into `path =
-  "../..."`. That is what this repository did before, and it put the revision CI
-  used in a `BLITZ_REF` env var in release.yml while every developer built
-  against whatever happened to be on disk. The pin sat 44 commits behind, and
-  the release job broke the day a new engine package was added, because a path
-  dependency resolves against the filesystem and no local build can notice.
+- **Every dependency is a published version with a caret, not a sibling
+  checkout.** `ps-blitz`, the renderers and `endpoint-libs` are ordinary
+  crates.io dependencies on `^`, so `cargo update` can move them, `Cargo.lock`
+  records exactly what a release builds, and two crates asking for the same
+  range share one copy instead of getting a second. Do not turn them back into
+  `path = "../..."`. That is what this repository did before, and it put the
+  revision CI used in a `BLITZ_REF` env var in release.yml while every developer
+  built against whatever happened to be on disk. The pin sat 44 commits behind,
+  and the release job broke the day a new engine package was added, because a
+  path dependency resolves against the filesystem and no local build can notice.
+  Do not reach for `rev` or `=` either: a git revision cannot be published and
+  an exact pin is a range of one, so both split the graph the same way. A git
+  `endpoint-libs` alongside the registry copy is precisely how this repository
+  ended up with two of it.
+- **`tauri-runtime-blitz` is the one exception, and it is temporary.** It is
+  still a git dependency with a `rev` because the crate sets `publish = false`
+  and depends on a patched `usvg` for `Tree::intrinsic_dimensions`; crates.io
+  rejects anything with a git dependency. `ps-usvg` is published now, so the
+  path forward is to repoint it there, drop `publish = false`, release, and
+  bring this one to a caret with the rest.
 - **Building against a working checkout is opt-in and never edits a tracked
   file.** Put the `[patch]` tables in `.cargo/local-engine.toml`, which is
   gitignored, and reach for them per command:
@@ -28,10 +39,12 @@
   restores `Cargo.lock`, because a redirected build rewrites it to point at
   directories that exist on one machine. Patch only the crates you are actually
   changing; every entry is a pin that stops being tested.
-- When you move the engine pin, move `tauri-runtime-blitz`'s to match. Both name
-  a ps-blitz revision, and two different ones put two engines in the graph,
-  which surfaces as missing methods and unrelated `PaintScene` traits rather
-  than as a version error.
+- When you move the engine version, move `tauri-runtime-blitz`'s to match. Both
+  resolve a ps-blitz, and two different ones put two engines in the graph, which
+  surfaces as missing methods and unrelated `PaintScene` traits rather than as a
+  version error. This is why the exception above is worth closing: a caret on
+  both sides makes the shared range the thing that keeps them equal, instead of
+  a revision someone has to remember to move twice.
 - Work on a branch and ship through a pull request. Do not commit to `main`.
 - Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` before delivery.
 
