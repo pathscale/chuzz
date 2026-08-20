@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "chuzz-control"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "endpoint-libs 2.1.5 (git+https://github.com/pathscale/endpoint-libs.git?rev=7eff4d850f1c84c1104c0729c68f50711940b7fb)",
  "serde",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "chuzz-gui"
-version = "0.1.33"
+version = "0.1.34"
 dependencies = [
  "brotli",
  "chuzz-control",
