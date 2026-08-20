@@ -62,11 +62,17 @@ jobs:
       - name: Compare the committed version against the published one
         id: decide
         run: |
-          VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
+          # `cargo pkgid` rather than a TOML parser. The version is resolved by
+          # the tool that owns it, so this cannot disagree with what the build
+          # actually produces, and it needs no interpreter on the runner.
+          VERSION=$(cargo pkgid -p chuzz-gui | sed 's/.*@//')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+          # `latest.json` is written by this workflow further down, so its shape
+          # is known: one "version" field. `sed` reads it rather than a JSON
+          # parser, which keeps the runner requirement at coreutils.
           LIVE=$(curl -fsS --max-time 30 "$CDN_BASE/latest.json" 2>/dev/null \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || echo "")
+            | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 
           if [ "${{ inputs.force }}" = "true" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
@@ -352,7 +358,8 @@ jobs:
           # nobody sees the release. It is also what the next run compares
           # against, so a stale copy would republish this version forever.
           for attempt in 1 2 3 4 5 6; do
-            LIVE=$(curl -sS -L "$CDN_BASE/latest.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || echo "")
+            LIVE=$(curl -sS -L "$CDN_BASE/latest.json" 2>/dev/null \
+              | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
             if [ "$LIVE" = "$VERSION" ]; then
               echo "edge serves version $LIVE"
               exit 0
