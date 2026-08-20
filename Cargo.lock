@@ -76,18 +76,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "accesskit_xplat"
-version = "0.1.1"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "accesskit",
- "accesskit_macos",
- "accesskit_windows",
- "android-activity",
- "raw-window-handle",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -184,6 +172,18 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "anyrender"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aea77d85ae0be665528618c97164c2b510dc635e80b805e9a9df9a9fe72da423"
+dependencies = [
+ "kurbo",
+ "peniko",
+ "raw-window-handle",
+ "smallvec",
+]
 
 [[package]]
 name = "app_units"
@@ -427,88 +427,11 @@ checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
 [[package]]
 name = "blitz-control-protocol"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=b23402616df4f7fa819de389451b5edd87c6dfbe#b23402616df4f7fa819de389451b5edd87c6dfbe"
+source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=61eaebcf598fa5963d349e919a7faeb41e18a1cd#61eaebcf598fa5963d349e919a7faeb41e18a1cd"
 dependencies = [
  "endpoint-libs 2.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "blitz-dom-api"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "markup5ever 0.39.0",
- "ps-blitz-dom",
-]
-
-[[package]]
-name = "blitz-html"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "html5ever 0.39.0",
- "ps-blitz-dom",
- "ps-blitz-traits",
- "xml5ever",
-]
-
-[[package]]
-name = "blitz-net"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "data-url",
- "directories",
- "http-cache",
- "http-cache-reqwest",
- "ps-blitz-traits",
- "reqwest",
- "reqwest-middleware",
- "tokio",
- "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "blitz-paint"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "color",
- "euclid",
- "kurbo",
- "parley",
- "peniko",
- "ps-anyrender",
- "ps-anyrender-svg",
- "ps-blitz-dom",
- "ps-blitz-traits",
- "ps-taffy",
- "smallvec",
- "stylo",
- "usvg",
-]
-
-[[package]]
-name = "blitz-platform-api"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "ps-blitz-traits",
-]
-
-[[package]]
-name = "blitz-wasm"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "blitz-dom-api",
- "blitz-platform-api",
- "dom-abi",
- "ps-blitz-dom",
- "ps-blitz-traits",
- "wasmi",
 ]
 
 [[package]]
@@ -848,21 +771,21 @@ dependencies = [
 name = "chuzz-gui"
 version = "0.1.33"
 dependencies = [
- "blitz-html",
- "blitz-net",
- "blitz-paint",
- "blitz-wasm",
  "brotli",
  "chuzz-control",
- "dioxus-native",
  "flate2",
  "image",
  "png 0.18.1",
  "ps-anyrender",
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
+ "ps-blitz-html",
+ "ps-blitz-net",
+ "ps-blitz-paint",
  "ps-blitz-script",
  "ps-blitz-traits",
+ "ps-blitz-wasm",
+ "ps-dioxus-native",
  "serde",
  "serde_json",
  "tauri",
@@ -1398,11 +1321,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
 
 [[package]]
-name = "debug_timer"
-version = "0.1.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-
-[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,59 +1541,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxus-native"
-version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "android-activity",
- "blitz-net",
- "blitz-paint",
- "cfg-if",
- "dioxus-asset-resolver",
- "dioxus-cli-config",
- "dioxus-core",
- "dioxus-core-macro",
- "dioxus-document",
- "dioxus-history",
- "dioxus-hooks",
- "dioxus-html",
- "dioxus-native-dom",
- "dioxus-signals",
- "dioxus-stores",
- "futures-util",
- "keyboard-types 0.7.0",
- "manganis",
- "peniko",
- "ps-anyrender",
- "ps-anyrender-vello",
- "ps-anyrender-vello-cpu",
- "ps-anyrender-vello-hybrid",
- "ps-blitz-dom",
- "ps-blitz-shell",
- "ps-blitz-traits",
- "rustc-hash 2.1.3",
- "slotmap",
- "tokio",
- "webbrowser",
- "wgpu_context",
- "winit",
-]
-
-[[package]]
-name = "dioxus-native-dom"
-version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "dioxus-core",
- "dioxus-html",
- "futures-util",
- "keyboard-types 0.7.0",
- "ps-blitz-dom",
- "ps-blitz-traits",
- "rustc-hash 2.1.3",
-]
-
-[[package]]
 name = "dioxus-rsx"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1800,7 +1665,8 @@ dependencies = [
 [[package]]
 name = "dom-abi"
 version = "0.1.1"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b56cecd6b08e26fa2df2616cfbffd767107c063459b73bddaa3d67344a634e99"
 dependencies = [
  "serde",
 ]
@@ -4788,11 +4654,12 @@ dependencies = [
 [[package]]
 name = "pixels_window_renderer"
 version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef#f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f8446b6281adf257c7454da61707febd23a9eff0c85e32ed20b0fccafd1539a"
 dependencies = [
- "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "anyrender",
+ "debug_timer",
  "pixels",
- "ps-anyrender",
 ]
 
 [[package]]
@@ -5034,9 +4901,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-accesskit-xplat"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e040e752d1d2d0cff2dc5cd15b17f8c94f68111fd0f7729636117f0aa220097"
+dependencies = [
+ "accesskit",
+ "accesskit_macos",
+ "accesskit_windows",
+ "android-activity",
+ "raw-window-handle",
+]
+
+[[package]]
 name = "ps-anyrender"
-version = "0.12.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef#f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5327da0a20e60efcd3dada8550ca954c7de9e25dee7426b1c1fbdac9671f4fd0"
 dependencies = [
  "kurbo",
  "peniko",
@@ -5046,22 +4927,24 @@ dependencies = [
 
 [[package]]
 name = "ps-anyrender-svg"
-version = "0.14.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef#f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46398b5d65887187d3d512aebdfc87bb8c22b13c4621e5b751f2984136b63307"
 dependencies = [
  "image",
  "kurbo",
  "peniko",
  "ps-anyrender",
- "usvg",
+ "ps-usvg",
 ]
 
 [[package]]
 name = "ps-anyrender-vello"
-version = "0.13.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef#f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b52d430f880f9a515c726eac3ab1a796ecf5f242b758893efc9b2f159cea72d"
 dependencies = [
- "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "debug_timer",
  "futures-channel",
  "kurbo",
  "peniko",
@@ -5076,10 +4959,11 @@ dependencies = [
 
 [[package]]
 name = "ps-anyrender-vello-cpu"
-version = "0.15.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef#f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0535ad2b287de44f3e4215db589cc308f656e9023c5d5462f726ce23dcbd0fd"
 dependencies = [
- "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "debug_timer",
  "glifo",
  "kurbo",
  "peniko",
@@ -5091,10 +4975,11 @@ dependencies = [
 
 [[package]]
 name = "ps-anyrender-vello-hybrid"
-version = "0.9.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef#f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d70154799ecff6b3e94b210597fada58afa385459ef2a2768f40eff20ff256a4"
 dependencies = [
- "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "debug_timer",
  "futures-channel",
  "glifo",
  "kurbo",
@@ -5111,8 +4996,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-debug-control"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8e025562967111b5e257bbbab7d61c145d32a1142ea443c351a27f0c589fd80"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -5121,8 +5007,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f5565bf91b5b108bf6643e69895f3ebd16274cd107f32cbc0e3ba1f6f762900"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5131,7 +5018,6 @@ dependencies = [
  "color",
  "cssparser 0.37.0",
  "cursor-icon",
- "debug_timer 0.1.3 (git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf)",
  "euclid",
  "html-escape",
  "image",
@@ -5144,7 +5030,10 @@ dependencies = [
  "percent-encoding",
  "ps-anyrender",
  "ps-blitz-traits",
+ "ps-debug-timer",
+ "ps-stylo-taffy",
  "ps-taffy",
+ "ps-usvg",
  "rayon",
  "rustc-hash 2.1.3",
  "selectors 0.40.0",
@@ -5154,24 +5043,90 @@ dependencies = [
  "stylo",
  "stylo_dom",
  "stylo_static_prefs",
- "stylo_taffy",
  "stylo_traits",
  "thin-vec",
  "thread_local",
  "url",
- "usvg",
  "web-time",
  "wuff",
 ]
 
 [[package]]
+name = "ps-blitz-dom-api"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c89717f4c253008434fe0faab39809bcbd7f76f58d5d3e0328d75a97e25ff77"
+dependencies = [
+ "markup5ever 0.39.0",
+ "ps-blitz-dom",
+]
+
+[[package]]
+name = "ps-blitz-html"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dabaaff5a82fb9f1b6ea1afb30ddde1154826385e3a5128f2890a7131ec4a65"
+dependencies = [
+ "html5ever 0.39.0",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+ "xml5ever",
+]
+
+[[package]]
+name = "ps-blitz-net"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76f253370a9289ec81e898972a835c65977c361227ea9925a3b8fb4ee8ff8cd2"
+dependencies = [
+ "data-url",
+ "directories",
+ "http-cache",
+ "http-cache-reqwest",
+ "ps-blitz-traits",
+ "reqwest",
+ "reqwest-middleware",
+ "tokio",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "ps-blitz-paint"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99f0c76280303217feedcf02538262aab2a1bcc1cbabac1b1978f10bc5fadaa1"
+dependencies = [
+ "color",
+ "euclid",
+ "kurbo",
+ "parley",
+ "peniko",
+ "ps-anyrender",
+ "ps-anyrender-svg",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+ "ps-taffy",
+ "ps-usvg",
+ "smallvec",
+ "stylo",
+]
+
+[[package]]
+name = "ps-blitz-platform-api"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18141f86cad5f71568454f9afa50b0985b179884d4944a4aad0aaede3a8d637f"
+dependencies = [
+ "ps-blitz-traits",
+]
+
+[[package]]
 name = "ps-blitz-script"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ec346c9261d9f6167722447ee402ab705cee1dcfa743779c43ae81a5d0561d1"
 dependencies = [
  "base64 0.22.1",
- "blitz-html",
- "blitz-paint",
  "data-url",
  "getrandom 0.4.3",
  "image",
@@ -5181,6 +5136,8 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-blitz-debug-control",
  "ps-blitz-dom",
+ "ps-blitz-html",
+ "ps-blitz-paint",
  "ps-blitz-traits",
  "ps-boa-engine",
  "ps-boa-gc",
@@ -5193,19 +5150,20 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-shell"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f92cb45997bef85dbdbb57700847edc8247e3fb0e2996b515352c3fa2bb5a2c"
 dependencies = [
  "accesskit",
- "accesskit_xplat",
  "android-activity",
  "arboard",
  "atomic_refcell",
- "blitz-paint",
  "futures-util",
  "keyboard-types 0.7.0",
+ "ps-accesskit-xplat",
  "ps-anyrender",
  "ps-blitz-dom",
+ "ps-blitz-paint",
  "ps-blitz-script",
  "ps-blitz-traits",
  "wasm-bindgen",
@@ -5216,8 +5174,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe475f00adaeddb80a27b4aa2ac995e2fd2a19b209476e4172efbef42ecfa5b7"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.1",
@@ -5228,6 +5187,20 @@ dependencies = [
  "serde",
  "smol_str",
  "url",
+]
+
+[[package]]
+name = "ps-blitz-wasm"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "040ae3c5732656f972d8fc013f846216e920a3c795f89bab99aa9a071d92c507"
+dependencies = [
+ "dom-abi",
+ "ps-blitz-dom",
+ "ps-blitz-dom-api",
+ "ps-blitz-platform-api",
+ "ps-blitz-traits",
+ "wasmi",
 ]
 
 [[package]]
@@ -5400,9 +5373,82 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-debug-timer"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2387c1a4325992b45f525d6e940321efef1589962806eef948ad5660388d33d"
+
+[[package]]
+name = "ps-dioxus-native"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ef8b34d6129da85a28bd3eed17489bbf9a38adac8c2618518d524af24454648"
+dependencies = [
+ "android-activity",
+ "cfg-if",
+ "dioxus-asset-resolver",
+ "dioxus-cli-config",
+ "dioxus-core",
+ "dioxus-core-macro",
+ "dioxus-document",
+ "dioxus-history",
+ "dioxus-hooks",
+ "dioxus-html",
+ "dioxus-signals",
+ "dioxus-stores",
+ "futures-util",
+ "keyboard-types 0.7.0",
+ "manganis",
+ "peniko",
+ "ps-anyrender",
+ "ps-anyrender-vello",
+ "ps-anyrender-vello-cpu",
+ "ps-anyrender-vello-hybrid",
+ "ps-blitz-dom",
+ "ps-blitz-net",
+ "ps-blitz-paint",
+ "ps-blitz-shell",
+ "ps-blitz-traits",
+ "ps-dioxus-native-dom",
+ "rustc-hash 2.1.3",
+ "slotmap",
+ "tokio",
+ "webbrowser",
+ "wgpu_context",
+ "winit",
+]
+
+[[package]]
+name = "ps-dioxus-native-dom"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be26b67d59b288dbe7d561b47d219fb2060a1e48cb04ec1cd1eadc6b8f6066e8"
+dependencies = [
+ "dioxus-core",
+ "dioxus-html",
+ "futures-util",
+ "keyboard-types 0.7.0",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "ps-stylo-taffy"
+version = "0.3.0-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d95f5fed6805d0bfaf63de2127fffe0c857451d21e537cb5ea1e0d3e2d7a9e5b"
+dependencies = [
+ "ps-taffy",
+ "stylo",
+ "stylo_atoms",
+]
+
+[[package]]
 name = "ps-taffy"
 version = "0.13.0"
-source = "git+https://github.com/pathscale/ps-taffy.git?rev=4355471d36f1939109d36197bfb580a931231738#4355471d36f1939109d36197bfb580a931231738"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdfbfb9089d7ce4f31237072cac4f7cd295dc23342a3a2886d566b50f0d1108d"
 dependencies = [
  "arrayvec",
  "serde",
@@ -5411,9 +5457,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-usvg"
+version = "0.48.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa6416d61344c2d54bf38e4bb4374c3e1c3835e9e3c7bc900a96eb788ce8c56"
+dependencies = [
+ "base64 0.23.1",
+ "data-url",
+ "flate2",
+ "fontdb",
+ "harfrust 0.12.0",
+ "imagesize",
+ "kurbo",
+ "log",
+ "pico-args",
+ "roxmltree 0.21.1",
+ "simplecss",
+ "siphasher",
+ "skrifa 0.44.0",
+ "strict-num",
+ "svgtypes",
+ "tiny-skia-path",
+ "unicode-bidi",
+ "unicode-script",
+ "unicode-vo",
+ "xmlwriter",
+]
+
+[[package]]
 name = "ps-wgpu-context"
 version = "0.8.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef#f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2089c166b3c856d7c1d542725a09b392d1ff9609cf1998ee1c07154825cfe79c"
 dependencies = [
  "futures-intrusive",
  "wgpu",
@@ -6748,16 +6823,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stylo_taffy"
-version = "0.3.0-beta.3"
-source = "git+https://github.com/pathscale/ps-blitz.git?rev=3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf#3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf"
-dependencies = [
- "ps-taffy",
- "stylo",
- "stylo_atoms",
-]
-
-[[package]]
 name = "stylo_traits"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7059,7 +7124,7 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-blitz"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=b23402616df4f7fa819de389451b5edd87c6dfbe#b23402616df4f7fa819de389451b5edd87c6dfbe"
+source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=61eaebcf598fa5963d349e919a7faeb41e18a1cd#61eaebcf598fa5963d349e919a7faeb41e18a1cd"
 dependencies = [
  "blitz-control-protocol",
  "endpoint-libs 2.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -7796,33 +7861,6 @@ dependencies = [
  "serde",
  "unic-ucd-ident",
  "url",
-]
-
-[[package]]
-name = "usvg"
-version = "0.48.1"
-source = "git+https://github.com/DioxusLabs/resvg?branch=devin%2F1785858271-intrinsic-dimensions#3289a9b0c3d3352692bf5acdf5f6e6949cdb57b5"
-dependencies = [
- "base64 0.23.1",
- "data-url",
- "flate2",
- "fontdb",
- "harfrust 0.12.0",
- "imagesize",
- "kurbo",
- "log",
- "pico-args",
- "roxmltree 0.21.1",
- "simplecss",
- "siphasher",
- "skrifa 0.44.0",
- "strict-num",
- "svgtypes",
- "tiny-skia-path",
- "unicode-bidi",
- "unicode-script",
- "unicode-vo",
- "xmlwriter",
 ]
 
 [[package]]

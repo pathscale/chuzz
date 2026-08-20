@@ -12,32 +12,35 @@ repository = "https://github.com/pathscale/chuzz"
 homepage = "https://github.com/pathscale/chuzz"
 
 [workspace.dependencies]
-# The engine, by revision rather than by path.
+# The engine, by version.
 #
-# These were `path = "../ps-blitz/..."`, which made the sibling checkout on each
-# machine the real dependency and left the revision CI used declared separately,
-# in a `BLITZ_REF` env var in release.yml. Two sources of truth that nothing
-# reconciled: the pin sat 44 commits behind while local builds moved on, and the
-# release job broke the moment a new engine package was added, because a path
-# dependency resolves against whatever is on disk and no local build can notice.
+# These were `path = "../ps-blitz/..."`, then revisions. The path form made the
+# sibling checkout on each machine the real dependency and left the revision CI
+# used declared separately in a `BLITZ_REF` env var, two sources of truth that
+# nothing reconciled: the pin sat 44 commits behind while local builds moved on.
+# A revision fixed that and introduced its own tax, because a git dependency is
+# not a version: every engine release meant editing eight lines here and a
+# matching set in `tauri-runtime-blitz`, and the day those disagreed cargo put
+# two engines in the graph and reported it as
 #
-# A rev here is the single declaration. `Cargo.lock` records it, CI needs no
-# clone step, and an ordinary `cargo build` fetches exactly what a release does.
-# To build against a working checkout, see `scripts/local-engine.sh`; it is
-# opt-in precisely so that the default exercises these pins.
+#   expected `blitz_script::document::ScriptDocument`, found `ScriptDocument`
 #
-# `tauri-runtime-blitz` pins this same revision, which is what keeps one engine
-# in the graph. Move the two together, or `PaintScene` becomes two unrelated
-# traits and the errors read as a broken engine rather than as two of them.
-blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
-blitz-html = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
-blitz-net = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
-blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
-blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
+# with both types pointing at the same file.
+#
+# A caret is what was meant all along. `cargo update` moves it, `Cargo.lock`
+# records what was resolved, and anything else asking for the same range gets
+# the same crate rather than a second copy. To build against a working checkout,
+# see `scripts/local-engine.sh`; it is opt-in so the default exercises what a
+# release actually resolves.
+blitz-dom = { package = "ps-blitz-dom", version = "^0.3.0-beta.5" }
+blitz-html = { package = "ps-blitz-html", version = "^0.3.0-beta.5" }
+blitz-net = { package = "ps-blitz-net", version = "^0.3.0-beta.5" }
+blitz-script = { package = "ps-blitz-script", version = "^0.3.0-beta.5" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.3.0-beta.5" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
-dioxus-native = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf", default-features = false }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.3.0-beta.5" }
+dioxus-native = { package = "ps-dioxus-native", version = "^0.7.1", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"] }
@@ -45,18 +48,23 @@ brotli = { version = "8", default-features = false, features = ["std"] }
 image = { version = "=0.25.6", default-features = false }
 # Headless capture: renders a page to a buffer with the CPU rasteriser, so the
 # result can be inspected without a window.
+#
 # Must be the same anyrender blitz-paint links against, or PaintScene is two
-# unrelated traits and the painter cannot be passed to paint_scene. blitz-paint
-# takes it from whatever `ps-blitz/Cargo.toml` pins at the revision above, so
-# this rev has to be kept equal to that one by hand. It rotted once: ps-blitz
-# moved to acb9714 and this stayed on 0e4122b, which broke every `--capture`
+# unrelated traits and the painter cannot be passed to paint_scene. That used to
+# mean keeping a revision here equal by hand to the one in
+# `ps-blitz/Cargo.toml`, and it rotted exactly as you would expect: ps-blitz
+# moved to acb9714 while this stayed on 0e4122b, breaking every `--capture`
 # build with
 #
 #   error[E0277]: the trait bound `VelloCpuScenePainter: PaintScene` is not satisfied
 #   note: there are multiple different versions of crate `ps_anyrender_vello_cpu`
 #
 # reading as a broken painter when it was really two of them.
-anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef" }
+#
+# Both sides take it by version now, so cargo unifies them instead of two people
+# remembering to. A caret is also what ps-blitz declares, so the ranges agree by
+# construction rather than by coincidence.
+anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # `filters` is off by default in the backend, and with it off `push_layer`
 # discards both the element's `filter:` and its `backdrop-filter:`.
 #
@@ -67,8 +75,8 @@ anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-a
 # every backdrop inside a layer, which is every backdrop on a real page; the
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef", features = ["filters"] }
-blitz-paint = { git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.16.0", features = ["filters"] }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.3.0-beta.5" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -98,7 +106,7 @@ tauri = { version = "=2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "b23402616df4f7fa819de389451b5edd87c6dfbe", features = ["diagnostics"] }
+tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "61eaebcf598fa5963d349e919a7faeb41e18a1cd", features = ["diagnostics"] }
 
 [profile.release]
 lto = "thin"
@@ -113,10 +121,12 @@ codegen-units = 1
 debug = "line-tables-only"
 strip = "none"
 
-# `[patch]` only applies from the top-level workspace, so ps-blitz's own patch
-# section is ignored when chuzz is the root. Its blitz-dom calls
-# `usvg::Tree::intrinsic_dimensions`, which exists only on this branch, so
-# without this the engine does not compile here even though it compiles there.
-# Keep this in step with `ps-blitz/Cargo.toml`'s `[patch.crates-io]`.
-[patch.crates-io]
-usvg = { git = "https://github.com/DioxusLabs/resvg", branch = "devin/1785858271-intrinsic-dimensions" }
+# No patch table. There was one: `[patch]` only applies from the top-level
+# workspace, so ps-blitz's own was ignored when chuzz is the root, and its
+# blitz-dom needs a `usvg` carrying `Tree::intrinsic_dimensions` and
+# `pub use svgtypes` that no published linebender usvg has. That had to be
+# copied here and kept in step by hand.
+#
+# The fork is published as `ps-usvg` now and ps-blitz depends on it by version,
+# so the requirement travels with the dependency instead of being restated by
+# every consumer.
