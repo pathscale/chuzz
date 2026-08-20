@@ -141,21 +141,24 @@ function SurfaceColorWheel(props: { value: string; onPick: (value: string) => vo
     { count: 1, index: 0, radius: 0, phase: 0 },
   ];
   const colors = () => surfaceColors(prefs.colorMode);
-  let previous = colors();
 
   // Preserve the same petal across a mode change, and migrate the upstream
   // palette values written by earlier builds to the nearest literal petal.
-  createEffect(() => {
-    const next = colors();
-    const value = props.value.trim().toLowerCase();
-    if (value) {
+  //
+  // Solid 2's two-function form: the compute tracks the palette and the effect
+  // receives it alongside the previous one, so the old value no longer has to
+  // be carried in a closure variable.
+  createEffect(
+    () => colors(),
+    (next, previous) => {
+      const value = props.value.trim().toLowerCase();
+      if (!value || !previous) return;
       let selected = previous.findIndex((color) => color.toLowerCase() === value);
       if (selected < 0) selected = closestColorIndex(value, previous);
       const rebased = next[selected];
       if (rebased && rebased.toLowerCase() !== value) props.onPick(rebased);
-    }
-    previous = next;
-  });
+    },
+  );
 
   return (
     <SurfaceWheel value={props.value} onChange={props.onPick} label={t("appearance.surfaceColour")}>
@@ -188,26 +191,30 @@ function AccentSelector(props: {
   onPick: (value: string) => void;
 }): JSX.Element {
   const options = () => accentOptions(props.surface, prefs.colorMode, props.wash, props.softness);
-  let previous = options();
 
   // A palette choice is semantic, not a frozen hex. Keep the same harmony
   // selected while its rendered colour responds to surface, mode, strength,
   // and softness. Older arbitrary hex values migrate to the nearest harmony.
-  createEffect(() => {
-    const next = options();
-    let selected = previous.findIndex((option) => option.value === props.accent);
-    if (selected < 1 && props.accent) {
-      const closest = closestColorIndex(
-        props.accent,
-        previous.slice(1).map((option) => option.color),
-      );
-      if (closest >= 0) selected = closest + 1;
-    }
-    if (selected > 0 && next[selected]?.value !== props.accent) {
-      props.onPick(next[selected].value);
-    }
-    previous = next;
-  });
+  //
+  // Solid 2's two-function form, as above: the previous palette arrives as the
+  // effect's second argument rather than being tracked by hand.
+  createEffect(
+    () => options(),
+    (next, previous) => {
+      if (!previous) return;
+      let selected = previous.findIndex((option) => option.value === props.accent);
+      if (selected < 1 && props.accent) {
+        const closest = closestColorIndex(
+          props.accent,
+          previous.slice(1).map((option) => option.color),
+        );
+        if (closest >= 0) selected = closest + 1;
+      }
+      if (selected > 0 && next[selected]?.value !== props.accent) {
+        props.onPick(next[selected].value);
+      }
+    },
+  );
   return (
     <Flex as="div" direction="col" gap="sm">
       <Flex as="div" align="baseline" gap="sm">
