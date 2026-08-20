@@ -1,6 +1,6 @@
 import type { TabsRootProps } from "@pathscale/ui";
 import { Tabs } from "@pathscale/ui";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import type { Layout } from "solid-layouts";
 import { tabList } from "./TabList.recipe";
 

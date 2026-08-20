@@ -1,5 +1,12 @@
-import { createContext, onCleanup, onMount, type ParentProps, useContext } from "solid-js";
-import { createStore, reconcile } from "solid-js/store";
+import {
+  createContext,
+  createEffect,
+  createStore,
+  onCleanup,
+  type ParentProps,
+  reconcile,
+  useContext,
+} from "solid-js";
 import { api } from "~/api";
 import { type BrowserShortcut, resolveBrowserShortcut } from "~/lib/shortcuts";
 import { syncDiagnostics } from "~/stores/diagnostics";
@@ -45,154 +52,193 @@ const DEBUG_LIMIT = 500;
 function createBrowserStore() {
   const [state, setState] = createStore<BrowserState>({ ...EMPTY });
 
-  onMount(() => {
-    const unlisteners: Array<() => void> = [];
-    let disposed = false;
+  // Solid 2 removed `onMount`, and its `createEffect` takes a compute function
+  // *and* a separate effect function: the one-argument form is typed `never`
+  // and throws at runtime, which surfaced as a bare "cannot convert 'null' or
+  // 'undefined' to object" from inside `render` with no mention of this file.
+  // An empty compute tracks nothing, so the effect below runs exactly once
+  // after the first render, which is what `onMount` did here.
+  createEffect(
+    () => {},
+    () => {
+      const unlisteners: Array<() => void> = [];
+      let disposed = false;
 
-    // Tauri installs listeners asynchronously. Mirror AgencyZero's lifecycle
-    // handling so an unmount during registration cannot leave a live listener
-    // holding this Solid owner after the chrome has gone away.
-    const track = (pending: Promise<() => void>) => {
-      void pending.then((unlisten) => {
-        if (disposed) unlisten();
-        else unlisteners.push(unlisten);
-      });
-    };
+      // Tauri installs listeners asynchronously. Mirror AgencyZero's lifecycle
+      // handling so an unmount during registration cannot leave a live listener
+      // holding this Solid owner after the chrome has gone away.
+      const track = (pending: Promise<() => void>) => {
+        void pending.then((unlisten) => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        });
+      };
 
-    // The diagnostics switches are window-wide rather than per-tab, so they
-    // are adopted here alongside the rest of the startup read.
-    void syncDiagnostics();
+      // The diagnostics switches are window-wide rather than per-tab, so they
+      // are adopted here alongside the rest of the startup read.
+      void syncDiagnostics();
 
-    void (async () => {
-      const [tabs, activeTabId, panel, status, debug] = await Promise.all([
-        api.listTabs(),
-        api.activeTabId(),
-        api.panelState(),
-        api.status(),
-        // Everything that happened before the window finished starting. The
-        // first page load is usually already over by now.
-        //
-        // Defended, because it is the one value here the window does not need
-        // in order to draw. A shell whose bridge answers `null` for an unknown
-        // command put `null` in `debug`, the debugging section read `.length`
-        // off it, and the whole interface failed to render: no tab strip, no
-        // toolbar, no page mount. A missing log has to cost the log.
-        api.debugLog().catch(() => []),
-      ]);
-      setState({ tabs, activeTabId, panel, status, debug: debug ?? [] });
-    })();
+      void (async () => {
+        const [tabs, activeTabId, panel, status, debug] = await Promise.all([
+          api.listTabs(),
+          api.activeTabId(),
+          api.panelState(),
+          api.status(),
+          // Everything that happened before the window finished starting. The
+          // first page load is usually already over by now.
+          //
+          // Defended, because it is the one value here the window does not need
+          // in order to draw. A shell whose bridge answers `null` for an unknown
+          // command put `null` in `debug`, the debugging section read `.length`
+          // off it, and the whole interface failed to render: no tab strip, no
+          // toolbar, no page mount. A missing log has to cost the log.
+          api.debugLog().catch(() => []),
+        ]);
+        setState((draft) => {
+          draft.tabs = tabs;
+          draft.activeTabId = activeTabId;
+          draft.panel = panel;
+          draft.status = status;
+          draft.debug = debug ?? [];
+        });
+      })();
 
-    /*
-     * `reconcile` on the tab list, so a title arriving for tab 3 does not
-     * recreate the DOM for tabs 1 and 2. The list is replaced wholesale by the
-     * shell on every change, and without this each replacement would look like
-     * an entirely new set of rows.
-     */
-    track(api.on("tabs-changed", (tabs) => setState("tabs", reconcile(tabs, { key: "id" }))));
-    track(api.on("active-tab-changed", (id) => setState("activeTabId", id)));
-    track(api.on("status-changed", (status) => setState("status", status)));
-    track(api.on("panel-changed", (panel) => setState("panel", panel)));
-    track(
-      api.on("debug-entry", (entry) =>
-        setState("debug", (entries) => {
-          // Dropped by seq rather than appended blindly: the startup backfill
-          // and the live stream overlap by however long the listener took to
-          // register, and the same line arriving twice reads as the browser
-          // doing the work twice.
-          if (entries.some((seen) => seen.seq === entry.seq)) return entries;
-          const next = [...entries, entry];
-          return next.length > DEBUG_LIMIT ? next.slice(next.length - DEBUG_LIMIT) : next;
-        }),
-      ),
-    );
+      /*
+       * `reconcile` on the tab list, so a title arriving for tab 3 does not
+       * recreate the DOM for tabs 1 and 2. The list is replaced wholesale by the
+       * shell on every change, and without this each replacement would look like
+       * an entirely new set of rows.
+       */
+      track(
+        api.on("tabs-changed", (tabs) =>
+          setState((draft) => {
+            reconcile(tabs, "id")(draft.tabs);
+          }),
+        ),
+      );
+      track(
+        api.on("active-tab-changed", (id) =>
+          setState((draft) => {
+            draft.activeTabId = id;
+          }),
+        ),
+      );
+      track(
+        api.on("status-changed", (status) =>
+          setState((draft) => {
+            draft.status = status;
+          }),
+        ),
+      );
+      track(
+        api.on("panel-changed", (panel) =>
+          setState((draft) => {
+            draft.panel = panel;
+          }),
+        ),
+      );
+      track(
+        api.on("debug-entry", (entry) =>
+          setState((draft) => {
+            // Dropped by seq rather than appended blindly: the startup backfill
+            // and the live stream overlap by however long the listener took to
+            // register, and the same line arriving twice reads as the browser
+            // doing the work twice.
+            if (draft.debug.some((seen) => seen.seq === entry.seq)) return;
+            const next = [...draft.debug, entry];
+            draft.debug = next.length > DEBUG_LIMIT ? next.slice(next.length - DEBUG_LIMIT) : next;
+          }),
+        ),
+      );
 
-    const focusAddress = () => {
-      const address = document.getElementById("chuzz-address-bar");
-      if (address instanceof HTMLInputElement) {
-        // Boa exposes the DOM shape before every method has an implementation.
-        // Keep this usable in browser dev builds without calling a non-callable
-        // placeholder in the native Blitz document.
-        if (typeof address.focus === "function") address.focus();
-        if (typeof address.select === "function") address.select();
-      }
-    };
-    const cycleTab = (offset: number) => {
-      const index = state.tabs.findIndex((tab) => tab.id === state.activeTabId);
-      if (index < 0 || state.tabs.length === 0) return;
-      const next = (index + offset + state.tabs.length) % state.tabs.length;
-      void api.selectTab(state.tabs[next].id);
-    };
-    const runShortcut = (shortcut: BrowserShortcut) => {
-      switch (shortcut) {
-        case "new-tab":
-          void api.openTab().then(focusAddress);
-          break;
-        case "close-tab":
-          void api.closeTab(state.activeTabId);
-          break;
-        case "previous-tab":
-          cycleTab(-1);
-          break;
-        case "next-tab":
-          cycleTab(1);
-          break;
-        case "reload":
-          void api.reload(state.activeTabId);
-          break;
-        case "focus-address":
-          focusAddress();
-          break;
-        case "view-source": {
-          const url = state.tabs.find((tab) => tab.id === state.activeTabId)?.url;
-          // Inert on a source tab rather than recursive. The naive version
-          // opens `view-source:view-source:https://...`, which the address bar
-          // happily accepts and nothing can render.
-          if (url && !url.startsWith("view-source:")) {
-            void api.openTab(`view-source:${url}`);
+      const focusAddress = () => {
+        const address = document.getElementById("chuzz-address-bar");
+        if (address instanceof HTMLInputElement) {
+          // Boa exposes the DOM shape before every method has an implementation.
+          // Keep this usable in browser dev builds without calling a non-callable
+          // placeholder in the native Blitz document.
+          if (typeof address.focus === "function") address.focus();
+          if (typeof address.select === "function") address.select();
+        }
+      };
+      const cycleTab = (offset: number) => {
+        const index = state.tabs.findIndex((tab) => tab.id === state.activeTabId);
+        if (index < 0 || state.tabs.length === 0) return;
+        const next = (index + offset + state.tabs.length) % state.tabs.length;
+        void api.selectTab(state.tabs[next].id);
+      };
+      const runShortcut = (shortcut: BrowserShortcut) => {
+        switch (shortcut) {
+          case "new-tab":
+            void api.openTab().then(focusAddress);
+            break;
+          case "close-tab":
+            void api.closeTab(state.activeTabId);
+            break;
+          case "previous-tab":
+            cycleTab(-1);
+            break;
+          case "next-tab":
+            cycleTab(1);
+            break;
+          case "reload":
+            void api.reload(state.activeTabId);
+            break;
+          case "focus-address":
+            focusAddress();
+            break;
+          case "view-source": {
+            const url = state.tabs.find((tab) => tab.id === state.activeTabId)?.url;
+            // Inert on a source tab rather than recursive. The naive version
+            // opens `view-source:view-source:https://...`, which the address bar
+            // happily accepts and nothing can render.
+            if (url && !url.startsWith("view-source:")) {
+              void api.openTab(`view-source:${url}`);
+            }
+            break;
           }
-          break;
+          case "back":
+            void api.goBack(state.activeTabId);
+            break;
+          case "forward":
+            void api.goForward(state.activeTabId);
+            break;
         }
-        case "back":
-          void api.goBack(state.activeTabId);
-          break;
-        case "forward":
-          void api.goForward(state.activeTabId);
-          break;
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      // The PathScale Input delegates its field handler. Keep submission at
-      // the shell boundary too, where Blitz already delivers the key reliably
-      // for the browser shortcuts. This also makes DOM-control and physical
-      // keyboard input take the same route.
-      if (event.key === "Enter" || event.code === "Enter") {
-        const target = event.target;
-        if (target instanceof HTMLInputElement && target.id === "chuzz-address-bar") {
-          if (typeof event.preventDefault === "function") event.preventDefault();
-          void api.navigate(state.activeTabId, target.value);
-          return;
+      };
+      const onKeyDown = (event: KeyboardEvent) => {
+        // The PathScale Input delegates its field handler. Keep submission at
+        // the shell boundary too, where Blitz already delivers the key reliably
+        // for the browser shortcuts. This also makes DOM-control and physical
+        // keyboard input take the same route.
+        if (event.key === "Enter" || event.code === "Enter") {
+          const target = event.target;
+          if (target instanceof HTMLInputElement && target.id === "chuzz-address-bar") {
+            if (typeof event.preventDefault === "function") event.preventDefault();
+            void api.navigate(state.activeTabId, target.value);
+            return;
+          }
         }
-      }
-      const shortcut = resolveBrowserShortcut(event);
-      if (!shortcut) return;
-      if (typeof event.preventDefault === "function") event.preventDefault();
-      if (typeof event.stopPropagation === "function") event.stopPropagation();
-      runShortcut(shortcut);
-    };
-    window.addEventListener("keydown", onKeyDown, true);
+        const shortcut = resolveBrowserShortcut(event);
+        if (!shortcut) return;
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        runShortcut(shortcut);
+      };
+      window.addEventListener("keydown", onKeyDown, true);
 
-    // The macOS menu item runs the keystroke's action rather than its own, so
-    // the two cannot drift. Tracked like every other listener: registration is
-    // async, and an unmount mid-flight would otherwise leave it holding this
-    // owner.
-    track(api.on("menu-view-source", () => runShortcut("view-source")));
+      // The macOS menu item runs the keystroke's action rather than its own, so
+      // the two cannot drift. Tracked like every other listener: registration is
+      // async, and an unmount mid-flight would otherwise leave it holding this
+      // owner.
+      track(api.on("menu-view-source", () => runShortcut("view-source")));
 
-    onCleanup(() => {
-      disposed = true;
-      window.removeEventListener("keydown", onKeyDown, true);
-      for (const unlisten of unlisteners) unlisten();
-    });
-  });
+      onCleanup(() => {
+        disposed = true;
+        window.removeEventListener("keydown", onKeyDown, true);
+        for (const unlisten of unlisteners) unlisten();
+      });
+    },
+  );
 
   const activeTab = (): Tab | undefined => state.tabs.find((tab) => tab.id === state.activeTabId);
 
@@ -214,7 +260,9 @@ function createBrowserStore() {
       // The panel is window-local UI. Apply it immediately, then persist the
       // same state through Rust. Waiting for the event round trip made the
       // handle appear dead whenever event delivery lagged or was unavailable.
-      setState("panel", "collapsed", collapsed);
+      setState((draft) => {
+        draft.panel.collapsed = collapsed;
+      });
       void api.setPanelCollapsed(collapsed);
     },
     toggleSection: (section: keyof PanelSections) => void api.toggleSection(section),
@@ -231,7 +279,7 @@ export function BrowserProvider(props: ParentProps) {
   // rather than under this component, and anything it registered in
   // `onMount`/`onCleanup` would belong to the wrong owner.
   const store = createBrowserStore();
-  return <BrowserContext.Provider value={store}>{props.children}</BrowserContext.Provider>;
+  return <BrowserContext value={store}>{props.children}</BrowserContext>;
 }
 
 export function useBrowser(): BrowserStore {

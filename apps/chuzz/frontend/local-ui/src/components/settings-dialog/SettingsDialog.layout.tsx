@@ -1,5 +1,5 @@
 import { Button, Dialog, Text } from "@pathscale/ui";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import type { Layout } from "solid-layouts";
 import { settingsDialog } from "./SettingsDialog.recipe";
 
@@ -40,7 +40,7 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
             <Button
               variant={local.mode === "dark" ? "solid" : "outline"}
               size="sm"
-              aria-pressed={local.mode === "dark"}
+              aria-pressed={local.mode === "dark" ? "true" : "false"}
               onClick={() => local.onModeChange("dark")}
             >
               {local.darkLabel}
@@ -48,7 +48,7 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
             <Button
               variant={local.mode === "light" ? "solid" : "outline"}
               size="sm"
-              aria-pressed={local.mode === "light"}
+              aria-pressed={local.mode === "light" ? "true" : "false"}
               onClick={() => local.onModeChange("light")}
             >
               {local.lightLabel}

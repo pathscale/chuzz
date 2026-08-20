@@ -1,5 +1,5 @@
 import { Button, Flex, Text } from "@pathscale/ui";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import { diagnostics, setDiagnostics } from "~/stores/diagnostics";
 import { t } from "~/stores/i18n";
 
@@ -76,7 +76,7 @@ function Switch(props: {
         <Button
           variant={props.value ? "solid" : "outline"}
           size="sm"
-          aria-pressed={props.value}
+          aria-pressed={props.value ? "true" : "false"}
           state={props.disabled ? "disabled" : undefined}
           onClick={() => props.onPick(true)}
         >
@@ -85,7 +85,7 @@ function Switch(props: {
         <Button
           variant={props.value ? "outline" : "solid"}
           size="sm"
-          aria-pressed={!props.value}
+          aria-pressed={!props.value ? "true" : "false"}
           state={props.disabled ? "disabled" : undefined}
           onClick={() => props.onPick(false)}
         >

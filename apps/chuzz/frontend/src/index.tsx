@@ -1,8 +1,8 @@
 /* @refresh reload */
 import "./index.css";
 import { enablePopmotion } from "@pathscale/ui/motion";
+import { render } from "@solidjs/web";
 import { animate } from "popmotion";
-import { render } from "solid-js/web";
 import { App } from "./App";
 import { syncTheme } from "./stores/prefs";
 

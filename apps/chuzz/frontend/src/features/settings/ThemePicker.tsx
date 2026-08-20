@@ -1,6 +1,7 @@
 import { SurfaceSwatch, SurfaceWheel } from "@chuzz/ui";
 import { Button, ColorSwatch, Flex, Text } from "@pathscale/ui";
-import { createEffect, For, type JSX, Show } from "solid-js";
+import type { JSX } from "@solidjs/web";
+import { createEffect, For, Show } from "solid-js";
 import {
   accentOptions,
   BRIGHTNESS_STOPS,
@@ -283,7 +284,7 @@ function Axis(props: {
               size="sm"
               width="square"
               aria-label={`${props.label} ${props.format(stop, index())}`}
-              aria-pressed={selected(stop)}
+              aria-pressed={selected(stop) ? "true" : "false"}
               onClick={() => props.onPick(stop)}
               style={{ "background-color": props.preview(stop) }}
             >

@@ -1,4 +1,4 @@
-import { createStore } from "solid-js/store";
+import { createRoot, createStore } from "solid-js";
 import { applyTheme, DEFAULT_WASH } from "~/lib/theme";
 import type { ColorMode, ThemeSettings } from "~/types";
 
@@ -43,7 +43,13 @@ function load(): Prefs {
   }
 }
 
-const [prefs, setPrefs] = createStore<Prefs>(load());
+// `createRoot`, because this store outlives any component: it is created when
+// the module is first imported and written by `syncTheme()` before `render()`
+// has run. Solid 2 tracks ownership strictly, and a store created with no owner
+// has nowhere to attach, which surfaced as "cannot convert 'null' or
+// 'undefined' to object" thrown from inside `render` with nothing naming this
+// file. An explicit root is the owner; nothing here is ever disposed.
+const [prefs, setPrefs] = createRoot(() => createStore<Prefs>(load()));
 
 export { prefs };
 
@@ -73,19 +79,25 @@ export function syncTheme(): void {
 }
 
 export function setColorMode(mode: ColorMode): void {
-  setPrefs("colorMode", mode);
+  setPrefs((draft) => {
+    draft.colorMode = mode;
+  });
   syncTheme();
   persist();
 }
 
 export function setTheme<K extends keyof ThemeSettings>(key: K, value: ThemeSettings[K]): void {
-  setPrefs("theme", key, value);
+  setPrefs((draft) => {
+    draft.theme[key] = value;
+  });
   syncTheme();
   persist();
 }
 
 export function resetTheme(): void {
-  setPrefs("theme", { ...DEFAULT_THEME });
+  setPrefs((draft) => {
+    draft.theme = { ...DEFAULT_THEME };
+  });
   syncTheme();
   persist();
 }

@@ -1,5 +1,6 @@
 import { InspectorRow, InspectorSection, SidePanel as Panel } from "@chuzz/ui";
-import { For, type JSX, Show } from "solid-js";
+import type { JSX } from "@solidjs/web";
+import { For, Show } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 import type { InspectorSection as InspectorSectionModel, PanelSections } from "~/types";

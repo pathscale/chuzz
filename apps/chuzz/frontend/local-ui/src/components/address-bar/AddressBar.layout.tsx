@@ -1,5 +1,5 @@
 import { Input } from "@pathscale/ui";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import type { Layout } from "solid-layouts";
 import { addressBar } from "./AddressBar.recipe";
 

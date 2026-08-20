@@ -1,5 +1,5 @@
 import "../../styles.css";
-import type { JSX } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import type { Layout } from "solid-layouts";
 import { appShell } from "./AppShell.recipe";
 
