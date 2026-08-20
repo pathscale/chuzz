@@ -243,31 +243,32 @@ jobs:
         run: |
           TARBALL="$BUNDLE_DIR/Chuzz.app.tar.gz"
           test -f "$TARBALL.sig" || { echo "::error::missing $TARBALL.sig"; exit 1; }
-          python3 - "$VERSION" "$TARBALL.sig" "$CDN_BASE" <<'PY'
-          import json, sys, datetime
-          version, sig_path, base = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(sig_path) as f:
-              signature = f.read().strip()
-          manifest = {
-              "version": version,
-              "pub_date": datetime.datetime.now(datetime.timezone.utc)
-                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "platforms": {
-                  "darwin-aarch64": {
-                      "signature": signature,
-                      # The query string is a cache-buster, and it works because
-                      # this pull zone keys its cache on the full URL including
-                      # the query, so each release advertises a URL no edge has
-                      # ever held. Brew fetches the bare URL and relies on the
-                      # purge.
-                      "url": f"{base}/Chuzz.app.tar.gz?v={version}",
-                  }
-              },
+          # A minisign signature is base64 and the version is a semver string,
+          # so neither can hold a character JSON would need escaped, and this
+          # manifest is interpolation rather than serialisation. Guard that
+          # assumption instead of taking on a parser.
+          SIGNATURE=$(cat "$TARBALL.sig")
+          case $SIGNATURE in *[!A-Za-z0-9+/=]*)
+            echo "::error::signature is not plain base64; refusing to interpolate"; exit 1;; esac
+          case $VERSION in *[!0-9A-Za-z.+-]*)
+            echo "::error::version has unexpected characters; refusing to interpolate"; exit 1;; esac
+
+          # The url query string is a cache-buster, and it works because this
+          # pull zone keys its cache on the full URL including the query, so
+          # each release advertises a URL no edge has ever held. Brew fetches
+          # the bare URL and relies on the purge.
+          cat > latest.json <<JSON
+          {
+            "version": "$VERSION",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "$SIGNATURE",
+                "url": "$CDN_BASE/Chuzz.app.tar.gz?v=$VERSION"
+              }
+            }
           }
-          with open("latest.json", "w") as f:
-              json.dump(manifest, f, indent=2)
-              f.write("\n")
-          PY
+          JSON
           cat latest.json
 
       # Ordering matters and is the whole reason these are separate steps. The
