@@ -17,13 +17,18 @@ export function Toolbar(): JSX.Element {
   const browser = useBrowser();
   const [typed, setTyped] = createSignal("");
 
-  createEffect((previous: string | undefined) => {
-    const url = browser.activeTab()?.url ?? "";
-    if (url !== previous) {
-      setTyped(url === "about:blank" ? "" : url);
-    }
-    return url;
-  });
+  // Solid 2 splits this in two: the compute function tracks, and the effect
+  // function receives its value and the previous one. The single-argument
+  // Solid 1 form throws at runtime, because the missing effect argument is
+  // called as a function. See the note in `stores/browser.tsx`.
+  createEffect(
+    () => browser.activeTab()?.url ?? "",
+    (url, previous) => {
+      if (url !== previous) {
+        setTyped(url === "about:blank" ? "" : url);
+      }
+    },
+  );
 
   return (
     <NavigationBar>
