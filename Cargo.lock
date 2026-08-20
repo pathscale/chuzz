@@ -427,7 +427,8 @@ checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
 [[package]]
 name = "blitz-control-protocol"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=330cbb0963f93f5be85771cabad7fa73117535ab#330cbb0963f93f5be85771cabad7fa73117535ab"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eca443ea23955ca693e482cb00f2051b47c6ca18aad324340aff8c6127eacff"
 dependencies = [
  "endpoint-libs",
  "serde",
@@ -7199,7 +7200,8 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-blitz"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=330cbb0963f93f5be85771cabad7fa73117535ab#330cbb0963f93f5be85771cabad7fa73117535ab"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9faa026183d612fbd9fd0a869ab91932a41226158b4786274ca216c60ab805ad"
 dependencies = [
  "blitz-control-protocol",
  "endpoint-libs",

@@ -25,13 +25,8 @@
   Do not reach for `rev` or `=` either: a git revision cannot be published and
   an exact pin is a range of one, so both split the graph the same way. A git
   `endpoint-libs` alongside the registry copy is precisely how this repository
-  ended up with two of it.
-- **`tauri-runtime-blitz` is the one exception, and it is temporary.** It is
-  still a git dependency with a `rev` because the crate sets `publish = false`
-  and depends on a patched `usvg` for `Tree::intrinsic_dimensions`; crates.io
-  rejects anything with a git dependency. `ps-usvg` is published now, so the
-  path forward is to repoint it there, drop `publish = false`, release, and
-  bring this one to a caret with the rest.
+  ended up with two of it. There are no exceptions left: `tauri-runtime-blitz`
+  was the last git dependency, and it is `^0.1.0` from crates.io like the rest.
 - **Building against a working checkout is opt-in and never edits a tracked
   file.** Put the `[patch]` tables in `.cargo/local-engine.toml`, which is
   gitignored, and reach for them per command:
@@ -42,9 +37,8 @@
 - When you move the engine version, move `tauri-runtime-blitz`'s to match. Both
   resolve a ps-blitz, and two different ones put two engines in the graph, which
   surfaces as missing methods and unrelated `PaintScene` traits rather than as a
-  version error. This is why the exception above is worth closing: a caret on
-  both sides makes the shared range the thing that keeps them equal, instead of
-  a revision someone has to remember to move twice.
+  version error. A caret on both sides makes the shared range the thing that
+  keeps them equal, instead of a revision someone has to remember to move twice.
 - Work on a branch and ship through a pull request. Do not commit to `main`.
 - Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` before delivery.
 
