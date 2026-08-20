@@ -32,15 +32,15 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same crate rather than a second copy. To build against a working checkout,
 # see `scripts/local-engine.sh`; it is opt-in so the default exercises what a
 # release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.3.0-beta.5" }
-blitz-html = { package = "ps-blitz-html", version = "^0.3.0-beta.5" }
-blitz-net = { package = "ps-blitz-net", version = "^0.3.0-beta.5" }
-blitz-script = { package = "ps-blitz-script", version = "^0.3.0-beta.5" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.3.0-beta.5" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.3.0-beta.6" }
+blitz-html = { package = "ps-blitz-html", version = "^0.3.0-beta.6" }
+blitz-net = { package = "ps-blitz-net", version = "^0.3.0-beta.6" }
+blitz-script = { package = "ps-blitz-script", version = "^0.3.0-beta.6" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.3.0-beta.6" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.3.0-beta.5" }
-dioxus-native = { package = "ps-dioxus-native", version = "^0.7.1", default-features = false }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.3.0-beta.6" }
+dioxus-native = { package = "ps-dioxus-native", version = "^0.7.2", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"] }
@@ -75,8 +75,8 @@ anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # every backdrop inside a layer, which is every backdrop on a real page; the
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.16.0", features = ["filters"] }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.3.0-beta.5" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0", features = ["filters"] }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.3.0-beta.6" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -106,7 +106,7 @@ tauri = { version = "=2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "61eaebcf598fa5963d349e919a7faeb41e18a1cd", features = ["diagnostics"] }
+tauri-runtime-blitz = { git = "https://github.com/pathscale/tauri-runtime-blitz.git", rev = "330cbb0963f93f5be85771cabad7fa73117535ab", features = ["diagnostics"] }
 
 [profile.release]
 lto = "thin"

@@ -427,7 +427,7 @@ checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
 [[package]]
 name = "blitz-control-protocol"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=61eaebcf598fa5963d349e919a7faeb41e18a1cd#61eaebcf598fa5963d349e919a7faeb41e18a1cd"
+source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=330cbb0963f93f5be85771cabad7fa73117535ab#330cbb0963f93f5be85771cabad7fa73117535ab"
 dependencies = [
  "endpoint-libs 2.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
@@ -4940,9 +4940,9 @@ dependencies = [
 
 [[package]]
 name = "ps-anyrender-vello"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b52d430f880f9a515c726eac3ab1a796ecf5f242b758893efc9b2f159cea72d"
+checksum = "ddf67f7119ac78ec0ec93c467aa3748ed780a474e16998a3e940c8371f5e047c"
 dependencies = [
  "debug_timer",
  "futures-channel",
@@ -4950,27 +4950,27 @@ dependencies = [
  "peniko",
  "pollster",
  "ps-anyrender",
+ "ps-vello",
  "ps-wgpu-context",
  "rustc-hash 2.1.3",
- "vello",
  "wasm-bindgen-futures",
  "wgpu",
 ]
 
 [[package]]
 name = "ps-anyrender-vello-cpu"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0535ad2b287de44f3e4215db589cc308f656e9023c5d5462f726ce23dcbd0fd"
+checksum = "c824cddd4c61f6d98144542b1fdbf455df94c68892db0fbac3fa693fb260019e"
 dependencies = [
  "debug_timer",
- "glifo",
  "kurbo",
  "peniko",
  "pixels_window_renderer",
  "ps-anyrender",
- "vello_common",
- "vello_cpu",
+ "ps-glifo",
+ "ps-vello-common",
+ "ps-vello-cpu",
 ]
 
 [[package]]
@@ -4996,9 +4996,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-debug-control"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8e025562967111b5e257bbbab7d61c145d32a1142ea443c351a27f0c589fd80"
+checksum = "adb949b76f8ab3e9e8b64be0b052ee6e6b816159db8a758ae0cb72e314e3e42f"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -5007,9 +5007,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f5565bf91b5b108bf6643e69895f3ebd16274cd107f32cbc0e3ba1f6f762900"
+checksum = "39e6b8ff7695ee4136693ad9d8e481eb6d7c32a79d8198dec8206968908453b9"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5053,9 +5053,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom-api"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c89717f4c253008434fe0faab39809bcbd7f76f58d5d3e0328d75a97e25ff77"
+checksum = "62e5b9fac50a9f1ac5cb11922bf87d2159b2a92b24bd924ab68e4a43d09214c4"
 dependencies = [
  "markup5ever 0.39.0",
  "ps-blitz-dom",
@@ -5063,9 +5063,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-html"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dabaaff5a82fb9f1b6ea1afb30ddde1154826385e3a5128f2890a7131ec4a65"
+checksum = "8fe6d14c36a54614166ebf9177fa92148070fd0af22b1b1fddc7e6b0680ed0d5"
 dependencies = [
  "html5ever 0.39.0",
  "ps-blitz-dom",
@@ -5075,9 +5075,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-net"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76f253370a9289ec81e898972a835c65977c361227ea9925a3b8fb4ee8ff8cd2"
+checksum = "2f938d2bf87ad93200369181c690b92ca130f2edaa7fd842d77666c45af6c984"
 dependencies = [
  "data-url",
  "directories",
@@ -5092,9 +5092,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-paint"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99f0c76280303217feedcf02538262aab2a1bcc1cbabac1b1978f10bc5fadaa1"
+checksum = "42789f0e3d07922879392bf42b67e93695e90cbbcbd8f6197df3c72dd236bb47"
 dependencies = [
  "color",
  "euclid",
@@ -5113,18 +5113,18 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-platform-api"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18141f86cad5f71568454f9afa50b0985b179884d4944a4aad0aaede3a8d637f"
+checksum = "6d68d4ab916b39df9ab0294d6ac012a059200fb7ab20b0c8415785a367466701"
 dependencies = [
  "ps-blitz-traits",
 ]
 
 [[package]]
 name = "ps-blitz-script"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ec346c9261d9f6167722447ee402ab705cee1dcfa743779c43ae81a5d0561d1"
+checksum = "103a6b9a8a2d2accee025e54f487a731d16ff4a89c479ef2c2824ef9225f375d"
 dependencies = [
  "base64 0.22.1",
  "data-url",
@@ -5150,9 +5150,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-shell"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f92cb45997bef85dbdbb57700847edc8247e3fb0e2996b515352c3fa2bb5a2c"
+checksum = "08cbcc7c7a28123331620135cda504834c808d089caccc33ef8b5553958a5169"
 dependencies = [
  "accesskit",
  "android-activity",
@@ -5174,9 +5174,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe475f00adaeddb80a27b4aa2ac995e2fd2a19b209476e4172efbef42ecfa5b7"
+checksum = "543d757eec9cc725056b3bcb1f06ad1adedc9600392a25fed593701766eda60e"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.1",
@@ -5191,9 +5191,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-wasm"
-version = "0.3.0-beta.5"
+version = "0.3.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "040ae3c5732656f972d8fc013f846216e920a3c795f89bab99aa9a071d92c507"
+checksum = "ad1fc81467192323d0e58abe5db905c9d5c5f1d0ded811194714df44df6158ce"
 dependencies = [
  "dom-abi",
  "ps-blitz-dom",
@@ -5380,9 +5380,9 @@ checksum = "f2387c1a4325992b45f525d6e940321efef1589962806eef948ad5660388d33d"
 
 [[package]]
 name = "ps-dioxus-native"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef8b34d6129da85a28bd3eed17489bbf9a38adac8c2618518d524af24454648"
+checksum = "0e7f282bf9c9820c51a79f0515aa3f752ec5194cd4a17636cee2ee3b7dee15c1"
 dependencies = [
  "android-activity",
  "cfg-if",
@@ -5420,9 +5420,9 @@ dependencies = [
 
 [[package]]
 name = "ps-dioxus-native-dom"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be26b67d59b288dbe7d561b47d219fb2060a1e48cb04ec1cd1eadc6b8f6066e8"
+checksum = "f97e6867ed11666ea134a9d844cc21ef0e2087e54f9bb6bfec3e4def0ab54996"
 dependencies = [
  "dioxus-core",
  "dioxus-html",
@@ -5434,10 +5434,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "ps-stylo-taffy"
-version = "0.3.0-beta.5"
+name = "ps-glifo"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d95f5fed6805d0bfaf63de2127fffe0c857451d21e537cb5ea1e0d3e2d7a9e5b"
+checksum = "a51d7005df0becdb12516b0190fa8ceedce4ab862f8f9bc85e31038edd1877e1"
+dependencies = [
+ "bytemuck",
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+ "log",
+ "peniko",
+ "ps-vello-common",
+ "skrifa 0.44.0",
+ "smallvec",
+]
+
+[[package]]
+name = "ps-stylo-taffy"
+version = "0.3.0-beta.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "195da035081c62b72c2ff8da00edeb785186a438d04c8724b63ba2dd20857eee"
 dependencies = [
  "ps-taffy",
  "stylo",
@@ -5482,6 +5498,80 @@ dependencies = [
  "unicode-script",
  "unicode-vo",
  "xmlwriter",
+]
+
+[[package]]
+name = "ps-vello"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98671b72f0cf65f7429fdc83175d661181b1f11f3b319e59ce5c8c1c71db09a"
+dependencies = [
+ "bytemuck",
+ "futures-intrusive",
+ "log",
+ "peniko",
+ "png 0.18.1",
+ "ps-vello-encoding",
+ "ps-vello-shaders",
+ "skrifa 0.44.0",
+ "static_assertions",
+ "thiserror 2.0.20",
+ "wgpu",
+]
+
+[[package]]
+name = "ps-vello-common"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f29f5a5b9d29161c7815857f93ea71258705d272f6667bfc8b864eabd7eda2ca"
+dependencies = [
+ "bytemuck",
+ "fearless_simd",
+ "guillotiere",
+ "log",
+ "peniko",
+ "png 0.18.1",
+ "smallvec",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "ps-vello-cpu"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3bcd3285fb3fd178f859fd8ee4bfafaa17f3e575435e3e9fb4354b951c437d1"
+dependencies = [
+ "bytemuck",
+ "hashbrown 0.17.1",
+ "ps-glifo",
+ "ps-vello-common",
+]
+
+[[package]]
+name = "ps-vello-encoding"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01fd171542e9a1272a3e33198a6ce3cf0efece1e5d6db14d6747eae3b7866b98"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "log",
+ "peniko",
+ "skrifa 0.44.0",
+ "smallvec",
+]
+
+[[package]]
+name = "ps-vello-shaders"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6c37f4dae69719d5aa5b13066acca0514b2d1956c6372ce4209ec5175359a3d"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga",
+ "ps-vello-encoding",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -7124,7 +7214,7 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-blitz"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=61eaebcf598fa5963d349e919a7faeb41e18a1cd#61eaebcf598fa5963d349e919a7faeb41e18a1cd"
+source = "git+https://github.com/pathscale/tauri-runtime-blitz.git?rev=330cbb0963f93f5be85771cabad7fa73117535ab#330cbb0963f93f5be85771cabad7fa73117535ab"
 dependencies = [
  "blitz-control-protocol",
  "endpoint-libs 2.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -7905,25 +7995,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
-name = "vello"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "261359dbef879f8110ef7e1c442246c838d33d3d91cb05e0ea9288d432760c9f"
-dependencies = [
- "bytemuck",
- "futures-intrusive",
- "log",
- "peniko",
- "png 0.18.1",
- "skrifa 0.42.1",
- "static_assertions",
- "thiserror 2.0.20",
- "vello_encoding",
- "vello_shaders",
- "wgpu",
-]
-
-[[package]]
 name = "vello_common"
 version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7941,31 +8012,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello_cpu"
-version = "0.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "588691169aed86b5c8fb487266afee01323234e6fd0a3f2aaec0eaa8e4007f23"
-dependencies = [
- "bytemuck",
- "glifo",
- "hashbrown 0.17.1",
- "vello_common",
-]
-
-[[package]]
-name = "vello_encoding"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2346f5f0d7dccb3582fcd397b4a57b43165209f1424e0d76e85dd814db164af7"
-dependencies = [
- "bytemuck",
- "guillotiere",
- "peniko",
- "skrifa 0.42.1",
- "smallvec",
-]
-
-[[package]]
 name = "vello_hybrid"
 version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7979,19 +8025,6 @@ dependencies = [
  "vello_common",
  "vello_sparse_shaders",
  "wgpu",
-]
-
-[[package]]
-name = "vello_shaders"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd38937516fa4b47423d9255bb5e4a65e839ec9d57c38c4af6189ce56bf46b7"
-dependencies = [
- "bytemuck",
- "log",
- "naga",
- "thiserror 2.0.20",
- "vello_encoding",
 ]
 
 [[package]]
