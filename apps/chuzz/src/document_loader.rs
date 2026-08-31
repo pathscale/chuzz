@@ -432,6 +432,60 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       return out;
     };
   }
+  if (typeof globalThis.atob === 'undefined') {
+    // Real base64, both ways, and the largest gap the corpus had not yet
+    // reported: once `String.prototype.substr` above let those scripts run past
+    // their first TypeError, `atob` became the next wall on 4 of the 12 pages
+    // re-captured. A missing global only gets counted once something reaches
+    // it, which is why the fix for one defect is what surfaces the next.
+    var BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    globalThis.atob = function (input) {
+      // Whitespace is allowed anywhere in the input and padding is optional,
+      // which is what a page decoding a header or a data URL relies on.
+      var text = String(input).replace(/[ \t\n\f\r]/g, '').replace(/=+$/, '');
+      if (text.length % 4 === 1) {
+        throw new globalThis.DOMException('invalid base64', 'InvalidCharacterError');
+      }
+      var out = '';
+      var buffer = 0;
+      var bits = 0;
+      for (var index = 0; index < text.length; index++) {
+        var digit = BASE64.indexOf(text.charAt(index));
+        if (digit < 0) {
+          throw new globalThis.DOMException('invalid base64', 'InvalidCharacterError');
+        }
+        buffer = (buffer << 6) | digit;
+        bits += 6;
+        if (bits >= 8) {
+          bits -= 8;
+          out += String.fromCharCode((buffer >> bits) & 0xff);
+          // Masked back down, or the accumulator keeps every group it has seen
+          // and overflows the 32 bits the shift operators work in.
+          buffer &= (1 << bits) - 1;
+        }
+      }
+      return out;
+    };
+    globalThis.btoa = function (input) {
+      var text = String(input);
+      var out = '';
+      for (var index = 0; index < text.length; index += 3) {
+        var first = text.charCodeAt(index);
+        var second = text.charCodeAt(index + 1);
+        var third = text.charCodeAt(index + 2);
+        // btoa is defined over a byte string; anything above 255 is the caller
+        // passing text it should have encoded first, and throwing says so.
+        if (first > 0xff || (second > 0xff) || (third > 0xff)) {
+          throw new globalThis.DOMException('not a byte string', 'InvalidCharacterError');
+        }
+        var chunk = (first << 16) | ((second || 0) << 8) | (third || 0);
+        out += BASE64.charAt((chunk >> 18) & 0x3f) + BASE64.charAt((chunk >> 12) & 0x3f);
+        out += isNaN(second) ? '=' : BASE64.charAt((chunk >> 6) & 0x3f);
+        out += isNaN(third) ? '=' : BASE64.charAt(chunk & 0x3f);
+      }
+      return out;
+    };
+  }
   if (typeof globalThis.DOMException === 'undefined') {
     // Real. A DOMException is a name, a message and a legacy code, and the
     // reason pages reach for it is `error.name === 'AbortError'` rather than
@@ -1012,6 +1066,8 @@ mod tests {
             "Path2D",
             "ShadowRoot",
             "DOMException",
+            "atob",
+            "btoa",
             "top",
             "scrollX",
         ] {
@@ -1149,6 +1205,44 @@ mod tests {
             pump_for(&mut document, "globalThis.__loaded"),
             serde_json::json!(["onload", "listener"]),
             "both handler styles run once the timer fires"
+        );
+    }
+
+    /// Base64 both ways, including the unpadded and whitespaced inputs pages send.
+    ///
+    /// This is the one addition here the corpus did not ask for and measurement
+    /// did: `substr` let four of the twelve re-captured pages run past their
+    /// first TypeError, and `atob` was the wall they hit next.
+    #[test]
+    fn base64_round_trips() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(&mut document, "btoa('any carnal pleasure.')"),
+            serde_json::json!("YW55IGNhcm5hbCBwbGVhc3VyZS4=")
+        );
+        assert_eq!(
+            value(&mut document, "atob('YW55IGNhcm5hbCBwbGVhc3VyZS4=')"),
+            serde_json::json!("any carnal pleasure.")
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "[btoa('a'), btoa('ab'), btoa('abc'), atob('YQ'), atob('YWJj')]"
+            ),
+            serde_json::json!(["YQ==", "YWI=", "YWJj", "a", "abc"]),
+            "every padding length, and an unpadded input decoding anyway"
+        );
+        assert_eq!(
+            value(&mut document, "atob('  YW Jj\\n')"),
+            serde_json::json!("abc"),
+            "whitespace anywhere is stripped rather than rejected"
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () { try { atob('!'); } catch (error) { return error.name; } return 'no throw'; })()"
+            ),
+            serde_json::json!("InvalidCharacterError")
         );
     }
 
