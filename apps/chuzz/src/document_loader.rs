@@ -36,6 +36,14 @@ pub type NetProvider = blitz_net::Provider;
 #[cfg(all(feature = "capture", feature = "javascript"))]
 const CAPTURE_SCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long one `fetch` or `XMLHttpRequest` from the page may take.
+///
+/// Longer than the script deadline, because nothing waits on it: the request is
+/// asynchronous and the pump keeps running. It is bounded anyway so a server
+/// that never answers cannot hold the capture open past its own watchdog.
+#[cfg(all(feature = "capture", feature = "javascript"))]
+const CAPTURE_NETWORK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Web APIs the script engine does not provide.
 ///
 /// Boa is a JavaScript engine, not a browser: it supplies the language, and
@@ -399,6 +407,11 @@ pub async fn load_for_capture(
             CAPTURE_SCRIPT_DEADLINE,
         ));
         document.eval(WEB_API_SHIM);
+        crate::net_bridge::install(
+            &mut document,
+            Arc::clone(&net_provider),
+            CAPTURE_NETWORK_DEADLINE,
+        );
         document.execute_scripts();
         // Pump the script runtime until the page has built its DOM, then keep
         // pumping for a few more passes.

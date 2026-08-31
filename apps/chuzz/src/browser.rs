@@ -288,6 +288,13 @@ struct WasmPage {
 /// would not need to choose.
 const WINDOW_SCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long one `fetch` or `XMLHttpRequest` from the page may take.
+///
+/// Generous compared to the script deadline, and it can afford to be: this one
+/// blocks nothing. The request is asynchronous, the window keeps painting, and
+/// the answer arrives on a later poll.
+const WINDOW_NETWORK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 struct BrowserInner {
     state: Mutex<BrowserState>,
     log: Mutex<DebugLog>,
@@ -576,6 +583,11 @@ impl Browser {
                                     WINDOW_SCRIPT_DEADLINE,
                                 ));
                         page.eval(WEB_API_SHIM);
+                        crate::net_bridge::install(
+                            &mut page,
+                            Arc::clone(&self.0.net),
+                            WINDOW_NETWORK_DEADLINE,
+                        );
                         page.execute_scripts();
                         let title = page
                             .inner()
@@ -597,6 +609,11 @@ impl Browser {
                             WINDOW_SCRIPT_DEADLINE,
                         ));
                     page.eval(WEB_API_SHIM);
+                    crate::net_bridge::install(
+                        &mut page,
+                        Arc::clone(&self.0.net),
+                        WINDOW_NETWORK_DEADLINE,
+                    );
                     page.execute_scripts();
                     let title = page
                         .inner()
