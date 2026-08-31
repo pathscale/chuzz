@@ -32,14 +32,14 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same crate rather than a second copy. To build against a working checkout,
 # see `scripts/local-engine.sh`; it is opt-in so the default exercises what a
 # release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.3.0-beta.6" }
-blitz-html = { package = "ps-blitz-html", version = "^0.3.0-beta.6" }
-blitz-net = { package = "ps-blitz-net", version = "^0.3.0-beta.6" }
-blitz-script = { package = "ps-blitz-script", version = "^0.3.0-beta.6" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.3.0-beta.6" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.4" }
+blitz-html = { package = "ps-blitz-html", version = "^0.4" }
+blitz-net = { package = "ps-blitz-net", version = "^0.4" }
+blitz-script = { package = "ps-blitz-script", version = "^0.4" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.4" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.3.0-beta.6" }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4" }
 dioxus-native = { package = "ps-dioxus-native", version = "^0.7.2", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
@@ -76,7 +76,7 @@ anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0", features = ["filters"] }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.3.0-beta.6" }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.4" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -106,7 +106,7 @@ tauri = { version = "^2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-tauri-runtime-blitz = { version = "^0.1.0", features = ["diagnostics"] }
+tauri-runtime-blitz = { version = "^0.3.2", features = ["diagnostics"] }
 
 [profile.release]
 lto = "thin"
