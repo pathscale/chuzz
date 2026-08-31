@@ -274,6 +274,20 @@ struct WasmPage {
     module: std::path::PathBuf,
 }
 
+/// How long the window waits for a script the page asked for while running.
+///
+/// Shorter than the capture's, and the reason is worth stating plainly:
+/// `ScriptFetcher::fetch` is synchronous and the page's scripts run on the UI
+/// thread, so this blocks the whole window, other tabs included, for as long
+/// as it waits. The alternative is what happened before, which was to drop the
+/// script and render a page missing whatever it was going to build. A short
+/// stall is the better of the two, but only a short one; a page cannot be
+/// allowed to freeze the browser because one of its servers went quiet.
+///
+/// The real answer is an asynchronous script-loading path in the engine, which
+/// would not need to choose.
+const WINDOW_SCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 struct BrowserInner {
     state: Mutex<BrowserState>,
     log: Mutex<DebugLog>,
@@ -556,7 +570,11 @@ impl Browser {
                         // certain the document is exactly what the page said.
                         let mut page =
                             blitz_script::ScriptDocument::from_html(&html, make_config())
-                                .with_fetcher(PrefetchedScripts { scripts });
+                                .with_fetcher(crate::script_fetch::PageScripts::new(
+                                    scripts,
+                                    Arc::clone(&self.0.net),
+                                    WINDOW_SCRIPT_DEADLINE,
+                                ));
                         page.eval(WEB_API_SHIM);
                         page.execute_scripts();
                         let title = page
@@ -573,7 +591,11 @@ impl Browser {
                     wasm: None,
                 } => {
                     let mut page = blitz_script::ScriptDocument::from_html(&html, make_config())
-                        .with_fetcher(PrefetchedScripts { scripts });
+                        .with_fetcher(crate::script_fetch::PageScripts::new(
+                            scripts,
+                            Arc::clone(&self.0.net),
+                            WINDOW_SCRIPT_DEADLINE,
+                        ));
                     page.eval(WEB_API_SHIM);
                     page.execute_scripts();
                     let title = page
@@ -650,20 +672,6 @@ impl NavigationProvider for PageNavigation {
         if let Some(inner) = self.browser.upgrade() {
             Browser(inner).navigate_request(self.tab_id, options.into_request());
         }
-    }
-}
-
-struct PrefetchedScripts {
-    scripts: HashMap<Url, String>,
-}
-
-impl blitz_script::ScriptFetcher for PrefetchedScripts {
-    fn fetch(&self, url: &Url) -> Result<String, blitz_script::FetchError> {
-        self.scripts
-            .get(url)
-            .cloned()
-            .map(Ok)
-            .unwrap_or_else(|| blitz_script::DefaultScriptFetcher.fetch(url))
     }
 }
 

@@ -103,6 +103,7 @@ mod document_loader;
 mod dump;
 mod frontend;
 mod nav;
+mod script_fetch;
 // Shared by `--wasm` in the window and `--capture-wasm` headlessly, so a
 // guest-built page cannot render one way in a tab and another in a capture.
 #[cfg(feature = "wasm")]
