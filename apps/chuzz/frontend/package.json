@@ -29,7 +29,7 @@
   "dependencies": {
     "@chuzz/ui": "workspace:*",
     "@iconify/tailwind4": "^1.0.6",
-    "@pathscale/ui": "^2.11.9",
+    "@pathscale/ui": "^2.11.10",
     "@solidjs/web": "2.0.0-rc.4",
     "@tauri-apps/api": "^2.1.1",
     "clsx": "^2.1.1",
