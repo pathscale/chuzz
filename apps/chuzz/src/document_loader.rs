@@ -207,6 +207,32 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       orientation: { type: 'landscape-primary', angle: 0 }
     };
   }
+  if (typeof globalThis.top === 'undefined') {
+    // Real, and the answer a browser gives: there are no frames here, so a
+    // document is its own top, parent and self. Frame-busting code compares
+    // `window.top !== window.self` and gets `false`, which is correct rather
+    // than convenient.
+    globalThis.top = globalThis;
+    globalThis.parent = globalThis;
+    globalThis.self = globalThis;
+    globalThis.frames = globalThis;
+    globalThis.frameElement = null;
+  }
+  if (typeof globalThis.scrollX === 'undefined') {
+    // The document's scroll offset is the engine's and does not reach here, so
+    // these report the position a page loads at and never move. That is right
+    // at load, which is when the scripts that read them run, and it is the same
+    // choice `IntersectionObserver` above makes: a lazy loader reading `scrollY`
+    // concludes it is at the top of the page and shows what is above the fold.
+    // A page that binds a scroll handler and recomputes from these will not see
+    // the view move. Making them true is engine work.
+    globalThis.scrollX = 0;
+    globalThis.scrollY = 0;
+    globalThis.pageXOffset = 0;
+    globalThis.pageYOffset = 0;
+    globalThis.scrollTo = function () {};
+    globalThis.scrollBy = function () {};
+  }
   if (typeof globalThis.requestIdleCallback === 'undefined') {
     globalThis.requestIdleCallback = function (callback) {
       return setTimeout(function () {
@@ -406,6 +432,34 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       return out;
     };
   }
+  if (typeof globalThis.DOMException === 'undefined') {
+    // Real. A DOMException is a name, a message and a legacy code, and the
+    // reason pages reach for it is `error.name === 'AbortError'` rather than
+    // anything the platform has to provide. Building it here also gives the
+    // abort machinery below the type a browser would actually throw.
+    var LEGACY_CODES = {
+      IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4,
+      InvalidCharacterError: 5, NoModificationAllowedError: 7, NotFoundError: 8,
+      NotSupportedError: 9, InUseAttributeError: 10, InvalidStateError: 11,
+      SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14,
+      InvalidAccessError: 15, TypeMismatchError: 17, SecurityError: 18,
+      NetworkError: 19, AbortError: 20, URLMismatchError: 21,
+      QuotaExceededError: 22, TimeoutError: 23, InvalidNodeTypeError: 24,
+      DataCloneError: 25
+    };
+    globalThis.DOMException = function (message, name) {
+      this.message = message === undefined ? '' : String(message);
+      this.name = name === undefined ? 'Error' : String(name);
+      this.code = LEGACY_CODES[this.name] || 0;
+      // Not inherited from Error, because Boa's Error does not take to being
+      // subclassed from a plain constructor. A stack is attached instead, since
+      // that is the one property a reporter reads off a caught exception.
+      this.stack = this.name + ': ' + this.message;
+    };
+    globalThis.DOMException.prototype.toString = function () {
+      return this.name + ': ' + this.message;
+    };
+  }
   if (typeof globalThis.TextEncoder === 'undefined') {
     // Real UTF-8, including surrogate pairs, because the callers that reach for
     // this are hashing, signing or framing bytes. An encoder that got the
@@ -528,9 +582,7 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     // checks, `throwIfAborted`, and its abort handlers all behave.
     var abortReason = function (reason) {
       if (reason !== undefined) { return reason; }
-      var error = new Error('signal is aborted without reason');
-      error.name = 'AbortError';
-      return error;
+      return new globalThis.DOMException('signal is aborted without reason', 'AbortError');
     };
     var AbortSignal = function () {
       this.aborted = false;
@@ -573,9 +625,7 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     AbortSignal.timeout = function (milliseconds) {
       var signal = new AbortSignal();
       setTimeout(function () {
-        var error = new Error('signal timed out');
-        error.name = 'TimeoutError';
-        fireAbort(signal, error);
+        fireAbort(signal, new globalThis.DOMException('signal timed out', 'TimeoutError'));
       }, milliseconds);
       return signal;
     };
@@ -722,6 +772,24 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   // - `ReadableStream`. A page reaching for it wants incremental delivery, and a
   //   stub can only hand over the whole body at once or nothing. Both read as a
   //   working stream to the code and neither is one.
+  // - The DOM interface constructors the corpus also reported missing:
+  //   `NodeList`, `DocumentFragment`, `CharacterData`, `KeyboardEvent`,
+  //   `HTMLVideoElement`. `ShadowRoot` above is declared precisely because
+  //   nothing in this engine is one, so answering `false` to `instanceof` is
+  //   true. These are the opposite case: the document really does contain node
+  //   lists and fragments, so an empty constructor would answer `false` about
+  //   objects that genuinely are instances, and a branch that meant to take the
+  //   DOM path would silently take the other one. They belong with the engine's
+  //   DOM bindings, next to the prototypes they have to be related to.
+  // - `Intl`. Faking `NumberFormat` and `DateTimeFormat` as `String(value)`
+  //   would keep a script alive at the cost of rendering unformatted numbers
+  //   and raw date strings as though they were the page's own output, and the
+  //   locale data behind a real one is not a shim.
+  // - `ActiveXObject`, reported by one site. No browser has it, and a page that
+  //   reaches for it without a `typeof` guard throws in Chrome too. Absent is
+  //   the correct answer and the report is not a defect of ours.
+  // - `WebAssembly`, `define` and `require` are module and engine support,
+  //   which is not something JavaScript in this string can supply.
 })();
 "#;
 /// Load a page outside the browser, for headless capture.
@@ -943,6 +1011,9 @@ mod tests {
             "Image",
             "Path2D",
             "ShadowRoot",
+            "DOMException",
+            "top",
+            "scrollX",
         ] {
             assert_ne!(
                 value(&mut document, &format!("typeof globalThis.{name}")),
@@ -1081,6 +1152,48 @@ mod tests {
         );
     }
 
+    /// A DOMException carries the name a page branches on, and a legacy code.
+    #[test]
+    fn dom_exception_is_the_type_a_browser_throws() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () {
+                   var error = new DOMException('nope', 'AbortError');
+                   return [error.name, error.message, error.code, String(error)];
+                 })()"
+            ),
+            serde_json::json!(["AbortError", "nope", 20, "AbortError: nope"])
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () {
+                   var controller = new AbortController();
+                   controller.abort();
+                   return controller.signal.reason instanceof DOMException;
+                 })()"
+            ),
+            serde_json::json!(true),
+            "an abort with no reason throws what a browser throws"
+        );
+    }
+
+    /// A document with no frames is its own top, which is the true answer.
+    #[test]
+    fn the_window_is_its_own_top() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(
+                &mut document,
+                "[globalThis.top === globalThis.self, globalThis.parent === globalThis, globalThis.frameElement]"
+            ),
+            serde_json::json!([true, true, serde_json::Value::Null]),
+            "frame-busting code must not conclude it is framed"
+        );
+    }
+
     /// The omissions are deliberate, and this is the record of that.
     ///
     /// Both are on the corpus's missing-globals list, and both are cheap to
@@ -1092,7 +1205,15 @@ mod tests {
     #[test]
     fn the_lying_stubs_are_left_out() {
         let mut document = shimmed();
-        for name in ["getComputedStyle", "ReadableStream"] {
+        for name in [
+            "getComputedStyle",
+            "ReadableStream",
+            "NodeList",
+            "DocumentFragment",
+            "CharacterData",
+            "Intl",
+            "ActiveXObject",
+        ] {
             assert_eq!(
                 value(&mut document, &format!("typeof globalThis.{name}")),
                 serde_json::json!("undefined"),
