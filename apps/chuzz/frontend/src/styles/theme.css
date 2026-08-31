@@ -598,9 +598,9 @@
 }
 
 /*
- * `@theme` emits the app-specific variables outside the DaisyUI theme layer.
- * Keep their light counterparts outside that layer too, or the unlayered dark
- * values win the cascade even when the root carries `data-color-mode=light`.
+ * `@theme` emits the app-specific variables outside the theme layer. Keep their
+ * light counterparts outside that layer too, or the unlayered dark values win
+ * the cascade even when the root carries `data-color-mode=light`.
  */
 [data-theme="24x-dark"][data-color-mode="light"] {
   /* Tailwind's `white/N` utilities are translucent interface surfaces in this app. */
