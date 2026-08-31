@@ -48,6 +48,13 @@ chuzz-inspect: read and drive a running chuzz window
     overlap <node-a> <node-b>  whether two boxes intersect
     raw <json>                 one request, verbatim, answer printed as JSON
 
+Diagnostics (the browser's other tool, `blitz.diagnostics`):
+    console                    subscribe to console output and runtime errors
+    metrics                    renderer metrics
+    settle                     wait until the document is idle
+    dom                        a DOM and layout snapshot
+    diag <json>                one diagnostics request, verbatim
+
 Deep debugging (needs the driver; see --driver):
     screenshot <out.png>       the window as it was painted, not as it is laid out
 
@@ -250,6 +257,54 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     match command {
+        // The diagnostics tool is what reports a page's own JS errors. Without
+        // it a thrown TypeError only reaches stdout, where it is indistinguishable
+        // from the renderer's own logging.
+        "console" => {
+            let request = serde_json::json!({
+                "command": "observe",
+                "params": {"streams": ["console", "runtimeErrors"]}
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&client.diagnostics(request).await?)?
+            );
+        }
+        "metrics" => {
+            let request = serde_json::json!({"command": "metrics"});
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&client.diagnostics(request).await?)?
+            );
+        }
+        "settle" => {
+            let request = serde_json::json!({"command": "waitForIdle"});
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&client.diagnostics(request).await?)?
+            );
+        }
+        "dom" => {
+            let request = serde_json::json!({
+                "command": "snapshot",
+                "params": {
+                    "includeDom": true,
+                    "includeLayout": true,
+                    "includeComputedStyle": false
+                }
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&client.diagnostics(request).await?)?
+            );
+        }
+        "diag" => {
+            let request: Value = serde_json::from_str(argument(1)?)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&client.diagnostics(request).await?)?
+            );
+        }
         "raw" => {
             let request: Value = serde_json::from_str(argument(1)?)?;
             println!(
