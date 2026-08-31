@@ -40,7 +40,7 @@ blitz-traits = { package = "ps-blitz-traits", version = "^0.4" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
 blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4" }
-dioxus-native = { package = "ps-dioxus-native", version = "^0.7.2", default-features = false }
+dioxus-native = { package = "ps-dioxus-native", version = "^0.7.3", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
