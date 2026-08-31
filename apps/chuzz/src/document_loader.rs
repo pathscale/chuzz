@@ -325,6 +325,403 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       };
     };
   }
+  // `String.prototype.substr`. Annex B, and the engine does not have it.
+  //
+  // This one is not on the corpus's missing-globals list and cannot be: the
+  // report counts names a page looked up and did not find, and a missing method
+  // on an existing prototype is a `TypeError: not a callable function` instead,
+  // which is a different error class counted nowhere. It was found by writing
+  // `unescape` in terms of it. Real, not a stub; the negative `start` and
+  // omitted `length` cases are the ones old code actually uses.
+  //
+  // Defined rather than assigned, because a plain assignment is enumerable and
+  // this is a prototype: `for (var key in 'abc')` would start yielding 'substr'
+  // alongside the indices, on every string in the page.
+  if (typeof String.prototype.substr !== 'function') {
+    Object.defineProperty(String.prototype, 'substr', {
+      configurable: true,
+      writable: true,
+      enumerable: false,
+      value: function (start, length) {
+        var text = String(this);
+        var from = start === undefined ? 0 : Math.trunc(Number(start)) || 0;
+        if (from < 0) { from = Math.max(text.length + from, 0); }
+        if (length === undefined) { return text.slice(from); }
+        var count = Math.trunc(Number(length)) || 0;
+        if (count <= 0) { return ''; }
+        return text.slice(from, from + count);
+      }
+    });
+  }
+  // Annex B string escaping. Real implementations, not stubs: both are pure
+  // string transforms with a specification, so there is nothing to fake.
+  if (typeof globalThis.unescape === 'undefined') {
+    globalThis.unescape = function (input) {
+      var text = String(input);
+      var out = '';
+      var index = 0;
+      while (index < text.length) {
+        var character = text.charAt(index);
+        if (character === '%') {
+          var wide = text.slice(index + 2, index + 6);
+          if (text.charAt(index + 1) === 'u' && /^[0-9a-fA-F]{4}$/.test(wide)) {
+            out += String.fromCharCode(parseInt(wide, 16));
+            index += 6;
+            continue;
+          }
+          var narrow = text.slice(index + 1, index + 3);
+          if (/^[0-9a-fA-F]{2}$/.test(narrow)) {
+            out += String.fromCharCode(parseInt(narrow, 16));
+            index += 3;
+            continue;
+          }
+        }
+        out += character;
+        index += 1;
+      }
+      return out;
+    };
+  }
+  if (typeof globalThis.escape === 'undefined') {
+    globalThis.escape = function (input) {
+      var text = String(input);
+      // The unreserved set Annex B names, verbatim.
+      var keep = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_+-./';
+      var out = '';
+      for (var index = 0; index < text.length; index++) {
+        var character = text.charAt(index);
+        if (keep.indexOf(character) >= 0) {
+          out += character;
+          continue;
+        }
+        var code = text.charCodeAt(index);
+        if (code < 256) {
+          out += '%' + (code < 16 ? '0' : '') + code.toString(16).toUpperCase();
+        } else {
+          var hex = code.toString(16).toUpperCase();
+          while (hex.length < 4) { hex = '0' + hex; }
+          out += '%u' + hex;
+        }
+      }
+      return out;
+    };
+  }
+  if (typeof globalThis.TextEncoder === 'undefined') {
+    // Real UTF-8, including surrogate pairs, because the callers that reach for
+    // this are hashing, signing or framing bytes. An encoder that got the
+    // multi-byte cases wrong would hand them a plausible array of the wrong
+    // length, and they would fail somewhere else entirely.
+    globalThis.TextEncoder = function () {};
+    Object.defineProperty(globalThis.TextEncoder.prototype, 'encoding', {
+      configurable: true,
+      get: function () { return 'utf-8'; }
+    });
+    globalThis.TextEncoder.prototype.encode = function (input) {
+      var text = input === undefined ? '' : String(input);
+      var bytes = [];
+      for (var index = 0; index < text.length; index++) {
+        var code = text.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          // A high surrogate followed by its low half is one code point; a lone
+          // one is not representable, and the spec says to emit U+FFFD.
+          var low = index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
+          if (low >= 0xdc00 && low <= 0xdfff) {
+            code = 0x10000 + ((code - 0xd800) * 0x400) + (low - 0xdc00);
+            index += 1;
+          } else {
+            code = 0xfffd;
+          }
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+          code = 0xfffd;
+        }
+        if (code < 0x80) {
+          bytes.push(code);
+        } else if (code < 0x800) {
+          bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        } else if (code < 0x10000) {
+          bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        } else {
+          bytes.push(
+            0xf0 | (code >> 18),
+            0x80 | ((code >> 12) & 0x3f),
+            0x80 | ((code >> 6) & 0x3f),
+            0x80 | (code & 0x3f)
+          );
+        }
+      }
+      return typeof Uint8Array === 'function' ? new Uint8Array(bytes) : bytes;
+    };
+    globalThis.TextEncoder.prototype.encodeInto = function (input, destination) {
+      var text = input === undefined ? '' : String(input);
+      var encoded = this.encode(text);
+      var written = Math.min(encoded.length, destination ? destination.length : 0);
+      for (var index = 0; index < written; index++) { destination[index] = encoded[index]; }
+      // `read` counts the UTF-16 units consumed, and is only exact when the
+      // whole string fitted: stopping part way would need the encoder to encode
+      // incrementally, which this one does not.
+      return { read: written === encoded.length ? text.length : 0, written: written };
+    };
+  }
+  if (typeof globalThis.TextDecoder === 'undefined') {
+    globalThis.TextDecoder = function (label) {
+      this._encoding = label === undefined ? 'utf-8' : String(label).toLowerCase();
+    };
+    Object.defineProperty(globalThis.TextDecoder.prototype, 'encoding', {
+      configurable: true,
+      get: function () { return this._encoding || 'utf-8'; }
+    });
+    globalThis.TextDecoder.prototype.decode = function (input) {
+      if (input === undefined || input === null) { return ''; }
+      var bytes = input;
+      // Accept an ArrayBuffer or any view over one, which is what a caller
+      // holding the result of a slice or a DataView actually has.
+      if (typeof ArrayBuffer === 'function' && input instanceof ArrayBuffer) {
+        bytes = new Uint8Array(input);
+      } else if (typeof Uint8Array === 'function' && !(input instanceof Uint8Array)
+                 && input.buffer && typeof input.byteOffset === 'number') {
+        bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+      }
+      var out = '';
+      var index = 0;
+      var length = bytes.length;
+      while (index < length) {
+        var lead = bytes[index++] & 0xff;
+        var code;
+        var trailing;
+        if (lead < 0x80) { out += String.fromCharCode(lead); continue; }
+        // 0xc0 and 0xc1 are excluded here rather than checked for afterwards:
+        // they can only ever start an overlong two-byte sequence.
+        else if (lead >= 0xc2 && lead <= 0xdf) { code = lead & 0x1f; trailing = 1; }
+        else if (lead >= 0xe0 && lead <= 0xef) { code = lead & 0x0f; trailing = 2; }
+        else if (lead >= 0xf0 && lead <= 0xf4) { code = lead & 0x07; trailing = 3; }
+        else { out += '\uFFFD'; continue; }
+        var complete = true;
+        for (var step = 0; step < trailing; step++) {
+          var next = index < length ? bytes[index] & 0xff : -1;
+          if (next < 0x80 || next > 0xbf) { complete = false; break; }
+          code = (code * 64) + (next & 0x3f);
+          index += 1;
+        }
+        if (!complete
+            || code > 0x10ffff
+            || (code >= 0xd800 && code <= 0xdfff)
+            || (trailing === 2 && code < 0x800)
+            || (trailing === 3 && code < 0x10000)) {
+          out += '\uFFFD';
+          continue;
+        }
+        if (code <= 0xffff) {
+          out += String.fromCharCode(code);
+        } else {
+          code -= 0x10000;
+          out += String.fromCharCode(0xd800 + (code >> 10), 0xdc00 + (code & 0x3ff));
+        }
+      }
+      return out;
+    };
+  }
+  if (typeof globalThis.AbortController === 'undefined') {
+    // Real, not a stub: the whole of AbortController is bookkeeping over a flag
+    // and a listener list, and there is no engine support to wait for. The half
+    // that is missing is on the consumer side, where a request already in
+    // flight cannot be cancelled at the socket. The page's own `signal.aborted`
+    // checks, `throwIfAborted`, and its abort handlers all behave.
+    var abortReason = function (reason) {
+      if (reason !== undefined) { return reason; }
+      var error = new Error('signal is aborted without reason');
+      error.name = 'AbortError';
+      return error;
+    };
+    var AbortSignal = function () {
+      this.aborted = false;
+      this.reason = undefined;
+      this.onabort = null;
+      this._handlers = [];
+    };
+    AbortSignal.prototype.addEventListener = function (type, handler) {
+      if (type === 'abort' && typeof handler === 'function') { this._handlers.push(handler); }
+    };
+    AbortSignal.prototype.removeEventListener = function (type, handler) {
+      if (type !== 'abort') { return; }
+      var at = this._handlers.indexOf(handler);
+      if (at >= 0) { this._handlers.splice(at, 1); }
+    };
+    AbortSignal.prototype.dispatchEvent = function () { return false; };
+    AbortSignal.prototype.throwIfAborted = function () {
+      if (this.aborted) { throw this.reason; }
+    };
+    var fireAbort = function (signal, reason) {
+      if (signal.aborted) { return; }
+      signal.aborted = true;
+      signal.reason = abortReason(reason);
+      var event = { type: 'abort', target: signal };
+      if (typeof signal.onabort === 'function') {
+        try { signal.onabort(event); } catch (error) { /* the page's handler threw */ }
+      }
+      var handlers = signal._handlers.slice();
+      signal._handlers.length = 0;
+      for (var index = 0; index < handlers.length; index++) {
+        try { handlers[index](event); } catch (error) { /* likewise */ }
+      }
+    };
+    AbortSignal.abort = function (reason) {
+      var signal = new AbortSignal();
+      signal.aborted = true;
+      signal.reason = abortReason(reason);
+      return signal;
+    };
+    AbortSignal.timeout = function (milliseconds) {
+      var signal = new AbortSignal();
+      setTimeout(function () {
+        var error = new Error('signal timed out');
+        error.name = 'TimeoutError';
+        fireAbort(signal, error);
+      }, milliseconds);
+      return signal;
+    };
+    AbortSignal.any = function (signals) {
+      var combined = new AbortSignal();
+      var list = signals || [];
+      for (var index = 0; index < list.length; index++) {
+        if (list[index] && list[index].aborted) {
+          combined.aborted = true;
+          combined.reason = list[index].reason;
+          return combined;
+        }
+      }
+      for (var each = 0; each < list.length; each++) {
+        if (!list[each] || typeof list[each].addEventListener !== 'function') { continue; }
+        (function (source) {
+          source.addEventListener('abort', function () { fireAbort(combined, source.reason); });
+        })(list[each]);
+      }
+      return combined;
+    };
+    globalThis.AbortSignal = AbortSignal;
+    globalThis.AbortController = function () { this.signal = new AbortSignal(); };
+    globalThis.AbortController.prototype.abort = function (reason) {
+      fireAbort(this.signal, reason);
+    };
+  }
+  if (typeof globalThis.ResizeObserver === 'undefined') {
+    // A stub, and deliberately silent rather than firing once the way
+    // `IntersectionObserver` above does. The difference is what an invented
+    // entry would have to say: visibility has an answer that is right for most
+    // of a page ("yes"), and a size does not. Nothing here can measure a box
+    // from JavaScript, so the only entry this could deliver carries a zero
+    // `contentRect`, and a grid or carousel that divides by that width computes
+    // zero columns and renders nothing. Never firing leaves such a component on
+    // whatever it renders before it has measured, which is the better of the
+    // two wrong answers. Backing this with real box data is engine work.
+    globalThis.ResizeObserver = function (callback) {
+      this.callback = callback;
+      this.observe = function () {};
+      this.unobserve = function () {};
+      this.disconnect = function () {};
+    };
+  }
+  if (typeof globalThis.Image === 'undefined') {
+    // A stub. It reports every image as loaded without fetching anything, so a
+    // preloader, which is what most constructed `Image`s are, runs its
+    // callback and the page proceeds. Code that waits for the load and then
+    // reads pixels or natural dimensions gets nothing useful, and the zero
+    // dimensions below are left honest rather than invented for that reason.
+    // Images the *document* references are fetched and painted by the engine;
+    // this is only the JavaScript constructor.
+    globalThis.Image = function (width, height) {
+      var image = this;
+      var handlers = [];
+      var source = '';
+      this.width = width === undefined ? 0 : width;
+      this.height = height === undefined ? 0 : height;
+      this.naturalWidth = 0;
+      this.naturalHeight = 0;
+      this.complete = false;
+      this.onload = null;
+      this.onerror = null;
+      this.crossOrigin = null;
+      this.decoding = 'auto';
+      this.loading = 'eager';
+      this.addEventListener = function (type, handler) {
+        if (typeof handler === 'function') { handlers.push([String(type), handler]); }
+      };
+      this.removeEventListener = function (type, handler) {
+        for (var index = handlers.length - 1; index >= 0; index--) {
+          if (handlers[index][0] === String(type) && handlers[index][1] === handler) {
+            handlers.splice(index, 1);
+          }
+        }
+      };
+      this.dispatchEvent = function () { return false; };
+      this.decode = function () { return Promise.resolve(); };
+      Object.defineProperty(this, 'src', {
+        configurable: true,
+        get: function () { return source; },
+        set: function (value) {
+          source = String(value);
+          // Asynchronously, the way a real load completes. Firing during the
+          // assignment would reach a handler the caller attaches on the next
+          // line, which is the ordinary way this is written.
+          setTimeout(function () {
+            image.complete = true;
+            var event = { type: 'load', target: image };
+            if (typeof image.onload === 'function') {
+              try { image.onload(event); } catch (error) { /* the page's handler threw */ }
+            }
+            var listeners = handlers.slice();
+            for (var index = 0; index < listeners.length; index++) {
+              if (listeners[index][0] !== 'load') { continue; }
+              try { listeners[index][1](event); } catch (error) { /* likewise */ }
+            }
+          }, 0);
+        }
+      });
+    };
+  }
+  if (typeof globalThis.Path2D === 'undefined') {
+    // The path is really accumulated; what is missing is anything that reads
+    // it. A page constructing a Path2D is about to hand it to a canvas context,
+    // and that is the part the engine does not have, so this keeps the
+    // construction from throwing and no more.
+    globalThis.Path2D = function (path) {
+      this.commands = path && path.commands ? path.commands.slice() : [];
+      var record = function (name) {
+        return function () {
+          this.commands.push([name].concat(Array.prototype.slice.call(arguments)));
+        };
+      };
+      this.addPath = function (other) {
+        if (other && other.commands) { this.commands = this.commands.concat(other.commands); }
+      };
+      this.closePath = record('closePath');
+      this.moveTo = record('moveTo');
+      this.lineTo = record('lineTo');
+      this.bezierCurveTo = record('bezierCurveTo');
+      this.quadraticCurveTo = record('quadraticCurveTo');
+      this.arc = record('arc');
+      this.arcTo = record('arcTo');
+      this.ellipse = record('ellipse');
+      this.rect = record('rect');
+      this.roundRect = record('roundRect');
+    };
+  }
+  if (typeof globalThis.ShadowRoot === 'undefined') {
+    // Declared so `node instanceof ShadowRoot` and `x.constructor === ShadowRoot`
+    // are answerable, and nothing is an instance of it. That is the truthful
+    // answer here: this engine builds no shadow trees, so every node really is
+    // in the light DOM, and a test that asks gets "no" instead of a ReferenceError.
+    globalThis.ShadowRoot = function () {};
+  }
+  // Deliberately absent, so nobody adds them from the corpus report alone:
+  //
+  // - `getComputedStyle`. A stub answering '' for every property is worse than
+  //   the ReferenceError it replaces. Today the script throws and stops, which
+  //   is visible; with a lying stub it continues, measures nothing, and lays the
+  //   page out wrongly, which looks like an engine bug. It needs real style data
+  //   from the document, which is engine work rather than a shim.
+  // - `ReadableStream`. A page reaching for it wants incremental delivery, and a
+  //   stub can only hand over the whole body at once or nothing. Both read as a
+  //   working stream to the code and neither is one.
 })();
 "#;
 /// Load a page outside the browser, for headless capture.
@@ -477,6 +874,230 @@ impl CapturedDocument {
             #[cfg(feature = "javascript")]
             Self::Script(document) => callback(&mut document.inner_mut()),
             Self::Html(document) => callback(document),
+        }
+    }
+}
+
+/// The shim is a three-hundred-line JavaScript string in a Rust file, and
+/// nothing else in the build parses it. A syntax error in it is not a compile
+/// error: it is a page that renders as if the shim were absent, on every site.
+/// These evaluate it the way a page does and read the answers back.
+#[cfg(all(test, feature = "javascript"))]
+mod tests {
+    use super::WEB_API_SHIM;
+
+    fn shimmed() -> blitz_script::ScriptDocument {
+        let mut document = blitz_script::ScriptDocument::from_html(
+            "<html><body></body></html>",
+            blitz_dom::DocumentConfig::default(),
+        );
+        document.eval(WEB_API_SHIM);
+        document
+    }
+
+    fn value(document: &mut blitz_script::ScriptDocument, script: &str) -> serde_json::Value {
+        document
+            .eval_json(script)
+            .unwrap_or_else(|error| panic!("evaluating `{script}` failed: {error:?}"))
+    }
+
+    /// Run timers until a probe answers, or give up.
+    ///
+    /// `setTimeout` fires from the document's own polling, so a shim that
+    /// defers its callback has nothing to fire it in a test that only evals.
+    fn pump_for(document: &mut blitz_script::ScriptDocument, probe: &str) -> serde_json::Value {
+        use blitz_dom::Document as _;
+        for _ in 0..100 {
+            document.poll(None);
+            let seen = value(document, probe);
+            if !seen.is_null() {
+                return seen;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        serde_json::Value::Null
+    }
+
+    /// The whole string parses and every global it promises is installed.
+    ///
+    /// One bad token anywhere silently costs all of them, so this asserts the
+    /// list rather than each name where it is tested.
+    #[test]
+    fn the_shim_installs_every_global_it_claims() {
+        let mut document = shimmed();
+        for name in [
+            "localStorage",
+            "sessionStorage",
+            "URLSearchParams",
+            "MutationObserver",
+            "IntersectionObserver",
+            "requestIdleCallback",
+            "matchMedia",
+            "unescape",
+            "escape",
+            "TextEncoder",
+            "TextDecoder",
+            "AbortController",
+            "AbortSignal",
+            "ResizeObserver",
+            "Image",
+            "Path2D",
+            "ShadowRoot",
+        ] {
+            assert_ne!(
+                value(&mut document, &format!("typeof globalThis.{name}")),
+                serde_json::json!("undefined"),
+                "the shim should define {name}"
+            );
+        }
+    }
+
+    /// ASCII, two-byte, three-byte and a surrogate pair, both ways.
+    ///
+    /// The callers that reach for `TextEncoder` are hashing or framing bytes, so
+    /// a wrong length is worse than a missing constructor: it fails somewhere
+    /// else, later, as a bad digest.
+    #[test]
+    fn text_encoding_is_real_utf8() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(
+                &mut document,
+                "Array.from(new TextEncoder().encode('A\u{00e9}\u{20ac}\u{1f600}'))"
+            ),
+            serde_json::json!([0x41, 0xc3, 0xa9, 0xe2, 0x82, 0xac, 0xf0, 0x9f, 0x98, 0x80]),
+            "one ASCII, one two-byte, one three-byte and one four-byte code point"
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "new TextDecoder().decode(new TextEncoder().encode('A\u{00e9}\u{20ac}\u{1f600}'))"
+            ),
+            serde_json::json!("A\u{00e9}\u{20ac}\u{1f600}"),
+            "decoding what the encoder produced returns the original string"
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "new TextDecoder().decode(new Uint8Array([0xc0, 0x80, 0x41]))"
+            ),
+            serde_json::json!("\u{fffd}\u{fffd}A"),
+            "an overlong sequence is replaced rather than decoded"
+        );
+    }
+
+    /// Annex B escaping, which is a pure string transform with a specification.
+    #[test]
+    fn escape_and_unescape_round_trip() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(&mut document, "escape('a b/\u{00e9}\u{20ac}')"),
+            serde_json::json!("a%20b/%E9%u20AC"),
+            "space and Latin-1 as %XX, above 255 as %uXXXX, and `/` left alone"
+        );
+        assert_eq!(
+            value(&mut document, "unescape(escape('a b/\u{00e9}\u{20ac}'))"),
+            serde_json::json!("a b/\u{00e9}\u{20ac}")
+        );
+    }
+
+    /// `substr` is Annex B, the engine lacks it, and old code still calls it.
+    ///
+    /// A missing prototype method reads as `TypeError: not a callable function`
+    /// rather than a missing global, which is why no corpus count found it.
+    #[test]
+    fn substr_handles_the_cases_old_code_uses() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(
+                &mut document,
+                "['abcdef'.substr(2), 'abcdef'.substr(1, 3), 'abcdef'.substr(-2), 'abcdef'.substr(1, 0)]"
+            ),
+            serde_json::json!(["cdef", "bcd", "ef", ""])
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () { var keys = []; for (var key in 'ab') { keys.push(key); } return keys; })()"
+            ),
+            serde_json::json!(["0", "1"]),
+            "a prototype addition must not become enumerable on every string"
+        );
+    }
+
+    /// A controller aborts its signal, and the abort is observable three ways.
+    #[test]
+    fn aborting_a_controller_notifies_its_signal() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () {
+                   var controller = new AbortController();
+                   var seen = 0;
+                   controller.signal.addEventListener('abort', function () { seen++; });
+                   controller.signal.onabort = function () { seen++; };
+                   var before = controller.signal.aborted;
+                   controller.abort();
+                   var threw = false;
+                   try { controller.signal.throwIfAborted(); } catch (error) { threw = error.name; }
+                   return [before, controller.signal.aborted, seen, threw];
+                 })()"
+            ),
+            serde_json::json!([false, true, 2, "AbortError"])
+        );
+        assert_eq!(
+            value(&mut document, "AbortSignal.abort('gone').reason"),
+            serde_json::json!("gone"),
+            "an explicit reason is kept rather than replaced with an AbortError"
+        );
+    }
+
+    /// Setting `src` reports a load, asynchronously, to both handler styles.
+    ///
+    /// Asynchronously matters: a preloader attaches `onload` on the line after
+    /// the assignment, and a callback fired during the setter would miss it.
+    #[test]
+    fn an_image_reports_a_load_after_its_src_is_set() {
+        let mut document = shimmed();
+        document.eval(
+            "globalThis.__loaded = null;
+             var image = new Image();
+             var seen = [];
+             image.addEventListener('load', function () { seen.push('listener'); });
+             image.onload = function () { seen.push('onload'); globalThis.__loaded = seen; };
+             globalThis.__during = image.complete;
+             image.src = 'https://example.invalid/pixel.png';",
+        );
+        assert_eq!(
+            value(&mut document, "globalThis.__during"),
+            serde_json::json!(false),
+            "the load must not be reported from inside the setter"
+        );
+        assert_eq!(
+            pump_for(&mut document, "globalThis.__loaded"),
+            serde_json::json!(["onload", "listener"]),
+            "both handler styles run once the timer fires"
+        );
+    }
+
+    /// The omissions are deliberate, and this is the record of that.
+    ///
+    /// Both are on the corpus's missing-globals list, and both are cheap to
+    /// stub and wrong to stub: `getComputedStyle` returning `''` for every
+    /// property turns a visible error into a silently mislaid-out page, and a
+    /// `ReadableStream` that cannot stream reads as one to the code using it.
+    /// A future change that adds either should be a change that backs it with
+    /// real data, and should delete this test rather than edit it.
+    #[test]
+    fn the_lying_stubs_are_left_out() {
+        let mut document = shimmed();
+        for name in ["getComputedStyle", "ReadableStream"] {
+            assert_eq!(
+                value(&mut document, &format!("typeof globalThis.{name}")),
+                serde_json::json!("undefined"),
+                "{name} is deliberately not shimmed"
+            );
         }
     }
 }
