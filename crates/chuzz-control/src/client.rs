@@ -109,7 +109,7 @@ impl Client {
             "params": {"name": AGENT_CONTROL_TOOL, "arguments": request},
         });
         self.stream
-            .send(WireMessage::Text(serde_json::to_string(&envelope)?))
+            .send(WireMessage::Text(serde_json::to_string(&envelope)?.into()))
             .await
             .map_err(|error| format!("could not send: {error}"))?;
 
