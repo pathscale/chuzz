@@ -116,6 +116,10 @@ tauri.workspace = true
 tauri-runtime-blitz.workspace = true
 
 [dev-dependencies]
+# `flavor = "multi_thread"` in the script-fetch test: the blocking fetch takes
+# the `block_in_place` path, which only the multi-threaded runtime has, and
+# that is the path the capture actually uses.
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 # Assembles `fixtures/panel.wat` into a module in-process, so the capture test
 # owns its guest instead of borrowing blitz-wasm's demo, and so it needs no
 # wasm32 target and no nested cargo build. See the header of that file.
