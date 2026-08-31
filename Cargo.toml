@@ -43,7 +43,7 @@ blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4" }
 dioxus-native = { package = "ps-dioxus-native", version = "^0.7.2", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
-endpoint-libs = { version = "^2.1.5", default-features = false, features = ["agent-control"] }
+endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
 image = { version = "^0.25.6", default-features = false }
 # Headless capture: renders a page to a buffer with the CPU rasteriser, so the

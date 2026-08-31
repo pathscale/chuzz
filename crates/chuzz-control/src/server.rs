@@ -185,7 +185,11 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
                 error.to_string().replace('"', "'")
             )
         });
-        if stream.send(WireMessage::Text(encoded)).await.is_err() {
+        if stream
+            .send(WireMessage::Text(encoded.into()))
+            .await
+            .is_err()
+        {
             break;
         }
     }
@@ -245,7 +249,10 @@ mod tests {
             include_attrs: crate::AttrScope::None,
         })
         .unwrap();
-        client.send(WireMessage::Text(request)).await.unwrap();
+        client
+            .send(WireMessage::Text(request.into()))
+            .await
+            .unwrap();
         let WireMessage::Text(reply) = client.recv().await.unwrap().unwrap() else {
             panic!("expected a text reply");
         };
