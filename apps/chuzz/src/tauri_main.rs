@@ -186,10 +186,11 @@ fn main() {
             .enable_all()
             .build()
             .expect("capture needs a tokio runtime");
+        let (width, height) = capture::capture_viewport();
         let result = runtime.block_on(capture::capture(
             &url,
-            1440,
-            960,
+            width,
+            height,
             std::path::Path::new(&output),
         ));
         match result {
