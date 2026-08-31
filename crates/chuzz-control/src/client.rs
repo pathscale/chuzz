@@ -22,6 +22,10 @@ use serde_json::{Value, json};
 use tokio::net::UnixStream;
 
 pub const AGENT_CONTROL_TOOL: &str = "blitz.agent.control";
+/// The other half of the surface: DOM and layout snapshots, renderer metrics,
+/// and the console and runtime-error streams. Advertised by `tools/list` on
+/// any build that can collect them, and unreachable from here until now.
+pub const DIAGNOSTICS_TOOL: &str = "blitz.diagnostics";
 
 /// Where a running browser publishes its socket.
 ///
@@ -100,13 +104,29 @@ impl Client {
     /// A caller that read `content` would get "semantic snapshot with 334
     /// nodes" and nothing to measure.
     pub async fn call(&mut self, request: Value) -> Result<Value, Box<dyn std::error::Error>> {
+        self.call_tool(AGENT_CONTROL_TOOL, request).await
+    }
+
+    /// The same round trip against the diagnostics tool.
+    pub async fn diagnostics(
+        &mut self,
+        request: Value,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        self.call_tool(DIAGNOSTICS_TOOL, request).await
+    }
+
+    async fn call_tool(
+        &mut self,
+        tool: &str,
+        request: Value,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
         let id = self.next_id;
         self.next_id += 1;
         let envelope = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "tools/call",
-            "params": {"name": AGENT_CONTROL_TOOL, "arguments": request},
+            "params": {"name": tool, "arguments": request},
         });
         self.stream
             .send(WireMessage::Text(serde_json::to_string(&envelope)?))
