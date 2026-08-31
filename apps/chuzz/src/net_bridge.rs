@@ -188,7 +188,16 @@ const NETWORK_API_SHIM: &str = r#"
       delete pending[id];
       onResult({ ok: false, error: String(error) });
     }
+    return id;
   }
+
+  // Stop listening for a request's answer.
+  //
+  // The request itself keeps running: the host has already spawned it and there
+  // is no cancellation channel back. What this buys is the observable half of
+  // aborting: the caller's promise settles now, and its handler does not run
+  // later against a component that has been torn down.
+  function forget(id) { delete pending[id]; }
 
   function Response(result) {
     var body = result.body == null ? "" : String(result.body);
@@ -209,14 +218,32 @@ const NETWORK_API_SHIM: &str = r#"
     this.clone = function () { return new Response(result); };
   }
 
+  function abortError(signal) {
+    var reason = signal && signal.reason;
+    if (reason !== undefined && reason !== null) { return reason; }
+    var error = new Error("The operation was aborted");
+    error.name = "AbortError";
+    return error;
+  }
+
   if (typeof globalThis.fetch === "undefined") {
     globalThis.fetch = function (input, init) {
       var url = input && input.url ? input.url : input;
+      var signal = init && init.signal;
       return new Promise(function (resolve, reject) {
-        send(url, init, function (result) {
+        // An already-aborted signal rejects without touching the network, which
+        // is what a caller reusing a controller across renders depends on.
+        if (signal && signal.aborted) { reject(abortError(signal)); return; }
+        var id = send(url, init, function (result) {
           if (result.ok) { resolve(new Response(result)); }
           else { reject(new TypeError("fetch failed: " + (result.error || "unknown"))); }
         });
+        if (signal && typeof signal.addEventListener === "function") {
+          signal.addEventListener("abort", function () {
+            forget(id);
+            reject(abortError(signal));
+          });
+        }
       });
     };
   }
@@ -231,8 +258,11 @@ const NETWORK_API_SHIM: &str = r#"
       this.onreadystatechange = null;
       this.onload = null;
       this.onerror = null;
+      this.onabort = null;
       this._method = "GET";
       this._url = "";
+      // The id of the request in flight, so `abort` has something to drop.
+      this._id = 0;
     };
     XHR.prototype.open = function (method, url) {
       this._method = method || "GET";
@@ -245,10 +275,18 @@ const NETWORK_API_SHIM: &str = r#"
     XHR.prototype.setRequestHeader = function () {};
     XHR.prototype.getAllResponseHeaders = function () { return ""; };
     XHR.prototype.getResponseHeader = function () { return null; };
-    XHR.prototype.abort = function () {};
+    XHR.prototype.abort = function () {
+      if (this._id) { forget(this._id); this._id = 0; }
+      this.readyState = 0;
+      this.status = 0;
+      this.statusText = "";
+      if (this.onabort) { this.onabort(); }
+      if (this.onreadystatechange) { this.onreadystatechange(); }
+    };
     XHR.prototype.send = function (body) {
       var self = this;
-      send(this._url, { method: this._method, body: body }, function (result) {
+      this._id = send(this._url, { method: this._method, body: body }, function (result) {
+        self._id = 0;
         self.readyState = 4;
         if (result.ok) {
           self.status = result.status || 200;
@@ -342,10 +380,15 @@ mod tests {
     }
 
     fn page() -> blitz_script::ScriptDocument {
-        blitz_script::ScriptDocument::from_html(
+        let mut document = blitz_script::ScriptDocument::from_html(
             "<html><body><div id=out></div></body></html>",
             blitz_dom::DocumentConfig::default(),
-        )
+        );
+        // The order `browser.rs` and `load_for_capture` both use: the web-API
+        // shim first, then this one over it. `AbortController` comes from
+        // there, and `fetch` here only honours a signal because it does.
+        document.eval(crate::document_loader::WEB_API_SHIM);
+        document
     }
 
     /// A page that fetches gets its body, through the promise it parked.
@@ -408,5 +451,81 @@ mod tests {
             "the bridge never opened a connection"
         );
         assert_eq!(result, serde_json::json!("hello from the server"));
+    }
+
+    /// A signal that is already aborted rejects without reaching the network.
+    ///
+    /// The URL below is deliberately one nothing can answer: if this ever
+    /// reaches the host the test still fails, because the rejection would carry
+    /// a fetch error rather than the abort reason.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fetch_with_an_aborted_signal_never_leaves() {
+        let mut document = page();
+        install(
+            &mut document,
+            Arc::new(NetProvider::new(None)),
+            Duration::from_secs(10),
+        );
+
+        document.eval(
+            "globalThis.__aborted = null;
+             var controller = new AbortController();
+             controller.abort();
+             fetch('http://127.0.0.1:1/never', { signal: controller.signal })
+               .then(function () { globalThis.__aborted = 'resolved'; })
+               .catch(function (error) { globalThis.__aborted = error.name; });",
+        );
+
+        assert_eq!(
+            pump_for(&mut document, "globalThis.__aborted"),
+            serde_json::json!("AbortError")
+        );
+    }
+
+    /// Aborting a request in flight settles the promise and drops the answer.
+    ///
+    /// The server here does reply, and the host request does finish: what abort
+    /// buys is that the page's `then` never runs against it. That is the half
+    /// of cancellation this can honour, and the assertion is written to fail if
+    /// a later change quietly lets the late delivery through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn aborting_in_flight_drops_the_answer() {
+        let (port, server) = serve_once("late");
+        let mut document = page();
+        install(
+            &mut document,
+            Arc::new(NetProvider::new(None)),
+            Duration::from_secs(10),
+        );
+
+        document.eval(&format!(
+            "globalThis.__settled = null;
+             var controller = new AbortController();
+             fetch('http://127.0.0.1:{port}/slow', {{ signal: controller.signal }})
+               .then(function () {{ globalThis.__settled = 'resolved'; }})
+               .catch(function (error) {{ globalThis.__settled = error.name; }});
+             controller.abort();"
+        ));
+
+        assert_eq!(
+            pump_for(&mut document, "globalThis.__settled"),
+            serde_json::json!("AbortError")
+        );
+        assert!(
+            server.join().expect("the server thread finishes"),
+            "the request was already on its way; abort does not unsend it"
+        );
+        // Pump past the point the reply comes back, and the page must not see it.
+        for _ in 0..50 {
+            document.poll(None);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            document
+                .eval_json("globalThis.__settled")
+                .expect("the probe evaluates"),
+            serde_json::json!("AbortError"),
+            "the dropped delivery must not resolve the aborted promise"
+        );
     }
 }
