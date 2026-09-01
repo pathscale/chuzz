@@ -80,6 +80,49 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   if (typeof globalThis.sessionStorage === 'undefined') {
     globalThis.sessionStorage = MemoryStorage();
   }
+  /*
+   * `performance`, and specifically `getEntriesByType`.
+   *
+   * This is not a nicety. @solidjs/router's scroll restoration ends its setup
+   * with
+   *
+   *     const [nav] = performance.getEntriesByType && performance.getEntriesByType("navigation");
+   *
+   * The guard protects the *call*, not the destructuring: without the method
+   * the whole expression is `undefined`, and destructuring that throws
+   * "Cannot destructure 'undefined' value" before the router renders anything.
+   * Every site built on the router therefore painted a blank page here, which
+   * reads as the application being broken rather than one absent method.
+   *
+   * An empty list is the honest answer: nothing here measures navigation
+   * timing, and a made-up entry would be worse than none. The router treats an
+   * absent entry as a fresh navigation, which is what a first load is.
+   */
+  if (typeof globalThis.performance === 'undefined') {
+    globalThis.performance = {};
+  }
+  if (typeof globalThis.performance.now !== 'function') {
+    var started = Date.now();
+    globalThis.performance.now = function () {
+      return Date.now() - started;
+    };
+  }
+  if (typeof globalThis.performance.getEntriesByType !== 'function') {
+    globalThis.performance.getEntriesByType = function () {
+      return [];
+    };
+  }
+  if (typeof globalThis.performance.getEntriesByName !== 'function') {
+    globalThis.performance.getEntriesByName = function () {
+      return [];
+    };
+  }
+  if (typeof globalThis.performance.mark !== 'function') {
+    globalThis.performance.mark = function () {};
+  }
+  if (typeof globalThis.performance.measure !== 'function') {
+    globalThis.performance.measure = function () {};
+  }
   if (typeof globalThis.URL === 'undefined') {
     // Enough of the URL interface for routing: parse, read the parts, and
     // resolve against a base. Not a WHATWG-conformant implementation.
@@ -194,14 +237,32 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       this.takeRecords = function () { return []; };
     };
   }
+  /*
+   * The viewport size, and the single source of truth for it.
+   *
+   * Everything that reports a size reads these two numbers: `screen`,
+   * `innerWidth`/`innerHeight`, and the dimension branch of `matchMedia`.
+   * They previously pointed at each other — `screen.width` returned
+   * `innerWidth || 1440` while an `innerWidth` shim returned `screen.width`
+   * — which is unbounded recursion the moment both exist, and it took the
+   * whole shim down with it.
+   *
+   * The engine does not expose its real size to script: `innerWidth`,
+   * `outerWidth` and the client dimensions all read 0, and the layout rect
+   * comes back zero-width. So this is a stated default rather than a
+   * measurement, chosen to match the driver's default screenshot size. A page
+   * asking whether it has room for the desktop layout gets a truthful-looking
+   * desktop answer instead of the zero that silently forces every responsive
+   * design into its narrowest branch.
+   */
+  var CHUZZ_VIEWPORT_WIDTH = 1440;
+  var CHUZZ_VIEWPORT_HEIGHT = 960;
   if (typeof globalThis.screen === 'undefined') {
-    // Read from the window rather than invented, so a page branching on screen
-    // size gets an answer consistent with the one it gets from window.innerWidth.
     globalThis.screen = {
-      get width() { return globalThis.innerWidth || 1440; },
-      get height() { return globalThis.innerHeight || 960; },
-      get availWidth() { return globalThis.innerWidth || 1440; },
-      get availHeight() { return globalThis.innerHeight || 960; },
+      get width() { return CHUZZ_VIEWPORT_WIDTH; },
+      get height() { return CHUZZ_VIEWPORT_HEIGHT; },
+      get availWidth() { return CHUZZ_VIEWPORT_WIDTH; },
+      get availHeight() { return CHUZZ_VIEWPORT_HEIGHT; },
       colorDepth: 24,
       pixelDepth: 24,
       orientation: { type: 'landscape-primary', angle: 0 }
@@ -338,11 +399,135 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       }
     });
   }
+  /*
+   * Publish the size on the global, for the scripts that read it there.
+   *
+   * Assignment can silently fail when the engine already owns the name as a
+   * read-only accessor, so each one is attempted independently: one refusal
+   * must not skip the rest, and none of them may throw out of the shim.
+   */
+  (function () {
+    var assign = function (name, value) {
+      try {
+        if (globalThis[name]) { return; }
+        /*
+         * `defineProperty`, not assignment. The engine owns these names as
+         * read-only accessors, so `globalThis.innerWidth = 1440` fails
+         * silently and the page keeps reading 0. Redefining the property is
+         * what actually takes. The value is a plain number, never a getter:
+         * a getter that read another shimmed size recursed without bound.
+         */
+        Object.defineProperty(globalThis, name, {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: value
+        });
+      } catch (error) {}
+    };
+    assign('innerWidth', CHUZZ_VIEWPORT_WIDTH);
+    assign('innerHeight', CHUZZ_VIEWPORT_HEIGHT);
+    assign('outerWidth', CHUZZ_VIEWPORT_WIDTH);
+    assign('outerHeight', CHUZZ_VIEWPORT_HEIGHT);
+  })();
+  /*
+   * `location.origin`, and `location.host` with its port.
+   *
+   * The engine populates href, protocol, hostname, port and pathname, but not
+   * `origin`, and it leaves the port off `host`. Both are load-bearing:
+   * `new URL(path, location.origin)` with an undefined base returns the
+   * relative input unchanged, so the caller passes a bare "/x.json" to fetch,
+   * which rejects with "invalid URL".
+   *
+   * That is not a small gap. A page whose bootstrap resolves its own asset
+   * URLs that way — hiding the body until it finishes, as a FOUC guard —
+   * fails inside an async handler, never unhides, and renders a blank white
+   * page with nothing in the console to say why.
+   */
+  (function () {
+    var loc = globalThis.location;
+    if (!loc) { return; }
+
+    var authority = function () {
+      var host = loc.hostname || '';
+      if (!host) { return ''; }
+      // A port belongs in both `host` and `origin`; only the scheme's default
+      // is omitted, which is what a browser reports.
+      var port = loc.port ? String(loc.port) : '';
+      var isDefault = (loc.protocol === 'http:' && port === '80') ||
+                      (loc.protocol === 'https:' && port === '443');
+      return host + (port && !isDefault ? ':' + port : '');
+    };
+
+    var define = function (name, value) {
+      if (!value) { return; }
+      try {
+        Object.defineProperty(loc, name, {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: value
+        });
+      } catch (error) {}
+    };
+
+    var host = authority();
+    if (!loc.origin && loc.protocol && host) {
+      define('origin', loc.protocol + '//' + host);
+    }
+    // Only widen `host` when the port is genuinely missing from it.
+    if (host && loc.host !== host) {
+      define('host', host);
+    }
+  })();
   if (typeof globalThis.matchMedia === 'undefined') {
+    /*
+     * Answering false to everything is not neutral, it is wrong, and it is
+     * wrong in a way that shows.
+     *
+     * A site that themes itself from `prefers-color-scheme: dark` reads false
+     * and renders its light palette, so every page came out pale against this
+     * browser's dark interface while the same build elsewhere was dark. The
+     * same applies to `no-preference` queries, which are true by definition
+     * when no preference is expressed.
+     *
+     * So: report dark, matching this browser's own interface, and answer the
+     * negative and no-preference forms consistently with it. Anything not
+     * recognised still falls through to false rather than guessing.
+     */
     globalThis.matchMedia = function (query) {
+      var text = String(query).toLowerCase();
+      var matches = false;
+      if (text.indexOf('prefers-color-scheme') !== -1) {
+        matches = text.indexOf('dark') !== -1;
+      } else if (text.indexOf('no-preference') !== -1) {
+        matches = true;
+      } else if (text.indexOf('prefers-reduced-motion') !== -1) {
+        matches = false;
+      } else if (text.indexOf('pointer') !== -1) {
+        matches = text.indexOf('fine') !== -1;
+      } else if (text.indexOf('hover') !== -1) {
+        matches = text.indexOf('none') === -1;
+      } else {
+        /*
+         * Dimension queries, which are the ones a responsive layout actually
+         * asks. Answering false to every one of them puts every site on its
+         * narrowest branch: a desktop window renders the phone layout, and the
+         * page looks broken rather than small.
+         */
+        var dimension = /\((min|max)-(width|height):\s*([0-9.]+)(px|em|rem)?\)/.exec(text);
+        if (dimension) {
+          var bound = parseFloat(dimension[3]);
+          if (dimension[4] === 'em' || dimension[4] === 'rem') bound = bound * 16;
+          var actual = dimension[2] === 'width'
+            ? CHUZZ_VIEWPORT_WIDTH
+            : CHUZZ_VIEWPORT_HEIGHT;
+          matches = dimension[1] === 'min' ? actual >= bound : actual <= bound;
+        }
+      }
       return {
         media: String(query),
-        matches: false,
+        matches: matches,
         addListener: function () {},
         removeListener: function () {},
         addEventListener: function () {},
