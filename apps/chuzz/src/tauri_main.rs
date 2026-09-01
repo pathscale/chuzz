@@ -102,6 +102,7 @@ mod document_loader;
 #[cfg(feature = "capture")]
 mod dump;
 mod frontend;
+mod identity;
 mod nav;
 mod net_bridge;
 mod script_fetch;

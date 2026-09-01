@@ -9,6 +9,16 @@ BLANK or SPARSE is a question for the reference browser, not an answer.
 import sys
 
 
+# A refusal is only a refusal when the *document* was refused.
+#
+# The first version of this matched `HttpStatus { status: N }` anywhere in the
+# log, which also matches a third-party script that came back 403 on a page that
+# loaded perfectly. Two sites with thousands of nodes were scored REFUSED that
+# way, so the refusal count read 23 when it was 21 and the render count read 59
+# when it was 61. Match the `capture failed:` line, which is the document.
+CAPTURE_FAILED = "capture failed: HttpStatus"
+
+
 def verdict(status, nodes, boxed, errs):
     if status != 0:
         return "TIMEOUT"
