@@ -361,7 +361,10 @@ impl Browser {
                 next_seq: 1,
                 entries: VecDeque::new(),
             }),
-            net: Arc::new(NetProvider::new(None)),
+            net: Arc::new(NetProvider::with_user_agent(
+                None,
+                &crate::identity::user_agent_from_env(),
+            )),
             completed: Mutex::new(VecDeque::new()),
             app: Mutex::new(None),
             wasm,
