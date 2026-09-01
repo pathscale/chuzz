@@ -1,8 +1,8 @@
-# Corpus tooling
+# Corpus captures
 
-Support for capturing a large set of real sites through `chuzz-gui --capture`
-and judging what came back. `../render-check.sh` does the capturing; these do
-the reading.
+`../render-check.sh` captures a page headlessly and writes a PNG, a tree dump
+and a log. This directory holds the notes for running that over a large set of
+real sites.
 
 ## Anonymity is the point, not a detail
 
@@ -13,77 +13,42 @@ a commit message, an issue, or a PR.
 
 That is not satisfied by renaming the file. A capture log names every CDN it
 fetched from, and a tree dump carries class names and element ids that identify
-a site as surely as its hostname would. **Scrub before quoting anything.**
+a site as surely as a hostname would. Hostname matching alone is not enough
+either: one leak survived it because the site's name was in a CSS class.
+**Read what you are about to quote, and redact every distinctive word.**
 
-## The tools
+## Reading a run
 
-### `scrub.py` — remove identity from a log or a tree dump
+Label every capture with the opaque id, so nothing under `target/` carries a
+site name:
 
-    python3 scrub.py --identity <token> < s101.log.txt > safe.txt
+    CHUZZ_CAPTURE_SCALE=1 RENDER_CHECK_TIMEOUT=45 \
+      scripts/render-check.sh s001 "$url"
 
-Replaces URLs and hostnames with stable per-file tokens, so two mentions of one
-host stay recognisably the same host and an error about a script is still
-traceable to the request that fetched it.
+Four numbers come back per site: exit status, node count, boxed count, console
+lines. They separate the coarse outcomes and nothing finer. Some traps:
 
-`--identity` takes a word to redact, from the local-only map, and it is not
-optional in practice: hostname matching alone left one leak in a tree dump,
-because the site's name was in a CSS class. Pass every distinctive word.
+- **Read the logs, not the exit code.** `render-check.sh` exits non-zero for
+  both a watchdog kill and a failed load, so a site refused with HTTP 403 looks
+  identical to one that timed out. A whole corpus was once reported as 26
+  timeouts when 21 of them were refusals. The `capture failed:` line in the log
+  is the document-level answer; a bare `HttpStatus` anywhere else may be a
+  third-party script on a page that loaded perfectly.
+- **A refusal is not a rendering fault.** A fifth of a 104-site corpus never
+  reaches the engine at all, so the engine-relevant denominator is not the
+  corpus size.
+- **Clear `target/render-check` between runs, or scope your greps to the ids
+  you just captured.** Labels from earlier runs sit alongside the current ones
+  and silently double any count taken with a glob.
+- **Bucket counts cannot measure an engine change.** Across two runs a day
+  apart, nine sites changed verdict and every one traced to a bot wall
+  flipping, a site serving different content, or an error count crossing a
+  threshold with node counts unchanged. Count specific error signatures
+  instead; those move only when the engine does.
 
-### `classify.py` — a verdict per site
+## No tooling here
 
-    python3 classify.py results.tsv
-
-Reads a TSV of `id, status, nodes, boxed, errors` and buckets each site.
-
-**Read the logs, not the exit code.** `render-check.sh` exits non-zero for both
-a watchdog kill and a failed load, so a run that was refused with HTTP 403 looks
-identical to one that timed out. A whole corpus was once reported as "26
-timeouts" that were really 15x403 plus assorted 401/429/406/404/400 — the
-servers declined to serve the client, and no amount of rendering work would have
-changed it.
-
-### `compare.py` — diff a capture against a reference browser
-
-    python3 compare.py <site-id> <capture>.tree.txt <reference>.json
-
-Both sides describe the page as boxes; the reference is the authority. Elements
-are keyed by `tag#id` where an id exists, else `tag.classes` plus an ordinal.
-
-The reference dump is a `getBoundingClientRect` sweep taken from a real browser.
-Getting it out of that browser is the awkward part and has no committed tool,
-deliberately — see below.
-
-## Reading the numbers without fooling yourself
-
-- **Node count is not monotonic under improvement.** A page that starts working
-  can *drop* from 215 nodes to 28, because it finally cleared its
-  server-rendered markup, began rebuilding, and died at the next missing API.
-  That is the measurement working. Compare trees, not counts.
-- **Check it is the same page.** A WAF interstitial is a 28-node "please wait"
-  that reads as a catastrophic regression.
-- **Viewports must match.** Two engines laying the same page out at different
-  widths disagree on every percentage width and every breakpoint, so a diff
-  becomes noise that reads exactly like a rendering fault. `render-check.sh`
-  honours `CHUZZ_CAPTURE_WIDTH`/`HEIGHT`; it did not always, and a re-capture at
-  another width returned a byte-identical tree, which is how that was found.
-- **`X is not defined` is only half the missing APIs.** A method absent from an
-  existing prototype throws `TypeError: not a callable function`, which names
-  nothing and ranks nowhere. That string covered 48 of 104 sites in the first
-  corpus run and is the largest unexamined surface in it.
-
-## Why there is no collector here
-
-An earlier version shipped a loopback HTTP collector for the reference browser
-to POST its dump to. It is not here because it does not work, and the reasons
-are worth keeping so nobody rebuilds it:
-
-- a collector started from a sandboxed shell binds that sandbox's own loopback,
-  so `curl` from the same shell reaches it and the browser never does;
-- Brave blocks page-to-localhost requests outright — no preflight arrives at the
-  socket at all, and the fetch hangs rather than failing;
-- `navigator.clipboard` refuses on a background tab, "Document is not focused";
-- a Blob download does write, but stalls behind the save dialog unless "ask
-  where to save each file" is off.
-
-Pulling a filtered dump back through the automation tool works and needs no
-infrastructure. Prefer it.
+There were three Python scripts here (a classifier, a tree-vs-reference diff,
+and a log scrubber). They have been removed. The scrubbing the anonymity
+section calls for is currently a manual step, and if that becomes a burden the
+replacement should be Rust, like everything else in this repository.
