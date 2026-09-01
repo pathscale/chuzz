@@ -818,11 +818,11 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   }
   // Deliberately absent, so nobody adds them from the corpus report alone:
   //
-  // - `getComputedStyle`. A stub answering '' for every property is worse than
-  //   the ReferenceError it replaces. Today the script throws and stops, which
-  //   is visible; with a lying stub it continues, measures nothing, and lays the
-  //   page out wrongly, which looks like an engine bug. It needs real style data
-  //   from the document, which is engine work rather than a shim.
+  // - `getComputedStyle` was here, for the right reason: a stub answering ''
+  //   for every property is worse than the ReferenceError, because the script
+  //   continues, measures nothing, and lays the page out wrongly. It is no
+  //   longer shimmed *or* absent — the engine answers it from real computed
+  //   values, which is the outcome this note asked for.
   // - `ReadableStream`. A page reaching for it wants incremental delivery, and a
   //   stub can only hand over the whole body at once or nothing. Both read as a
   //   working stream to the code and neither is one.
@@ -1290,17 +1290,32 @@ mod tests {
 
     /// The omissions are deliberate, and this is the record of that.
     ///
-    /// Both are on the corpus's missing-globals list, and both are cheap to
-    /// stub and wrong to stub: `getComputedStyle` returning `''` for every
-    /// property turns a visible error into a silently mislaid-out page, and a
-    /// `ReadableStream` that cannot stream reads as one to the code using it.
-    /// A future change that adds either should be a change that backs it with
-    /// real data, and should delete this test rather than edit it.
+    /// Each is on the corpus's missing-globals list, cheap to stub and wrong to
+    /// stub: a `ReadableStream` that cannot stream reads as one to the code
+    /// using it, and `NodeList`/`DocumentFragment`/`CharacterData` would answer
+    /// `false` to an `instanceof` about a genuine instance.
+    ///
+    /// `getComputedStyle` was on this list and has left it, in the way the note
+    /// asked for: the engine now answers it from real computed values rather
+    /// than a shim returning `''`. The instruction was to delete this test
+    /// rather than edit it, and editing is the narrower change here, because
+    /// the remaining names are still unbacked and still worth guarding. Delete
+    /// it when the last of them is answered honestly.
     #[test]
     fn the_lying_stubs_are_left_out() {
         let mut document = shimmed();
+        // `getComputedStyle` used to be on this list, and the reasoning was
+        // right: a shim returning `""` for every property is worse than the
+        // ReferenceError, because a page reads `display`, concludes nothing is
+        // hidden, and lays out wrongly with nothing in the log.
+        //
+        // It is off the list because the engine now answers it from real
+        // computed values (ps-blitz `getComputedStyle`, backed by
+        // `computed_style_properties`), which is the case this test was written
+        // to leave room for. Asserting it absent here would fail the moment
+        // that engine is published, and it would be asserting the wrong thing:
+        // the objection was to lying, not to the API.
         for name in [
-            "getComputedStyle",
             "ReadableStream",
             "NodeList",
             "DocumentFragment",

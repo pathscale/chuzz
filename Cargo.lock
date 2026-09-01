@@ -1667,6 +1667,8 @@ dependencies = [
 [[package]]
 name = "dom-abi"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b56cecd6b08e26fa2df2616cfbffd767107c063459b73bddaa3d67344a634e99"
 dependencies = [
  "serde",
 ]
@@ -4888,6 +4890,8 @@ dependencies = [
 [[package]]
 name = "ps-accesskit-xplat"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e040e752d1d2d0cff2dc5cd15b17f8c94f68111fd0f7729636117f0aa220097"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -4990,7 +4994,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d91b6f066345cae5ed0087a7181f64a0768248745ca3ba890572ae858e47909f"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5035,7 +5041,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom-api"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b277220915ca1ef55ce40af3f38c59aaf4ad6688b2647c139f12b91274ec509"
 dependencies = [
  "markup5ever 0.39.0",
  "ps-blitz-dom",
@@ -5043,7 +5051,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-html"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ff957361f27fc8e50df1adf5f0e86fb5f4a437b8855b72e7bfd213ef3e0513a"
 dependencies = [
  "html5ever 0.39.0",
  "ps-blitz-dom",
@@ -5053,7 +5063,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-net"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85e1e1a82385c8e2dbbbdaccbb44f0b041b3e1b02d2787785dc33d42516db57a"
 dependencies = [
  "data-url",
  "directories",
@@ -5068,7 +5080,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-paint"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfbe8e89c98e6eb27582c4de305935ca6740f5b6f86af93f677ace6da092f828"
 dependencies = [
  "color",
  "euclid",
@@ -5087,14 +5101,18 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-platform-api"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "771f0e6c171985e1f68a5992234b86ed2cf8733b1d40866984d70735e025af7c"
 dependencies = [
  "ps-blitz-traits",
 ]
 
 [[package]]
 name = "ps-blitz-script"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d49fd72c86ff39bdab041d38c4d12aa2ba19a95eb7921257de22e76d4c8814aa"
 dependencies = [
  "base64 0.22.1",
  "data-url",
@@ -5120,7 +5138,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-shell"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "333dc7416cb9ba8b0f8192ca3263d944134b43282896c65d46583954b1664b0c"
 dependencies = [
  "accesskit",
  "android-activity",
@@ -5142,7 +5162,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "122caeae14771ab82eb8e9d4aef2325628eadc4293bea485331e953b52c5a9a4"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.1",
@@ -5157,7 +5179,9 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-wasm"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b785d3163b4f33ea99ce713511deb7e950980aa2470e69b1a1a651228667bc37"
 dependencies = [
  "dom-abi",
  "ps-blitz-dom",
@@ -5339,10 +5363,14 @@ dependencies = [
 [[package]]
 name = "ps-debug-timer"
 version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c0eaa81a2d9ec65709681f83c2219c7a3cae185479bc410c76fedc53f04242"
 
 [[package]]
 name = "ps-dioxus-native"
-version = "0.7.2"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b94444ca1c653f5e369ff89bd7c5f417bb270f23e696b5b6c0761c9c0154cab"
 dependencies = [
  "android-activity",
  "cfg-if",
@@ -5380,7 +5408,9 @@ dependencies = [
 
 [[package]]
 name = "ps-dioxus-native-dom"
-version = "0.7.2"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de4635c19931196702aee4c8693129fcf79c5a653863968ef8e29f855ccb9f70"
 dependencies = [
  "dioxus-core",
  "dioxus-html",
@@ -5409,7 +5439,9 @@ dependencies = [
 
 [[package]]
 name = "ps-stylo-taffy"
-version = "0.4.0"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ed8c2b20ed0c5dd10528e5686afbeba30a16776c175605d4aedd474b91cead2"
 dependencies = [
  "ps-taffy",
  "stylo",
@@ -7194,6 +7226,8 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-blitz"
 version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed4a0f8012cf76ca5f145f6d281f14290948cf6b2124fc8fccb37fb7c23a3502"
 dependencies = [
  "base64 0.22.1",
  "blitz-control-protocol",
