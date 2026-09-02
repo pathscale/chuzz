@@ -45,6 +45,29 @@ fn capture_scale() -> f32 {
         .unwrap_or(1.0)
 }
 
+/// CSS pixel size to lay the page out at. Defaults to 1440 by 960.
+///
+/// A capture is only comparable against a reference browser when both laid the
+/// page out at the same width: every responsive breakpoint, every percentage
+/// width and every centred box moves with it. These were exported by
+/// `scripts/render-check.sh` and read by nothing, so a run at another size
+/// silently produced the default and the resulting diff was all viewport and
+/// no signal.
+pub fn capture_viewport() -> (u32, u32) {
+    fn dimension(name: &str, fallback: u32) -> u32 {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .filter(|pixels: &u32| *pixels > 0)
+            .unwrap_or(fallback)
+    }
+
+    (
+        dimension("CHUZZ_CAPTURE_WIDTH", 1440),
+        dimension("CHUZZ_CAPTURE_HEIGHT", 960),
+    )
+}
+
 /// Which colour scheme to render at. Defaults to dark.
 ///
 /// A site that respects `prefers-color-scheme` is a different page in each, so
@@ -78,7 +101,10 @@ pub async fn capture(
 
     // The same loader the browser uses, so a capture cannot silently diverge
     // from what a tab would render.
-    let net_provider = std::sync::Arc::new(blitz_net::Provider::new(None));
+    let net_provider = std::sync::Arc::new(blitz_net::Provider::with_user_agent(
+        None,
+        &crate::identity::user_agent_from_env(),
+    ));
     let mut document = crate::document_loader::load_for_capture(request, net_provider).await?;
 
     // Images are fetched asynchronously and applied through the document's

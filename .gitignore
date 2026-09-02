@@ -21,3 +21,7 @@ apps/chuzz/gen/
 # Engine redirect for local builds. Untracked on purpose: it names paths that
 # exist on one machine. See scripts/local-engine.sh.
 .cargo/local-engine.toml
+
+# Python bytecode from scripts/corpus/
+__pycache__/
+*.pyc

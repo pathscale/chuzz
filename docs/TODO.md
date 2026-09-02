@@ -8,12 +8,17 @@ on `customElements` and is not any more, and 24x.ai is well past "roughly 80 per
 
 Four new findings, each reproduced from a fixture rather than read off a screenshot.
 
-| # | Finding | Evidence |
-|---|---|---|
-| 1 | **`overflow: hidden` does not clip in-flow children.** Absolutely-positioned children clip correctly, including with `border-radius`. A static child larger than its container is not clipped at all — it paints across the page. | fixture with four cases; abs/rounded correct, in-flow square *and* rounded both leak |
-| 2 | **Percentage `translate()` resolves against the wrong box.** `left:50%; top:50%; transform:translate(-50%,-50%)` on a 240x240 child of a 160x100 container must cover it completely; it leaves an uncovered strip. This is *the* centring idiom on the web. | three-case fixture: no-transform correct, `translate(-50%,-50%)` decentred, `+rotate(30deg)` visibly off-centre |
-| 3 | **No `@property`.** `conic-gradient(from var(--ang))` with a registered `<angle>` does not just fail to animate — the gradient escapes its box and the interior fill stops painting. | ring fixture case C |
-| 4 | **No `mask-image` at all** in `blitz-paint` (`mask_image`/`mask_composite`: zero hits). `clip-path` exists. | grep + the MetalBorder work below |
+> **Re-verified 2026-09-01: all four are fixed.** Each was re-run from a fresh
+> fixture against the current engine. Nothing below is still an open defect, and
+> the table is kept only so that nobody re-opens one of them from memory. If you
+> came here for something to work on, skip to *Do next*.
+
+| # | Finding | Evidence when found | Status 2026-09-01 |
+|---|---|---|---|
+| 1 | **`overflow: hidden` does not clip in-flow children.** Absolutely-positioned children clip correctly, including with `border-radius`. A static child larger than its container is not clipped at all — it paints across the page. | fixture with four cases; abs/rounded correct, in-flow square *and* rounded both leak | **Fixed.** Two fixtures: one with positioned parents, one with static parents (the exact shape of the claim). A 400x300 in-flow child of a 200x100 `overflow:hidden` parent clips, with and without `border-radius`, as does `overflow:scroll` and an over-wide text run, which is cut mid-word at the box edge. |
+| 2 | **Percentage `translate()` resolves against the wrong box.** `left:50%; top:50%; transform:translate(-50%,-50%)` on a 240x240 child of a 160x100 container must cover it completely; it leaves an uncovered strip. This is *the* centring idiom on the web. | three-case fixture: no-transform correct, `translate(-50%,-50%)` decentred, `+rotate(30deg)` visibly off-centre | **Fixed.** The 240x240 child now covers the container with no strip showing. With `+rotate(30deg)` the rotated bounding box measures 328x328 centred on the container's centre, which is what `240*(cos30+sin30)` predicts. The no-transform control still leaves the container visible, so the fixture can still detect the failure. |
+| 3 | **No `@property`.** `conic-gradient(from var(--ang))` with a registered `<angle>` does not just fail to animate — the gradient escapes its box and the interior fill stops painting. | ring fixture case C | **Does not reproduce.** A registered `<angle>` with `initial-value: 0deg` resolves to its initial value, and the gradient stays inside its `border-radius: 50%` box with the interior filled — indistinguishable from the `from 45deg` control except for the rotation. Whether a registered property *animates* is a separate question this fixture does not answer. |
+| 4 | **No `mask-image` at all** in `blitz-paint` (`mask_image`/`mask_composite`: zero hits). `clip-path` exists. | grep + the MetalBorder work below | **Implemented.** `blitz-paint/src/render/mask.rs` handles `mask_image`, `mask_composite` and the layer list. |
 
 **Do not conclude "the ring leaked past the clip" from a screenshot.** That was the first
 reading of finding 2 and it was wrong; the clip was fine and the layer was mis-centred.
@@ -179,6 +184,7 @@ real defects that any other site will hit.
 | 2 | **`position: fixed` sizes against the document, not the viewport** (1027 tall against a 960 viewport). Still true after the engine move. | Real, and worse on sites with fixed headers than on 24x.ai. The next engine item to pick up if a site needs it. |
 | 3 | Intrinsic text measures a few percent narrower than a reference browser. Chips: 134 and 143 against 150 and 163. | Cosmetic. The engine move changed it slightly in both directions, so it is font selection rather than a single bug. |
 | 4 | The CPU capture drops 256-aligned tile columns inside a text input. `vello_cpu`, not Blitz; the window is unaffected. | A tooling defect. Known and characterised, so it costs nothing as long as nobody reads a capture's transparent regions as a page defect. |
+| 5 | **A line of purely RTL text is placed at the right edge of an LTR block.** A `<div>` with no `dir` attribute, containing only Arabic, paints its glyph run flush right; the reference browser puts it flush left. Layout is not at fault — the block measures `0,154 1440x38`, correct and full width — so the run is being aligned to a base direction inferred from the content rather than from the CSS `direction` property, which is `ltr`. Reference numbers on identical markup: `textX: 0`, `direction: ltr`, `text-align: start`. | Confirmed against a reference browser, not yet traced to a line in the fork. Deprioritised: it only shows on pages whose text is predominantly RTL. |
 
 **Use `CHUZZ_CAPTURE_SCALE=2` for any capture meant to be compared against the window.**
 The window renders the page as a sub-document at scale 2, and at scale 1 the capture

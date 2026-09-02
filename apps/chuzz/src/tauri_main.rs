@@ -102,7 +102,10 @@ mod document_loader;
 #[cfg(feature = "capture")]
 mod dump;
 mod frontend;
+mod identity;
 mod nav;
+mod net_bridge;
+mod script_fetch;
 // Shared by `--wasm` in the window and `--capture-wasm` headlessly, so a
 // guest-built page cannot render one way in a tab and another in a capture.
 #[cfg(feature = "wasm")]
@@ -186,10 +189,11 @@ fn main() {
             .enable_all()
             .build()
             .expect("capture needs a tokio runtime");
+        let (width, height) = capture::capture_viewport();
         let result = runtime.block_on(capture::capture(
             &url,
-            1440,
-            960,
+            width,
+            height,
             std::path::Path::new(&output),
         ));
         match result {
