@@ -36,9 +36,9 @@ cask "chuzz" do
   #
   # Delete this block once the bundle is notarized: leaving it in would strip a
   # Gatekeeper check that users should get.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Chuzz.app"]
+  postflight_steps do
+    run "/usr/bin/xattr",
+        args: ["-dr", "com.apple.quarantine", "{{appdir}}/Chuzz.app"]
   end
 
   # Chuzz keeps no profile on disk yet: history and cookies live in memory for
