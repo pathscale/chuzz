@@ -9,7 +9,7 @@
     "**/*.css"
   ],
   "peerDependencies": {
-    "@pathscale/ui": "^2.11.9",
+    "@pathscale/ui": "^4.0.0",
     "solid-js": ">=2.0.0-rc.0",
     "solid-layouts": "^0.2.1"
   }

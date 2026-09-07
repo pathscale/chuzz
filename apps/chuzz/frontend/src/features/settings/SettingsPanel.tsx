@@ -13,10 +13,10 @@ import { ThemePicker } from "./ThemePicker";
  * which for now is `localStorage` and the document, not the shell. Persisting
  * through Rust is a later change to `stores/prefs`, not to the picker.
  */
-export function SettingsPanel(props: { isOpen: boolean; onClose: () => void }): JSX.Element {
+export function SettingsPanel(props: { open: boolean; onClose: () => void }): JSX.Element {
   return (
     <SettingsDialog
-      open={props.isOpen}
+      open={props.open}
       onClose={props.onClose}
       title={t("appearance.title")}
       modeLabel={t("appearance.mode")}
