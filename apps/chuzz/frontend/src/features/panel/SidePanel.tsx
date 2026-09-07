@@ -70,9 +70,9 @@ export function SidePanel(): JSX.Element {
           placed directly here would be frozen at whatever it saw on the first
           render, which for the debugging stream is nothing at all. */}
       <div class="side-panel__sections">
-        <DebuggingSection isOpen={panel().sections.debugging} />
+        <DebuggingSection open={panel().sections.debugging} />
         <For each={SECTIONS}>
-          {(section) => <Section section={section} isOpen={panel().sections[section.key]} />}
+          {(section) => <Section section={section} open={panel().sections[section.key]} />}
         </For>
       </div>
     </Panel>
@@ -90,7 +90,7 @@ export function SidePanel(): JSX.Element {
  * the tone follows the worst level in the buffer: a panel that has to be opened
  * and read to find out something failed is a panel that gets ignored.
  */
-function DebuggingSection(props: { isOpen: boolean }): JSX.Element {
+function DebuggingSection(props: { open: boolean }): JSX.Element {
   const browser = useBrowser();
   const entries = () => browser.state.debug;
   const worst = () =>
@@ -104,9 +104,9 @@ function DebuggingSection(props: { isOpen: boolean }): JSX.Element {
       title={t("browser.debugging")}
       count={entries().length}
       tone={worst()}
-      open={props.isOpen}
+      open={props.open}
       onOpenChange={(open) => {
-        if (open !== props.isOpen) browser.toggleSection("debugging");
+        if (open !== props.open) browser.toggleSection("debugging");
       }}
     >
       <div class="debug-log">
@@ -128,7 +128,7 @@ function DebuggingSection(props: { isOpen: boolean }): JSX.Element {
   );
 }
 
-function Section(props: { section: InspectorSectionModel; isOpen: boolean }): JSX.Element {
+function Section(props: { section: InspectorSectionModel; open: boolean }): JSX.Element {
   const browser = useBrowser();
   const toggle = () => browser.toggleSection(props.section.key as keyof PanelSections);
 
@@ -138,9 +138,9 @@ function Section(props: { section: InspectorSectionModel; isOpen: boolean }): JS
       title={props.section.title}
       count={props.section.count}
       tone={props.section.tone}
-      open={props.isOpen}
+      open={props.open}
       onOpenChange={(open) => {
-        if (open !== props.isOpen) toggle();
+        if (open !== props.open) toggle();
       }}
     >
       <For each={props.section.rows}>

@@ -11,6 +11,16 @@ export type AddressBarProps = {
   onInput: JSX.EventHandlerUnion<HTMLInputElement, InputEvent>;
 };
 
+/**
+ * Deliberately unsized.
+ *
+ * `Input` used to default to `md` and now defaults to `sm`, which is 4px
+ * shorter. It makes no difference here: `.navigation-bar .input-control` pins
+ * the field at 32px with its own padding, radius and font size, and outranks
+ * the component's size class on specificity. Passing `size="md"` back would be
+ * naming a value nothing reads, so the height stays where the chrome's own
+ * stylesheet puts it.
+ */
 const AddressBar: Layout<typeof addressBar, AddressBarProps> = () => (
   <Input
     {...slot.root}

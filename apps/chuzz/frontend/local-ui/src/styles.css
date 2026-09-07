@@ -516,7 +516,16 @@
     padding: 0 12px 10px 12px;
   }
 
-  .inspector-body .disclosure__body-inner {
+  /*
+   * `collapsible__body-inner`, not `disclosure__body-inner`.
+   *
+   * `Disclosure` became `Collapsible` and the class names moved with it, so
+   * this selector had been naming an element that no longer exists: the rule
+   * matched nothing and the library's own body padding stayed. The section
+   * beside it, three rules up, was already written against the new name, which
+   * is why only the inner padding was wrong rather than the whole section.
+   */
+  .inspector-body .collapsible__body-inner {
     padding: 0;
   }
 

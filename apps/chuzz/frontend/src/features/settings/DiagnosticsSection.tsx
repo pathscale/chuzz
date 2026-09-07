@@ -32,7 +32,7 @@ export function DiagnosticsSection(): JSX.Element {
         {t("diagnostics.title")}
       </Text>
 
-      <Switch
+      <OnOffRow
         label={t("diagnostics.inspection")}
         hint={diagnostics.locked ? t("diagnostics.locked") : t("diagnostics.inspectionHint")}
         value={diagnostics.inspection}
@@ -46,7 +46,7 @@ export function DiagnosticsSection(): JSX.Element {
        * offering it as independently selectable would be offering a switch
        * that does nothing.
        */}
-      <Switch
+      <OnOffRow
         label={t("diagnostics.profiling")}
         hint={t("diagnostics.profilingHint")}
         value={diagnostics.profiling}
@@ -57,7 +57,22 @@ export function DiagnosticsSection(): JSX.Element {
   );
 }
 
-function Switch(props: {
+/**
+ * Not named `Switch`.
+ *
+ * `@pathscale/ui` exports a `Switch` of its own, and as of 4.0.0 its `onChange`
+ * hands over the new `boolean` rather than the native `Event`; the event is
+ * `onNativeChange` now. A local component wearing the same name, in a file that
+ * imports from that library, is the setup where someone reaches for the import
+ * and gets a control with different callback semantics without anything failing
+ * to typecheck. The name is the only thing that was ambiguous, so the name is
+ * what changes.
+ *
+ * The library's own note on that prop says "Breaking in 3.1". No 3.1 was ever
+ * published: the registry goes 3.0.0 then 4.0.0, and 3.0.0 still has the native
+ * handler. Read the version off the pin, not off that comment.
+ */
+function OnOffRow(props: {
   label: string;
   hint: string;
   value: boolean;
