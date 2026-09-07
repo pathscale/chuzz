@@ -40,7 +40,7 @@ function Shell(): JSX.Element {
         />
         <SidePanel />
       </MainContent>
-      <SettingsPanel isOpen={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+      <SettingsPanel open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
     </AppShell>
   );
 }
