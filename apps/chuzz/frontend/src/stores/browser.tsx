@@ -113,6 +113,7 @@ function createBrowserStore() {
         api.on("tabs-changed", (tabs) =>
           setState((draft) => {
             reconcile(tabs, "id")(draft.tabs);
+            draft.tabs.length = tabs.length;
           }),
         ),
       );
