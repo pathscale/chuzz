@@ -1,0 +1,308 @@
+//! A loopback origin for a built page, so a directory can be served as a site.
+//!
+//! # Why a directory is not enough
+//!
+//! A built single-page application is not a file, it is a site. Its markup
+//! references `/static/js/app.mjs`, absolutely, and its router asks the history
+//! API for `/settings` and expects the same document back. Opened as
+//! `file:///.../index.html` that first reference resolves to the filesystem
+//! root, so the bundle is never fetched and the page renders as an empty mount
+//! point with one line in the log. Measured on support.cafe's dist, which is
+//! two absolute references and nothing else.
+//!
+//! An origin also decides things a page can observe. `localStorage` is keyed by
+//! origin and `file://` has an opaque one, so storage a page writes at startup
+//! and reads back is not obviously the same storage.
+//!
+//! So a directory gets an origin: `127.0.0.1` on a port the kernel picks, for
+//! as long as the host runs. A file or a URL is taken as given, because a
+//! caller naming one of those has already decided how the page is reached.
+//!
+//! # What it is not
+//!
+//! Not a dev server, and deliberately not a general one. It serves `GET` and
+//! `HEAD` for files under one directory, answers an extension-less path with
+//! `index.html` so client routing works, and refuses everything else. It binds
+//! loopback, so it is reachable only from this machine, and it is gone when the
+//! process is.
+
+use std::path::{Component, Path, PathBuf};
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+/// The most a request head may be before it is refused.
+///
+/// A client that never sends the blank line would otherwise be read from until
+/// this process runs out of memory.
+const MAX_HEAD_BYTES: usize = 16 * 1024;
+
+/// Start serving `root` on loopback and return its origin.
+///
+/// The listener is bound before this returns, so the caller can hand the URL
+/// straight to the loader without racing it.
+pub async fn start(root: &Path) -> Result<String, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("could not resolve {}: {error}", root.display()))?;
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|error| format!("could not bind a loopback port: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("could not read the bound port: {error}"))?
+        .port();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let root = root.clone();
+            tokio::spawn(async move {
+                if let Err(error) = answer(stream, &root).await {
+                    eprintln!("chuzz-headless: page server: {error}");
+                }
+            });
+        }
+    });
+
+    Ok(format!("http://127.0.0.1:{port}/"))
+}
+
+async fn answer(mut stream: TcpStream, root: &Path) -> Result<(), String> {
+    let head = read_head(&mut stream).await?;
+    let Some(line) = head.lines().next() else {
+        return respond(&mut stream, 400, "text/plain", b"no request line", false).await;
+    };
+    let mut parts = line.split(' ');
+    let method = parts.next().unwrap_or_default();
+    let target = parts.next().unwrap_or_default();
+    if !matches!(method, "GET" | "HEAD") {
+        return respond(&mut stream, 405, "text/plain", b"method not allowed", false).await;
+    }
+
+    match resolve(root, target) {
+        Some(path) => match std::fs::read(&path) {
+            Ok(body) => {
+                respond(
+                    &mut stream,
+                    200,
+                    content_type(&path),
+                    &body,
+                    method == "HEAD",
+                )
+                .await
+            }
+            Err(error) => {
+                let message = format!("could not read {}: {error}", path.display());
+                respond(&mut stream, 500, "text/plain", message.as_bytes(), false).await
+            }
+        },
+        None => respond(&mut stream, 404, "text/plain", b"not found", false).await,
+    }
+}
+
+async fn read_head(stream: &mut TcpStream) -> Result<String, String> {
+    let mut head = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && !head.ends_with(b"\n\n") {
+        if head.len() >= MAX_HEAD_BYTES {
+            return Err("request head is too long".to_owned());
+        }
+        match stream.read(&mut byte).await {
+            Ok(0) => break,
+            Ok(_) => head.push(byte[0]),
+            Err(error) => return Err(format!("reading the request: {error}")),
+        }
+    }
+    String::from_utf8(head).map_err(|_| "the request head is not UTF-8".to_owned())
+}
+
+/// Which file, if any, answers `target`.
+///
+/// An extension-less path is the client router's, and gets `index.html` so that
+/// `/settings` is the application rather than a 404. A path with an extension
+/// that is not there is a missing asset and is reported as one: answering it
+/// with the document instead is how a broken bundle reference turns into a
+/// page that parses HTML as JavaScript.
+fn resolve(root: &Path, target: &str) -> Option<PathBuf> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let relative = Path::new(path.trim_start_matches('/'));
+    // Nothing that climbs, and nothing absolute: a request is a name under the
+    // root, not a way to name the rest of the disk.
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+
+    let index = root.join("index.html");
+    if relative.as_os_str().is_empty() {
+        return index.is_file().then_some(index);
+    }
+
+    let candidate = root.join(relative);
+    if candidate.is_file() {
+        // Canonicalised and checked, because a symlink inside the directory can
+        // still point out of it.
+        let resolved = candidate.canonicalize().ok()?;
+        return resolved.starts_with(root).then_some(resolved);
+    }
+    if candidate.is_dir() {
+        let nested = candidate.join("index.html");
+        return nested.is_file().then_some(nested);
+    }
+    if relative.extension().is_none() {
+        return index.is_file().then_some(index);
+    }
+    None
+}
+
+/// Enough of a type table for a built page.
+///
+/// A wrong type is not cosmetic: a module served as `text/plain` is refused by
+/// the script fetcher, and a stylesheet served as anything but `text/css` is
+/// parsed as nothing, which reads as a page with no styles rather than a page
+/// with a mistyped response.
+fn content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+    {
+        "html" | "htm" => "text/html; charset=utf-8",
+        // `.mcss` is the extension support.cafe's build emits for a stylesheet.
+        "css" | "mcss" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" | "map" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "wasm" => "application/wasm",
+        "txt" => "text/plain; charset=utf-8",
+        "xml" => "application/xml",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn respond(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    head_only: bool,
+) -> Result<(), String> {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Internal Server Error",
+    };
+    // `Connection: close` rather than keep-alive: one exchange per connection
+    // is all a page load needs from a server that exists for the length of one
+    // process, and it means no idle sockets to time out.
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .await
+        .map_err(|error| format!("writing the response head: {error}"))?;
+    if !head_only {
+        stream
+            .write_all(body)
+            .await
+            .map_err(|error| format!("writing the response body: {error}"))?;
+    }
+    stream
+        .shutdown()
+        .await
+        .map_err(|error| format!("closing the response: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{content_type, resolve};
+
+    fn fixture() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "chuzz-page-server-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("static/js")).expect("create fixture tree");
+        std::fs::write(root.join("index.html"), "<html></html>").expect("write index");
+        std::fs::write(root.join("static/js/app.mjs"), "export {}").expect("write bundle");
+        root.canonicalize().expect("canonicalise fixture")
+    }
+
+    /// The reference that made this module necessary. Under `file://` it
+    /// resolves to the filesystem root and the bundle is never fetched.
+    #[test]
+    fn an_absolute_asset_path_resolves_under_the_root() {
+        let root = fixture();
+        assert_eq!(
+            resolve(&root, "/static/js/app.mjs?v=1.0.0"),
+            Some(root.join("static/js/app.mjs"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A client router owns paths that were never built as files.
+    #[test]
+    fn a_route_falls_back_to_the_document() {
+        let root = fixture();
+        assert_eq!(resolve(&root, "/settings"), Some(root.join("index.html")));
+        assert_eq!(resolve(&root, "/"), Some(root.join("index.html")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A missing asset is a missing asset. Falling back to the document for
+    /// anything with an extension hands a bundle request the HTML, and the
+    /// script engine reports a syntax error in a file that was never a script.
+    #[test]
+    fn a_missing_asset_is_not_answered_with_the_document() {
+        let root = fixture();
+        assert_eq!(resolve(&root, "/static/js/missing.mjs"), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_request_cannot_climb_out_of_the_root() {
+        let root = fixture();
+        assert_eq!(resolve(&root, "/../../etc/passwd"), None);
+        assert_eq!(resolve(&root, "/static/../../outside"), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A module served as anything but JavaScript is refused by the fetcher,
+    /// which reads as a bundle that will not parse rather than one mislabelled.
+    #[test]
+    fn a_module_is_typed_as_javascript() {
+        assert_eq!(
+            content_type(std::path::Path::new("app.mjs")),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            content_type(std::path::Path::new("app.mcss")),
+            "text/css; charset=utf-8"
+        );
+    }
+}

@@ -27,6 +27,10 @@ pub mod frontend;
 pub mod identity;
 pub mod nav;
 pub mod net_bridge;
+// A built site needs an origin before it is a site. Only the headless host
+// reaches for it, but it is not conditional on that mode: what it does is a
+// fact about serving a directory, not about having no window.
+pub mod page_server;
 pub mod script_fetch;
 // Loading a page needs the rasteriser for a visual assertion and the script
 // engine for a page worth asserting about, which is what `capture` and
