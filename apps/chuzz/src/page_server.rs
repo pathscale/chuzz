@@ -205,8 +205,12 @@ fn content_type(path: &Path) -> &'static str {
         .unwrap_or_default()
     {
         "html" | "htm" => "text/html; charset=utf-8",
-        // `.mcss` is the extension support.cafe's build emits for a stylesheet.
-        "css" | "mcss" => "text/css; charset=utf-8",
+        // A stylesheet is served as one whatever the build named the file.
+        // `.mcss` is what support.cafe emits; four sites in the fleet emit
+        // `.scss`, and served as anything else the engine ignores them and
+        // the page renders with no styling at all -- which still passes a
+        // check that only asks whether a control exists.
+        "css" | "mcss" | "scss" | "sass" | "less" => "text/css; charset=utf-8",
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "json" | "map" => "application/json; charset=utf-8",
         "svg" => "image/svg+xml",
@@ -335,6 +339,28 @@ mod tests {
             content_type(std::path::Path::new("app.mcss")),
             "text/css; charset=utf-8"
         );
+    }
+
+    /// A stylesheet named for its source language is still a stylesheet.
+    ///
+    /// Four sites in the fleet emit their built CSS as `app.scss`. Served as
+    /// `application/octet-stream` the engine ignored the link entirely, so
+    /// those pages rendered with no styling at all: every element at the
+    /// body's default 8px margin, every responsive rule inert, the desktop
+    /// and mobile halves of a header both visible at once.
+    ///
+    /// Nothing failed. A check that asks whether a control exists and paints
+    /// gets the same answer from an unstyled page, which is what makes this
+    /// worth a test rather than a fix.
+    #[test]
+    fn a_stylesheet_is_typed_as_css_whatever_the_build_named_it() {
+        for name in ["app.css", "app.mcss", "app.scss", "app.sass", "app.less"] {
+            assert_eq!(
+                content_type(std::path::Path::new(name)),
+                "text/css; charset=utf-8",
+                "{name} is a stylesheet"
+            );
+        }
     }
 
     #[test]
