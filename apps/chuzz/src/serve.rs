@@ -294,6 +294,41 @@ fn settle_response(
 #[derive(Default)]
 struct RequestedNavigation(std::sync::Mutex<Option<Url>>);
 
+/// A clipboard, because a page with no window still has one.
+///
+/// The default `ShellProvider` refuses both directions, which is right for a
+/// provider that has no shell to ask. It is wrong for a page: the usual copy
+/// button is `await navigator.clipboard.writeText(t)` followed by the only
+/// feedback a clipboard write ever has, and a rejected promise skips that line
+/// and leaves an unhandled rejection behind. Under Solid 2 an error that
+/// escapes every boundary halts the scheduler outright, so a headless run of a
+/// page with a copy button is one press away from a frozen application that
+/// still paints.
+///
+/// In memory and per host, which is the honest scope: nothing here reaches the
+/// machine's clipboard, and a check that reads it back is reading what the page
+/// wrote rather than what the operating system holds.
+#[derive(Default)]
+struct HostClipboard(std::sync::Mutex<String>);
+
+impl blitz_traits::shell::ShellProvider for HostClipboard {
+    fn get_clipboard_text(&self) -> Result<String, blitz_traits::shell::ClipboardError> {
+        self.0
+            .lock()
+            .map(|held| held.clone())
+            .map_err(|_| blitz_traits::shell::ClipboardError)
+    }
+
+    fn set_clipboard_text(&self, text: String) -> Result<(), blitz_traits::shell::ClipboardError> {
+        let mut held = self
+            .0
+            .lock()
+            .map_err(|_| blitz_traits::shell::ClipboardError)?;
+        *held = text;
+        Ok(())
+    }
+}
+
 impl blitz_traits::navigation::NavigationProvider for RequestedNavigation {
     fn navigate_to(&self, options: blitz_traits::navigation::NavigationOptions) {
         if let Ok(mut slot) = self.0.lock() {
@@ -440,6 +475,9 @@ pub fn serve(target: &str) -> Result<(), String> {
         &crate::identity::user_agent_from_env(),
     ));
     let navigation = Arc::new(RequestedNavigation::default());
+    // One clipboard for the host, not one per document, so a page that copies
+    // on one route and reads it back on another sees what it wrote.
+    let clipboard = Arc::new(HostClipboard::default());
     let animation_clock = std::time::Instant::now();
 
     let load = |url: Url, carried: Option<&StoredState>| -> Result<Box<ScriptDocument>, String> {
@@ -461,6 +499,9 @@ pub fn serve(target: &str) -> Result<(), String> {
         document
             .inner_mut()
             .set_navigation_provider(Arc::clone(&navigation) as _);
+        document
+            .inner_mut()
+            .set_shell_provider(Arc::clone(&clipboard) as _);
         // The loader already ran and pumped the page's scripts. This settles
         // what the viewport change queued, rather than sleeping for a fixed
         // interval before announcing the socket.
