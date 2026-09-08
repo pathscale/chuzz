@@ -167,6 +167,40 @@ fn settle_immediate(
     Ok(document.inner().paint_damage().generation != before)
 }
 
+/// How long the loop waits for a request before letting the page run.
+///
+/// Short enough that a page which is waiting on a timer or a response is not
+/// noticeably slowed by it, long enough that an idle host is not a spin.
+const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// A bound on one idle turn, so a page that always has work still leaves the
+/// loop able to answer. The next tick picks up where this one stopped.
+const MAX_IDLE_TURNS: u32 = 512;
+
+/// Let the page get on with what it started, while nothing is being asked of it.
+///
+/// Without this the document only advances inside a request. A page whose
+/// bootstrap is a chain of asynchronous steps -- fetch a version, append a
+/// script, wait for its `load`, mount -- gets exactly as far as the last step
+/// that finished before the loader went quiet, and then stops. That is not a
+/// slow page: it is a stopped one, and it reads as a site that renders nothing.
+/// nofilter.io is the case that found it, and it stayed at 23 nodes for as long
+/// as it was left running.
+///
+/// Returns whether the page painted.
+fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> bool {
+    let before = document.inner().paint_damage().generation;
+    let mut turns = 0_u32;
+    while document.poll(None) {
+        turns = turns.saturating_add(1);
+        if turns >= MAX_IDLE_TURNS {
+            break;
+        }
+    }
+    document.inner_mut().resolve(clock.elapsed().as_secs_f64());
+    document.inner().paint_damage().generation != before
+}
+
 fn settle_response(
     document: &mut ScriptDocument,
     clock: &std::time::Instant,
@@ -433,7 +467,17 @@ pub fn serve(target: &str) -> Result<(), String> {
     let mut revision = 0_u64;
     let mut render_revision = 0_u64;
     let mut capture = DocumentCapture::new();
-    while let Ok((request, reply)) = request_rx.recv() {
+    loop {
+        let (request, reply) = match request_rx.recv_timeout(IDLE_TICK) {
+            Ok(pair) => pair,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if tick_document(&mut document, &animation_clock) {
+                    commit_render(&render_events, &mut render_revision);
+                }
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let mut painted = false;
         let response = match request {
             ControlBridgeRequest::Agent(request) => match request {
