@@ -127,6 +127,8 @@ serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
 tauri-runtime-blitz.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 # `flavor = "multi_thread"` in the script-fetch test: the blocking fetch takes

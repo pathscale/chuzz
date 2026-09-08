@@ -502,6 +502,9 @@ pub fn serve(target: &str) -> Result<(), String> {
     let mut revision = 0_u64;
     let mut render_revision = 0_u64;
     let mut capture = DocumentCapture::new();
+    // When the page was last allowed to run. A request resets nothing on its
+    // own, so this is what keeps the guarantee below true under load.
+    let mut last_tick = std::time::Instant::now();
     loop {
         let (request, reply) = match request_rx.recv_timeout(IDLE_TICK) {
             Ok(pair) => pair,
@@ -509,6 +512,7 @@ pub fn serve(target: &str) -> Result<(), String> {
                 if tick_document(&mut document, &animation_clock) {
                     commit_render(&render_events, &mut render_revision);
                 }
+                last_tick = std::time::Instant::now();
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -724,6 +728,28 @@ pub fn serve(target: &str) -> Result<(), String> {
         }
         if reply.send(response).is_err() {
             break;
+        }
+        // The page runs on a schedule, not only when the socket goes quiet.
+        //
+        // `recv_timeout` ticks the document when *no* request arrives, which
+        // is exactly backwards for a harness: a check waiting for an outcome
+        // inspects the tree continuously, the timeout never fires, and the
+        // page it is waiting on never advances. The check then waits out its
+        // whole deadline for something that completes moments after it gives
+        // up. Measured on honey.id, whose sign-in completed three seconds
+        // after a 150-second check declared it had not.
+        //
+        // Anything driven by a host callback rather than by a request lands
+        // here: socket messages, timers, promise continuations.
+        //
+        // After the reply, never before it. Ticking first resolves layout
+        // underneath the request that is about to be answered, and an inspect
+        // then reports a tree whose every box is 0x0.
+        if last_tick.elapsed() >= IDLE_TICK {
+            if tick_document(&mut document, &animation_clock) {
+                commit_render(&render_events, &mut render_revision);
+            }
+            last_tick = std::time::Instant::now();
         }
 
         /*

@@ -32,6 +32,7 @@ pub mod net_bridge;
 // fact about serving a directory, not about having no window.
 pub mod page_server;
 pub mod script_fetch;
+pub mod ws_bridge;
 // Loading a page needs the rasteriser for a visual assertion and the script
 // engine for a page worth asserting about, which is what `capture` and
 // `javascript` carry.
