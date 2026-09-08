@@ -67,6 +67,7 @@ impl Bridge {
     }
 
     fn post(&self, id: u64, payload: serde_json::Value) {
+        crate::serve::verbose(&format!("socket {id} produced {payload}"));
         // A poisoned lock means a panic on the document thread while holding
         // it. The page is already lost; dropping the event beats panicking on
         // top of the first one.
@@ -256,7 +257,7 @@ impl Bridge {
         }
     }
 
-    /// Hand every event since the last poll to the page.
+    /// Hand every event  the last poll to the page.
     pub fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
         let ready = match self.events.lock() {
             Ok(mut queue) => std::mem::take(&mut *queue),
@@ -266,6 +267,7 @@ impl Bridge {
             return false;
         }
         for event in ready {
+            crate::serve::verbose(&format!("socket {} delivering {}", event.id, event.payload));
             // `serde_json` renders a JavaScript-safe literal, so a message
             // carrying quotes cannot become a syntax error in the receiver.
             document.eval(&format!(
