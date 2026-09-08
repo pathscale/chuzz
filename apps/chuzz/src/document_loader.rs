@@ -1103,6 +1103,10 @@ pub async fn load_for_capture(
 ) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
     use blitz_dom::Document as _;
 
+    // Kept before the request is consumed: the page URL is what a relative
+    // `fetch` in this document resolves against.
+    let page_url = request.url.clone();
+
     // `view-source:` is the browser's, and a capture that could not take it was
     // the one address a tab could show and a PNG could not. The scheme is not a
     // fetchable one, so this has to come before the net provider sees it: the
@@ -1175,6 +1179,7 @@ pub async fn load_for_capture(
             &mut document,
             Arc::clone(&net_provider),
             CAPTURE_NETWORK_DEADLINE,
+            Some(page_url.clone()),
         );
         document.execute_scripts();
         // Pump the script runtime until the page has built its DOM, then keep

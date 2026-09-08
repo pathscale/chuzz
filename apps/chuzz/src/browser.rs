@@ -590,6 +590,7 @@ impl Browser {
                             &mut page,
                             Arc::clone(&self.0.net),
                             WINDOW_NETWORK_DEADLINE,
+                            blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
                         );
                         page.execute_scripts();
                         let title = page
@@ -616,6 +617,7 @@ impl Browser {
                         &mut page,
                         Arc::clone(&self.0.net),
                         WINDOW_NETWORK_DEADLINE,
+                        blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
                     );
                     page.execute_scripts();
                     let title = page
