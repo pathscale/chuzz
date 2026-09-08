@@ -17,7 +17,11 @@ inputs:
       The driver's version requirement. A floor rather than "latest": a check
       file can use a field an older driver does not know, and the failure then
       reads as a broken workflow rather than a driver that is too old.
-    default: "^0.6.2"
+
+      0.6.3 is the floor because it is the first that reads `QA_TIMEOUT_SCALE`
+      from the environment. Every site workflow sets it, so an older driver
+      silently runs a shared runner against the strict local latency contract.
+    default: "^0.6.3"
 
 outputs:
   host:
