@@ -459,7 +459,19 @@ pub fn serve(target: &str) -> Result<(), String> {
         Target::Directory(root) => {
             let origin = runtime.block_on(crate::page_server::start(root))?;
             trace(&format!("serving {} at {origin}", root.display()));
-            Url::parse(&origin).map_err(|error| format!("{origin} is not a URL: {error}"))?
+            // A route can be opened directly rather than navigated to.
+            //
+            // A built single-page application has one file and many addresses:
+            // `/spec` and `/designer` are the router's, not the filesystem's,
+            // and the server already answers them with the document so the
+            // router resolves them exactly as a production host does. Without
+            // this the only way to reach such a page was to press whatever
+            // links to it, which makes every check on a deep route depend on
+            // the navigation above it and leaves a route with no link
+            // unreachable altogether.
+            let path = std::env::var("QA_HOST_PATH").unwrap_or_default();
+            let target = format!("{origin}{}", path.trim_start_matches('/'));
+            Url::parse(&target).map_err(|error| format!("{target} is not a URL: {error}"))?
         }
         Target::File { root, page } => {
             let origin = runtime.block_on(crate::page_server::start(root))?;

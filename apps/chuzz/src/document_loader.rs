@@ -530,6 +530,92 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       define('host', host);
     }
   })();
+  (function () {
+    /*
+     * `URL.searchParams`, which the runtime's URL does not implement.
+     *
+     * `new URL(...)` works and `URLSearchParams` works; the getter that joins
+     * them throws "URL.searchParams is not implemented". Reading it is how
+     * every page in this fleet adds a query to a link it is about to open, and
+     * the throw takes the rest of the handler with it -- on
+     * consulting.parcle.ai the line after it is the one that renders the
+     * booking confirmation, so the control appeared to do nothing at all.
+     *
+     * Each read returns a fresh object rather than one the URL keeps, so
+     * `u.searchParams === u.searchParams` is false here where a browser says
+     * true. Mutating one still writes through, which is the property callers
+     * actually use.
+     */
+    if (typeof URL === 'undefined' || typeof URLSearchParams === 'undefined') {
+      return;
+    }
+    var works = false;
+    try {
+      works = new URL('https://example.invalid/').searchParams !== undefined;
+    } catch (error) {
+      works = false;
+    }
+    if (works) {
+      return;
+    }
+    Object.defineProperty(URL.prototype, 'searchParams', {
+      configurable: true,
+      get: function () {
+        var url = this;
+        var params = new URLSearchParams(url.search || '');
+        var writeBack = function () {
+          try {
+            var text = params.toString();
+            url.search = text === '' ? '' : '?' + text;
+          } catch (error) {}
+        };
+        ['append', 'delete', 'set', 'sort'].forEach(function (name) {
+          var original = params[name];
+          if (typeof original !== 'function') {
+            return;
+          }
+          params[name] = function () {
+            var result = original.apply(params, arguments);
+            writeBack();
+            return result;
+          };
+        });
+        return params;
+      },
+    });
+  })();
+  if (typeof globalThis.open === 'undefined') {
+    /*
+     * A window this browser cannot open, reported rather than thrown.
+     *
+     * `window.open(url, '_blank')` is how every "book a call", "view on
+     * GitHub" and "open the docs" control in this fleet leaves the site. With
+     * no such function the call throws, and the throw takes the rest of the
+     * handler with it: the line after it is usually the one that sets the
+     * page's own confirmation, so the control appears to do nothing at all.
+     * Under Solid 2 it is worse than nothing, because an error that escapes
+     * every boundary halts the scheduler and leaves an application that still
+     * paints and no longer responds.
+     *
+     * There is no second window here, so this opens none. It records what was
+     * asked for on `globalThis.__chuzzOpened`, which is how a check can assert
+     * that a control aimed somewhere without the run depending on whoever owns
+     * the destination, and returns null -- which is exactly what a real
+     * browser returns when a popup is blocked, and therefore a value pages
+     * already handle.
+     */
+    globalThis.__chuzzOpened = [];
+    globalThis.open = function (url, target, features) {
+      try {
+        globalThis.__chuzzOpened.push({
+          url: url === undefined ? '' : String(url),
+          target: target === undefined ? '' : String(target),
+          features: features === undefined ? '' : String(features),
+        });
+      } catch (error) {}
+      return null;
+    };
+  }
   if (typeof globalThis.matchMedia === 'undefined') {
     /*
      * Answering false to everything is not neutral, it is wrong, and it is
