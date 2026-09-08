@@ -185,6 +185,35 @@ fn settle_response(
     }
 }
 
+/// Where a link click asks to go.
+///
+/// A plain `<a href>` is not the router's: `@solidjs/router` intercepts only its
+/// own `<A>`, so every `Button href=` and `Link href=` in the fleet is an
+/// ordinary anchor whose activation is the shell's to carry out. The windowed
+/// browser has a shell. Without one the click is dispatched, acknowledged, and
+/// nothing moves, which reads as a dead control rather than a missing
+/// capability -- and it is most of the navigation on every site here.
+///
+/// A slot rather than a queue. Two navigations before the loop looks again
+/// means the second won, exactly as it would in a browser, and a queue would
+/// replay a page the user never waited for.
+#[derive(Default)]
+struct RequestedNavigation(std::sync::Mutex<Option<Url>>);
+
+impl blitz_traits::navigation::NavigationProvider for RequestedNavigation {
+    fn navigate_to(&self, options: blitz_traits::navigation::NavigationOptions) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(options.url);
+        }
+    }
+}
+
+impl RequestedNavigation {
+    fn take(&self) -> Option<Url> {
+        self.0.lock().ok().and_then(|mut slot| slot.take())
+    }
+}
+
 fn commit_render(events: &tokio::sync::watch::Sender<Option<DebugEvent>>, revision: &mut u64) {
     *revision = revision.saturating_add(1);
     events.send_replace(Some(DebugEvent::PaintCommitted {
@@ -227,36 +256,44 @@ pub fn serve(target: &str) -> Result<(), String> {
         Target::Page(url) => url.clone(),
     };
 
-    trace(&format!("loading {url}"));
     let net_provider = Arc::new(blitz_net::Provider::with_user_agent(
         None,
         &crate::identity::user_agent_from_env(),
     ));
-    let loaded = runtime
-        .block_on(crate::document_loader::load_for_capture(
-            blitz_traits::net::Request::get(url.clone()),
-            net_provider,
-        ))
-        .map_err(|error| format!("could not load {url}: {error}"))?;
-    let mut document = loaded
-        .into_script()
-        .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?;
-
-    document
-        .inner_mut()
-        .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Dark));
-    document.inner_mut().set_paint_damage_tracking(true);
-
-    // The loader already ran and pumped the page's scripts. This settles what
-    // the viewport change queued, rather than sleeping for a fixed interval
-    // before announcing the socket.
+    let navigation = Arc::new(RequestedNavigation::default());
     let animation_clock = std::time::Instant::now();
-    if let Err(failure) = settle_immediate(&mut document, &animation_clock, settle_deadline) {
-        trace(&format!(
-            "the page reached the settle deadline before serving: {}",
-            failure.error.message
-        ));
-    }
+
+    let load = |url: Url| -> Result<Box<ScriptDocument>, String> {
+        trace(&format!("loading {url}"));
+        let loaded = runtime
+            .block_on(crate::document_loader::load_for_capture(
+                blitz_traits::net::Request::get(url.clone()),
+                Arc::clone(&net_provider),
+            ))
+            .map_err(|error| format!("could not load {url}: {error}"))?;
+        let mut document = loaded
+            .into_script()
+            .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?;
+        document
+            .inner_mut()
+            .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Dark));
+        document.inner_mut().set_paint_damage_tracking(true);
+        document
+            .inner_mut()
+            .set_navigation_provider(Arc::clone(&navigation) as _);
+        // The loader already ran and pumped the page's scripts. This settles
+        // what the viewport change queued, rather than sleeping for a fixed
+        // interval before announcing the socket.
+        if let Err(failure) = settle_immediate(&mut document, &animation_clock, settle_deadline) {
+            trace(&format!(
+                "the page reached the settle deadline: {}",
+                failure.error.message
+            ));
+        }
+        Ok(document)
+    };
+
+    let mut document = load(url)?;
     trace("document ready");
 
     /*
@@ -525,6 +562,30 @@ pub fn serve(target: &str) -> Result<(), String> {
         }
         if reply.send(response).is_err() {
             break;
+        }
+
+        /*
+         * A link the last action followed.
+         *
+         * After the reply, not before it, so the action is acknowledged with
+         * the timing it actually had rather than with a page load added to it.
+         * A caller inspects again before it asserts anything, and by then the
+         * new document is standing.
+         *
+         * A load that fails leaves the old page up and says so. Serving an
+         * error document instead would make every check after it fail against
+         * a page that is not the one under test, and the reason would be four
+         * checks back in the log.
+         */
+        if let Some(destination) = navigation.take() {
+            trace(&format!("following a link to {destination}"));
+            match load(destination) {
+                Ok(next) => {
+                    document = next;
+                    commit_render(&render_events, &mut render_revision);
+                }
+                Err(error) => trace(&format!("the navigation failed, staying put: {error}")),
+            }
         }
     }
 
