@@ -88,6 +88,19 @@ pub enum Target {
     /// A built site, which needs an origin before it is a site at all. See
     /// [`crate::page_server`].
     Directory(std::path::PathBuf),
+    /// A built page inside a directory: served as a site, and opened at that
+    /// page rather than at `index.html`.
+    ///
+    /// A page in a build is no more a file than a whole site is. The component
+    /// sweep names one page per component, `button.html` beside `button.js`,
+    /// and each of those references `/static/js/button.js` absolutely, which a
+    /// `file://` base resolves to the filesystem root. The bundle is then never
+    /// fetched and the page renders as an empty mount point, which reads as a
+    /// component that draws nothing.
+    File {
+        root: std::path::PathBuf,
+        page: String,
+    },
     /// A single file, or a page already being served somewhere.
     Page(Url),
 }
@@ -113,6 +126,23 @@ pub fn classify(target: &str) -> Result<Target, String> {
                 ));
             }
             return Ok(Target::Directory(canonical));
+        }
+        // A built page needs an origin exactly as a whole site does, so its
+        // directory is served and the page opened on it. Only a document:
+        // anything else named directly is taken as given.
+        if canonical
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
+        {
+            if let (Some(root), Some(page)) = (
+                canonical.parent(),
+                canonical.file_name().and_then(|name| name.to_str()),
+            ) {
+                return Ok(Target::File {
+                    root: root.to_path_buf(),
+                    page: page.to_owned(),
+                });
+            }
         }
         return Url::from_file_path(&canonical)
             .map(Target::Page)
@@ -365,6 +395,12 @@ pub fn serve(target: &str) -> Result<(), String> {
             let origin = runtime.block_on(crate::page_server::start(root))?;
             trace(&format!("serving {} at {origin}", root.display()));
             Url::parse(&origin).map_err(|error| format!("{origin} is not a URL: {error}"))?
+        }
+        Target::File { root, page } => {
+            let origin = runtime.block_on(crate::page_server::start(root))?;
+            trace(&format!("serving {} at {origin}", root.display()));
+            Url::parse(&format!("{origin}{page}"))
+                .map_err(|error| format!("{origin}{page} is not a URL: {error}"))?
         }
         Target::Page(url) => url.clone(),
     };
@@ -794,16 +830,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// A single file is taken as the page it is, with no origin invented for
-    /// it. The engine's own fixtures are one file with siblings beside it.
+    /// A built page is served from its own directory rather than opened as a
+    /// file. Its markup names `/static/...` absolutely, which a `file://` base
+    /// resolves to the filesystem root, so the bundle is never fetched and the
+    /// page renders as an empty mount point.
     #[test]
-    fn a_file_is_taken_as_a_page() {
+    fn a_built_page_is_served_from_its_directory() {
         let root = fixture_root("file");
         let page = root.join("page.html");
         std::fs::write(&page, "<html></html>").expect("write page");
         let target = classify(page.to_str().expect("utf-8 fixture path")).expect("classify");
+        let Target::File {
+            root: served,
+            page: name,
+        } = target
+        else {
+            panic!("a built page should be served from its directory, got {target:?}");
+        };
+        assert_eq!(name, "page.html");
+        assert!(served.ends_with(root.file_name().expect("fixture directory name")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Anything else named directly is still taken as given. The engine's own
+    /// fixtures include files that are not documents.
+    #[test]
+    fn a_file_that_is_not_a_document_is_taken_as_a_page() {
+        let root = fixture_root("plain-file");
+        let page = root.join("data.json");
+        std::fs::write(&page, "{}").expect("write file");
+        let target = classify(page.to_str().expect("utf-8 fixture path")).expect("classify");
         let Target::Page(url) = target else {
-            panic!("a file should be a page, got {target:?}");
+            panic!("a plain file should be a page, got {target:?}");
         };
         assert_eq!(url.scheme(), "file");
         let _ = std::fs::remove_dir_all(root);
