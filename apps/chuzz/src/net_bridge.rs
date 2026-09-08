@@ -82,11 +82,21 @@ pub fn install(
     base: Option<blitz_traits::net::Url>,
 ) {
     document.eval(NETWORK_API_SHIM);
+    // After the web-API shim, so the real socket replaces the inert one that
+    // shim installs when nothing better exists.
+    document.eval(crate::ws_bridge::WEBSOCKET_SHIM);
 
     let mailbox = Mailbox::default();
     let handler_mailbox = mailbox.clone();
+    let sockets = crate::ws_bridge::Bridge::new();
+    let handler_sockets = sockets.clone();
 
     document.set_ipc_handler(move |message| {
+        // Sockets first: setting an IPC handler replaces it rather than adding
+        // to it, so one handler carries both and each claims its own.
+        if handler_sockets.handle(&message) {
+            return;
+        }
         let Ok(request) = serde_json::from_str::<NetRequest>(&message) else {
             // Not ours. The channel is shared, and a message this does not
             // recognise belongs to somebody else rather than being an error.
@@ -150,9 +160,12 @@ pub fn install(
     });
 
     document.add_poll_hook(move |document, _| {
+        // Socket events and fetch results share a pass, and either alone is
+        // reason enough to draw a frame.
+        let drew = sockets.drain_into(document);
         let ready = mailbox.drain();
         if ready.is_empty() {
-            return false;
+            return drew;
         }
         for delivery in ready {
             // `serde_json` renders a JavaScript-safe literal, so the body needs
