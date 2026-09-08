@@ -151,13 +151,63 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       this.origin = this.protocol + '//' + this.host;
       this.toString = function () { return this.href; };
     };
-    // Object URLs: a page that creates one and revokes it on teardown would
-    // otherwise throw on a missing static. Blobs are not backed here, so the
-    // handle is a token rather than a readable resource.
+  }
+  /*
+   * `Blob`, and object URLs that can actually be loaded.
+   *
+   * These are outside the `URL` block above on purpose: the engine registers a
+   * real `URL` now, so that block is skipped and these would not exist at all.
+   *
+   * A loader that fetches its own bundle, wraps it in a `Blob` and injects it
+   * as `script.src = URL.createObjectURL(blob)` is a common shape, and it is
+   * the shape honey.id ships. With no `Blob` the loader threw before it got as
+   * far as the URL; with an object URL that is only a token, the injected
+   * script pointed at something nothing could fetch. Either way the bundle
+   * never ran and the page stayed as its loading placeholder, with nothing in
+   * the log.
+   *
+   * The handle is a `data:` URL, which the engine's fetcher already resolves,
+   * so the script really loads. That is the whole trick: no blob registry, no
+   * new scheme, and a resource that behaves like one everywhere it is used.
+   *
+   * Text only. The parts are joined as strings and encoded with `btoa`, which
+   * is defined over bytes, so a blob built from an `ArrayBuffer` or a typed
+   * array is not represented faithfully. That is the honest limit of doing
+   * this in JavaScript, and it covers the case that matters: a bundle, a
+   * stylesheet, a JSON document. `size` is the length in code units rather
+   * than in bytes for the same reason.
+   */
+  if (typeof globalThis.Blob === 'undefined') {
+    globalThis.Blob = function (parts, options) {
+      var text = '';
+      if (parts) {
+        for (var i = 0; i < parts.length; i++) {
+          text += String(parts[i]);
+        }
+      }
+      this.__text = text;
+      this.type = (options && options.type) ? String(options.type) : '';
+      this.size = text.length;
+      this.text = function () { return Promise.resolve(text); };
+      this.slice = function (start, end, type) {
+        return new globalThis.Blob([text.slice(start, end)], { type: type || this.type });
+      };
+    };
+  }
+  if (typeof globalThis.URL !== 'undefined'
+      && typeof globalThis.URL.createObjectURL !== 'function') {
     var objectUrls = Object.create(null);
-    var objectUrlSeq = 0;
     globalThis.URL.createObjectURL = function (object) {
-      var handle = 'blob:chuzz/' + (++objectUrlSeq);
+      var text = object && typeof object.__text === 'string' ? object.__text : String(object);
+      var type = (object && object.type) ? object.type : 'application/octet-stream';
+      var handle;
+      try {
+        handle = 'data:' + type + ';base64,' + globalThis.btoa(unescape(encodeURIComponent(text)));
+      } catch (error) {
+        // A blob this cannot encode is still worth a handle: revoking it must
+        // not throw, and a caller that only stores it is not broken by us.
+        handle = 'data:' + type + ',';
+      }
       objectUrls[handle] = object;
       return handle;
     };
@@ -1263,6 +1313,7 @@ mod tests {
         for name in [
             "localStorage",
             "sessionStorage",
+            "Blob",
             "URLSearchParams",
             "MutationObserver",
             "IntersectionObserver",
@@ -1323,6 +1374,42 @@ mod tests {
             ),
             serde_json::json!("\u{fffd}\u{fffd}A"),
             "an overlong sequence is replaced rather than decoded"
+        );
+    }
+
+    /// An object URL is something the engine can actually load.
+    ///
+    /// A loader that fetches its own bundle, wraps it in a `Blob` and injects
+    /// it as `script.src = URL.createObjectURL(blob)` is a common shape, and it
+    /// is the shape honey.id ships. With no `Blob` the loader threw before it
+    /// reached the URL; with a handle that is only a token the injected script
+    /// pointed at something nothing could fetch. Either way the bundle never
+    /// ran and the page stayed as its loading placeholder, with nothing in the
+    /// log to say why.
+    ///
+    /// The assertion is that the handle is a `data:` URL carrying the blob's
+    /// own bytes, because that is what makes it loadable rather than merely
+    /// present.
+    #[test]
+    fn an_object_url_carries_what_the_blob_holds() {
+        let mut document = shimmed();
+        assert_eq!(
+            value(
+                &mut document,
+                "URL.createObjectURL(new Blob(['globalThis.x = 1;'], \
+                 { type: 'text/javascript' }))"
+            ),
+            serde_json::json!("data:text/javascript;base64,Z2xvYmFsVGhpcy54ID0gMTs="),
+        );
+        // Revoking one is not allowed to throw: a page that tidies up on
+        // teardown would otherwise take the teardown with it.
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () { var u = URL.createObjectURL(new Blob(['a'])); \
+                 URL.revokeObjectURL(u); return 'ok'; })()"
+            ),
+            serde_json::json!("ok"),
         );
     }
 
