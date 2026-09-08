@@ -133,16 +133,15 @@ pub fn classify(target: &str) -> Result<Target, String> {
         if canonical
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
-        {
-            if let (Some(root), Some(page)) = (
+            && let (Some(root), Some(page)) = (
                 canonical.parent(),
                 canonical.file_name().and_then(|name| name.to_str()),
-            ) {
-                return Ok(Target::File {
-                    root: root.to_path_buf(),
-                    page: page.to_owned(),
-                });
-            }
+            )
+        {
+            return Ok(Target::File {
+                root: root.to_path_buf(),
+                page: page.to_owned(),
+            });
         }
         return Url::from_file_path(&canonical)
             .map(Target::Page)
