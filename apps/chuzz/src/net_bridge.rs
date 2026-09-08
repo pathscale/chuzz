@@ -79,6 +79,7 @@ pub fn install(
     document: &mut blitz_script::ScriptDocument,
     net: Arc<NetProvider>,
     deadline: Duration,
+    base: Option<blitz_traits::net::Url>,
 ) {
     document.eval(NETWORK_API_SHIM);
 
@@ -91,7 +92,15 @@ pub fn install(
             // recognise belongs to somebody else rather than being an error.
             return;
         };
-        let Ok(url) = blitz_traits::net::Url::parse(&request.url) else {
+        // Resolved against the page, not parsed on its own. `fetch("/v.json")`
+        // is the ordinary way to ask for something on your own origin, and
+        // parsing it without a base makes it a relative reference with no
+        // scheme, which is a hard error. A page whose bootstrap asks that way
+        // then fails at its first step and renders nothing.
+        let Ok(url) = blitz_traits::net::Url::options()
+            .base_url(base.as_ref())
+            .parse(&request.url)
+        else {
             handler_mailbox.post(Delivery {
                 id: request.id,
                 payload: serde_json::json!({"ok": false, "error": "invalid URL"}),
@@ -404,6 +413,7 @@ mod tests {
             &mut document,
             Arc::new(NetProvider::new(None)),
             Duration::from_secs(10),
+            blitz_traits::net::Url::parse("http://127.0.0.1/").ok(),
         );
 
         document.eval(&format!(
@@ -426,6 +436,43 @@ mod tests {
         );
     }
 
+    /// A relative URL resolves against the page, as it does in a browser.
+    ///
+    /// `fetch("/v.json")` is the ordinary way to ask for something on your own
+    /// origin. Parsed without a base it is a relative reference with no scheme,
+    /// which is a hard error, so a page whose bootstrap asks that way failed at
+    /// its first step and rendered nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relative_url_resolves_against_the_page() {
+        let (port, server) = serve_once(r#"{"answer":7}"#);
+        let mut document = page();
+        install(
+            &mut document,
+            Arc::new(NetProvider::new(None)),
+            Duration::from_secs(10),
+            blitz_traits::net::Url::parse(&format!("http://127.0.0.1:{port}/index.html")).ok(),
+        );
+
+        document.eval(
+            "globalThis.__result = null;
+             fetch('/data.json')
+               .then(function (r) { return r.json(); })
+               .then(function (v) { globalThis.__result = v.answer; })
+               .catch(function (e) { globalThis.__result = 'error: ' + e; });",
+        );
+
+        let result = pump_for(&mut document, "globalThis.__result");
+        assert!(
+            server.join().expect("the server thread finishes"),
+            "the bridge never opened a connection"
+        );
+        assert_eq!(
+            result,
+            serde_json::json!(7),
+            "a relative URL should have been resolved against the page"
+        );
+    }
+
     /// The same channel carries `XMLHttpRequest`, which older code still uses.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_page_can_use_xmlhttprequest() {
@@ -435,6 +482,7 @@ mod tests {
             &mut document,
             Arc::new(NetProvider::new(None)),
             Duration::from_secs(10),
+            blitz_traits::net::Url::parse("http://127.0.0.1/").ok(),
         );
 
         document.eval(&format!(
@@ -465,6 +513,7 @@ mod tests {
             &mut document,
             Arc::new(NetProvider::new(None)),
             Duration::from_secs(10),
+            blitz_traits::net::Url::parse("http://127.0.0.1/").ok(),
         );
 
         document.eval(
@@ -496,6 +545,7 @@ mod tests {
             &mut document,
             Arc::new(NetProvider::new(None)),
             Duration::from_secs(10),
+            blitz_traits::net::Url::parse("http://127.0.0.1/").ok(),
         );
 
         document.eval(&format!(
