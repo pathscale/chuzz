@@ -1,0 +1,62 @@
+name: Headless browser host
+description: >
+  Build chuzz-headless and install ps-qa, so a site's built output can be driven
+  through a real browser engine with no window.
+
+inputs:
+  chuzz-ref:
+    description: The chuzz revision to build the host from.
+    default: master
+  token:
+    description: >
+      A token that can read pathscale/chuzz. Required, because the host is built
+      from source rather than installed from a registry.
+    required: true
+  ps-qa-version:
+    description: >
+      The driver's version requirement. A floor rather than "latest": a check
+      file can use a field an older driver does not know, and the failure then
+      reads as a broken workflow rather than a driver that is too old.
+    default: "^0.6.2"
+
+outputs:
+  host:
+    description: Path to the built chuzz-headless binary.
+    value: ${{ steps.build.outputs.host }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check out chuzz
+      uses: actions/checkout@v4
+      with:
+        repository: pathscale/chuzz
+        ref: ${{ inputs.chuzz-ref }}
+        path: .qa-host
+        token: ${{ inputs.token }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: .qa-host
+        # A failing check must not make the corrective run rebuild a browser
+        # engine from zero.
+        cache-on-failure: true
+
+    # The driver links no renderer, so it installs from the registry. The host
+    # is built here because it is the browser, and the browser is not a crate a
+    # site can install.
+    - name: Install ps-qa
+      shell: bash
+      env:
+        CARGO_TARGET_DIR: .qa-host/target/qa-tools
+      run: cargo install ps-qa --version "${{ inputs.ps-qa-version }}"
+
+    - name: Build the host
+      id: build
+      shell: bash
+      run: |
+        cargo build --release --manifest-path .qa-host/Cargo.toml --bin chuzz-headless
+        echo "host=$PWD/.qa-host/target/release/chuzz-headless" >> "$GITHUB_OUTPUT"

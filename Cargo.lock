@@ -825,7 +825,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4994,9 +4994,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d91b6f066345cae5ed0087a7181f64a0768248745ca3ba890572ae858e47909f"
+version = "0.4.4"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5051,9 +5049,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-html"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff957361f27fc8e50df1adf5f0e86fb5f4a437b8855b72e7bfd213ef3e0513a"
+version = "0.4.4"
 dependencies = [
  "html5ever 0.39.0",
  "ps-blitz-dom",
@@ -5080,9 +5076,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-paint"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfbe8e89c98e6eb27582c4de305935ca6740f5b6f86af93f677ace6da092f828"
+version = "0.4.4"
 dependencies = [
  "color",
  "euclid",
@@ -5110,9 +5104,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-script"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d49fd72c86ff39bdab041d38c4d12aa2ba19a95eb7921257de22e76d4c8814aa"
+version = "0.4.4"
 dependencies = [
  "base64 0.22.1",
  "data-url",
@@ -5162,9 +5154,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122caeae14771ab82eb8e9d4aef2325628eadc4293bea485331e953b52c5a9a4"
+version = "0.4.4"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.1",
@@ -5193,9 +5183,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-ast"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fff890b125d485fd8c6642326eba3a091d3e394ef85c09ec1e5c31a964e5a9b9"
+checksum = "73fb39f3fef5521cb06bd488b140016d4c59f202de71336b15e9d310ba156eb9"
 dependencies = [
  "bitflags 2.13.1",
  "indexmap 2.14.0",
@@ -5209,9 +5199,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-engine"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb923dd84a7416dfa4a64300c3b9fc9a359a0634cf9ea9abcccc8c9b451b8422"
+checksum = "478b623512554565df15b38ffcc0de404b0f0aa6c0e60795b2dadf0a72a169d7"
 dependencies = [
  "aligned-vec",
  "arrayvec",
@@ -5266,9 +5256,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-gc"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10c3da79aebdc7a14d51cb952170a2c54433895396aa7513fcffd85faf6791e3"
+checksum = "22eb82810b5b1c4de777a58de638a38b52d8bf6090ae6a33e64bea52256f0e51"
 dependencies = [
  "arrayvec",
  "either",
@@ -5280,9 +5270,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-interner"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "140643a4462cca2bfb482305677a5f8d9e653297821f29b5cea66561de494236"
+checksum = "cfc4f1cc10c8991c66a50ebf643cc732ec9f6f6ab4e8f13f5ccb7ad31a805a2f"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap 2.14.0",
@@ -5296,9 +5286,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-macros"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a7382e6e15a55421a322777a792cd4e6ab8cfc57b8871e9fdce6f0fd984207f"
+checksum = "eb91c00f79e420b6433ac1f014c6915d211a4affd10d6ae01f7e98dfc0712a99"
 dependencies = [
  "cfg-if",
  "cow-utils",
@@ -5310,9 +5300,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-parser"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eda0a3a1db82643c5f05228fc456006f81fc694b00e03b5ee9fd70633775bf0a"
+checksum = "3101518d96d269f3ccdc45c74a0d93f976d7467b24ef83ac1dcf3b371b9f0d26"
 dependencies = [
  "bitflags 2.13.1",
  "fast-float2",
@@ -5328,9 +5318,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-runtime"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "277b5c9913178c55c5e4c937337f26fa4d698bb6a77d16506a5113cf2e10f063"
+checksum = "c7b55e49ee038aaaf465e225aaada7ffb7e15e44f67a1b13bb87e7e66d1304f7"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
@@ -5348,9 +5338,9 @@ dependencies = [
 
 [[package]]
 name = "ps-boa-string"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e50d2653fadf918f8d32305ca6959220326179292a2c07b66a9357562ff4e2e"
+checksum = "ef760712a7637d91d6c4649900ece456c922584470f398046402b08517768255"
 dependencies = [
  "fast-float2",
  "itoa",
@@ -5363,8 +5353,6 @@ dependencies = [
 [[package]]
 name = "ps-debug-timer"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67c0eaa81a2d9ec65709681f83c2219c7a3cae185479bc410c76fedc53f04242"
 
 [[package]]
 name = "ps-dioxus-native"
@@ -5439,9 +5427,7 @@ dependencies = [
 
 [[package]]
 name = "ps-stylo-taffy"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ed8c2b20ed0c5dd10528e5686afbeba30a16776c175605d4aedd474b91cead2"
+version = "0.4.4"
 dependencies = [
  "ps-taffy",
  "stylo",
@@ -7225,9 +7211,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-runtime-blitz"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed4a0f8012cf76ca5f145f6d281f14290948cf6b2124fc8fccb37fb7c23a3502"
+version = "0.3.6"
 dependencies = [
  "base64 0.22.1",
  "blitz-control-protocol",
@@ -9821,3 +9805,19 @@ checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
 dependencies = [
  "zune-core",
 ]
+
+[[patch.unused]]
+name = "ps-blitz-dom-api"
+version = "0.4.4"
+
+[[patch.unused]]
+name = "ps-blitz-net"
+version = "0.4.4"
+
+[[patch.unused]]
+name = "ps-blitz-shell"
+version = "0.4.4"
+
+[[patch.unused]]
+name = "ps-blitz-wasm"
+version = "0.4.4"
