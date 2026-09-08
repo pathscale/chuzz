@@ -214,6 +214,85 @@ impl RequestedNavigation {
     }
 }
 
+/// What the page put in storage, carried from one document to the next.
+///
+/// The shim's `localStorage` is in-memory and per document, which is right for
+/// a capture and wrong the moment the host follows a link: an application
+/// writes its settings on one route and reads them while booting the next, and
+/// a fresh store makes that read a miss. Every check of the shape "save, go
+/// somewhere, come back" is undecidable without this.
+///
+/// It is a copy, not real storage. Nothing here is on disk, no quota is
+/// enforced, and no `storage` event is delivered; what it buys is that the same
+/// origin sees what it wrote.
+struct StoredState {
+    origin: String,
+    local: String,
+    session: String,
+}
+
+/// Read both stores out of the document that is about to be replaced.
+///
+/// Through the public interface -- `length`, `key`, `getItem` -- rather than
+/// through the shim's internals, so this keeps working the day storage stops
+/// being a closure over an object.
+fn snapshot_storage(document: &mut ScriptDocument, origin: &str) -> StoredState {
+    fn dump(document: &mut ScriptDocument, store: &str) -> String {
+        let script = format!(
+            "(function () {{
+               try {{
+                 var out = {{}};
+                 for (var i = 0; i < {store}.length; i++) {{
+                   var key = {store}.key(i);
+                   if (key !== null) {{ out[key] = {store}.getItem(key); }}
+                 }}
+                 return JSON.stringify(out);
+               }} catch (error) {{ return '{{}}'; }}
+             }})()"
+        );
+        document.eval(&format!("globalThis.__chuzz_dump = {script};"));
+        document
+            .eval_json("globalThis.__chuzz_dump")
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "{}".to_owned())
+    }
+
+    StoredState {
+        origin: origin.to_owned(),
+        local: dump(document, "localStorage"),
+        session: dump(document, "sessionStorage"),
+    }
+}
+
+/// The prelude that puts it back, or nothing when it does not belong here.
+///
+/// Storage is keyed by origin in a browser and is keyed by origin here. A link
+/// that leaves the site under test lands on a page that must not see the site's
+/// keys, and carrying them across would be a leak invented by the harness.
+fn restore_script(stored: Option<&StoredState>, destination: &Url) -> String {
+    let Some(stored) =
+        stored.filter(|stored| stored.origin == destination.origin().ascii_serialization())
+    else {
+        return String::new();
+    };
+    format!(
+        "(function () {{
+           try {{
+             var local = JSON.parse({local});
+             for (var key in local) {{ localStorage.setItem(key, local[key]); }}
+             var session = JSON.parse({session});
+             for (var key in session) {{ sessionStorage.setItem(key, session[key]); }}
+           }} catch (error) {{}}
+         }})();",
+        // Serialized twice on purpose: the inner JSON is the data, and the
+        // outer encoding makes it a JavaScript string literal that cannot end
+        // the statement early. A page's own key is untrusted input here.
+        local = serde_json::to_string(&stored.local).unwrap_or_else(|_| "\"{}\"".to_owned()),
+        session = serde_json::to_string(&stored.session).unwrap_or_else(|_| "\"{}\"".to_owned()),
+    )
+}
+
 fn commit_render(events: &tokio::sync::watch::Sender<Option<DebugEvent>>, revision: &mut u64) {
     *revision = revision.saturating_add(1);
     events.send_replace(Some(DebugEvent::PaintCommitted {
@@ -263,12 +342,13 @@ pub fn serve(target: &str) -> Result<(), String> {
     let navigation = Arc::new(RequestedNavigation::default());
     let animation_clock = std::time::Instant::now();
 
-    let load = |url: Url| -> Result<Box<ScriptDocument>, String> {
+    let load = |url: Url, carried: Option<&StoredState>| -> Result<Box<ScriptDocument>, String> {
         trace(&format!("loading {url}"));
         let loaded = runtime
             .block_on(crate::document_loader::load_for_capture(
                 blitz_traits::net::Request::get(url.clone()),
                 Arc::clone(&net_provider),
+                &restore_script(carried, &url),
             ))
             .map_err(|error| format!("could not load {url}: {error}"))?;
         let mut document = loaded
@@ -293,7 +373,10 @@ pub fn serve(target: &str) -> Result<(), String> {
         Ok(document)
     };
 
-    let mut document = load(url)?;
+    // Which origin the standing document belongs to, so what it stored is
+    // offered back only to itself.
+    let mut origin = url.origin().ascii_serialization();
+    let mut document = load(url, None)?;
     trace("document ready");
 
     /*
@@ -579,9 +662,16 @@ pub fn serve(target: &str) -> Result<(), String> {
          */
         if let Some(destination) = navigation.take() {
             trace(&format!("following a link to {destination}"));
-            match load(destination) {
+            // Read out before the document that holds it goes. A page writes
+            // its settings on one route and reads them while booting the next,
+            // so a store that starts empty makes that read a miss and the
+            // application look like it never saved.
+            let carried = snapshot_storage(&mut document, &origin);
+            let arriving = destination.origin().ascii_serialization();
+            match load(destination, Some(&carried)) {
                 Ok(next) => {
                     document = next;
+                    origin = arriving;
                     commit_render(&render_events, &mut render_revision);
                 }
                 Err(error) => trace(&format!("the navigation failed, staying put: {error}")),

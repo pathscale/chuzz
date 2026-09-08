@@ -105,7 +105,8 @@ pub async fn capture(
         None,
         &crate::identity::user_agent_from_env(),
     ));
-    let mut document = crate::document_loader::load_for_capture(request, net_provider).await?;
+    // No prelude: a capture loads one page and has nothing to carry into it.
+    let mut document = crate::document_loader::load_for_capture(request, net_provider, "").await?;
 
     // Images are fetched asynchronously and applied through the document's
     // message channel, which only drains inside `resolve`. Resolving once

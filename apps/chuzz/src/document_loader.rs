@@ -1039,10 +1039,17 @@ pub(crate) const WEB_API_SHIM: &str = r#"
 /// live window: it attaches the result to a `<web-view>` and emits events, and
 /// there is no window here to attach to. **A capture therefore proves the
 /// engine renders and does not prove the shell's mount rendezvous.**
+///
+/// `prelude` is evaluated after the shim and before the page's own scripts, for
+/// state the caller is carrying into this document. That ordering is the whole
+/// of its usefulness: an application reads its stored settings while it boots,
+/// so seeding storage a moment later is the same as not seeding it. Empty for a
+/// capture, which loads one page and has nothing to carry.
 #[cfg(feature = "capture")]
 pub async fn load_for_capture(
     request: Request,
     net_provider: Arc<NetProvider>,
+    prelude: &str,
 ) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
     use blitz_dom::Document as _;
 
@@ -1111,6 +1118,9 @@ pub async fn load_for_capture(
             CAPTURE_SCRIPT_DEADLINE,
         ));
         document.eval(WEB_API_SHIM);
+        if !prelude.is_empty() {
+            document.eval(prelude);
+        }
         crate::net_bridge::install(
             &mut document,
             Arc::clone(&net_provider),
