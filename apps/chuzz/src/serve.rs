@@ -55,6 +55,25 @@ fn trace(message: &str) {
     eprintln!("chuzz-headless: {message}");
 }
 
+/// Timestamped tracing of the loop and the socket, off unless `CHUZZ_TRACE` is
+/// set in the environment.
+///
+/// The question this exists for is not "did it happen" but "when did it happen
+/// relative to what the harness was doing", which no snapshot of the tree can
+/// answer. It is what found the outcome poll that went blind to the rest of the
+/// document, and it is deliberately millisecond-stamped so its lines can be
+/// read against a driver's own timings.
+pub(crate) fn verbose(message: &str) {
+    if std::env::var_os("CHUZZ_TRACE").is_none() {
+        return;
+    }
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() % 1_000_000)
+        .unwrap_or_default();
+    eprintln!("chuzz-headless: [{at}] {message}");
+}
+
 /// A positive integer from the environment, or `default`.
 fn dimension(variable: &str, default: u32) -> Result<u32, String> {
     let Some(value) = std::env::var_os(variable) else {
@@ -206,6 +225,14 @@ const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(8);
 /// loop able to answer. The next tick picks up where this one stopped.
 const MAX_IDLE_TURNS: u32 = 512;
 
+/// How many missed turns one reply may hand back to the page.
+///
+/// A request that took a long time owes the page the turns it spent, but the
+/// debt has to end somewhere: without a cap, a single slow snapshot would let
+/// the page run unbounded before the next request is even read, which is the
+/// starvation this fixes pointed the other way.
+const MAX_CATCHUP_TURNS: u32 = 64;
+
 /// Let the page get on with what it started, while nothing is being asked of it.
 ///
 /// Without this the document only advances inside a request. A page whose
@@ -227,7 +254,11 @@ fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> b
         }
     }
     document.inner_mut().resolve(clock.elapsed().as_secs_f64());
-    document.inner().paint_damage().generation != before
+    let painted = document.inner().paint_damage().generation != before;
+    if turns > 0 || painted {
+        verbose(&format!("tick turns={turns} painted={painted}"));
+    }
+    painted
 }
 
 fn settle_response(
@@ -466,6 +497,7 @@ pub fn serve(target: &str) -> Result<(), String> {
         match request_tx.try_send((request, response_tx)) {
             Ok(()) => response_rx,
             Err(mpsc::TrySendError::Full((_, response_tx))) => {
+                verbose("request refused: queue full");
                 let _ = response_tx.send(DebugResponse::Error(DebugError {
                     code: "documentBusy".into(),
                     message: format!(
@@ -476,6 +508,7 @@ pub fn serve(target: &str) -> Result<(), String> {
                 response_rx
             }
             Err(mpsc::TrySendError::Disconnected((_, response_tx))) => {
+                verbose("request refused: document gone");
                 let _ = response_tx.send(DebugResponse::Error(DebugError {
                     code: "documentUnavailable".into(),
                     message: "the document is no longer serving".into(),
@@ -517,6 +550,11 @@ pub fn serve(target: &str) -> Result<(), String> {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        verbose(match &request {
+            ControlBridgeRequest::Agent(AgentControlRequest::Inspect { .. }) => "request inspect",
+            ControlBridgeRequest::Agent(AgentControlRequest::Act(_)) => "request act",
+            _ => "request other",
+        });
         let mut painted = false;
         let response = match request {
             ControlBridgeRequest::Agent(request) => match request {
@@ -742,13 +780,38 @@ pub fn serve(target: &str) -> Result<(), String> {
         // Anything driven by a host callback rather than by a request lands
         // here: socket messages, timers, promise continuations.
         //
+        // One turn per reply is not enough, and the arithmetic is the reason.
+        // A semantic snapshot of a signed-in page costs upwards of 150ms, and
+        // a driver polling for an outcome sends the next one the moment it has
+        // the last. That bought the page six turns a second while the harness
+        // watched, against roughly a hundred when it did not, so a login that
+        // needed a few hundred turns of timers and promise continuations
+        // completed only after the harness gave up and disconnected. Thirty
+        // seconds of polling produced 179 turns; six seconds of quiet produced
+        // about six hundred.
+        //
+        // So the page is owed the turns the request consumed. `last_tick`
+        // advances by one interval per turn rather than being reset to now,
+        // which is what makes this a catch-up rather than a single tick, and
+        // the cap keeps one slow request from handing the page an unbounded
+        // slice.
+        //
         // After the reply, never before it. Ticking first resolves layout
         // underneath the request that is about to be answered, and an inspect
         // then reports a tree whose every box is 0x0.
-        if last_tick.elapsed() >= IDLE_TICK {
+        let mut owed = 0_u32;
+        while last_tick.elapsed() >= IDLE_TICK && owed < MAX_CATCHUP_TURNS {
             if tick_document(&mut document, &animation_clock) {
                 commit_render(&render_events, &mut render_revision);
             }
+            last_tick += IDLE_TICK;
+            owed += 1;
+        }
+        // A request that took longer than the cap allows leaves `last_tick` in
+        // the past, which would make the next reply owe those turns again for
+        // ever. The debt is forgiven at the cap: the page is behind, and the
+        // honest thing is to carry on from now.
+        if owed >= MAX_CATCHUP_TURNS {
             last_tick = std::time::Instant::now();
         }
 
