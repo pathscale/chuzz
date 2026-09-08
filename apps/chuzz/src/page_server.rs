@@ -85,6 +85,7 @@ async fn answer(mut stream: TcpStream, root: &Path) -> Result<(), String> {
     match resolve(root, target) {
         Some(path) => match std::fs::read(&path) {
             Ok(body) => {
+                let body = decoded(content_type(&path), body);
                 respond(
                     &mut stream,
                     200,
@@ -168,6 +169,35 @@ fn resolve(root: &Path, target: &str) -> Option<PathBuf> {
 /// the script fetcher, and a stylesheet served as anything but `text/css` is
 /// parsed as nothing, which reads as a page with no styles rather than a page
 /// with a mistyped response.
+/// Serve a compressed asset as what it decompresses to.
+///
+/// A pathscale build ships its bundle brotli-encoded under `.mjs` and `.mcss`
+/// and lets the CDN answer `content-encoding: br`. This server does not, so a
+/// page that reads its own bundle through `fetch` and hands the bytes to a
+/// blob URL gets brotli where it expects JavaScript, and mounts nothing. That
+/// is how nofilter.io rendered 20 anonymous nodes here while rendering fine in
+/// a browser, and while its own checks were quietly measuring the copy the
+/// public CDN answered with rather than the build under test.
+///
+/// Declaring the encoding instead would leave the decoding to whoever asked,
+/// and a page `fetch` that never negotiated `accept-encoding` does not decode
+/// what it did not ask for. Decoding here is decided by this process.
+///
+/// Only text payloads are considered, and `decode_body` leaves anything that
+/// is already text alone, so an image or a font passes through untouched.
+fn decoded(content_type: &str, body: Vec<u8>) -> Vec<u8> {
+    let is_text = content_type.starts_with("text/")
+        || content_type.starts_with("application/json")
+        || content_type.contains("javascript");
+    if !is_text {
+        return body;
+    }
+    match crate::decode::decode_body_if_compressed(&body) {
+        Some(text) => text.into_bytes(),
+        None => body,
+    }
+}
+
 fn content_type(path: &Path) -> &'static str {
     match path
         .extension()
@@ -236,7 +266,8 @@ async fn respond(
 
 #[cfg(test)]
 mod tests {
-    use super::{content_type, resolve};
+    use super::{content_type, decoded, resolve};
+    use std::io::Write;
 
     fn fixture() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -304,5 +335,35 @@ mod tests {
             content_type(std::path::Path::new("app.mcss")),
             "text/css; charset=utf-8"
         );
+    }
+
+    #[test]
+    fn a_brotli_bundle_is_served_as_the_script_it_decompresses_to() {
+        let source = "export const value = 1;";
+        let mut compressed = Vec::new();
+        {
+            let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 9, 22);
+            writer.write_all(source.as_bytes()).expect("compress");
+        }
+        assert_ne!(compressed.as_slice(), source.as_bytes());
+
+        let served = decoded("text/javascript; charset=utf-8", compressed);
+        assert_eq!(String::from_utf8(served).expect("utf8"), source);
+    }
+
+    #[test]
+    fn a_plain_script_is_served_byte_for_byte() {
+        let source = b"export const value = 1;".to_vec();
+        assert_eq!(
+            decoded("text/javascript; charset=utf-8", source.clone()),
+            source
+        );
+    }
+
+    #[test]
+    fn a_binary_asset_is_never_probed_for_compression() {
+        // A PNG header: not text, and not something to hand a decompressor.
+        let png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        assert_eq!(decoded("image/png", png.clone()), png);
     }
 }

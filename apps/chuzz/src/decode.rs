@@ -30,6 +30,13 @@ pub fn decode_body(bytes: &[u8]) -> String {
 }
 
 /// Returns the decompressed text, or `None` when the bytes are not compressed
+/// or cannot be decoded. Callers that need to know which of the two happened
+/// use this rather than [`decode_body`].
+pub fn decode_body_if_compressed(bytes: &[u8]) -> Option<String> {
+    decompress(bytes)
+}
+
+/// Returns the decompressed text, or `None` when the bytes are not compressed
 /// or cannot be decoded.
 fn decompress(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || looks_like_text(bytes) {
