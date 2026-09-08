@@ -92,24 +92,11 @@ fn build_menu<R: tauri::Runtime>(
 #[cfg(target_os = "macos")]
 const MENU_VIEW_SOURCE: &str = "menu-view-source";
 
-mod browser;
+// The modules live in the library beside this binary, because the headless
+// host is the same browser and compiles the same tree. See `lib.rs`.
 #[cfg(feature = "capture")]
-mod capture;
-mod decode;
-mod document_loader;
-// `capture` writes the tree beside the PNG, so the two arrive together or the
-// pixels have nothing to be explained by.
-#[cfg(feature = "capture")]
-mod dump;
-mod frontend;
-mod identity;
-mod nav;
-mod net_bridge;
-mod script_fetch;
-// Shared by `--wasm` in the window and `--capture-wasm` headlessly, so a
-// guest-built page cannot render one way in a tab and another in a capture.
-#[cfg(feature = "wasm")]
-mod wasm_page;
+use chuzz_gui::capture;
+use chuzz_gui::{browser, frontend, nav};
 
 use browser::Browser;
 
