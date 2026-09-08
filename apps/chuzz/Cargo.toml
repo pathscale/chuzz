@@ -15,6 +15,19 @@ publish = false
 name = "chuzz-gui"
 path = "src/tauri_main.rs"
 
+# The same browser with no window, serving one page over the inspection socket
+# for `ps-qa` to drive. See `src/serve.rs` for why it is a mode of this binary's
+# package rather than a second host in another repo.
+#
+# `capture` for the CPU rasteriser, because a visual assertion is a screenshot
+# request over the socket; `javascript` because a page whose scripts never ran
+# is not the page anyone is asking about. Both are defaults, so this is a
+# statement of what the binary needs rather than a build to remember to ask for.
+[[bin]]
+name = "chuzz-headless"
+path = "src/headless_main.rs"
+required-features = ["capture", "javascript"]
+
 [features]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
@@ -119,7 +132,17 @@ tauri-runtime-blitz.workspace = true
 # `flavor = "multi_thread"` in the script-fetch test: the blocking fetch takes
 # the `block_in_place` path, which only the multi-threaded runtime has, and
 # that is the path the capture actually uses.
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+# `net` and `io-util` are the inspection test's: it connects to the host's Unix
+# socket and speaks the same framed transport `ps-qa` does.
+tokio = { workspace = true, features = [
+  "io-util",
+  "macros",
+  "net",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
 # Assembles `fixtures/panel.wat` into a module in-process, so the capture test
 # owns its guest instead of borrowing blitz-wasm's demo, and so it needs no
 # wasm32 target and no nested cargo build. See the header of that file.

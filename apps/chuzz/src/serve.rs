@@ -1,0 +1,657 @@
+//! Serve one page over the inspection socket, with no window.
+//!
+//! # Why this is here and not in a second crate
+//!
+//! It used to be `qa-inspect-host`, a separate binary in ps-observability that
+//! built its own document out of a dist directory. That made two headless
+//! browsers: one that a person browses with and one that QA drives, and the web
+//! platform existed in only the first of them. `document_loader`'s shim is what
+//! makes `@solidjs/router` reach its first render at all, and a host without it
+//! reported every routed page in the fleet as blank. Every gap closed for the
+//! browser had to be closed a second time for the harness, by hand, or the
+//! harness kept measuring a browser nobody ships.
+//!
+//! So the host is a mode of the browser instead. What `ps-qa` drives is the
+//! same loader, the same shim and the same engine a tab uses; the only thing
+//! missing is the window.
+//!
+//! `ps-qa` still links none of this. It speaks `blitz-control-protocol` over
+//! the socket and is forbidden from depending on blitz, tauri, winit or wgpu,
+//! which is satisfied by a socket, not by a crate boundary.
+//!
+//! # Use
+//!
+//! ```sh
+//! chuzz-headless /path/to/dist            # or a file, or an http(s) URL
+//! QA_INSPECT_PAGE=/path/to/dist chuzz-headless
+//! ```
+//!
+//! It prints its descriptor path on stdout when it is ready, then serves until
+//! killed. That line, and one page per process, are the two properties
+//! `ps-qa sweep-components` is built on: it launches one host per component and
+//! waits for the line, so a component that wedges the engine cannot poison the
+//! next one's verdict.
+
+use std::num::NonZeroUsize;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::mpsc;
+
+use blitz_dom::Document as _;
+use blitz_script::ScriptDocument;
+use blitz_traits::events::{BlitzImeEvent, UiEvent};
+use blitz_traits::net::Url;
+use blitz_traits::shell::{ColorScheme, Viewport};
+use tauri_runtime_blitz::control_protocol::{
+    AgentAction, AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
+    InputCommand, KeyPhase, WindowComposition,
+};
+use tauri_runtime_blitz::{
+    AgentControlServer, ControlBridgeRequest, DocumentCapture, click_agent_node, focus_agent_node,
+    hover_agent_node, inspect_document, press_agent_key, snapshot_document,
+};
+
+fn trace(message: &str) {
+    eprintln!("chuzz-headless: {message}");
+}
+
+/// A positive integer from the environment, or `default`.
+fn dimension(variable: &str, default: u32) -> Result<u32, String> {
+    let Some(value) = std::env::var_os(variable) else {
+        return Ok(default);
+    };
+    let text = value
+        .into_string()
+        .map_err(|_| format!("{variable} is not valid UTF-8"))?;
+    text.parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{variable} must be a positive integer, got {text:?}"))
+}
+
+/// What to load, from the command line or the environment.
+///
+/// `QA_INSPECT_PAGE` is how `ps-qa` tells a host which page to serve: it runs
+/// the binary named by `--host` with no arguments and that variable set. An
+/// explicit argument wins, so the same binary is usable by hand.
+pub fn target_from(args: &[String]) -> Result<String, String> {
+    if let Some(argument) = args.iter().skip(1).find(|arg| !arg.starts_with("--")) {
+        return Ok(argument.clone());
+    }
+    std::env::var("QA_INSPECT_PAGE")
+        .map_err(|_| "no page to serve: pass one as an argument or set QA_INSPECT_PAGE".to_owned())
+}
+
+/// What the caller named.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Target {
+    /// A built site, which needs an origin before it is a site at all. See
+    /// [`crate::page_server`].
+    Directory(std::path::PathBuf),
+    /// A single file, or a page already being served somewhere.
+    Page(Url),
+}
+
+/// Decide what the caller named.
+///
+/// A filesystem path is tried first, and only a string that is not a path is
+/// handed to the address-bar rule. That order matters: `dist` is a directory
+/// here and a bare hostname to `nav::request_from_input`, and guessing wrong
+/// means fetching `https://dist/` and reporting whatever comes back as the page
+/// under test.
+pub fn classify(target: &str) -> Result<Target, String> {
+    let path = Path::new(target);
+    if path.exists() {
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("could not resolve {target}: {error}"))?;
+        if canonical.is_dir() {
+            if !canonical.join("index.html").is_file() {
+                return Err(format!(
+                    "{} is a directory with no index.html in it",
+                    canonical.display()
+                ));
+            }
+            return Ok(Target::Directory(canonical));
+        }
+        return Url::from_file_path(&canonical)
+            .map(Target::Page)
+            .map_err(|()| format!("{} is not a path a URL can name", canonical.display()));
+    }
+
+    crate::nav::request_from_input(target)
+        .map(|request| Target::Page(request.url))
+        .ok_or_else(|| format!("{target} is neither a path that exists nor a URL"))
+}
+
+/// Drain synchronous script and reactive work without imposing a timer on every
+/// control.
+///
+/// Delayed outcomes are polled by `ps-qa` against the exact declared verdict,
+/// so sleeping here only makes fast controls slow and duplicates the caller's
+/// timeout.
+struct SettleFailure {
+    error: DebugError,
+    painted: bool,
+}
+
+fn settle_immediate(
+    document: &mut ScriptDocument,
+    clock: &std::time::Instant,
+    deadline: std::time::Duration,
+) -> Result<bool, SettleFailure> {
+    let before = document.inner().paint_damage().generation;
+    let started = std::time::Instant::now();
+    let mut iterations = 0_u32;
+    loop {
+        if !document.poll(None) {
+            break;
+        }
+        iterations = iterations.saturating_add(1);
+        if started.elapsed() >= deadline {
+            document.inner_mut().resolve(clock.elapsed().as_secs_f64());
+            return Err(SettleFailure {
+                painted: document.inner().paint_damage().generation != before,
+                error: DebugError {
+                    code: "documentNotQuiescent".into(),
+                    message: format!(
+                        "the document still had immediate work after {iterations} settle \
+                         iterations and {}ms",
+                        deadline.as_millis()
+                    ),
+                },
+            });
+        }
+    }
+    document.inner_mut().resolve(clock.elapsed().as_secs_f64());
+    Ok(document.inner().paint_damage().generation != before)
+}
+
+fn settle_response(
+    document: &mut ScriptDocument,
+    clock: &std::time::Instant,
+    deadline: std::time::Duration,
+    painted: &mut bool,
+) -> DebugResponse {
+    match settle_immediate(document, clock, deadline) {
+        Ok(did_paint) => {
+            *painted = did_paint;
+            DebugResponse::Ack
+        }
+        Err(failure) => {
+            *painted = failure.painted;
+            DebugResponse::Error(failure.error)
+        }
+    }
+}
+
+fn commit_render(events: &tokio::sync::watch::Sender<Option<DebugEvent>>, revision: &mut u64) {
+    *revision = revision.saturating_add(1);
+    events.send_replace(Some(DebugEvent::PaintCommitted {
+        revision: *revision,
+    }));
+}
+
+/// Load `target` and serve it over the inspection socket until killed.
+pub fn serve(target: &str) -> Result<(), String> {
+    let target = classify(target)?;
+    let width = dimension("QA_HOST_WIDTH", 1344)?;
+    let height = dimension("QA_HOST_HEIGHT", 900)?;
+    let settle_deadline =
+        std::time::Duration::from_millis(u64::from(dimension("QA_HOST_SETTLE_MS", 100)?));
+
+    // Multi-threaded, and entered for the whole run.
+    //
+    // The page keeps fetching after it is first laid out: images, fonts and
+    // anything a script asks for arrive on the document's channel and are
+    // applied by the next `resolve`. Blitz's net provider issues those with
+    // `tokio::spawn`, which panics outright with no reactor entered, so the
+    // dispatch loop below has to run inside the runtime rather than after it.
+    // The blocking script fetch also takes `block_in_place`, which only the
+    // multi-threaded runtime has.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not start a tokio runtime: {error}"))?;
+    let _runtime_guard = runtime.enter();
+
+    // A directory becomes a site before it becomes a document: its markup names
+    // `/static/...` absolutely and its router owns paths that were never built
+    // as files, neither of which a `file://` base can answer.
+    let url = match &target {
+        Target::Directory(root) => {
+            let origin = runtime.block_on(crate::page_server::start(root))?;
+            trace(&format!("serving {} at {origin}", root.display()));
+            Url::parse(&origin).map_err(|error| format!("{origin} is not a URL: {error}"))?
+        }
+        Target::Page(url) => url.clone(),
+    };
+
+    trace(&format!("loading {url}"));
+    let net_provider = Arc::new(blitz_net::Provider::with_user_agent(
+        None,
+        &crate::identity::user_agent_from_env(),
+    ));
+    let loaded = runtime
+        .block_on(crate::document_loader::load_for_capture(
+            blitz_traits::net::Request::get(url.clone()),
+            net_provider,
+        ))
+        .map_err(|error| format!("could not load {url}: {error}"))?;
+    let mut document = loaded
+        .into_script()
+        .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?;
+
+    document
+        .inner_mut()
+        .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Dark));
+    document.inner_mut().set_paint_damage_tracking(true);
+
+    // The loader already ran and pumped the page's scripts. This settles what
+    // the viewport change queued, rather than sleeping for a fixed interval
+    // before announcing the socket.
+    let animation_clock = std::time::Instant::now();
+    if let Err(failure) = settle_immediate(&mut document, &animation_clock, settle_deadline) {
+        trace(&format!(
+            "the page reached the settle deadline before serving: {}",
+            failure.error.message
+        ));
+    }
+    trace("document ready");
+
+    /*
+     * The bridge hands a request to this thread and waits for the answer.
+     *
+     * A `SyncSender` with a zero-capacity channel would rendezvous, but the
+     * server thread must not block indefinitely if this loop has gone away, so
+     * the reply travels on a per-request oneshot the caller owns.
+     */
+    const MAX_PENDING_REQUESTS: usize = 64;
+    let (request_tx, request_rx) = mpsc::sync_channel::<(
+        ControlBridgeRequest,
+        tokio::sync::oneshot::Sender<DebugResponse>,
+    )>(MAX_PENDING_REQUESTS);
+
+    let bridge: tauri_runtime_blitz::ControlBridge = Arc::new(move |request| {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        match request_tx.try_send((request, response_tx)) {
+            Ok(()) => response_rx,
+            Err(mpsc::TrySendError::Full((_, response_tx))) => {
+                let _ = response_tx.send(DebugResponse::Error(DebugError {
+                    code: "documentBusy".into(),
+                    message: format!(
+                        "the document already has {MAX_PENDING_REQUESTS} pending inspection \
+                         requests"
+                    ),
+                }));
+                response_rx
+            }
+            Err(mpsc::TrySendError::Disconnected((_, response_tx))) => {
+                let _ = response_tx.send(DebugResponse::Error(DebugError {
+                    code: "documentUnavailable".into(),
+                    message: "the document is no longer serving".into(),
+                }));
+                response_rx
+            }
+        }
+    });
+
+    let (render_events, render_event_receiver) = tokio::sync::watch::channel(None);
+    let server = AgentControlServer::start_with_events(bridge, render_event_receiver)
+        .map_err(|error| format!("could not host the control socket: {error}"))?;
+    trace(&format!(
+        "inspection socket listening: {}",
+        server.descriptor_path().display()
+    ));
+    // The descriptor path on stdout, so a caller can attach without guessing
+    // it. `ps-qa --app` takes a descriptor, and a sweep that has to search a
+    // directory races every other instance on the machine.
+    println!("{}", server.descriptor_path().display());
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+
+    let mut revision = 0_u64;
+    let mut render_revision = 0_u64;
+    let mut capture = DocumentCapture::new();
+    while let Ok((request, reply)) = request_rx.recv() {
+        let mut painted = false;
+        let response = match request {
+            ControlBridgeRequest::Agent(request) => match request {
+                AgentControlRequest::Inspect { root, max_depth } => {
+                    revision += 1;
+                    inspect_document(&mut document, root, max_depth, revision)
+                }
+                AgentControlRequest::Act(AgentAction::Focus { node_id }) => {
+                    let node_id = blitz_dom::NodeId::from_u64(node_id);
+                    match focus_agent_node(&mut document, node_id) {
+                        Ok(()) => settle_response(
+                            &mut document,
+                            &animation_clock,
+                            settle_deadline,
+                            &mut painted,
+                        ),
+                        Err(error) => DebugResponse::Error(error),
+                    }
+                }
+                AgentControlRequest::Act(AgentAction::Click { node_id }) => {
+                    match click_agent_node(&mut document, node_id, 1) {
+                        Ok(_) => settle_response(
+                            &mut document,
+                            &animation_clock,
+                            settle_deadline,
+                            &mut painted,
+                        ),
+                        Err(error) => DebugResponse::Error(error),
+                    }
+                }
+                AgentControlRequest::Act(AgentAction::ScrollIntoView { node_id }) => {
+                    /*
+                     * Really scrolled, not acknowledged.
+                     *
+                     * The host this replaces served one component on a page
+                     * that never overflowed, so it answered Ack and was right
+                     * by accident. A fleet site scrolls, and a control below
+                     * the fold that is never brought into view is hovered at
+                     * whatever happens to be at its coordinates, which reads as
+                     * a control that does not respond.
+                     */
+                    let node_id = blitz_dom::NodeId::from_u64(node_id);
+                    document.inner_mut().scroll_to_node(node_id);
+                    settle_response(
+                        &mut document,
+                        &animation_clock,
+                        settle_deadline,
+                        &mut painted,
+                    )
+                }
+                AgentControlRequest::Act(AgentAction::Hover { node_id }) => {
+                    /*
+                     * A control revealed on hover is unreachable without this,
+                     * and a defect that only shows on the second entry is
+                     * unreachable even with one hover: a pill whose hover
+                     * appends a shadow layer and never removes it looks right
+                     * once.
+                     */
+                    match hover_agent_node(&mut document, node_id) {
+                        Ok(_) => settle_response(
+                            &mut document,
+                            &animation_clock,
+                            settle_deadline,
+                            &mut painted,
+                        ),
+                        Err(error) => DebugResponse::Error(error),
+                    }
+                }
+                AgentControlRequest::Act(AgentAction::DoubleClick { node_id }) => {
+                    match click_agent_node(&mut document, node_id, 2) {
+                        Ok(_) => settle_response(
+                            &mut document,
+                            &animation_clock,
+                            settle_deadline,
+                            &mut painted,
+                        ),
+                        Err(error) => DebugResponse::Error(error),
+                    }
+                }
+                AgentControlRequest::Act(AgentAction::SetValue { node_id, value }) => {
+                    let node_id = blitz_dom::NodeId::from_u64(node_id);
+                    let current = document
+                        .inner()
+                        .get_node(node_id)
+                        .and_then(|node| node.element_data())
+                        .and_then(|element| element.text_input_data())
+                        .map(|input| input.editor.text().to_string());
+                    match current {
+                        None => DebugResponse::Error(DebugError {
+                            code: "notEditable".into(),
+                            message: "node is not a text input".into(),
+                        }),
+                        Some(current) => {
+                            document.inner_mut().set_focus_to(node_id);
+                            /*
+                             * Clear by byte count, not by selecting the text
+                             * first.
+                             *
+                             * `select_all` builds its selection with
+                             * `move_lines(&layout, isize::MAX)`, and
+                             * `select_byte_range` resolves its ends through
+                             * `Cursor::from_byte_index(&layout, ..)`. Both read
+                             * the laid out text, so both depend on a font
+                             * catalogue being present: with none registered
+                             * every glyph shapes to nothing, the selection
+                             * comes back collapsed, and the commit below
+                             * inserts at the caret instead of replacing.
+                             *
+                             * This build has faces, so `select_all` would work
+                             * here. It stays byte arithmetic anyway, because a
+                             * host that behaves differently depending on which
+                             * fonts the machine has is a harness that reports
+                             * different verdicts on CI and on a laptop.
+                             * `delete_bytes_before_selection` and
+                             * `delete_bytes_after_selection` clamp to the ends
+                             * of the buffer, so between them they empty it from
+                             * wherever the caret is, with no layout involved.
+                             */
+                            if let Some(len) = NonZeroUsize::new(current.len()) {
+                                document.inner_mut().with_text_input(node_id, |mut editor| {
+                                    editor.delete_bytes_before_selection(len);
+                                    editor.delete_bytes_after_selection(len);
+                                });
+                            }
+                            document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(value)));
+                            settle_response(
+                                &mut document,
+                                &animation_clock,
+                                settle_deadline,
+                                &mut painted,
+                            )
+                        }
+                    }
+                }
+                AgentControlRequest::Act(AgentAction::Input(InputCommand::Key {
+                    key,
+                    code,
+                    phase,
+                    ..
+                })) => {
+                    /*
+                     * One press per Down, and nothing on the matching Up.
+                     *
+                     * `press_agent_key` sends both halves, because a control
+                     * that acts on keyup never fires if only a keydown arrives.
+                     * A client that sends the pair would otherwise press the
+                     * key twice, and Escape pressed twice closes a menu and
+                     * then whatever was behind it.
+                     */
+                    if matches!(phase, KeyPhase::Up) {
+                        DebugResponse::Ack
+                    } else {
+                        match press_agent_key(&mut document, &key, &code) {
+                            Ok(()) => settle_response(
+                                &mut document,
+                                &animation_clock,
+                                settle_deadline,
+                                &mut painted,
+                            ),
+                            Err(error) => DebugResponse::Error(error),
+                        }
+                    }
+                }
+                // Everything else needs runtime state this mode does not have,
+                // and saying so is better than a plausible-looking Ack: a check
+                // that silently did nothing reports the page as broken.
+                _ => DebugResponse::Error(DebugError {
+                    code: "unsupported".into(),
+                    message: "the headless page serves Inspect, Focus, Hover, Click, \
+                              DoubleClick, ScrollIntoView, SetValue and Key only"
+                        .into(),
+                }),
+            },
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Capture(request)) => {
+                if !request.scale.is_finite() || !(0.25..=8.0).contains(&request.scale) {
+                    DebugResponse::Error(DebugError {
+                        code: "invalidArgument".into(),
+                        message: "capture scale must be finite and between 0.25 and 8".into(),
+                    })
+                } else {
+                    match capture.capture(&mut document, request) {
+                        Ok(captured) => DebugResponse::Captured(captured),
+                        Err(error) => DebugResponse::Error(error),
+                    }
+                }
+            }
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Snapshot(request)) => {
+                revision += 1;
+                match snapshot_document(&mut document, request, revision) {
+                    Ok(snapshot) => DebugResponse::Snapshot(snapshot),
+                    Err(error) => DebugResponse::Error(error),
+                }
+            }
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WindowComposition) => {
+                // There is no window, so there is nothing composited over the
+                // page. Reporting the default is the true answer here, and it
+                // is what lets a spill check run headlessly at all.
+                DebugResponse::WindowComposition(WindowComposition::default())
+            }
+            ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
+                code: "unsupported".into(),
+                message: "the headless page serves diagnostics Capture, Snapshot and \
+                          WindowComposition only"
+                    .into(),
+            }),
+        };
+        if painted {
+            commit_render(&render_events, &mut render_revision);
+        }
+        if reply.send(response).is_err() {
+            break;
+        }
+    }
+
+    trace("inspection host finished");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Target, Url, classify, target_from};
+
+    fn fixture_root(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "chuzz-serve-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture root");
+        root
+    }
+
+    /// A built page is a directory, and `ps-qa sweep-components` hands one over
+    /// per component. It gets an origin rather than a `file://` path to its
+    /// index, because a built site names its bundle absolutely and its router
+    /// owns paths that were never built as files.
+    #[test]
+    fn a_directory_is_served_as_a_site() {
+        let root = fixture_root("dir");
+        std::fs::write(root.join("index.html"), "<html></html>").expect("write index");
+        let target = classify(root.to_str().expect("utf-8 fixture path")).expect("classify");
+        assert!(
+            matches!(target, Target::Directory(_)),
+            "a built page needs an origin, got {target:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A directory that is not a built page is refused rather than served
+    /// empty, because an empty tree over a working socket reads as a component
+    /// that renders nothing.
+    #[test]
+    fn a_directory_with_no_index_is_refused() {
+        let root = fixture_root("empty");
+        let error =
+            classify(root.to_str().expect("utf-8 fixture path")).expect_err("no index to serve");
+        assert!(
+            error.contains("no index.html"),
+            "unhelpful refusal: {error}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The ordering that matters: a relative path is checked against the
+    /// filesystem before it is offered to the address-bar rule. `dist` is a
+    /// directory here and a bare hostname to `request_from_input`, and guessing
+    /// wrong fetches `https://dist/` and reports the result as the page under
+    /// test.
+    #[test]
+    fn a_path_that_exists_is_never_read_as_a_hostname() {
+        let root = fixture_root("host");
+        let page = root.join("example.com");
+        std::fs::create_dir(&page).expect("create fixture page");
+        std::fs::write(page.join("index.html"), "<html></html>").expect("write index");
+        let target = classify(page.to_str().expect("utf-8 fixture path")).expect("classify");
+        assert!(
+            matches!(target, Target::Directory(_)),
+            "a path named like a host was fetched over the network: {target:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A single file is taken as the page it is, with no origin invented for
+    /// it. The engine's own fixtures are one file with siblings beside it.
+    #[test]
+    fn a_file_is_taken_as_a_page() {
+        let root = fixture_root("file");
+        let page = root.join("page.html");
+        std::fs::write(&page, "<html></html>").expect("write page");
+        let target = classify(page.to_str().expect("utf-8 fixture path")).expect("classify");
+        let Target::Page(url) = target else {
+            panic!("a file should be a page, got {target:?}");
+        };
+        assert_eq!(url.scheme(), "file");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A remote page is still a page. The fleet is deployed, and pointing the
+    /// harness at what is actually serving is the whole point of sharing the
+    /// browser's loader.
+    #[test]
+    fn a_url_is_taken_as_written() {
+        let target = classify("https://support.cafe/").expect("resolve url");
+        assert_eq!(
+            target,
+            Target::Page(Url::parse("https://support.cafe/").unwrap())
+        );
+    }
+
+    #[test]
+    fn a_target_that_is_neither_is_refused() {
+        let error = classify("not a page").expect_err("prose is not a page");
+        assert!(
+            error.contains("neither a path that exists nor a URL"),
+            "unhelpful refusal: {error}"
+        );
+    }
+
+    /// `ps-qa` runs the host binary with no arguments and `QA_INSPECT_PAGE`
+    /// set, so a host that only reads argv is not a host it can launch.
+    #[test]
+    fn an_argument_wins_over_the_environment() {
+        let args = vec!["chuzz-headless".to_owned(), "example.com".to_owned()];
+        assert_eq!(target_from(&args).expect("argument"), "example.com");
+    }
+
+    /// A flag is not the page. The argument scan skips anything beginning with
+    /// `--`, or `--serve` itself would be loaded as an address.
+    #[test]
+    fn a_flag_is_not_mistaken_for_the_page() {
+        let args = vec![
+            "chuzz-headless".to_owned(),
+            "--serve".to_owned(),
+            "example.com".to_owned(),
+        ];
+        assert_eq!(target_from(&args).expect("argument"), "example.com");
+    }
+}

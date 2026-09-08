@@ -1185,6 +1185,24 @@ impl CapturedDocument {
     }
 }
 
+#[cfg(all(feature = "capture", feature = "javascript"))]
+impl CapturedDocument {
+    /// The script document underneath, for a caller that has to drive the
+    /// script runtime rather than only paint what it produced.
+    ///
+    /// `with_document` hands out the `BaseDocument`, which is enough to lay out
+    /// and paint and not enough to serve inspection: answering a click means
+    /// dispatching the event and then pumping the microtask queue the handler
+    /// filled, and only the `ScriptDocument` owns that queue. `None` for a page
+    /// that was parsed rather than scripted, which has no queue to pump.
+    pub fn into_script(self) -> Option<Box<blitz_script::ScriptDocument>> {
+        match self {
+            Self::Script(document) => Some(document),
+            Self::Html(_) => None,
+        }
+    }
+}
+
 /// The shim is a three-hundred-line JavaScript string in a Rust file, and
 /// nothing else in the build parses it. A syntax error in it is not a compile
 /// error: it is a page that renders as if the shim were absent, on every site.
