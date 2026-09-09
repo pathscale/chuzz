@@ -114,6 +114,11 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
 }
 
 fn main() {
+    // Before any of the entry points below can reach the network. See the
+    // function's own comment for why the provider is named here rather than
+    // left to the resolution.
+    chuzz_gui::install_crypto_provider();
+
     // Before `--capture`, and matched by equality rather than by prefix, so the
     // two flags cannot be confused for each other in either direction.
     #[cfg(feature = "capture")]

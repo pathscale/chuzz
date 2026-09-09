@@ -14,6 +14,10 @@
 use chuzz_gui::serve;
 
 fn main() {
+    // Before the loader can reach the network. See the function's own comment
+    // for why the provider is named here rather than left to the resolution.
+    chuzz_gui::install_crypto_provider();
+
     let args: Vec<String> = std::env::args().collect();
     let target = match serve::target_from(&args) {
         Ok(target) => target,
