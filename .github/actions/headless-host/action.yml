@@ -9,9 +9,17 @@ inputs:
     default: master
   token:
     description: >
-      A token that can read pathscale/chuzz. Required, because the host is built
-      from source rather than installed from a registry.
-    required: true
+      A token that can read pathscale/chuzz. Optional: chuzz is public, so the
+      workflow's own `github.token` can check it out, and that is the default.
+      Supply one only to read a fork or a private mirror.
+
+      This was `required: true`, which meant every caller had to pass a secret
+      to clone a public repository. Callers that named a secret their
+      repository did not have passed the empty string, and the action failed
+      before its first step with "Input required and not supplied: token",
+      naming the input rather than the missing secret.
+    required: false
+    default: ""
   ps-qa-version:
     description: >
       The driver's version requirement. A floor rather than "latest": a check
@@ -37,7 +45,9 @@ runs:
         repository: pathscale/chuzz
         ref: ${{ inputs.chuzz-ref }}
         path: .qa-host
-        token: ${{ inputs.token }}
+        # `|| github.token` so a caller passing an unset secret, which arrives
+        # as the empty string, still gets a token that can read a public repo.
+        token: ${{ inputs.token || github.token }}
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
