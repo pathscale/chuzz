@@ -14,6 +14,28 @@
 //! the harness, so the harness measured a browser nobody ships. There is one
 //! loader now, and one place a gap gets fixed.
 
+/// Name the TLS provider, rather than letting the resolver imply one.
+///
+/// `rustls` selects its cryptographic provider from crate features, and panics
+/// at the first handshake when the graph enables neither `ring` nor `aws-lc-rs`
+/// or enables both. Features are additive across a dependency graph, so which
+/// of those holds is an outcome of resolution rather than a decision anyone
+/// made. This repository commits no lockfile, so it is not fixed at any point
+/// in time either: one crate picking up `ring` in a later release is enough to
+/// turn every `https://` fetch and every `wss://` connection into a panicked
+/// worker on the next runner that resolves it.
+///
+/// It presents as a site bug rather than a browser one. The socket never
+/// opens, Solid halts reactivity on the escaped error, and the page collapses
+/// to unnamed nodes, so a QA run reports a broken site.
+///
+/// Both binaries call this before anything can reach the network. An `Err`
+/// means a provider is already installed, which is the outcome being asked
+/// for, so it is discarded.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 // The window and its Tauri command surface. Behind `gui` because `tauri` is,
 // and because a headless build has no window to drive.
 #[cfg(feature = "gui")]

@@ -98,6 +98,14 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = [
   "handshake",
   "rustls-tls-native-roots",
 ] }
+# Named directly only so the binary can install a crypto provider by name. See
+# `install_crypto_provider`: rustls otherwise picks one from crate features and
+# panics at the first handshake when the resolution enables neither provider or
+# both, and with no lockfile that is not fixed at any point in time.
+rustls = { version = "0.23", default-features = false, features = [
+  "aws-lc-rs",
+  "std",
+] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 tokio = "1"
 url = "2.5"
