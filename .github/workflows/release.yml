@@ -149,7 +149,7 @@ jobs:
       # for fourteen releases. It worked on a developer machine because an older
       # install had hoisted it there by luck, which is also why the local tree
       # was compiling with 0.1.5 while the lockfile said 0.1.6.
-            - name: Install frontend dependencies
+      - name: Install frontend dependencies
         working-directory: apps/chuzz/frontend
         run: bun install
 
