@@ -1,11 +1,21 @@
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// Everything below is the embedded browser chrome, which only a `gui` build
+// compiles. Off that feature these are dead, and an unused import is a warning
+// the workspace denies.
+#[cfg(feature = "gui")]
+use std::fs;
+#[cfg(feature = "gui")]
+use std::io::Write;
+#[cfg(feature = "gui")]
+use std::path::{Path, PathBuf};
+
+#[cfg(feature = "gui")]
 use brotli::CompressorWriter;
 
+#[cfg(feature = "gui")]
 const CSS_MARKER: &str = "__CHUZZ_EMBEDDED_CSS__";
+#[cfg(feature = "gui")]
 const JS_URL: &str = "chuzz://ui/__chuzz__/app.js";
 
 /// First line of a command's stdout, or `None` when it fails or prints nothing.
@@ -51,6 +61,7 @@ fn stamp_build() {
     println!("cargo:rerun-if-changed=src");
 }
 
+#[cfg(feature = "gui")]
 fn only_file_with_extension(directory: &Path, extension: &str) -> PathBuf {
     let mut matches = fs::read_dir(directory)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()))
@@ -68,6 +79,7 @@ fn only_file_with_extension(directory: &Path, extension: &str) -> PathBuf {
     path
 }
 
+#[cfg(feature = "gui")]
 fn compress_asset(path: &Path, output: &Path, quality: u32) -> usize {
     let input =
         fs::read(path).unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
@@ -84,6 +96,7 @@ fn compress_asset(path: &Path, output: &Path, quality: u32) -> usize {
 
 /// Compile and Brotli-embed the Solid browser chrome using the same asset
 /// loading shape as AgencyZero's Blitz document factory.
+#[cfg(feature = "gui")]
 fn build_frontend() {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR"),
@@ -170,6 +183,15 @@ fn strip_unused_frameworks() {
 fn main() {
     strip_unused_frameworks();
     stamp_build();
+    // The Solid browser chrome, consumed only by `frontend.rs`, which is itself
+    // behind `gui`. Building it unconditionally meant `cargo build --bin
+    // chuzz-headless --no-default-features` shelled out to `bun run build` for
+    // assets that binary never links, and then failed on any machine where
+    // `apps/chuzz/frontend/node_modules` was not installed. That is every CI
+    // runner using the headless-host action, which installs the site's
+    // dependencies and has no reason to install this crate's. It took the whole
+    // fleet's QA red.
+    #[cfg(feature = "gui")]
     build_frontend();
     // Generates the Tauri context, which only the `chuzz-gui` binary consumes.
     // A headless build has no `tauri` in its graph for the context to describe,
