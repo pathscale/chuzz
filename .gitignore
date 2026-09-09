@@ -22,10 +22,6 @@ apps/chuzz/gen/
 # exist on one machine. See scripts/local-engine.sh.
 .cargo/local-engine.toml
 
-# Python bytecode from scripts/corpus/
-__pycache__/
-*.pyc
-
 # Lockfiles are not committed here. Every dependency is a caret range on a
 # published version, so a build resolves the newest thing that satisfies it and
 # a broken upstream release fails the build that introduced it. A committed lock
