@@ -25,3 +25,12 @@ apps/chuzz/gen/
 # Python bytecode from scripts/corpus/
 __pycache__/
 *.pyc
+
+# Lockfiles are not committed here. Every dependency is a caret range on a
+# published version, so a build resolves the newest thing that satisfies it and
+# a broken upstream release fails the build that introduced it. A committed lock
+# turns that into a pin nobody chose: it kept the workspace on ps-blitz 0.4.4
+# and tauri-runtime-blitz 0.3.6 for as long as those satisfied the caret, so
+# fixes that had already shipped were invisible to every build and to CI.
+Cargo.lock
+bun.lock

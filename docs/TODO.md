@@ -337,8 +337,8 @@ and as an item, and **not shared in the build**:
 - `~/code/ps-taffy` is the fork, at 0.13.0, published as `ps-taffy` and imported as
   `taffy`. **AgencyZero resolves it; we do not.** Its lockfile carries `ps-taffy` with no
   `source` field, meaning a path dependency, reached through the `[patch]` in its
-  `.cargo/config.toml` that redirects ps-blitz to `~/code/ps-blitz-render`. Our
-  `Cargo.lock` has zero references to it.
+  `.cargo/config.toml` that redirects ps-blitz to `~/code/ps-blitz-render`. Nothing
+  in this workspace resolves it at all.
 
 So a source change in the fork reaches AgencyZero on their next build and reaches this
 browser never, until item 3 above is done. A measurement they take, by contrast, is
