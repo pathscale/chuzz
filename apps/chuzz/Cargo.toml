@@ -63,6 +63,7 @@ gui = [
   # not in the base dependencies: a headless build must not want a font stack.
   "blitz-dom/system-fonts",
   "blitz-script?/system-fonts",
+  "dep:dioxus-native",
   "dioxus-native/system-fonts",
 ]
 # Let a WebAssembly guest build a page, through `--wasm` in the window and
@@ -106,8 +107,8 @@ capture = [
   "wasm",
 ]
 avif = ["image/avif"]
-vello = ["dioxus-native/vello"]
-vello-hybrid = ["dioxus-native/vello-hybrid"]
+vello = ["dioxus-native?/vello"]
+vello-hybrid = ["dioxus-native?/vello-hybrid"]
 # `incremental` was a feature flag upstream; PR #599 made it a runtime setting on
 # DocumentConfig, so the forwarding feature no longer has anything to forward to.
 scrollbars = ["blitz-dom/scrollbars"]
@@ -143,7 +144,12 @@ anyrender_vello_cpu = { workspace = true, optional = true }
 blitz-paint = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 flate2.workspace = true
-dioxus-native = { workspace = true, features = [
+# Nothing in this crate imports `dioxus_native`. It is here for the window's
+# renderer selection, so it is optional and `gui` turns it on. While it was
+# unconditional it rejected a build that named no renderer, which is why the
+# headless feature set carried `vello`, and `vello` is wgpu, winit and AppKit in
+# a browser that opens no window.
+dioxus-native = { workspace = true, optional = true, features = [
   "accessibility",
   "clipboard",
   "net",
