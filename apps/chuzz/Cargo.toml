@@ -50,7 +50,16 @@ default = [
 # The window and its Tauri surface: `browser`, `frontend` and the `chuzz-gui`
 # binary. A headless build turns this off and keeps the engine, the loader, the
 # rasteriser and the inspection socket, which is everything ps-qa drives.
-gui = ["dep:tauri", "tauri-runtime-blitz/runtime"]
+gui = [
+  "dep:tauri",
+  "tauri-runtime-blitz/runtime",
+  # The window paints glyphs, so it wants real faces. On Linux this reaches
+  # parley's enumeration and therefore fontconfig, which is why it is here and
+  # not in the base dependencies: a headless build must not want a font stack.
+  "blitz-dom/system-fonts",
+  "blitz-script?/system-fonts",
+  "dioxus-native/system-fonts",
+]
 # Let a WebAssembly guest build a page, through `--wasm` in the window and
 # `--capture-wasm` headlessly. On by default because it is a way of opening a
 # page rather than a diagnostic: with it off, `--wasm` is not a flag the binary
@@ -101,26 +110,24 @@ scrollbars = ["blitz-dom/scrollbars"]
 [dependencies]
 # Default features are the engine's own baseline: svg (inline SVG cannot be
 # measured or painted without it, so a logo silently collapses),
-# accessibility, system-fonts, file-input and custom-widget. Stripping them
-# and re-adding one by hand was how the logo broke.
+# accessibility, file-input and custom-widget. Stripping them and re-adding one
+# by hand was how the logo broke.
 #
-# `system-fonts` is already in that default set, and it is named again on
-# purpose. Without it parley finds no face, every line shapes to zero height,
-# and a capture comes out blank while every assertion about the tree still
-# passes. blitz-wasm's own layout test carries the same dependency for the same
-# reason. Re-adding the defaults by hand once broke SVG this way; naming this
-# one alongside them is the note that it must not be dropped.
-blitz-dom = { workspace = true, default-features = true, features = [
-  "woff",
-  "system-fonts",
-] }
+# `system-fonts` is NOT here. It went behind `gui` with the rest of the window,
+# because it is a system dependency: on Linux it reaches parley's font
+# enumeration and therefore fontconfig, and a headless build then wants
+# development headers for a browser that opens no window and paints no glyph.
+# ps-blitz took it out of blitz-dom's own defaults for this reason in
+# "build: no font dependency in a headless build"; naming it again here put it
+# straight back.
+blitz-dom = { workspace = true, default-features = true, features = ["woff"] }
 blitz-html = { workspace = true, default-features = true }
 # compression: reqwest only sends Accept-Encoding for codecs it was built
 # with, so without it every response arrives uncompressed and a page costs
 # several times the bytes it should. cache: without it every navigation is
 # cold, including a reload of the page you are already on.
 blitz-net = { workspace = true, features = ["http2", "cookies", "compression", "cache"] }
-blitz-script = { workspace = true, features = ["system-fonts"], optional = true }
+blitz-script = { workspace = true, optional = true }
 blitz-traits = { workspace = true, default-features = true }
 blitz-wasm = { workspace = true, optional = true }
 wasmi = { workspace = true, optional = true }
@@ -138,7 +145,6 @@ dioxus-native = { workspace = true, features = [
   "net",
   "prelude",
   "svg",
-  "system-fonts",
 ] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 url.workspace = true
