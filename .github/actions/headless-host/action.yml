@@ -49,6 +49,23 @@ runs:
         # as the empty string, still gets a token that can read a public repo.
         token: ${{ inputs.token || github.token }}
 
+    # Text shaping needs a font, and on Linux parley finds one through
+    # fontconfig. `blitz-dom`'s `system-fonts` is deliberate here: without it
+    # parley finds no face, every line shapes to zero height, and a capture
+    # comes out blank while every assertion about the tree still passes. A
+    # silently empty screenshot is worse than a failed build, so the runner
+    # gets the library rather than the browser losing its fonts.
+    #
+    # Only fontconfig. The window stack is gone from this graph (see the `gui`
+    # feature in chuzz), and the remaining `-sys` crates either vendor their C
+    # or dlopen at runtime.
+    - name: Fontconfig, on Linux only
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends libfontconfig1-dev
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
