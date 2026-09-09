@@ -108,11 +108,12 @@ jobs:
       # day a new engine package was added, because a path dependency resolves
       # against whatever is on disk and no local build could notice.
       #
-      # `Cargo.toml` now pins ps-blitz, tauri-runtime-blitz and endpoint-libs by
-      # revision, so cargo fetches them and `Cargo.lock` records them. An
-      # ordinary `cargo build` on any machine resolves exactly what this job
-      # does. See scripts/local-engine.sh for building against a working
-      # checkout, which is opt-in so the default keeps testing these pins.
+      # `Cargo.toml` now takes ps-blitz, tauri-runtime-blitz and endpoint-libs
+      # from crates.io on a caret, and no lockfile is committed, so this job
+      # resolves the newest published versions that satisfy the ranges. An
+      # ordinary `cargo build` on any machine resolves the same thing. See
+      # scripts/local-engine.sh for building against a working checkout, which
+      # is opt-in so the default keeps testing what is actually released.
 
       # For `bunx @tauri-apps/cli signer sign` below. The runner has no bun
       # preinstalled, and without this the release builds, bundles and packs
@@ -148,12 +149,9 @@ jobs:
       # for fourteen releases. It worked on a developer machine because an older
       # install had hoisted it there by luck, which is also why the local tree
       # was compiling with 0.1.5 while the lockfile said 0.1.6.
-      #
-      # `--frozen-lockfile` so a release cannot quietly resolve a different tree
-      # from the committed bun.lock.
-      - name: Install frontend dependencies
+            - name: Install frontend dependencies
         working-directory: apps/chuzz/frontend
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

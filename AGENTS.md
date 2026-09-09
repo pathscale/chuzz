@@ -14,9 +14,9 @@
 - Control is opt-in, local-only, and unauthenticated only because the socket and descriptor are owner-readable. Never bind it to a network interface.
 - **Every dependency is a published version with a caret, not a sibling
   checkout.** `ps-blitz`, the renderers and `endpoint-libs` are ordinary
-  crates.io dependencies on `^`, so `cargo update` can move them, `Cargo.lock`
-  records exactly what a release builds, and two crates asking for the same
-  range share one copy instead of getting a second. Do not turn them back into
+  crates.io dependencies on `^`, so a build resolves the newest published
+  version that satisfies the range, and two crates asking for the same range
+  share one copy instead of getting a second. Do not turn them back into
   `path = "../..."`. That is what this repository did before, and it put the
   revision CI used in a `BLITZ_REF` env var in release.yml while every developer
   built against whatever happened to be on disk. The pin sat 44 commits behind,
@@ -27,12 +27,26 @@
   `endpoint-libs` alongside the registry copy is precisely how this repository
   ended up with two of it. There are no exceptions left: `tauri-runtime-blitz`
   was the last git dependency, and it is `^0.1.0` from crates.io like the rest.
+- **No lockfiles are committed. Not `Cargo.lock`, not `bun.lock`.** They were,
+  and a lockfile is the one thing that can hold a caret dependency still: any
+  version already recorded satisfies `^`, so cargo never reconsiders it. This
+  workspace sat on `ps-blitz` 0.4.4 and `tauri-runtime-blitz` 0.3.6 that way
+  while 0.4.5 and 0.3.7 were published, carrying fixes chuzz needed, and neither
+  a local build nor CI could see it. A stale-but-valid pin is the dangerous
+  kind; a stale-and-invalid one repairs itself, which is why the boa dependency
+  moved on its own and these did not. Without a lock, every build resolves the
+  newest published version in range, and a bad upstream release fails the build
+  that picked it up rather than waiting for whoever runs `cargo update`. Do not
+  add one back, and do not reach for `--locked`, `--frozen` or
+  `--frozen-lockfile` in a workflow: they only mean anything against a committed
+  lock. If a specific version is genuinely required, say so in the range.
 - **Building against a working checkout is opt-in and never edits a tracked
   file.** Put the `[patch]` tables in `.cargo/local-engine.toml`, which is
   gitignored, and reach for them per command:
   `scripts/local-engine.sh check -p chuzz-gui`. The wrapper snapshots and
-  restores `Cargo.lock`, because a redirected build rewrites it to point at
-  directories that exist on one machine. Patch only the crates you are actually
+  restores any `Cargo.lock` a redirected build leaves behind, because that one
+  points at directories that exist on one machine and the next plain `cargo
+  build` would silently reuse it. Patch only the crates you are actually
   changing; every entry is a pin that stops being tested.
 - When you move the engine version, move `tauri-runtime-blitz`'s to match. Both
   resolve a ps-blitz, and two different ones put two engines in the graph, which

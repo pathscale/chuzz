@@ -27,11 +27,11 @@ homepage = "https://github.com/pathscale/chuzz"
 #
 # with both types pointing at the same file.
 #
-# A caret is what was meant all along. `cargo update` moves it, `Cargo.lock`
-# records what was resolved, and anything else asking for the same range gets
-# the same crate rather than a second copy. To build against a working checkout,
-# see `scripts/local-engine.sh`; it is opt-in so the default exercises what a
-# release actually resolves.
+# A caret is what was meant all along. No lockfile is committed, so every build
+# resolves the newest published version in range, and anything else asking for
+# the same range gets the same crate rather than a second copy. To build against
+# a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
+# exercises what a release actually resolves.
 blitz-dom = { package = "ps-blitz-dom", version = "^0.4" }
 blitz-html = { package = "ps-blitz-html", version = "^0.4" }
 blitz-net = { package = "ps-blitz-net", version = "^0.4" }

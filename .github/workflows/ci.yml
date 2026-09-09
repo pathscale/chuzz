@@ -46,18 +46,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  # Reads Cargo.lock only, so it needs neither a toolchain nor a network. This
-  # is the check that would have caught the engine cascade being repinned
-  # halfway; see the script's own header for why that failure reads as a broken
-  # engine rather than as two of them.
-  one-rev:
-    runs-on: ubicloud-standard-2
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: One rev per git source
-        run: scripts/check-one-rev-per-git-source.sh
-
   # The portable half of the workspace, linted and tested for real.
   control:
     runs-on: ubicloud-standard-4
@@ -91,8 +79,9 @@ jobs:
   # only because `solid-layouts-oxc` is a direct devDependency. Bun links the
   # bins of direct dependencies into the root `.bin` and leaves a transitive one
   # under its own dependent, which is how the release job failed for fourteen
-  # releases while `bun install` reported success. `--frozen-lockfile` so a PR
-  # cannot quietly resolve a different tree from the committed bun.lock.
+  # releases while `bun install` reported success. There is no bun.lock to be
+  # frozen against: this repository commits no lockfiles, so every job resolves
+  # the ranges in package.json the way a fresh checkout does.
   frontend:
     runs-on: ubicloud-standard-4
     defaults:
@@ -107,7 +96,7 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install
 
       # Proves the binary the release job needs is actually on PATH, and names
       # it plainly if it is not. Cheap, and it turns the one failure that has
@@ -152,7 +141,7 @@ jobs:
       # dependencies have to be present before cargo starts.
       - name: Install frontend dependencies
         working-directory: apps/chuzz/frontend
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

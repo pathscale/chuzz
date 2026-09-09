@@ -52,18 +52,29 @@ MSG
     exit 1
 fi
 
-# Cargo rewrites Cargo.lock when a `[patch]` redirects a git source to a path:
-# the git revisions are replaced by path entries. That lockfile is committed, so
-# an opt-in build would otherwise leave the repository claiming it depends on
-# directories that exist on one machine.
+# Cargo rewrites Cargo.lock when a `[patch]` redirects a dependency to a path:
+# the registry versions are replaced by path entries. No lockfile is committed
+# here, but the file cargo writes stays on disk, and the next plain `cargo
+# build` would reuse it and keep building against one machine's directories
+# without saying so.
 #
 # Snapshot and restore on every exit path, including a failed build and a
-# Ctrl-C, so the redirect cannot leave a trace in the tree.
+# Ctrl-C, so the redirect cannot outlive the command. There may be no lockfile
+# to snapshot on a fresh checkout, in which case the restore removes whatever
+# the redirected build created.
 lock="$root/Cargo.lock"
 snapshot="$(mktemp)"
-cp "$lock" "$snapshot"
+had_lock=0
+if [ -f "$lock" ]; then
+    had_lock=1
+    cp "$lock" "$snapshot"
+fi
 restore() {
-    cp "$snapshot" "$lock"
+    if [ "$had_lock" -eq 1 ]; then
+        cp "$snapshot" "$lock"
+    else
+        rm -f "$lock"
+    fi
     rm -f "$snapshot"
 }
 trap restore EXIT INT TERM
