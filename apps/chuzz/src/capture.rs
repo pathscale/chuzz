@@ -473,7 +473,7 @@ mod tests {
         // A page whose rendered form is unmistakably different from its source:
         // an <h1> would paint large and bold, and the tags would vanish.
         const PAGE: &str = "<h1>Example Domain</h1><p>a &amp; b</p>";
-        let html = crate::browser::source_html(PAGE);
+        let html = crate::internal_pages::source_html(PAGE);
 
         // The escaping is the contract the picture depends on, so assert it
         // before painting: a failure here explains a failure below.

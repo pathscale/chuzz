@@ -14,6 +14,9 @@
 //! the harness, so the harness measured a browser nobody ships. There is one
 //! loader now, and one place a gap gets fixed.
 
+// The window and its Tauri command surface. Behind `gui` because `tauri` is,
+// and because a headless build has no window to drive.
+#[cfg(feature = "gui")]
 pub mod browser;
 #[cfg(feature = "capture")]
 pub mod capture;
@@ -23,8 +26,13 @@ pub mod document_loader;
 // pixels have nothing to be explained by.
 #[cfg(feature = "capture")]
 pub mod dump;
+// Draws the browser chrome, which only exists when there is a window.
+#[cfg(feature = "gui")]
 pub mod frontend;
 pub mod identity;
+// The browser's own documents: view source, the error page. Pages rather than
+// chrome, so the headless host reaches them too.
+pub mod internal_pages;
 pub mod nav;
 pub mod net_bridge;
 // A built site needs an origin before it is a site. Only the headless host

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::internal_pages::{INTERNAL_PAGE_STYLE, source_html};
 use blitz_dom::{Document as _, DocumentConfig, FontContext, NodeId};
 use blitz_html::HtmlProvider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
@@ -21,18 +22,6 @@ use crate::nav::{NEW_TAB_URL, display_title, request_from_input};
 /// tab stayed blue whatever they picked. The shell paints `.page` with the
 /// themed surface and this lets it through.
 const BLANK_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title></title></head><body style="margin:0;background:transparent"></body></html>"#;
-/// Colours for the pages the browser writes itself.
-///
-/// Explicit, and light, like every other browser's error and source pages.
-/// These documents declare no colours of their own, so they inherited the
-/// engine's defaults: black text on a transparent background, over a viewport
-/// the shell paints with the dark theme surface. The source of a page was
-/// therefore rendered, laid out, and unreadable, which is indistinguishable
-/// from not being rendered at all and was reported as exactly that.
-///
-/// Not a theme token. These are documents in a page viewport, not part of the
-/// chrome, and nothing in a page can reach the shell's custom properties.
-const INTERNAL_PAGE_STYLE: &str = "margin:0;background:#f6f6f7;color:#16181d";
 
 const EMPTY_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Empty response</title></head><body style="margin:0;background:#f6f6f7;color:#16181d"><h1>Empty response</h1><p>The server returned no content.</p></body></html>"#;
 
@@ -874,24 +863,6 @@ async fn fetch_page_module(
         bytes: bytes.to_vec(),
         selector: script.mount.clone(),
     })
-}
-
-/// Wrap a server's bytes in the smallest document that shows them verbatim.
-///
-/// Escaped and put in a `<pre>`, which is the whole job: the point of view
-/// source is that what you read is what arrived, so nothing here may reformat,
-/// pretty-print or re-serialise it. A document that showed a parsed and
-/// re-emitted tree would be answering a different question, and for a page
-/// whose claim is "there is no script here" it would be the wrong answer.
-pub(crate) fn source_html(text: &str) -> String {
-    let escaped = text
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>Source</title></head>
-<body style="{INTERNAL_PAGE_STYLE}"><pre style="margin:0;padding:1rem;font:13px ui-monospace,monospace;white-space:pre-wrap;word-break:break-word">{escaped}</pre></body></html>"#
-    )
 }
 
 pub(crate) fn page_node(document: &blitz_dom::BaseDocument, tab_id: u64) -> Option<NodeId> {
