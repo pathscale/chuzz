@@ -14,6 +14,12 @@ publish = false
 [[bin]]
 name = "chuzz-gui"
 path = "src/tauri_main.rs"
+# The window, and the only thing that needs Tauri. Off this feature `tauri`
+# leaves the graph, and with it `muda` -> `gtk` -> `glib-sys` and
+# `tauri-runtime` -> `webkit2gtk`. Neither is reachable from a binary that
+# never opens a window, and on Linux their absence is the difference between
+# building and needing GTK development headers.
+required-features = ["gui"]
 
 # The same browser with no window, serving one page over the inspection socket
 # for `ps-qa` to drive. See `src/serve.rs` for why it is a mode of this binary's
@@ -31,7 +37,20 @@ required-features = ["capture", "javascript"]
 [features]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
-default = ["vello", "scrollbars", "javascript", "wasm", "capture", "webp", "avif"]
+default = [
+  "gui",
+  "vello",
+  "scrollbars",
+  "javascript",
+  "wasm",
+  "capture",
+  "webp",
+  "avif",
+]
+# The window and its Tauri surface: `browser`, `frontend` and the `chuzz-gui`
+# binary. A headless build turns this off and keeps the engine, the loader, the
+# rasteriser and the inspection socket, which is everything ps-qa drives.
+gui = ["dep:tauri", "tauri-runtime-blitz/runtime"]
 # Let a WebAssembly guest build a page, through `--wasm` in the window and
 # `--capture-wasm` headlessly. On by default because it is a way of opening a
 # page rather than a diagnostic: with it off, `--wasm` is not a flag the binary
@@ -125,7 +144,7 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri.workspace = true
+tauri = { workspace = true, optional = true }
 tauri-runtime-blitz.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

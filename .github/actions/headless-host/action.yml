@@ -72,5 +72,10 @@ runs:
       id: build
       shell: bash
       run: |
-        cargo build --release --manifest-path .qa-host/Cargo.toml --bin chuzz-headless
+        # `--no-default-features` drops `gui`, and with it `tauri`, `muda -> gtk`
+        # and `tauri-runtime -> webkit2gtk`. A Linux runner then needs no GTK
+        # development headers to build a browser that never opens a window.
+        cargo build --release --manifest-path .qa-host/Cargo.toml \
+          --bin chuzz-headless --no-default-features \
+          --features capture,javascript,vello,scrollbars,webp
         echo "host=$PWD/.qa-host/target/release/chuzz-headless" >> "$GITHUB_OUTPUT"

@@ -1214,7 +1214,7 @@ pub async fn load_for_capture(
             .fetch_async(Request::get(url))
             .await
             .map_err(|error| format!("could not fetch {inner}: {error:?}"))?;
-        let html = crate::browser::source_html(&decode_body(&bytes));
+        let html = crate::internal_pages::source_html(&decode_body(&bytes));
         return Ok(CapturedDocument::Html(Box::new(
             blitz_html::HtmlDocument::from_html(
                 &html,

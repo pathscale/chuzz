@@ -171,5 +171,10 @@ fn main() {
     strip_unused_frameworks();
     stamp_build();
     build_frontend();
+    // Generates the Tauri context, which only the `chuzz-gui` binary consumes.
+    // A headless build has no `tauri` in its graph for the context to describe,
+    // and running this anyway is what made `cargo build --bin chuzz-headless`
+    // need a Tauri toolchain on a machine with no window system.
+    #[cfg(feature = "gui")]
     tauri_build::build();
 }
