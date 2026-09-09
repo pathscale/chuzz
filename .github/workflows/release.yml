@@ -62,10 +62,23 @@ jobs:
       - name: Compare the committed version against the published one
         id: decide
         run: |
-          # `cargo pkgid` rather than a TOML parser. The version is resolved by
-          # the tool that owns it, so this cannot disagree with what the build
-          # actually produces, and it needs no interpreter on the runner.
-          VERSION=$(cargo pkgid -p chuzz-gui | sed 's/.*@//')
+          # Cargo reads the version rather than a TOML parser, so this cannot
+          # disagree with what the build produces and needs no interpreter on
+          # the runner. `--no-deps` reads the workspace manifests only.
+          #
+          # Not `cargo pkgid`: that resolves the dependency graph and so refuses
+          # to run without a `Cargo.lock`, which this repo deliberately does not
+          # commit. It exited non-zero here, left VERSION empty, and the job ran
+          # on to compare the built bundle against an empty string. 0.1.37 was
+          # merged, tagged and never published that way. Hence the guard below:
+          # an unreadable version fails the release instead of publishing a
+          # nameless one.
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | sed -n 's/.*"name":"chuzz-gui","version":"\([^"]*\)".*/\1/p')
+          if [ -z "$VERSION" ]; then
+            echo "::error::could not read chuzz-gui's version from cargo metadata"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
           # `latest.json` is written by this workflow further down, so its shape
