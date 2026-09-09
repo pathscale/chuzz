@@ -1,6 +1,9 @@
 [package]
-# Package and binary share the name, matching AgencyZero's `apps/gui` -> `az-gui`.
-name = "chuzz-gui"
+# The package is the browser as a library, so an embedder can depend on it.
+# The binaries keep their own names: `chuzz-gui` is the window, `chuzz-headless`
+# the inspection host, and both are referenced by build-app.sh, the release
+# workflow and the Homebrew cask.
+name = "chuzz"
 description = "A pure Rust web browser"
 version.workspace = true
 edition.workspace = true
@@ -9,7 +12,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish = false
+publish = true
 
 [[bin]]
 name = "chuzz-gui"
@@ -133,7 +136,6 @@ blitz-script = { workspace = true, optional = true }
 blitz-traits = { workspace = true, default-features = true }
 blitz-wasm = { workspace = true, optional = true }
 wasmi = { workspace = true, optional = true }
-chuzz-control = { path = "../../crates/chuzz-control" }
 brotli.workspace = true
 image = { workspace = true, default-features = false }
 anyrender = { workspace = true, optional = true }

@@ -95,8 +95,8 @@ const MENU_VIEW_SOURCE: &str = "menu-view-source";
 // The modules live in the library beside this binary, because the headless
 // host is the same browser and compiles the same tree. See `lib.rs`.
 #[cfg(feature = "capture")]
-use chuzz_gui::capture;
-use chuzz_gui::{browser, frontend, nav};
+use chuzz::capture;
+use chuzz::{browser, frontend, nav};
 
 use browser::Browser;
 
@@ -117,7 +117,7 @@ fn main() {
     // Before any of the entry points below can reach the network. See the
     // function's own comment for why the provider is named here rather than
     // left to the resolution.
-    chuzz_gui::install_crypto_provider();
+    chuzz::install_crypto_provider();
 
     // Before `--capture`, and matched by equality rather than by prefix, so the
     // two flags cannot be confused for each other in either direction.

@@ -1,4 +1,14 @@
-//! Serve one page over the inspection socket, with no window.
+//! The headless runtime for Blitz: one page, no window, driven over the
+//! control socket.
+//!
+//! The pair to `tauri-runtime-blitz`, which is the same engine embedded in a
+//! Tauri window. That one is an adapter, about 4,000 lines letting Tauri host
+//! a Blitz document. This is the browser itself with the window left off, so
+//! it is a module here rather than a crate of its own: it needs
+//! `document_loader`, `page_server`, `nav` and `identity`, which is most of a
+//! browser, and the last attempt to package it separately is the cautionary
+//! tale below.
+//!
 //!
 //! # Why this is here and not in a second crate
 //!
