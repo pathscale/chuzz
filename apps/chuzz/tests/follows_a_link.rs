@@ -22,7 +22,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tauri_runtime_blitz::control_protocol::{
+use blitz_control_protocol::{
     AgentAction, AgentControlRequest, DebugResponse, JsonRpcId, MessageStream, TransportStream,
     decode_response, encode_agent_request, framed_json,
 };
@@ -65,7 +65,7 @@ async fn request(
 async fn tree(
     stream: &mut dyn MessageStream,
     next_id: &mut i64,
-) -> tauri_runtime_blitz::control_protocol::AgentSnapshot {
+) -> blitz_control_protocol::AgentSnapshot {
     let answer = request(
         stream,
         next_id,

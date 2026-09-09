@@ -52,6 +52,8 @@ default = [
 # rasteriser and the inspection socket, which is everything ps-qa drives.
 gui = [
   "dep:tauri",
+  "dep:tauri-runtime-blitz",
+  "dep:tauri-build",
   "tauri-runtime-blitz/runtime",
   # The window paints glyphs, so it wants real faces. On Linux this reaches
   # parley's enumeration and therefore fontconfig, which is why it is here and
@@ -152,7 +154,8 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { workspace = true, optional = true }
 rustls.workspace = true
-tauri-runtime-blitz.workspace = true
+blitz-control-protocol = { workspace = true, features = ["engine", "server", "capture"] }
+tauri-runtime-blitz = { workspace = true, optional = true }
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 
@@ -178,4 +181,7 @@ wat = "1"
 
 [build-dependencies]
 brotli.workspace = true
-tauri-build = { version = "2", features = [] }
+# Only the window needs a Tauri context. Optional so a headless build does not
+# compile `tauri-build` and its two transitives for a binary whose `build.rs`
+# never calls it: the same fault as the runtime dependency, one plane down.
+tauri-build = { version = "2", features = [], optional = true }

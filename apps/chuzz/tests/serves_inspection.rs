@@ -23,7 +23,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tauri_runtime_blitz::control_protocol::{
+use blitz_control_protocol::{
     AgentAction, AgentControlRequest, CaptureRequest, DebugEvent, DebugResponse, DebugStream,
     DiagnosticsRequest, InputCommand, JsonRpcId, KeyPhase, MessageStream, Modifiers, PointerPhase,
     TransportStream, WheelPhase, decode_diagnostics_event, decode_response, encode_agent_request,

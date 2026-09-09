@@ -37,19 +37,20 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
 
+use blitz_control_protocol::document::{
+    DocumentCapture, click_agent_node, focus_agent_node, hover_agent_node, inspect_document,
+    press_agent_key, snapshot_document,
+};
+use blitz_control_protocol::server::{AgentControlServer, ControlBridgeRequest, Host};
+use blitz_control_protocol::{
+    AgentAction, AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
+    InputCommand, KeyPhase, WindowComposition,
+};
 use blitz_dom::Document as _;
 use blitz_script::ScriptDocument;
 use blitz_traits::events::{BlitzImeEvent, UiEvent};
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use tauri_runtime_blitz::control_protocol::{
-    AgentAction, AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
-    InputCommand, KeyPhase, WindowComposition,
-};
-use tauri_runtime_blitz::{
-    AgentControlServer, ControlBridgeRequest, DocumentCapture, click_agent_node, focus_agent_node,
-    hover_agent_node, inspect_document, press_agent_key, snapshot_document,
-};
 
 fn trace(message: &str) {
     eprintln!("chuzz-headless: {message}");
@@ -545,7 +546,7 @@ pub fn serve(target: &str) -> Result<(), String> {
         tokio::sync::oneshot::Sender<DebugResponse>,
     )>(MAX_PENDING_REQUESTS);
 
-    let bridge: tauri_runtime_blitz::ControlBridge = Arc::new(move |request| {
+    let bridge: blitz_control_protocol::server::ControlBridge = Arc::new(move |request| {
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         match request_tx.try_send((request, response_tx)) {
             Ok(()) => response_rx,
@@ -572,7 +573,16 @@ pub fn serve(target: &str) -> Result<(), String> {
     });
 
     let (render_events, render_event_receiver) = tokio::sync::watch::channel(None);
-    let server = AgentControlServer::start_with_events(bridge, render_event_receiver)
+    // What this process calls itself over MCP. `diagnostics` is true because
+    // this binary is built with the protocol's `capture` feature, so
+    // `blitz.diagnostics` answers rather than erroring: advertising a tool that
+    // fails every call reads as a broken application instead of a plain build.
+    let host = Host {
+        name: "chuzz-headless".to_owned(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        diagnostics: true,
+    };
+    let server = AgentControlServer::start_with_events(bridge, host, render_event_receiver)
         .map_err(|error| format!("could not host the control socket: {error}"))?;
     trace(&format!(
         "inspection socket listening: {}",
