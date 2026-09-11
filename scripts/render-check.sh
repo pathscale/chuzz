@@ -33,7 +33,7 @@ mkdir -p "$out_dir"
 
 if [ ! -x "$binary" ]; then
   echo "building chuzz-gui with the capture feature" >&2
-  ( cd "$repo_dir" && cargo build -q -p chuzz-gui --release --features capture )
+  ( cd "$repo_dir" && cargo build -q -p chuzz --bin chuzz-gui --release --features capture )
 fi
 
 capture_one() {

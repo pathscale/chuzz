@@ -155,7 +155,7 @@ jobs:
           shared-key: chuzz-macos-ci
 
       - name: Clippy
-        run: cargo clippy -p chuzz-gui --all-targets -- -D warnings
+        run: cargo clippy -p chuzz --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --workspace

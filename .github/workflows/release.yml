@@ -74,9 +74,9 @@ jobs:
           # an unreadable version fails the release instead of publishing a
           # nameless one.
           VERSION=$(cargo metadata --no-deps --format-version 1 \
-            | sed -n 's/.*"name":"chuzz-gui","version":"\([^"]*\)".*/\1/p')
+            | sed -n 's/.*"name":"chuzz","version":"\([^"]*\)".*/\1/p')
           if [ -z "$VERSION" ]; then
-            echo "::error::could not read chuzz-gui's version from cargo metadata"
+            echo "::error::could not read chuzz's version from cargo metadata"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

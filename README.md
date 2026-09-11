@@ -8,9 +8,9 @@ chrome is a SolidJS app interpreted by Boa, the same way page content is, and ev
 it is Rust.
 
 ```sh
-cargo run -p chuzz-gui                  # opens a blank tab
-cargo run -p chuzz-gui -- example.com   # opens a bare hostname over HTTPS
-cargo run -p chuzz-gui -- --wasm demo.wasm   # a tab a WebAssembly guest builds
+cargo run -p chuzz --bin chuzz-gui                  # opens a blank tab
+cargo run -p chuzz --bin chuzz-gui -- example.com   # opens a bare hostname over HTTPS
+cargo run -p chuzz --bin chuzz-gui -- --wasm demo.wasm   # a tab a WebAssembly guest builds
 ```
 
 A non-URL argument is not a search: anything that is neither a URL nor a hostname
