@@ -26,10 +26,10 @@ inputs:
       file can use a field an older driver does not know, and the failure then
       reads as a broken workflow rather than a driver that is too old.
 
-      0.6.3 is the floor because it is the first that reads `QA_TIMEOUT_SCALE`
-      from the environment. Every site workflow sets it, so an older driver
-      silently runs a shared runner against the strict local latency contract.
-    default: "^0.6.3"
+      0.7.1 uses the shared control protocol and rejects checks that silently
+      inherit another file's page. Keep the driver on the same protocol line
+      as the headless host.
+    default: "^0.7.1"
 
 outputs:
   host:
@@ -51,6 +51,12 @@ runs:
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+
+    - name: Install fonts for rendered outcomes
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libfontconfig1-dev fonts-dejavu-core
 
     - uses: Swatinem/rust-cache@v2
       with:
@@ -77,5 +83,5 @@ runs:
         # development headers to build a browser that never opens a window.
         cargo build --release --manifest-path .qa-host/Cargo.toml \
           --bin chuzz-headless --no-default-features \
-          --features capture,javascript,vello,scrollbars,webp
+          --features capture,javascript,scrollbars,webp,system-fonts
         echo "host=$PWD/.qa-host/target/release/chuzz-headless" >> "$GITHUB_OUTPUT"

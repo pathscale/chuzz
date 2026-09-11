@@ -95,6 +95,27 @@ Events are not wired up yet: the page renders and does not respond.
 
 ## Rendering without a window
 
+For interactive website QA, build the headless host with fonts and use ps-qa
+0.7.1 or newer:
+
+```sh
+cargo build --release --bin chuzz-headless --no-default-features \
+  --features capture,javascript,scrollbars,webp,system-fonts
+ps-qa --app ../worktables.dev/tests/ps-qa/ps-qa.ron qa-hosted \
+  --host target/release/chuzz-headless --page ../worktables.dev/dist \
+  --checks ../worktables.dev/tests/ps-qa/checks
+```
+
+Linux needs `pkg-config`, `libfontconfig1-dev`, and a font catalogue such as
+`fonts-dejavu-core`; the shared headless-host CI action installs these. No desktop
+server is needed. The `system-fonts` feature is optional for embedders supplying
+their own fonts, but rendered website checks need real glyphs.
+
+The host dispatches input through the shared `DocumentControl` implementation,
+including pointer gestures, key-down/up, and scrolling. Once an action has been
+applied, a page that continues animating does not turn it into a failed action
+that a caller might repeat; subsequent inspection observes the resulting state.
+
 ```sh
 chuzz-gui --capture out.png https://example.com          # a fetched page
 chuzz-gui --capture-wasm demo.wasm --out out.png --tree out.txt

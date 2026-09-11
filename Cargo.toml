@@ -130,7 +130,7 @@ tauri = { version = "^2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-tauri-runtime-blitz = { version = "^0.3.7", default-features = false, features = [
+tauri-runtime-blitz = { version = "^0.4.0", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }

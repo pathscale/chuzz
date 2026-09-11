@@ -60,9 +60,8 @@ gui = [
   "tauri-runtime-blitz/runtime",
   # The window paints glyphs, so it wants real faces. On Linux this reaches
   # parley's enumeration and therefore fontconfig, which is why it is here and
-  # not in the base dependencies: a headless build must not want a font stack.
-  "blitz-dom/system-fonts",
-  "blitz-script?/system-fonts",
+  # not in the base dependencies. Rendered QA opts in through the same feature.
+  "system-fonts",
   "dep:dioxus-native",
   "dioxus-native/system-fonts",
 ]
@@ -75,6 +74,9 @@ wasm = ["dep:blitz-wasm", "dep:wasmi"]
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
 # page parses to an empty mount point and paints nothing.
 javascript = ["dep:blitz-script"]
+# Opt in for rendered QA as well as GUI builds. A minimal headless embedder
+# can still omit font discovery and provide its own faces.
+system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
 # The `image` crate is pulled in with default features off, so without these a
 # .webp or .avif downloads fine and then cannot be decoded: the element simply
 # never paints, which reads as a missing asset rather than a missing codec.

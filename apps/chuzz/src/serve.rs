@@ -42,23 +42,19 @@
 //! waits for the line, so a component that wedges the engine cannot poison the
 //! next one's verdict.
 
-use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use blitz_control_protocol::document::{
-    DocumentCapture, click_agent_node, focus_agent_node, hover_agent_node, inspect_document,
-    press_agent_key, snapshot_document,
-};
+use blitz_control_protocol::document::{DocumentCapture, inspect_document, snapshot_document};
+use blitz_control_protocol::in_process::DocumentControl;
 use blitz_control_protocol::server::{AgentControlServer, ControlBridgeRequest, Host};
 use blitz_control_protocol::{
-    AgentAction, AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
-    InputCommand, KeyPhase, WindowComposition,
+    AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
+    WindowComposition,
 };
 use blitz_dom::Document as _;
 use blitz_script::ScriptDocument;
-use blitz_traits::events::{BlitzImeEvent, UiEvent};
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
@@ -285,7 +281,12 @@ fn settle_response(
         }
         Err(failure) => {
             *painted = failure.painted;
-            DebugResponse::Error(failure.error)
+            // The action has already been applied. A busy page is not a failed
+            // click, and reporting it as one invites callers to repeat writes.
+            // Leave the remaining work to the idle loop; ps-qa waits for the
+            // declared outcome within its own deadline.
+            verbose(&failure.error.message);
+            DebugResponse::Ack
         }
     }
 }
@@ -608,6 +609,7 @@ pub fn serve(target: &str) -> Result<(), String> {
     let mut revision = 0_u64;
     let mut render_revision = 0_u64;
     let mut capture = DocumentCapture::new();
+    let mut control = DocumentControl::new();
     // When the page was last allowed to run. A request resets nothing on its
     // own, so this is what keeps the guarantee below true under load.
     let mut last_tick = std::time::Instant::now();
@@ -635,170 +637,21 @@ pub fn serve(target: &str) -> Result<(), String> {
                     revision += 1;
                     inspect_document(&mut document, root, max_depth, revision)
                 }
-                AgentControlRequest::Act(AgentAction::Focus { node_id }) => {
-                    let node_id = blitz_dom::NodeId::from_u64(node_id);
-                    match focus_agent_node(&mut document, node_id) {
-                        Ok(()) => settle_response(
-                            &mut document,
-                            &animation_clock,
-                            settle_deadline,
-                            &mut painted,
-                        ),
-                        Err(error) => DebugResponse::Error(error),
-                    }
-                }
-                AgentControlRequest::Act(AgentAction::Click { node_id }) => {
-                    match click_agent_node(&mut document, node_id, 1) {
-                        Ok(_) => settle_response(
-                            &mut document,
-                            &animation_clock,
-                            settle_deadline,
-                            &mut painted,
-                        ),
-                        Err(error) => DebugResponse::Error(error),
-                    }
-                }
-                AgentControlRequest::Act(AgentAction::ScrollIntoView { node_id }) => {
-                    /*
-                     * Really scrolled, not acknowledged.
-                     *
-                     * The host this replaces served one component on a page
-                     * that never overflowed, so it answered Ack and was right
-                     * by accident. A fleet site scrolls, and a control below
-                     * the fold that is never brought into view is hovered at
-                     * whatever happens to be at its coordinates, which reads as
-                     * a control that does not respond.
-                     */
-                    let node_id = blitz_dom::NodeId::from_u64(node_id);
-                    document.inner_mut().scroll_to_node(node_id);
-                    settle_response(
+                AgentControlRequest::Act(action) => match control.act(&mut document, action) {
+                    Ok(()) => settle_response(
                         &mut document,
                         &animation_clock,
                         settle_deadline,
                         &mut painted,
-                    )
-                }
-                AgentControlRequest::Act(AgentAction::Hover { node_id }) => {
-                    /*
-                     * A control revealed on hover is unreachable without this,
-                     * and a defect that only shows on the second entry is
-                     * unreachable even with one hover: a pill whose hover
-                     * appends a shadow layer and never removes it looks right
-                     * once.
-                     */
-                    match hover_agent_node(&mut document, node_id) {
-                        Ok(_) => settle_response(
-                            &mut document,
-                            &animation_clock,
-                            settle_deadline,
-                            &mut painted,
-                        ),
-                        Err(error) => DebugResponse::Error(error),
-                    }
-                }
-                AgentControlRequest::Act(AgentAction::DoubleClick { node_id }) => {
-                    match click_agent_node(&mut document, node_id, 2) {
-                        Ok(_) => settle_response(
-                            &mut document,
-                            &animation_clock,
-                            settle_deadline,
-                            &mut painted,
-                        ),
-                        Err(error) => DebugResponse::Error(error),
-                    }
-                }
-                AgentControlRequest::Act(AgentAction::SetValue { node_id, value }) => {
-                    let node_id = blitz_dom::NodeId::from_u64(node_id);
-                    let current = document
-                        .inner()
-                        .get_node(node_id)
-                        .and_then(|node| node.element_data())
-                        .and_then(|element| element.text_input_data())
-                        .map(|input| input.editor.text().to_string());
-                    match current {
-                        None => DebugResponse::Error(DebugError {
-                            code: "notEditable".into(),
-                            message: "node is not a text input".into(),
-                        }),
-                        Some(current) => {
-                            document.inner_mut().set_focus_to(node_id);
-                            /*
-                             * Clear by byte count, not by selecting the text
-                             * first.
-                             *
-                             * `select_all` builds its selection with
-                             * `move_lines(&layout, isize::MAX)`, and
-                             * `select_byte_range` resolves its ends through
-                             * `Cursor::from_byte_index(&layout, ..)`. Both read
-                             * the laid out text, so both depend on a font
-                             * catalogue being present: with none registered
-                             * every glyph shapes to nothing, the selection
-                             * comes back collapsed, and the commit below
-                             * inserts at the caret instead of replacing.
-                             *
-                             * This build has faces, so `select_all` would work
-                             * here. It stays byte arithmetic anyway, because a
-                             * host that behaves differently depending on which
-                             * fonts the machine has is a harness that reports
-                             * different verdicts on CI and on a laptop.
-                             * `delete_bytes_before_selection` and
-                             * `delete_bytes_after_selection` clamp to the ends
-                             * of the buffer, so between them they empty it from
-                             * wherever the caret is, with no layout involved.
-                             */
-                            if let Some(len) = NonZeroUsize::new(current.len()) {
-                                document.inner_mut().with_text_input(node_id, |mut editor| {
-                                    editor.delete_bytes_before_selection(len);
-                                    editor.delete_bytes_after_selection(len);
-                                });
-                            }
-                            document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(value)));
-                            settle_response(
-                                &mut document,
-                                &animation_clock,
-                                settle_deadline,
-                                &mut painted,
-                            )
-                        }
-                    }
-                }
-                AgentControlRequest::Act(AgentAction::Input(InputCommand::Key {
-                    key,
-                    code,
-                    phase,
-                    ..
-                })) => {
-                    /*
-                     * One press per Down, and nothing on the matching Up.
-                     *
-                     * `press_agent_key` sends both halves, because a control
-                     * that acts on keyup never fires if only a keydown arrives.
-                     * A client that sends the pair would otherwise press the
-                     * key twice, and Escape pressed twice closes a menu and
-                     * then whatever was behind it.
-                     */
-                    if matches!(phase, KeyPhase::Up) {
-                        DebugResponse::Ack
-                    } else {
-                        match press_agent_key(&mut document, &key, &code) {
-                            Ok(()) => settle_response(
-                                &mut document,
-                                &animation_clock,
-                                settle_deadline,
-                                &mut painted,
-                            ),
-                            Err(error) => DebugResponse::Error(error),
-                        }
-                    }
-                }
+                    ),
+                    Err(error) => DebugResponse::Error(error),
+                },
                 // Everything else needs runtime state this mode does not have,
                 // and saying so is better than a plausible-looking Ack: a check
                 // that silently did nothing reports the page as broken.
                 _ => DebugResponse::Error(DebugError {
                     code: "unsupported".into(),
-                    message: "the headless page serves Inspect, Focus, Hover, Click, \
-                              DoubleClick, ScrollIntoView, SetValue and Key only"
-                        .into(),
+                    message: "the headless page does not handle process lifecycle requests".into(),
                 }),
             },
             ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Capture(request)) => {
