@@ -115,6 +115,10 @@ The host dispatches input through the shared `DocumentControl` implementation,
 including pointer gestures, key-down/up, and scrolling. Once an action has been
 applied, a page that continues animating does not turn it into a failed action
 that a caller might repeat; subsequent inspection observes the resulting state.
+WebSocket dispatch snapshots the registered listeners, so a listener removing
+itself cannot skip another queued RPC waiting for the same connection to open.
+Listeners removed before their turn are skipped; newly added listeners wait for
+the next dispatch.
 
 ```sh
 chuzz-gui --capture out.png https://example.com          # a fetched page

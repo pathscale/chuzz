@@ -354,8 +354,16 @@ pub const WEBSOCKET_SHIM: &str = r#"
     function fire(type, event) {
       var direct = socket["on" + type];
       if (typeof direct === "function") { direct.call(socket, event); }
-      var registered = listeners[type];
-      for (var i = 0; i < registered.length; i++) { registered[i].call(socket, event); }
+      // A listener may remove itself while handling the event (the RPC adapter
+      // does this when sending queued requests on open). Iterating the live
+      // array skips the next request after that removal. New listeners belong
+      // to the next dispatch; explicitly removed listeners must not run.
+      var registered = listeners[type].slice();
+      for (var i = 0; i < registered.length; i++) {
+        if (listeners[type].indexOf(registered[i]) >= 0) {
+          registered[i].call(socket, event);
+        }
+      }
     }
 
     this.__deliver = function (event) {
