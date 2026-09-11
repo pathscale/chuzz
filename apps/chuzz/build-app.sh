@@ -31,7 +31,7 @@ resources_dir="$contents_dir/Resources"
 
 cd "$repo_dir"
 # shellcheck disable=SC2086
-cargo build -p chuzz-gui $cargo_args
+cargo build -p chuzz --bin chuzz-gui $cargo_args
 
 # Removed rather than overwritten: a stale file left inside Contents from an
 # earlier layout would be signed along with everything else and shipped.
