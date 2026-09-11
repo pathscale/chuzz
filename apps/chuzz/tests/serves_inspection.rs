@@ -411,7 +411,7 @@ fn serves_a_page_over_the_inspection_socket() {
                 }),
             )
             .await,
-            DebugResponse::Error(error) if error.code == "unsupported"
+            DebugResponse::Ack
         ));
 
         assert!(matches!(
@@ -433,7 +433,9 @@ fn serves_a_page_over_the_inspection_socket() {
             Ok(DebugEvent::PaintCommitted { .. })
         ));
 
-        for unsupported in [
+        // These inputs now use the shared document-control implementation.
+        // A page without a scroll range still accepts a wheel as a no-op.
+        for supported in [
             AgentControlRequest::Act(AgentAction::Input(InputCommand::Pointer {
                 phase: PointerPhase::Move,
                 x: 1.0,
@@ -447,9 +449,13 @@ fn serves_a_page_over_the_inspection_socket() {
                 phase: WheelPhase::Moved,
                 modifiers: Modifiers::default(),
             })),
-            AgentControlRequest::Relaunch,
-            AgentControlRequest::Quit,
         ] {
+            assert!(matches!(
+                request(&mut stream, &mut next_id, &supported).await,
+                DebugResponse::Ack
+            ));
+        }
+        for unsupported in [AgentControlRequest::Relaunch, AgentControlRequest::Quit] {
             assert!(matches!(
                 request(&mut stream, &mut next_id, &unsupported).await,
                 DebugResponse::Error(error) if error.code == "unsupported"
