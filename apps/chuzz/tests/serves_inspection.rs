@@ -414,6 +414,35 @@ fn serves_a_page_over_the_inspection_socket() {
             DebugResponse::Ack
         ));
 
+        // Click and DoubleClick both move the synthetic pointer onto their
+        // target, just as a physical click does. Move it away before testing
+        // entry, or hovering the same button again is correctly a no-op and
+        // there is no repaint to observe.
+        assert!(matches!(
+            request(
+                &mut stream,
+                &mut next_id,
+                &AgentControlRequest::Act(AgentAction::Input(InputCommand::Pointer {
+                    phase: PointerPhase::Move,
+                    x: 1.0,
+                    y: 1.0,
+                    button: 0,
+                    modifiers: Modifiers::default(),
+                })),
+            )
+            .await,
+            DebugResponse::Ack
+        ));
+        let event = tokio::time::timeout(Duration::from_millis(50), stream.recv())
+            .await
+            .expect("leaving a hovered control should repaint")
+            .expect("the host keeps serving")
+            .expect("read paint event");
+        assert!(matches!(
+            decode_diagnostics_event(event),
+            Ok(DebugEvent::PaintCommitted { .. })
+        ));
+
         assert!(matches!(
             request(
                 &mut stream,
@@ -435,26 +464,20 @@ fn serves_a_page_over_the_inspection_socket() {
 
         // These inputs now use the shared document-control implementation.
         // A page without a scroll range still accepts a wheel as a no-op.
-        for supported in [
-            AgentControlRequest::Act(AgentAction::Input(InputCommand::Pointer {
-                phase: PointerPhase::Move,
-                x: 1.0,
-                y: 1.0,
-                button: 0,
-                modifiers: Modifiers::default(),
-            })),
-            AgentControlRequest::Act(AgentAction::Input(InputCommand::Wheel {
-                delta_x: 0.0,
-                delta_y: 1.0,
-                phase: WheelPhase::Moved,
-                modifiers: Modifiers::default(),
-            })),
-        ] {
-            assert!(matches!(
-                request(&mut stream, &mut next_id, &supported).await,
-                DebugResponse::Ack
-            ));
-        }
+        assert!(matches!(
+            request(
+                &mut stream,
+                &mut next_id,
+                &AgentControlRequest::Act(AgentAction::Input(InputCommand::Wheel {
+                    delta_x: 0.0,
+                    delta_y: 1.0,
+                    phase: WheelPhase::Moved,
+                    modifiers: Modifiers::default(),
+                })),
+            )
+            .await,
+            DebugResponse::Ack
+        ));
         for unsupported in [AgentControlRequest::Relaunch, AgentControlRequest::Quit] {
             assert!(matches!(
                 request(&mut stream, &mut next_id, &unsupported).await,
