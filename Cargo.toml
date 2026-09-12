@@ -3,7 +3,7 @@ members = ["apps/chuzz", "crates/chuzz-control"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.37"
+version = "0.1.38"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
@@ -32,21 +32,21 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same range gets the same crate rather than a second copy. To build against
 # a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
 # exercises what a release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.4" }
-blitz-html = { package = "ps-blitz-html", version = "^0.4" }
-blitz-net = { package = "ps-blitz-net", version = "^0.4" }
-blitz-script = { package = "ps-blitz-script", version = "^0.4" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.4" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.4.9" }
+blitz-html = { package = "ps-blitz-html", version = "^0.4.9" }
+blitz-net = { package = "ps-blitz-net", version = "^0.4.9" }
+blitz-script = { package = "ps-blitz-script", version = "^0.4.9" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.4.9" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4" }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4.9" }
 dioxus-native = { package = "ps-dioxus-native", version = "^0.7.3", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 # The one control surface: wire vocabulary, the document core, and both
 # transports. It used to be reached through `tauri-runtime-blitz`, which meant a
 # headless browser compiled a Tauri runtime with the runtime switched off.
-blitz-control-protocol = { version = "^0.5", default-features = false }
+blitz-control-protocol = { version = "^0.5.1", default-features = false }
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
 image = { version = "^0.25.6", default-features = false }
@@ -80,7 +80,7 @@ anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0", features = ["filters"] }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.4" }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.4.9" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
