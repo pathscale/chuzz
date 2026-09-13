@@ -3,6 +3,7 @@ import type { Layout } from "solid-layouts";
 import { panelHandle } from "./PanelHandle.recipe";
 
 export type PanelHandleProps = {
+  id: string;
   title: string;
   collapsed?: boolean;
   onClick: JSX.EventHandlerUnion<HTMLButtonElement, MouseEvent>;
@@ -18,6 +19,7 @@ export type PanelHandleProps = {
  */
 const PanelHandle: Layout<typeof panelHandle, PanelHandleProps> = () => (
   <button
+    id={local.id}
     type="button"
     {...slot.root}
     title={local.title}

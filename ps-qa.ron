@@ -1,0 +1,28 @@
+// Native browser-chrome surfaces. The root is the body because the UI Dialog
+// portal is a sibling of the application shell rather than its descendant.
+AppProfile(
+    surfaces: [
+        (
+            name: "browser",
+            opener: "\u{0}dynamic-document",
+            marker: Some("#chuzz-address-bar"),
+            inventory_root: Some("#chuzz-browser-chrome"),
+        ),
+        (
+            name: "inspector",
+            opener: "#chuzz-inspector-toggle",
+            marker: Some("#collapsible-trigger-inspector-debugging"),
+            inventory_root: Some("#chuzz-inspector-region"),
+        ),
+        (
+            name: "settings",
+            opener: "#chuzz-settings",
+            marker: Some("#chuzz-settings-content"),
+            inventory_root: Some("#chuzz-settings-content"),
+        ),
+    ],
+    permanent_surfaces: ["Search or enter address", "Settings"],
+    sections: ["Debugging", "Page", "History", "Network", "Console"],
+    dismiss_controls: ["Close Appearance"],
+    isolated_controls: ["Agent control Off"],
+)

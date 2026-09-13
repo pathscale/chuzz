@@ -56,6 +56,27 @@
 - Work on a branch and ship through a pull request. Do not commit to `main`.
 - Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` before delivery.
 
+## Invariants (do not break these)
+
+- **No Python.** Not a script, not `python3 -c`, not a heredoc. Do not swap it
+  for another ad hoc parser or assume `jq` is present: it does not ship with
+  macOS. Ask the tool that owns the answer for structured output. A fixed-shape
+  field can use one `sed -nE` line; logic that needs real parsing belongs in
+  this repository's Rust code, where it can be tested.
+
+## Handover documents are never committed
+
+Never commit a handover, status or session-summary document to this repository.
+They are working notes for the owner and belong in the conversation. If one is
+tracked, untrack it rather than editing it.
+
+## Merged is not fixed
+
+Only the owner closes a bug. A merged PR means the change shipped. Call it
+finished only after the owner confirms it or after the exact reported path has
+been driven on a running build. When that cannot be verified here, state what
+remains unverified.
+
 ## Git workflow
 
 - **Always specify the branch when pushing**: `git push origin branch-name`

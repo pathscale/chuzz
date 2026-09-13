@@ -1,4 +1,11 @@
-import type { DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type {
+  DiagnosticsState,
+  PanelState,
+  StatusReadout,
+  Tab,
+  TabId,
+  UserAgentState,
+} from "~/types";
 import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
 
 const HOME_URL = "about:blank";
@@ -36,6 +43,12 @@ export function createMockApi(): BrowserApi {
   // Off by default, as in the real window: the inspection plane lets any local
   // process drive the browser, so it is asked for rather than assumed.
   let diagnostics: DiagnosticsState = { inspection: false, profiling: false, locked: false };
+  let userAgent: UserAgentState = {
+    spoofing: true,
+    locked: false,
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+  };
 
   const handlers: { [K in keyof BrowserEvents]: Set<(payload: BrowserEvents[K]) => void> } = {
     "tabs-changed": new Set(),
@@ -169,6 +182,18 @@ export function createMockApi(): BrowserApi {
     },
 
     status: async () => readout(),
+
+    userAgent: async () => userAgent,
+    setUserAgentSpoofing: async (spoofing) => {
+      userAgent = {
+        spoofing,
+        locked: false,
+        userAgent: spoofing
+          ? "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36"
+          : "Mozilla/5.0 Chuzz/0.1.39 Safari/537.36",
+      };
+      return userAgent;
+    },
 
     // The mock has no engine behind it, so there is nothing to narrate. An
     // empty stream is the honest answer, and the panel renders its own empty

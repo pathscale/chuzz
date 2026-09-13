@@ -167,12 +167,9 @@ jobs:
       - name: Test
         run: bun run test:run
 
-  # The app itself, on the platform it targets. This is the job that proves a
-  # change compiles against the pinned engine, which no Linux runner can do.
-  #
-  # `build-app.sh` is deliberately not used: bundling, signing and stamping are
-  # the release job's business. A PR only needs to know the code compiles and
-  # its tests pass.
+  # The app itself, on the platform it targets. The visible gate drives the
+  # same signed bundle a release would publish, including browser chrome,
+  # settings, theme controls, identity switching and the redraw stress page.
   app:
     runs-on: namespace-profile-agency-tahoe
     steps:
@@ -205,3 +202,25 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Install the native QA harness
+        run: cargo install ps-qa --version '^0.7.3'
+
+      - name: Build the review bundle
+        run: |
+          cargo build --release -p chuzz-qa-fixture
+          apps/chuzz/build-app.sh release
+
+      - name: Drive the visible application
+        env:
+          QA_ARTIFACT_DIR: ${{ runner.temp }}/chuzz-visible-qa
+        run: scripts/qa-visible-app.sh
+
+      - name: Keep visible QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chuzz-visible-qa
+          path: ${{ runner.temp }}/chuzz-visible-qa
+          if-no-files-found: warn
+          retention-days: 7

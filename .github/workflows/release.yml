@@ -239,6 +239,9 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      - name: Install the native QA harness
+        run: cargo install ps-qa --version '^0.7.3'
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -274,6 +277,22 @@ jobs:
             echo "::error::bundle is no longer ad-hoc; update the verification and the cask"
             exit 1
           fi
+
+      - name: Drive the exact release bundle
+        env:
+          QA_ARTIFACT_DIR: ${{ runner.temp }}/chuzz-visible-qa
+        run: |
+          cargo build --release -p chuzz-qa-fixture
+          scripts/qa-visible-app.sh "$BUNDLE_DIR/Chuzz.app"
+
+      - name: Keep visible QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chuzz-visible-qa-release-${{ needs.check.outputs.version }}
+          path: ${{ runner.temp }}/chuzz-visible-qa
+          if-no-files-found: warn
+          retention-days: 14
 
       # Tauri produces this tarball as a side effect of its bundler. Chuzz has no
       # Tauri, so it is packed here. COPYFILE_DISABLE stops bsdtar writing an

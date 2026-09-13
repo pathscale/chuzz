@@ -14,6 +14,7 @@ enablePopmotion(animate);
 // the first render, so the window never paints once at the default palette and
 // then again at the stored one.
 syncTheme();
+document.body.id = "chuzz-app-root";
 
 const root = document.getElementById("root");
 

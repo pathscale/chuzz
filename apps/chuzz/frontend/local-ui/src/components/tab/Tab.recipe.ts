@@ -33,7 +33,13 @@ export const tab = recipe({
       true: { close: "tab-close-visible" },
       false: {},
     },
+    closable: {},
     closeLabel: {},
+    onSelect: {},
+    onPrevious: {},
+    onNext: {},
+    onFirst: {},
+    onLast: {},
     onClose: {},
   },
 });

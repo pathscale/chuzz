@@ -26,19 +26,24 @@ function Shell(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = createSignal(false);
 
   return (
-    <AppShell tabindex={0}>
-      <BrowserHeader onOpenSettings={() => setSettingsOpen(true)} />
-      <Toolbar />
+    <AppShell id="chuzz-app" tabindex={0}>
+      <div id="chuzz-browser-chrome" style={{ display: "contents" }}>
+        <BrowserHeader onOpenSettings={() => setSettingsOpen(true)} />
+        <Toolbar />
+      </div>
       <MainContent>
         <PageArea />
-        <PanelHandle
-          title={t(
-            browser.state.panel.collapsed ? "browser.showInspector" : "browser.hideInspector",
-          )}
-          collapsed={browser.state.panel.collapsed}
-          onClick={() => browser.setPanelCollapsed(!browser.state.panel.collapsed)}
-        />
-        <SidePanel />
+        <div id="chuzz-inspector-region" style={{ display: "contents" }}>
+          <PanelHandle
+            id="chuzz-inspector-toggle"
+            title={t(
+              browser.state.panel.collapsed ? "browser.showInspector" : "browser.hideInspector",
+            )}
+            collapsed={browser.state.panel.collapsed}
+            onClick={() => browser.setPanelCollapsed(!browser.state.panel.collapsed)}
+          />
+          <SidePanel />
+        </div>
       </MainContent>
       <SettingsPanel open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
     </AppShell>

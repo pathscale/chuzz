@@ -71,6 +71,15 @@ export interface PanelState {
   sections: PanelSections;
 }
 
+export interface UserAgentState {
+  /** Chrome-compatible identity is sent on every page and subresource request. */
+  spoofing: boolean;
+  /** A CHUZZ_USER_AGENT environment override owns the choice for this run. */
+  locked: boolean;
+  /** Exact header value currently in use, exposed for compatibility diagnosis. */
+  userAgent: string;
+}
+
 /** One row in an inspector section. */
 export interface InspectorRow {
   label: string;

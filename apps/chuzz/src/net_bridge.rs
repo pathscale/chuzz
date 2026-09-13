@@ -70,6 +70,13 @@ struct NetRequest {
     body: Option<String>,
 }
 
+/// One `document.cookie = ...` assignment from the JavaScript shim.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CookieAssignment {
+    cookie: String,
+}
+
 /// Give `document` a working `fetch` and `XMLHttpRequest`.
 ///
 /// `deadline` bounds a single request. Nothing blocks on it, but a page that
@@ -86,15 +93,37 @@ pub fn install(
     // shim installs when nothing better exists.
     document.eval(crate::ws_bridge::WEBSOCKET_SHIM);
 
+    let initial_cookie = base
+        .as_ref()
+        .map(|url| net.cookie_store().script_cookies(url))
+        .unwrap_or_default();
+    document.eval(&format!(
+        "if (globalThis.__chuzzCookieRefresh) __chuzzCookieRefresh({});",
+        serde_json::to_string(&initial_cookie).expect("a cookie header serializes as JSON")
+    ));
+
     let mailbox = Mailbox::default();
     let handler_mailbox = mailbox.clone();
     let sockets = crate::ws_bridge::Bridge::new();
     let handler_sockets = sockets.clone();
+    let handler_base = base.clone();
+    let poll_base = base.clone();
+    let poll_net = Arc::clone(&net);
+    let mut last_cookie = initial_cookie;
 
     document.set_ipc_handler(move |message| {
         // Sockets first: setting an IPC handler replaces it rather than adding
         // to it, so one handler carries both and each claims its own.
         if handler_sockets.handle(&message) {
+            return;
+        }
+        if let Ok(assignment) = serde_json::from_str::<CookieAssignment>(&message) {
+            let Some(url) = handler_base.clone() else {
+                return;
+            };
+            let _ = net
+                .cookie_store()
+                .set_script_cookie(&url, &assignment.cookie);
             return;
         }
         let Ok(request) = serde_json::from_str::<NetRequest>(&message) else {
@@ -108,7 +137,7 @@ pub fn install(
         // scheme, which is a hard error. A page whose bootstrap asks that way
         // then fails at its first step and renders nothing.
         let Ok(url) = blitz_traits::net::Url::options()
-            .base_url(base.as_ref())
+            .base_url(handler_base.as_ref())
             .parse(&request.url)
         else {
             handler_mailbox.post(Delivery {
@@ -145,8 +174,7 @@ pub fn install(
             return;
         };
         handle.spawn(async move {
-            let payload = match tokio::time::timeout(deadline, net.fetch_async(blitz_request)).await
-            {
+            let payload = match nagoya::timeout(deadline, net.fetch_async(blitz_request)).await {
                 Ok(Ok((_, bytes))) => serde_json::json!({
                     "ok": true,
                     "status": 200,
@@ -160,12 +188,25 @@ pub fn install(
     });
 
     document.add_poll_hook(move |document, _| {
+        let current_cookie = poll_base
+            .as_ref()
+            .map(|url| poll_net.cookie_store().script_cookies(url))
+            .unwrap_or_default();
+        let cookie_changed = current_cookie != last_cookie;
+        if cookie_changed {
+            document.eval(&format!(
+                "if (globalThis.__chuzzCookieRefresh) __chuzzCookieRefresh({});",
+                serde_json::to_string(&current_cookie).expect("a cookie header serializes as JSON")
+            ));
+            last_cookie = current_cookie;
+        }
+
         // Socket events and fetch results share a pass, and either alone is
         // reason enough to draw a frame.
         let drew = sockets.drain_into(document);
         let ready = mailbox.drain();
         if ready.is_empty() {
-            return drew;
+            return drew | cookie_changed;
         }
         for delivery in ready {
             // `serde_json` renders a JavaScript-safe literal, so the body needs
@@ -411,6 +452,41 @@ mod tests {
         // there, and `fetch` here only honours a signal because it does.
         document.eval(crate::document_loader::WEB_API_SHIM);
         document
+    }
+
+    /// The JavaScript setter and getter use the same jar as HTTP requests.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_cookie_assignment_reaches_the_profile_jar() {
+        let mut document = page();
+        let provider = Arc::new(NetProvider::new(None));
+        let base = blitz_traits::net::Url::parse("https://profile.test.example/account")
+            .expect("valid page URL");
+        install(
+            &mut document,
+            Arc::clone(&provider),
+            Duration::from_secs(10),
+            Some(base.clone()),
+        );
+
+        document.eval("document.cookie = 'view=compact; Path=/'");
+        let mut visible = false;
+        for _ in 0..200 {
+            document.poll(None);
+            if document
+                .eval_json("document.cookie")
+                .is_ok_and(|value| value == serde_json::json!("view=compact"))
+            {
+                visible = true;
+                break;
+            }
+            nagoya::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert!(visible, "the getter refreshes from the profile jar");
+        assert_eq!(
+            provider.cookie_store().cookie_header(&base),
+            Some("view=compact".to_owned())
+        );
     }
 
     /// A page that fetches gets its body, through the promise it parked.

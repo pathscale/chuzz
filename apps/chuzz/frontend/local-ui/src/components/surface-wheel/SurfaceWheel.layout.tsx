@@ -12,6 +12,7 @@ export type SurfaceWheelProps = {
 
 const SurfaceWheel: Layout<typeof surfaceWheel, SurfaceWheelProps> = () => (
   <ColorSwatchPicker
+    id="chuzz-surface-wheel"
     value={local.value}
     onChange={local.onChange}
     aria-label={local.label}
