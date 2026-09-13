@@ -240,7 +240,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Install the native QA harness
-        run: cargo install ps-qa --version '^0.7.3'
+        run: cargo install ps-qa --version '^0.7'
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

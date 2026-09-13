@@ -204,7 +204,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Install the native QA harness
-        run: cargo install ps-qa --version '^0.7.3'
+        run: cargo install ps-qa --version '^0.7'
 
       - name: Build the review bundle
         run: |
