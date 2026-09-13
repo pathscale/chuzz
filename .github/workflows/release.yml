@@ -55,6 +55,7 @@ jobs:
     outputs:
       version: ${{ steps.decide.outputs.version }}
       publish: ${{ steps.decide.outputs.publish }}
+      headless_publish: ${{ steps.decide.outputs.headless_publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -100,6 +101,73 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "Live is already $LIVE; nothing to do. Bump [workspace.package] version to release."
           fi
+
+          HEADLESS=https://github.com/pathscale/chuzz/releases/download/headless-v$VERSION/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "headless_publish=true" >> "$GITHUB_OUTPUT"
+          elif curl -fsSIL --max-time 30 "$HEADLESS" >/dev/null 2>&1 && \
+               curl -fsSIL --max-time 30 "$HEADLESS.sha256" >/dev/null 2>&1; then
+            echo "headless_publish=false" >> "$GITHUB_OUTPUT"
+            echo "The Linux headless asset for $VERSION is already published."
+          else
+            echo "headless_publish=true" >> "$GITHUB_OUTPUT"
+            echo "The Linux headless asset for $VERSION is missing; publishing it."
+          fi
+
+  # Build the Linux QA browser once per Chuzz release. Fleet repositories use
+  # the checksum-verified asset through the composite headless-host action;
+  # they no longer each compile the same renderer and browser graph.
+  headless:
+    needs: check
+    if: needs.check.outputs.headless_publish == 'true'
+    runs-on: ubicloud-standard-4
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native font dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev fonts-dejavu-core
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: chuzz-linux-headless-release
+          cache-targets: true
+
+      - name: Build and package the headless browser
+        run: scripts/package-headless.sh
+
+      - name: Test the packaged feature set
+        run: |
+          cargo test --release -p chuzz \
+            --no-default-features \
+            --features capture,javascript,scrollbars,webp,system-fonts \
+            --test serves_inspection
+
+      - name: Publish the versioned headless asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          tag="headless-v$VERSION"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "Chuzz headless $VERSION" \
+              --notes "Linux x86_64 native ps-qa host with capture, JavaScript, scrollbars, WebP, and system-font discovery." \
+              --prerelease
+          fi
+          gh release upload "$tag" \
+            target/headless-release/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz \
+            target/headless-release/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            --clobber
 
   release:
     needs: check

@@ -96,7 +96,7 @@ Events are not wired up yet: the page renders and does not respond.
 ## Rendering without a window
 
 For interactive website QA, build the headless host with fonts and use ps-qa
-0.7.1 or newer:
+0.7.3 or newer:
 
 ```sh
 cargo build --release --bin chuzz-headless --no-default-features \
@@ -106,10 +106,13 @@ ps-qa --app ../worktables.dev/tests/ps-qa/ps-qa.ron qa-hosted \
   --checks ../worktables.dev/tests/ps-qa/checks
 ```
 
-Linux needs `pkg-config`, `libfontconfig1-dev`, and a font catalogue such as
-`fonts-dejavu-core`; the shared headless-host CI action installs these. No desktop
-server is needed. The `system-fonts` feature is optional for embedders supplying
-their own fonts, but rendered website checks need real glyphs.
+Linux source builds need `pkg-config`, `libfontconfig1-dev`, and a font catalogue
+such as `fonts-dejavu-core`. The shared headless-host action normally downloads
+the versioned Linux x86_64 release asset, verifies its published SHA-256, and
+installs only the runtime font catalogue. If that asset is unavailable, the
+action builds the same feature set from source. No desktop server is needed. The
+`system-fonts` feature is optional for embedders supplying their own fonts, but
+rendered website checks need real glyphs.
 
 The host dispatches input through the shared `DocumentControl` implementation,
 including pointer gestures, key-down/up, and scrolling. Once an action has been
