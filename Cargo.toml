@@ -34,7 +34,7 @@ homepage = "https://github.com/pathscale/chuzz"
 # exercises what a release actually resolves.
 blitz-dom = { package = "ps-blitz-dom", version = "^0.4.9" }
 blitz-html = { package = "ps-blitz-html", version = "^0.4.9" }
-blitz-net = { package = "ps-blitz-net", version = "^0.4.9" }
+blitz-net = { package = "ps-blitz-net", version = "^0.4.10" }
 blitz-script = { package = "ps-blitz-script", version = "^0.4.9" }
 blitz-traits = { package = "ps-blitz-traits", version = "^0.4.9" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
