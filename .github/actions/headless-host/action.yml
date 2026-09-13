@@ -27,13 +27,10 @@ inputs:
     default: ""
   ps-qa-version:
     description: >
-      The driver's version requirement. A floor rather than "latest": a check
-      file can use a field an older driver does not know, and the failure then
-      reads as a broken workflow rather than a driver that is too old.
-
-      0.7.3 adds full-root inventory support and manual-control reconciliation.
-      Keep the driver on the same protocol line as the headless host.
-    default: "^0.7.3"
+      The driver's compatible protocol line. Cargo installs the newest
+      published 0.7 release, keeping the driver and headless host on the same
+      protocol line without pinning a patch release.
+    default: "^0.7"
 
 outputs:
   host:
