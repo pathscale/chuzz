@@ -89,6 +89,14 @@ it into the bundle's `Info.plist` at build time, and the workflow refuses to
 publish if the two disagree, so the cask can never advertise a version the app
 does not report.
 
+The same release builds `chuzz-headless` on Linux x86_64 with capture,
+JavaScript, scrollbars, WebP, and system-font discovery enabled. It publishes a
+versioned GitHub prerelease asset and SHA-256 under `headless-v<version>`. Fleet
+sites consume that verified binary through the shared headless-host action, so
+the browser is compiled once in its own repository rather than once per site.
+The action falls back to the identical source build if the release asset is not
+yet available.
+
 [`release.yml`](../.github/workflows/release.yml) decides whether to publish by
 comparing that version against the one in the **live** `latest.json`, not against
 git history. That makes it idempotent: a release that failed halfway is retried

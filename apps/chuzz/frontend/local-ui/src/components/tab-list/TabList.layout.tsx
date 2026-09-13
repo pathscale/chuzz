@@ -1,12 +1,9 @@
-import { Tabs } from "@pathscale/ui";
 import type { JSX } from "@solidjs/web";
 import type { Layout } from "solid-layouts";
 import { tabList } from "./TabList.recipe";
 
 export type TabListProps = {
   children: JSX.Element;
-  selectedKey: string | number;
-  onSelectionChange: (key: string | number) => void;
 };
 
 /**
@@ -21,11 +18,9 @@ export type TabListProps = {
  */
 const TabList: Layout<typeof tabList, TabListProps> = () => (
   <div {...slot.root}>
-    <Tabs selectedKey={local.selectedKey} onSelectionChange={local.onSelectionChange}>
-      <div role="tablist" {...slot.strip}>
-        {children}
-      </div>
-    </Tabs>
+    <div id="chuzz-tabs" role="tablist" {...slot.strip}>
+      {children}
+    </div>
   </div>
 );
 

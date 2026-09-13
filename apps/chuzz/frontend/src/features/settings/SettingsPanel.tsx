@@ -2,6 +2,7 @@ import { SettingsDialog } from "@chuzz/ui";
 import type { JSX } from "@solidjs/web";
 import { t } from "~/stores/i18n";
 import { isDefaultTheme, prefs, resetTheme, setColorMode, setTheme } from "~/stores/prefs";
+import { BrowserIdentitySection } from "./BrowserIdentitySection";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { ThemePicker } from "./ThemePicker";
 
@@ -35,6 +36,7 @@ export function SettingsPanel(props: { open: boolean; onClose: () => void }): JS
         onReset={resetTheme}
         isDefault={isDefaultTheme()}
       />
+      <BrowserIdentitySection />
       <DiagnosticsSection />
     </SettingsDialog>
   );

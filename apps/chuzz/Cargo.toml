@@ -158,16 +158,24 @@ dioxus-native = { workspace = true, optional = true, features = [
   "prelude",
   "svg",
 ] }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+nagoya.workspace = true
+# Tokio remains the I/O boundary for Tauri, HTTP, TCP and WebSocket. Portable
+# timers use Nagoya, so this list names only the runtime/synchronisation surface
+# those concrete I/O types require.
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { workspace = true, optional = true }
 rustls.workspace = true
+cursor-icon.workspace = true
+cookie_store.workspace = true
+psl.workspace = true
 blitz-control-protocol = { workspace = true, features = ["engine", "server", "capture"] }
 tauri-runtime-blitz = { workspace = true, optional = true }
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+worktable.workspace = true
 
 [dev-dependencies]
 # `flavor = "multi_thread"` in the script-fetch test: the blocking fetch takes
@@ -182,7 +190,6 @@ tokio = { workspace = true, features = [
   "rt",
   "rt-multi-thread",
   "sync",
-  "time",
 ] }
 # Assembles `fixtures/panel.wat` into a module in-process, so the capture test
 # owns its guest instead of borrowing blitz-wasm's demo, and so it needs no

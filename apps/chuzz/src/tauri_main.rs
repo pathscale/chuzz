@@ -243,10 +243,18 @@ fn main() {
     // shutdown.
     let runtime = tauri::async_runtime::handle();
     let _runtime_guard = runtime.inner().enter();
+    let cookie_directory = chuzz::cookie_store::profile_directory().join("cookies");
+    if let Err(error) = runtime
+        .inner()
+        .block_on(browser.open_cookie_profile(cookie_directory))
+    {
+        eprintln!("chuzz: could not open browser cookies: {error}");
+        std::process::exit(1);
+    }
 
     let setup_browser = browser.clone();
     tauri_runtime_blitz::builder()
-        .manage(browser)
+        .manage(browser.clone())
         .invoke_handler(tauri::generate_handler![
             browser::list_tabs,
             browser::active_tab_id,
@@ -262,6 +270,8 @@ fn main() {
             browser::toggle_section,
             browser::status,
             browser::debug_log,
+            browser::user_agent,
+            browser::set_user_agent_spoofing,
             browser::diagnostics,
             browser::set_diagnostics,
         ])
@@ -302,6 +312,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Chuzz")
         .run(|_, _| {});
+    if let Err(error) = runtime.inner().block_on(browser.flush_cookie_store()) {
+        eprintln!("chuzz: could not flush browser cookies: {error}");
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

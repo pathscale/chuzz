@@ -494,10 +494,20 @@ pub fn serve(target: &str) -> Result<(), String> {
         Target::Page(url) => url.clone(),
     };
 
-    let net_provider = Arc::new(blitz_net::Provider::with_user_agent(
-        None,
-        &crate::identity::user_agent_from_env(),
-    ));
+    let cookies = Arc::new(
+        runtime
+            .block_on(crate::cookie_store::BrowserCookieStore::open(
+                crate::cookie_store::profile_directory().join("cookies"),
+            ))
+            .map_err(|error| format!("could not open browser cookies: {error}"))?,
+    );
+    let net_provider = Arc::new(
+        crate::document_loader::NetProvider::with_user_agent_and_cookies(
+            None,
+            &crate::identity::user_agent_from_env(),
+            cookies,
+        ),
+    );
     let navigation = Arc::new(RequestedNavigation::default());
     // One clipboard for the host, not one per document, so a page that copies
     // on one route and reads it back on another sees what it wrote.
@@ -774,6 +784,9 @@ pub fn serve(target: &str) -> Result<(), String> {
     }
 
     trace("inspection host finished");
+    runtime
+        .block_on(net_provider.cookie_store().flush())
+        .map_err(|error| format!("could not flush browser cookies: {error}"))?;
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-import { Badge, Button, Tabs, Text } from "@pathscale/ui";
+import { Badge, Button, Text } from "@pathscale/ui";
 import type { Layout } from "solid-layouts";
 import { tab } from "./Tab.recipe";
 
@@ -9,7 +9,13 @@ export type TabProps = {
   title: string;
   status: TabStatus;
   active: boolean;
+  closable: boolean;
   closeLabel: string;
+  onSelect: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onFirst: () => void;
+  onLast: () => void;
   onClose: () => void;
 };
 
@@ -40,7 +46,30 @@ const FLAVOUR = {
 
 const Tab: Layout<typeof tab, TabProps> = () => (
   <div {...slot.root}>
-    <Tabs.Tab id={local.id} {...slot.tab}>
+    <Button
+      id={`chuzz-tab-${local.id}`}
+      variant="ghost"
+      role="tab"
+      aria-selected={local.active ? "true" : "false"}
+      tabindex={local.active ? 0 : -1}
+      onClick={local.onSelect}
+      onKeyDown={(event) => {
+        const action =
+          event.key === "ArrowLeft"
+            ? local.onPrevious
+            : event.key === "ArrowRight"
+              ? local.onNext
+              : event.key === "Home"
+                ? local.onFirst
+                : event.key === "End"
+                  ? local.onLast
+                  : undefined;
+        if (!action) return;
+        event.preventDefault();
+        action();
+      }}
+      {...slot.tab}
+    >
       <Badge
         variant="solid"
         flavor={FLAVOUR[local.status] ?? FLAVOUR.blank}
@@ -52,13 +81,15 @@ const Tab: Layout<typeof tab, TabProps> = () => (
       <Text size="sm" title={local.title} {...slot.title}>
         {local.title}
       </Text>
-    </Tabs.Tab>
+    </Button>
     <Button
+      id={`chuzz-tab-${local.id}-close`}
       variant="ghost"
       size="sm"
       width="square"
       title={local.closeLabel}
       aria-label={local.closeLabel}
+      state={local.closable ? undefined : "disabled"}
       onClick={(event) => {
         event.stopPropagation();
         local.onClose();

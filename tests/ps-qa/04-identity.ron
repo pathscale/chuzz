@@ -1,0 +1,23 @@
+[
+    (
+        id: "identity-native-selects",
+        group: "identity",
+        what: "the user can expose Chuzz's native user agent",
+        open: Some("Settings"),
+        hover: None,
+        click: Some("#chuzz-user-agent-spoof-off"),
+        subject: "#chuzz-user-agent-spoof-off",
+        expect: SelectionChanges,
+    ),
+    (
+        id: "identity-chrome-restores",
+        group: "identity",
+        what: "Chrome compatibility is the selected default",
+        open: Some("Settings"),
+        hover: None,
+        click: Some("#chuzz-user-agent-spoof-on"),
+        subject: "#chuzz-user-agent-spoof-on",
+        expect: SelectionChanges,
+        covers: ["button:Chrome compatibility "],
+    ),
+]

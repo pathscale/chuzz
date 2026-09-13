@@ -35,9 +35,10 @@ export function Toolbar(): JSX.Element {
       <AddressBar
         id="chuzz-address-bar"
         value={typed()}
-        invalid={false}
+        invalid={browser.state.addressInvalid}
         placeholder={t("browser.addressPlaceholder")}
         onInput={(event: Event) => {
+          browser.clearAddressError();
           setTyped((event.target as HTMLInputElement).value);
         }}
       />

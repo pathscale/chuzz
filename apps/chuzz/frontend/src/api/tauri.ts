@@ -1,6 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { DebugEntry, DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type {
+  DebugEntry,
+  DiagnosticsState,
+  PanelState,
+  StatusReadout,
+  Tab,
+  TabId,
+  UserAgentState,
+} from "~/types";
 import type { BrowserApi, BrowserEvents, Unlisten } from "./client";
 
 /**
@@ -31,6 +39,10 @@ export function createTauriApi(): BrowserApi {
     toggleSection: (section) => invoke<void>("toggle_section", { section }),
 
     status: () => invoke<StatusReadout>("status"),
+
+    userAgent: () => invoke<UserAgentState>("user_agent"),
+    setUserAgentSpoofing: (spoofing) =>
+      invoke<UserAgentState>("set_user_agent_spoofing", { spoofing }),
 
     debugLog: (since) => invoke<DebugEntry[]>("debug_log", { since: since ?? null }),
 

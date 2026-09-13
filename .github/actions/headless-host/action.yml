@@ -1,12 +1,17 @@
 name: Headless browser host
 description: >
-  Build chuzz-headless and install ps-qa, so a site's built output can be driven
-  through a real browser engine with no window.
+  Download the released chuzz-headless browser and install ps-qa, so a site's
+  built output can be driven through a real browser engine with no window.
 
 inputs:
   chuzz-ref:
-    description: The chuzz revision to build the host from.
+    description: The chuzz revision to build only when no released binary exists.
     default: master
+  chuzz-version:
+    description: >
+      Released browser version. Empty reads the version from the action's own
+      Cargo.toml, keeping callers on the binary released with this action.
+    default: ""
   token:
     description: >
       A token that can read pathscale/chuzz. Optional: chuzz is public, so the
@@ -22,24 +27,65 @@ inputs:
     default: ""
   ps-qa-version:
     description: >
-      The driver's version requirement. A floor rather than "latest": a check
-      file can use a field an older driver does not know, and the failure then
-      reads as a broken workflow rather than a driver that is too old.
-
-      0.7.1 uses the shared control protocol and rejects checks that silently
-      inherit another file's page. Keep the driver on the same protocol line
-      as the headless host.
-    default: "^0.7.1"
+      The driver's compatible protocol line. Cargo installs the newest
+      published 0.7 release, keeping the driver and headless host on the same
+      protocol line without pinning a patch release.
+    default: "^0.7"
 
 outputs:
   host:
-    description: Path to the built chuzz-headless binary.
-    value: ${{ steps.build.outputs.host }}
+    description: Path to the verified chuzz-headless binary.
+    value: ${{ steps.acquire.outputs.host }}
 
 runs:
   using: composite
   steps:
-    - name: Check out chuzz
+    - name: Acquire released browser
+      id: acquire
+      shell: bash
+      env:
+        REQUESTED_VERSION: ${{ inputs.chuzz-version }}
+        ACTION_ROOT: ${{ github.action_path }}/../../..
+      run: |
+        if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+          echo "::error::the released chuzz-headless host supports Linux x86_64"
+          exit 1
+        fi
+        version="$REQUESTED_VERSION"
+        if [ -z "$version" ]; then
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ACTION_ROOT/Cargo.toml" | head -1)
+        fi
+        case "$version" in
+          ''|*[!0-9A-Za-z.+-]*)
+            echo "::error::invalid chuzz version '$version'"
+            exit 1
+            ;;
+        esac
+
+        asset=chuzz-headless-x86_64-unknown-linux-gnu.tar.gz
+        release=https://github.com/pathscale/chuzz/releases/download/headless-v$version
+        directory="$RUNNER_TEMP/chuzz-headless-$version"
+        mkdir -p "$directory"
+
+        if curl -fsSL --retry 3 --retry-delay 2 "$release/$asset" -o "$directory/$asset" && \
+           curl -fsSL --retry 3 --retry-delay 2 "$release/$asset.sha256" -o "$directory/$asset.sha256" && \
+           (cd "$directory" && sha256sum -c "$asset.sha256"); then
+          tar -xzf "$directory/$asset" -C "$directory"
+          chmod +x "$directory/chuzz-headless"
+          if [ "$(cat "$directory/VERSION")" != "$version" ]; then
+            echo "::error::released browser version does not match $version"
+            exit 1
+          fi
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "using released chuzz-headless $version"
+        else
+          echo "::warning::no verified chuzz-headless $version release; building ${{ inputs.chuzz-ref }} from source"
+          echo "released=false" >> "$GITHUB_OUTPUT"
+        fi
+        echo "host=$directory/chuzz-headless" >> "$GITHUB_OUTPUT"
+
+    - name: Check out chuzz source fallback
+      if: steps.acquire.outputs.released != 'true'
       uses: actions/checkout@v4
       with:
         repository: pathscale/chuzz
@@ -56,26 +102,30 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y pkg-config libfontconfig1-dev fonts-dejavu-core
+        packages=(fontconfig fonts-dejavu-core)
+        if [ "${{ steps.acquire.outputs.released }}" != "true" ]; then
+          packages+=(pkg-config libfontconfig1-dev)
+        fi
+        sudo apt-get install -y "${packages[@]}"
 
     - uses: Swatinem/rust-cache@v2
+      if: steps.acquire.outputs.released != 'true'
       with:
         workspaces: .qa-host
         # A failing check must not make the corrective run rebuild a browser
         # engine from zero.
         cache-on-failure: true
 
-    # The driver links no renderer, so it installs from the registry. The host
-    # is built here because it is the browser, and the browser is not a crate a
-    # site can install.
+    # The driver links no renderer, so it installs from the registry. The
+    # browser is a versioned release asset built once by Chuzz's release job.
     - name: Install ps-qa
       shell: bash
       env:
         CARGO_TARGET_DIR: .qa-host/target/qa-tools
       run: cargo install ps-qa --version "${{ inputs.ps-qa-version }}"
 
-    - name: Build the host
-      id: build
+    - name: Build source fallback
+      if: steps.acquire.outputs.released != 'true'
       shell: bash
       run: |
         # `--no-default-features` drops `gui`, and with it `tauri`, `muda -> gtk`
@@ -84,4 +134,4 @@ runs:
         cargo build --release --manifest-path .qa-host/Cargo.toml \
           --bin chuzz-headless --no-default-features \
           --features capture,javascript,scrollbars,webp,system-fonts
-        echo "host=$PWD/.qa-host/target/release/chuzz-headless" >> "$GITHUB_OUTPUT"
+        cp .qa-host/target/release/chuzz-headless "${{ steps.acquire.outputs.host }}"

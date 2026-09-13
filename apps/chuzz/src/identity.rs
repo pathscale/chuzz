@@ -16,11 +16,10 @@ use std::fmt;
 /// Which browser Chuzz presents itself as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Identity {
-    /// Chuzz, honestly. The default, because claiming to be another browser is
-    /// a decision a person should make rather than inherit.
-    #[default]
+    /// Chuzz, honestly. Available from Settings for compatibility diagnosis.
     Chuzz,
     /// A current Chrome on macOS, which is byte for byte what Brave sends.
+    #[default]
     Chrome,
 }
 
@@ -39,7 +38,7 @@ impl Identity {
     /// without a code change.
     pub fn from_env() -> (Self, Option<String>) {
         match std::env::var("CHUZZ_USER_AGENT").ok() {
-            None => (Self::Chuzz, None),
+            None => (Self::Chrome, None),
             Some(value) => match value.trim().to_ascii_lowercase().as_str() {
                 "" | "chuzz" => (Self::Chuzz, None),
                 "chrome" | "brave" => (Self::Chrome, None),
@@ -81,15 +80,36 @@ pub fn user_agent_from_env() -> String {
     }
 }
 
+/// Whether an environment override owns the identity for this process.
+///
+/// Corpus and compatibility runs use the override to reproduce a specific
+/// client. Settings must report that it is locked instead of displaying a
+/// switch whose click cannot affect those requests.
+pub fn environment_override_is_set() -> bool {
+    std::env::var_os("CHUZZ_USER_AGENT").is_some()
+}
+
+/// Resolve the ordinary Settings choice while preserving the environment
+/// override used by corpus runs.
+pub fn user_agent_for_spoofing(spoofing: bool) -> String {
+    if environment_override_is_set() {
+        user_agent_from_env()
+    } else if spoofing {
+        Identity::Chrome.user_agent()
+    } else {
+        Identity::Chuzz.user_agent()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The default says Chuzz rather than borrowing another browser's name.
+    /// Ordinary browsing defaults to the current Chrome-compatible identity.
     #[test]
-    fn the_default_identity_is_chuzz() {
-        assert_eq!(Identity::default(), Identity::Chuzz);
-        assert!(Identity::Chuzz.user_agent().contains("Chuzz/"));
+    fn the_default_identity_is_chrome() {
+        assert_eq!(Identity::default(), Identity::Chrome);
+        assert!(Identity::default().user_agent().contains("Chrome/"));
     }
 
     /// Asking for Brave gets Chrome's string, because that is what Brave sends.
