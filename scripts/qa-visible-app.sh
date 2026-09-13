@@ -16,7 +16,7 @@ if [[ ! -x "$app/Contents/MacOS/chuzz-gui" ]]; then
   exit 1
 fi
 if [[ -z "$qa_bin" || ! -x "$qa_bin" ]]; then
-  printf "ps-qa is missing; set PS_QA_BIN or install ps-qa '^0.7.3'\n" >&2
+  printf "ps-qa is missing; set PS_QA_BIN or install ps-qa '^0.7'\n" >&2
   exit 1
 fi
 if [[ ! -x "$fixture_bin" ]]; then
