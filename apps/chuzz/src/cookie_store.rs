@@ -163,19 +163,22 @@ impl CookiePersistence {
     }
 
     fn enqueue(&self, snapshot: String) -> Result<(), CookieStoreError> {
-        let wake = {
-            let mut latest = self
-                .latest
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            latest.replace(snapshot)
-        };
-        if let Some(wake) = wake {
-            self.sender
-                .send(PersistenceCommand::Apply(wake))
-                .map_err(|_| {
-                    CookieStoreError::Persistence("cookie persistence worker stopped".into())
-                })?;
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let wake = latest.replace(snapshot);
+        if let Some(wake) = wake
+            && self.sender.send(PersistenceCommand::Apply(wake)).is_err()
+        {
+            // Keep the slot locked across the nonblocking send. Otherwise
+            // another callback can replace this unsent generation, return
+            // success, and leave the slot permanently occupied after the
+            // worker has stopped.
+            let _ = latest.take_for_wake(wake);
+            return Err(CookieStoreError::Persistence(
+                "cookie persistence worker stopped".into(),
+            ));
         }
         Ok(())
     }
@@ -929,6 +932,32 @@ mod tests {
             pending.take_for_wake(second_wake).as_deref(),
             Some("after barrier")
         );
+    }
+
+    #[test]
+    fn a_stopped_worker_does_not_leave_an_unsent_snapshot_pending() {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        drop(receiver);
+        let persistence = CookiePersistence {
+            sender,
+            latest: Arc::new(Mutex::new(PendingSnapshots::default())),
+        };
+
+        for value in ["first", "retry"] {
+            assert!(matches!(
+                persistence.enqueue(value.to_owned()),
+                Err(CookieStoreError::Persistence(message))
+                    if message == "cookie persistence worker stopped"
+            ));
+            assert!(
+                persistence
+                    .latest
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .pending
+                    .is_none()
+            );
+        }
     }
 
     #[tokio::test]
