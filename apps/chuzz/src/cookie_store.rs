@@ -31,9 +31,62 @@ worktable!(
 type CookieKey = (String, String, String);
 
 enum PersistenceCommand {
-    Apply,
-    Flush(tokio::sync::oneshot::Sender<Result<(), String>>),
-    Close(tokio::sync::oneshot::Sender<Result<(), String>>),
+    Apply(u64),
+    Flush {
+        snapshot: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    Close {
+        snapshot: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+}
+
+struct PendingSnapshot {
+    wake: u64,
+    value: String,
+}
+
+#[derive(Default)]
+struct PendingSnapshots {
+    next_wake: u64,
+    pending: Option<PendingSnapshot>,
+}
+
+impl PendingSnapshots {
+    fn replace(&mut self, value: String) -> Option<u64> {
+        if let Some(pending) = &mut self.pending {
+            pending.value = value;
+            return None;
+        }
+
+        self.next_wake = self
+            .next_wake
+            .checked_add(1)
+            .expect("cookie persistence wake id exhausted");
+        let wake = self.next_wake;
+        self.pending = Some(PendingSnapshot { wake, value });
+        Some(wake)
+    }
+
+    fn take_for_wake(&mut self, wake: u64) -> Option<String> {
+        // A Flush can take the snapshot while its older Apply is still queued.
+        // The wake id keeps that stale Apply from stealing a mutation queued
+        // on the far side of the barrier.
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.wake == wake)
+        {
+            self.take()
+        } else {
+            None
+        }
+    }
+
+    fn take(&mut self) -> Option<String> {
+        self.pending.take().map(|pending| pending.value)
+    }
 }
 
 struct CookiePersistence {
@@ -42,36 +95,38 @@ struct CookiePersistence {
     // async channel. Keep one replaceable snapshot beside the ordered control
     // queue instead: a mutation burst then costs one pending jar and one wake,
     // while Flush and Close remain FIFO barriers after that wake.
-    latest: Arc<Mutex<Option<String>>>,
+    latest: Arc<Mutex<PendingSnapshots>>,
 }
 
 impl CookiePersistence {
     fn start(table: BrowserCookieWorkTable) -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let latest = Arc::new(Mutex::new(None));
+        let latest = Arc::new(Mutex::new(PendingSnapshots::default()));
         let worker_latest = Arc::clone(&latest);
         tokio::spawn(async move {
             let mut table = Some(table);
             let mut first_error: Option<String> = None;
             while let Some(command) = receiver.recv().await {
                 match command {
-                    PersistenceCommand::Apply => {
+                    PersistenceCommand::Apply(wake) => {
                         let snapshot = worker_latest
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .take();
-                        if let Some(snapshot) = snapshot {
-                            let error = apply_durable_snapshot(
-                                table.as_ref().expect("the cookie table is open"),
-                                snapshot,
-                            )
-                            .await;
-                            if first_error.is_none() {
-                                first_error = error;
-                            }
-                        }
+                            .take_for_wake(wake);
+                        record_durable_snapshot(
+                            table.as_ref().expect("the cookie table is open"),
+                            snapshot,
+                            &mut first_error,
+                        )
+                        .await;
                     }
-                    PersistenceCommand::Flush(reply) => {
+                    PersistenceCommand::Flush { snapshot, reply } => {
+                        record_durable_snapshot(
+                            table.as_ref().expect("the cookie table is open"),
+                            snapshot,
+                            &mut first_error,
+                        )
+                        .await;
                         let drain = table
                             .as_ref()
                             .expect("the cookie table is open")
@@ -81,7 +136,13 @@ impl CookiePersistence {
                         let result = first_error.clone().map_or(drain, Err);
                         let _ = reply.send(result);
                     }
-                    PersistenceCommand::Close(reply) => {
+                    PersistenceCommand::Close { snapshot, reply } => {
+                        record_durable_snapshot(
+                            table.as_ref().expect("the cookie table is open"),
+                            snapshot,
+                            &mut first_error,
+                        )
+                        .await;
                         let close = table
                             .take()
                             .expect("the cookie table is open")
@@ -102,19 +163,19 @@ impl CookiePersistence {
     }
 
     fn enqueue(&self, snapshot: String) -> Result<(), CookieStoreError> {
-        let notify = {
+        let wake = {
             let mut latest = self
                 .latest
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let notify = latest.is_none();
-            *latest = Some(snapshot);
-            notify
+            latest.replace(snapshot)
         };
-        if notify {
-            self.sender.send(PersistenceCommand::Apply).map_err(|_| {
-                CookieStoreError::Persistence("cookie persistence worker stopped".into())
-            })?;
+        if let Some(wake) = wake {
+            self.sender
+                .send(PersistenceCommand::Apply(wake))
+                .map_err(|_| {
+                    CookieStoreError::Persistence("cookie persistence worker stopped".into())
+                })?;
         }
         Ok(())
     }
@@ -123,8 +184,9 @@ impl CookiePersistence {
         &self,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, CookieStoreError> {
         let (reply, result) = tokio::sync::oneshot::channel();
+        let snapshot = self.take_pending();
         self.sender
-            .send(PersistenceCommand::Flush(reply))
+            .send(PersistenceCommand::Flush { snapshot, reply })
             .map_err(|_| {
                 CookieStoreError::Persistence("cookie persistence worker stopped".into())
             })?;
@@ -133,8 +195,9 @@ impl CookiePersistence {
 
     async fn close(self) -> Result<(), CookieStoreError> {
         let (reply, result) = tokio::sync::oneshot::channel();
+        let snapshot = self.take_pending();
         self.sender
-            .send(PersistenceCommand::Close(reply))
+            .send(PersistenceCommand::Close { snapshot, reply })
             .map_err(|_| {
                 CookieStoreError::Persistence("cookie persistence worker stopped".into())
             })?;
@@ -142,6 +205,13 @@ impl CookiePersistence {
             .await
             .map_err(|_| CookieStoreError::Persistence("cookie persistence worker stopped".into()))?
             .map_err(CookieStoreError::Persistence)
+    }
+
+    fn take_pending(&self) -> Option<String> {
+        self.latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 }
 
@@ -550,6 +620,20 @@ async fn apply_durable_snapshot(
         .map(|error| error.to_string())
 }
 
+async fn record_durable_snapshot(
+    table: &BrowserCookieWorkTable,
+    snapshot: Option<String>,
+    first_error: &mut Option<String>,
+) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    let error = apply_durable_snapshot(table, snapshot).await;
+    if first_error.is_none() {
+        *first_error = error;
+    }
+}
+
 fn cookie_key(cookie: &StoredCookie<'_>) -> CookieKey {
     (
         String::from(&cookie.domain),
@@ -826,6 +910,25 @@ mod tests {
             }
         );
         assert_eq!(store.cookie_header(&page), None);
+    }
+
+    #[test]
+    fn a_stale_wake_cannot_take_a_snapshot_after_a_barrier() {
+        let mut pending = PendingSnapshots::default();
+        let first_wake = pending
+            .replace("first".to_owned())
+            .expect("an empty slot queues a wake");
+        assert_eq!(pending.replace("before barrier".to_owned()), None);
+        assert_eq!(pending.take().as_deref(), Some("before barrier"));
+
+        let second_wake = pending
+            .replace("after barrier".to_owned())
+            .expect("the emptied slot queues a new wake");
+        assert_eq!(pending.take_for_wake(first_wake), None);
+        assert_eq!(
+            pending.take_for_wake(second_wake).as_deref(),
+            Some("after barrier")
+        );
     }
 
     #[tokio::test]
