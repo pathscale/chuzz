@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use cookie_store::{
     Cookie as StoredCookie, CookieError, CookieStore as RfcCookieStore, StoreAction,
@@ -31,31 +31,44 @@ worktable!(
 type CookieKey = (String, String, String);
 
 enum PersistenceCommand {
-    Apply(String),
+    Apply,
     Flush(tokio::sync::oneshot::Sender<Result<(), String>>),
     Close(tokio::sync::oneshot::Sender<Result<(), String>>),
 }
 
 struct CookiePersistence {
     sender: tokio::sync::mpsc::UnboundedSender<PersistenceCommand>,
+    // Cookie callbacks are synchronous, so they cannot wait on a bounded
+    // async channel. Keep one replaceable snapshot beside the ordered control
+    // queue instead: a mutation burst then costs one pending jar and one wake,
+    // while Flush and Close remain FIFO barriers after that wake.
+    latest: Arc<Mutex<Option<String>>>,
 }
 
 impl CookiePersistence {
     fn start(table: BrowserCookieWorkTable) -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let latest = Arc::new(Mutex::new(None));
+        let worker_latest = Arc::clone(&latest);
         tokio::spawn(async move {
             let mut table = Some(table);
             let mut first_error: Option<String> = None;
             while let Some(command) = receiver.recv().await {
                 match command {
-                    PersistenceCommand::Apply(snapshot) => {
-                        let error = apply_durable_snapshot(
-                            table.as_ref().expect("the cookie table is open"),
-                            snapshot,
-                        )
-                        .await;
-                        if first_error.is_none() {
-                            first_error = error;
+                    PersistenceCommand::Apply => {
+                        let snapshot = worker_latest
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .take();
+                        if let Some(snapshot) = snapshot {
+                            let error = apply_durable_snapshot(
+                                table.as_ref().expect("the cookie table is open"),
+                                snapshot,
+                            )
+                            .await;
+                            if first_error.is_none() {
+                                first_error = error;
+                            }
                         }
                     }
                     PersistenceCommand::Flush(reply) => {
@@ -85,13 +98,25 @@ impl CookiePersistence {
                 let _ = table.close().await;
             }
         });
-        Self { sender }
+        Self { sender, latest }
     }
 
     fn enqueue(&self, snapshot: String) -> Result<(), CookieStoreError> {
-        self.sender
-            .send(PersistenceCommand::Apply(snapshot))
-            .map_err(|_| CookieStoreError::Persistence("cookie persistence worker stopped".into()))
+        let notify = {
+            let mut latest = self
+                .latest
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let notify = latest.is_none();
+            *latest = Some(snapshot);
+            notify
+        };
+        if notify {
+            self.sender.send(PersistenceCommand::Apply).map_err(|_| {
+                CookieStoreError::Persistence("cookie persistence worker stopped".into())
+            })?;
+        }
+        Ok(())
     }
 
     fn request_flush(
@@ -830,11 +855,34 @@ mod tests {
         std::fs::remove_dir_all(directory).expect("test cookie directory removed");
     }
 
+    #[tokio::test]
+    async fn a_mutation_burst_closes_with_its_latest_snapshot() {
+        let directory = test_directory("burst");
+        let page = url("https://profile.test.example/");
+        {
+            let store = BrowserCookieStore::open(&directory)
+                .await
+                .expect("cookie table opens");
+            for value in 0..512 {
+                store
+                    .add_response_cookies(&page, [format!("counter={value}; Path=/; Max-Age=3600")])
+                    .expect("cookie update queued");
+            }
+            store.close().await.expect("cookie table closes");
+        }
+
+        let store = BrowserCookieStore::open(&directory)
+            .await
+            .expect("cookie table reopens");
+        assert_eq!(store.cookie_header(&page), Some("counter=511".to_owned()));
+        store.close().await.expect("cookie table closes");
+        std::fs::remove_dir_all(directory).expect("test cookie directory removed");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn provider_redirect_and_error_cookies_persist_in_exchange_order() {
         use blitz_traits::net::Request;
         use std::io::{Read, Write};
-        use std::sync::Arc;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener binds");
         let port = listener.local_addr().expect("listener has address").port();
