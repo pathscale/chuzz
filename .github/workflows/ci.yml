@@ -71,6 +71,52 @@ jobs:
       - name: Test
         run: cargo test -p chuzz-control --all-features
 
+  # The fleet's website QA consumes this exact feature set as a prebuilt Linux
+  # release asset. Build and drive it here once, in the repository that owns
+  # the browser, before a version can reach the release workflow.
+  headless:
+    runs-on: ubicloud-standard-4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native font dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev fonts-dejavu-core
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: chuzz-linux-headless-ci
+          cache-targets: true
+
+      - name: Build and package the headless browser
+        run: scripts/package-headless.sh
+
+      - name: Test the packaged feature set
+        run: |
+          cargo test --release -p chuzz \
+            --no-default-features \
+            --features capture,javascript,scrollbars,webp,system-fonts \
+            --test serves_inspection
+
+      - name: Verify the release archive
+        run: |
+          cd target/headless-release
+          sha256sum -c chuzz-headless-x86_64-unknown-linux-gnu.tar.gz.sha256
+          tar -tzf chuzz-headless-x86_64-unknown-linux-gnu.tar.gz
+
+      - name: Keep the candidate for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: chuzz-headless-x86_64-unknown-linux-gnu
+          path: target/headless-release/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz*
+          if-no-files-found: error
+          retention-days: 7
+
   # The frontend, which is where most changes actually land. Independent of the
   # Rust jobs, so a TypeScript error does not wait on a cargo build.
   #
