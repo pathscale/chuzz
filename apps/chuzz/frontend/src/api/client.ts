@@ -1,4 +1,12 @@
-import type { DebugEntry, DiagnosticsState, PanelState, StatusReadout, Tab, TabId } from "~/types";
+import type {
+  DebugEntry,
+  DiagnosticsState,
+  PanelState,
+  StatusReadout,
+  Tab,
+  TabId,
+  UserAgentState,
+} from "~/types";
 
 /**
  * The shell surface, as the interface sees it.
@@ -49,6 +57,9 @@ export interface BrowserApi {
   toggleSection(section: keyof PanelState["sections"]): Promise<void>;
 
   status(): Promise<StatusReadout>;
+
+  userAgent(): Promise<UserAgentState>;
+  setUserAgentSpoofing(spoofing: boolean): Promise<UserAgentState>;
 
   /** What the inspection and profiling switches are doing right now. */
   diagnostics(): Promise<DiagnosticsState>;

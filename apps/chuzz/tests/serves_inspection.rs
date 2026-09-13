@@ -42,7 +42,7 @@ async fn request(
         .await
         .expect("send agent request");
     loop {
-        let message = tokio::time::timeout(Duration::from_secs(5), stream.recv())
+        let message = nagoya::timeout(Duration::from_secs(5), stream.recv())
             .await
             .unwrap_or_else(|_| panic!("host did not answer {request:?}"))
             .expect("the host keeps serving")
@@ -71,7 +71,7 @@ async fn observe_paint(stream: &mut dyn MessageStream, next_id: &mut i64) {
         .await
         .expect("send observe request");
     loop {
-        let message = tokio::time::timeout(Duration::from_secs(5), stream.recv())
+        let message = nagoya::timeout(Duration::from_secs(5), stream.recv())
             .await
             .expect("host did not answer paint observation")
             .expect("the host keeps serving")
@@ -96,7 +96,7 @@ async fn diagnostics(
         .await
         .expect("send diagnostic request");
     loop {
-        let message = tokio::time::timeout(Duration::from_secs(5), stream.recv())
+        let message = nagoya::timeout(Duration::from_secs(5), stream.recv())
             .await
             .unwrap_or_else(|_| panic!("host did not answer {request:?}"))
             .expect("the host keeps serving")
@@ -119,14 +119,32 @@ impl Drop for Host {
     }
 }
 
+/// Remove the isolated browser profile after the child has been stopped.
+struct TestProfile(std::path::PathBuf);
+
+impl Drop for TestProfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn serves_a_page_over_the_inspection_socket() {
     let page = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixture/page.html");
     let binary = env!("CARGO_BIN_EXE_chuzz-headless");
+    let profile = TestProfile(std::env::temp_dir().join(format!(
+        "chuzz-inspection-profile-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    )));
 
     let mut host = Host(
         Command::new(binary)
             .env("QA_INSPECT_PAGE", page)
+            .env("CHUZZ_PROFILE_DIR", &profile.0)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -392,7 +410,7 @@ fn serves_a_page_over_the_inspection_socket() {
             DebugResponse::Ack
         ));
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), stream.recv())
+            nagoya::timeout(Duration::from_millis(50), stream.recv())
                 .await
                 .is_err(),
             "scrolling a node that is already in view must not repaint; the \
@@ -433,7 +451,7 @@ fn serves_a_page_over_the_inspection_socket() {
             .await,
             DebugResponse::Ack
         ));
-        let event = tokio::time::timeout(Duration::from_millis(50), stream.recv())
+        let event = nagoya::timeout(Duration::from_millis(50), stream.recv())
             .await
             .expect("leaving a hovered control should repaint")
             .expect("the host keeps serving")
@@ -452,7 +470,7 @@ fn serves_a_page_over_the_inspection_socket() {
             .await,
             DebugResponse::Ack
         ));
-        let event = tokio::time::timeout(Duration::from_millis(50), stream.recv())
+        let event = nagoya::timeout(Duration::from_millis(50), stream.recv())
             .await
             .expect("a real hover repaint should emit an event")
             .expect("the host keeps serving")

@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/chuzz", "crates/chuzz-control"]
+members = ["apps/chuzz", "crates/chuzz-control", "crates/chuzz-qa-fixture"]
 resolver = "3"
 
 [workspace.package]
@@ -110,9 +110,14 @@ rustls = { version = "0.23", default-features = false, features = [
   "aws-lc-rs",
   "std",
 ] }
+cursor-icon = "^1"
+cookie_store = "^0.22.1"
+psl = "^2"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+nagoya = "^0.1.2"
 tokio = "1"
 url = "2.5"
+worktable = "^1.9.0-beta1"
 tauri = { version = "^2.11.5", default-features = false }
 # `diagnostics`, always, rather than behind a cargo feature.
 #

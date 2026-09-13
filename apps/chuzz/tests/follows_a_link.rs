@@ -37,6 +37,15 @@ impl Drop for Host {
     }
 }
 
+/// Remove the isolated browser profile after the child has been stopped.
+struct TestProfile(std::path::PathBuf);
+
+impl Drop for TestProfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 async fn request(
     stream: &mut dyn MessageStream,
     next_id: &mut i64,
@@ -49,7 +58,7 @@ async fn request(
         .await
         .expect("send agent request");
     loop {
-        let message = tokio::time::timeout(Duration::from_secs(10), stream.recv())
+        let message = nagoya::timeout(Duration::from_secs(10), stream.recv())
             .await
             .unwrap_or_else(|_| panic!("host did not answer {request:?}"))
             .expect("the host keeps serving")
@@ -85,10 +94,19 @@ async fn tree(
 fn a_link_is_followed_and_storage_goes_with_it() {
     let site = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixture-site");
     let binary = env!("CARGO_BIN_EXE_chuzz-headless");
+    let profile = TestProfile(std::env::temp_dir().join(format!(
+        "chuzz-link-profile-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    )));
 
     let mut host = Host(
         Command::new(binary)
             .env("QA_INSPECT_PAGE", site)
+            .env("CHUZZ_PROFILE_DIR", &profile.0)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -170,7 +188,7 @@ fn a_link_is_followed_and_storage_goes_with_it() {
                 "clicking the link never loaded the second page; the tree is still {:?}",
                 after.nodes
             );
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            nagoya::sleep(Duration::from_millis(200)).await;
         };
 
         assert!(

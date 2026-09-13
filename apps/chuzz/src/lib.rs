@@ -42,6 +42,7 @@ pub fn install_crypto_provider() {
 pub mod browser;
 #[cfg(feature = "capture")]
 pub mod capture;
+pub mod cookie_store;
 pub mod decode;
 pub mod document_loader;
 // `capture` writes the tree beside the PNG, so the two arrive together or the

@@ -8,9 +8,6 @@
 node_modules/
 apps/chuzz/dist/
 
-# Handover notes are session state, tracked locally and never committed.
-docs/HANDOVER-*.md
-
 # Local-only renderer patch, see the file itself.
 .cargo/config.toml
 .cargo/config.toml.disabled
@@ -21,6 +18,10 @@ apps/chuzz/gen/
 # Engine redirect for local builds. Untracked on purpose: it names paths that
 # exist on one machine. See scripts/local-engine.sh.
 .cargo/local-engine.toml
+
+# Handover and session notes are working state, not repository content.
+HANDOVER*.md
+docs/HANDOVER*.md
 
 # Lockfiles are not committed here. Every dependency is a caret range on a
 # published version, so a build resolves the newest thing that satisfies it and

@@ -65,6 +65,7 @@ export function ThemePicker(props: {
          * accent moves — which is a legitimate choice, just not the default.
          */}
         <Axis
+          idPrefix="chuzz-theme-strength"
           label={t("appearance.colourStrength")}
           hint={t("appearance.colourStrengthHint")}
           stops={[...WASH_STOPS]}
@@ -76,6 +77,7 @@ export function ThemePicker(props: {
           format={(stop) => `${stop}%`}
           action={
             <Button
+              id="chuzz-theme-reset"
               variant="outline"
               size="sm"
               aria-label={t("appearance.resetButton")}
@@ -88,6 +90,7 @@ export function ThemePicker(props: {
         />
 
         <Axis
+          idPrefix="chuzz-theme-softness"
           label={t("appearance.softness")}
           hint={t("appearance.softnessHint")}
           stops={softnessStops()}
@@ -106,6 +109,7 @@ export function ThemePicker(props: {
          * letters at different weights is the actual question being asked.
          */}
         <Axis
+          idPrefix="chuzz-theme-brightness"
           label={t("appearance.textBrightness")}
           hint={t("appearance.textBrightnessHint")}
           stops={[...BRIGHTNESS_STOPS]}
@@ -170,10 +174,13 @@ function SurfaceColorWheel(props: { value: string; onPick: (value: string) => vo
           const y = Math.sin(angle) * point.radius;
           return (
             <SurfaceSwatch
+              controlId={`chuzz-theme-surface-${index()}`}
               color={color}
               label={`${t("appearance.surfaceColour")} ${color}`}
+              selected={props.value.toLowerCase() === color.toLowerCase()}
               x={x}
               y={y}
+              onSelect={() => props.onPick(color)}
             />
           );
         }}
@@ -235,6 +242,7 @@ function AccentSelector(props: {
                 : `${t("appearance.accentColour")} ${index() + 1}`;
             return (
               <ColorSwatch
+                id={`chuzz-theme-accent-${index()}`}
                 color={option.color}
                 colorName={label()}
                 size="md"
@@ -258,6 +266,7 @@ function AccentSelector(props: {
  * where a column reads as a menu.
  */
 function Axis(props: {
+  idPrefix: string;
   label: string;
   hint: string;
   stops: number[];
@@ -287,6 +296,7 @@ function Axis(props: {
         <For each={props.stops}>
           {(stop, index) => (
             <Button
+              id={`${props.idPrefix}-${index()}`}
               variant={selected(stop) ? "solid" : "outline"}
               size="sm"
               width="square"

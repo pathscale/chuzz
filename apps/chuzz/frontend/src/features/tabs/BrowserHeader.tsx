@@ -16,21 +16,12 @@ import type { Tab } from "~/types";
  */
 export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Element {
   const browser = useBrowser();
-  const tabsControl: {
-    readonly selectedKey: string | number;
-    onSelectionChange: (key: string | number) => void;
-  } = {
-    get selectedKey() {
-      return browser.state.activeTabId;
-    },
-    onSelectionChange: (key) => browser.selectTab(Number(key)),
-  };
 
   return (
     <TitleBar>
       {/* Spacing lives in the Layout with the rest of the strip's geometry,
           rather than half here and half there. */}
-      <TabList {...tabsControl}>
+      <TabList>
         {/* Tabs.List currently requires ResizeObserver, which Blitz does not
             expose. The UI tab primitives retain selection, ARIA state, and
             keyboard navigation without its animated measurement layer. */}
@@ -43,6 +34,7 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
           </For>
         </div>
         <Button
+          id="chuzz-new-tab"
           variant="outline"
           size="sm"
           width="square"
@@ -54,6 +46,7 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
       </TabList>
 
       <Button
+        id="chuzz-settings"
         variant="outline"
         size="sm"
         width="square"
@@ -101,6 +94,20 @@ function CogIcon(): JSX.Element {
 
 function TabPill(props: { tab: Tab; isActive: boolean }): JSX.Element {
   const browser = useBrowser();
+  const selectAndFocus = (offset: number | "first" | "last") => {
+    const tabs = browser.state.tabs;
+    const current = tabs.findIndex((tab) => tab.id === props.tab.id);
+    const index =
+      offset === "first"
+        ? 0
+        : offset === "last"
+          ? tabs.length - 1
+          : (current + offset + tabs.length) % tabs.length;
+    const next = tabs[index];
+    if (!next) return;
+    browser.selectTab(next.id);
+    document.getElementById(`chuzz-tab-${next.id}`)?.focus();
+  };
 
   return (
     <BrowserTab
@@ -108,7 +115,13 @@ function TabPill(props: { tab: Tab; isActive: boolean }): JSX.Element {
       title={props.tab.title}
       status={props.tab.status}
       active={props.isActive}
-      closeLabel={t("browser.closeTab")}
+      closable={browser.state.tabs.length > 1}
+      closeLabel={`${t("browser.closeTab")}: ${props.tab.title}`}
+      onSelect={() => browser.selectTab(props.tab.id)}
+      onPrevious={() => selectAndFocus(-1)}
+      onNext={() => selectAndFocus(1)}
+      onFirst={() => selectAndFocus("first")}
+      onLast={() => selectAndFocus("last")}
       onClose={() => browser.closeTab(props.tab.id)}
     />
   );

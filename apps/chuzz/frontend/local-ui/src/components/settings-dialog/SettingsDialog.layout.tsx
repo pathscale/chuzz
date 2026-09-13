@@ -17,6 +17,7 @@ export type SettingsDialogProps = {
 
 const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () => (
   <Dialog
+    id="chuzz-settings-dialog"
     {...slot.root}
     open={local.open}
     onOpenChange={(open) => {
@@ -26,10 +27,14 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
     size="lg"
     backdrop="opaque"
   >
-    <Dialog.Content {...slot.content}>
+    <Dialog.Content id="chuzz-settings-content" {...slot.content}>
       <Dialog.Header {...slot.header}>
         <Dialog.Heading {...slot.title}>{local.title}</Dialog.Heading>
-        <Dialog.CloseTrigger aria-label={local.title} />
+        <Dialog.CloseTrigger
+          id="chuzz-settings-close"
+          aria-label={`Close ${local.title}`}
+          onClick={local.onClose}
+        />
       </Dialog.Header>
       <Dialog.Body {...slot.body}>
         <div {...slot.row}>
@@ -38,6 +43,7 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
           </Text>
           <div {...slot.modeGroup}>
             <Button
+              id="chuzz-theme-dark"
               variant={local.mode === "dark" ? "solid" : "outline"}
               size="sm"
               aria-pressed={local.mode === "dark" ? "true" : "false"}
@@ -46,6 +52,7 @@ const SettingsDialog: Layout<typeof settingsDialog, SettingsDialogProps> = () =>
               {local.darkLabel}
             </Button>
             <Button
+              id="chuzz-theme-light"
               variant={local.mode === "light" ? "solid" : "outline"}
               size="sm"
               aria-pressed={local.mode === "light" ? "true" : "false"}

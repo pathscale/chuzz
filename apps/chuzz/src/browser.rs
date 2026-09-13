@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::internal_pages::{INTERNAL_PAGE_STYLE, source_html};
@@ -6,12 +7,13 @@ use blitz_dom::{Document as _, DocumentConfig, FontContext, NodeId};
 use blitz_html::HtmlProvider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::{Request, Url};
+use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_runtime_blitz::BlitzRuntime;
 
 use crate::decode::decode_body;
-use crate::document_loader::{NetProvider, WEB_API_SHIM};
+use crate::document_loader::{NetProvider, install_web_api_shim};
 use crate::nav::{NEW_TAB_URL, display_title, request_from_input};
 
 /// The document an empty tab shows.
@@ -287,11 +289,111 @@ const WINDOW_NETWORK_DEADLINE: std::time::Duration = std::time::Duration::from_s
 struct BrowserInner {
     state: Mutex<BrowserState>,
     log: Mutex<DebugLog>,
-    net: Arc<NetProvider>,
+    net: Mutex<Arc<NetProvider>>,
+    user_agent_spoofing: Mutex<bool>,
     completed: Mutex<VecDeque<PageBundle>>,
     app: Mutex<Option<ChuzzAppHandle>>,
     /// Set by `--wasm`. Immutable for the life of the process.
     wasm: Option<WasmPage>,
+}
+
+/// Queue embedded-page redraws without blocking network workers on AppKit.
+///
+/// Boa resolves a runtime-discovered module synchronously on the UI thread.
+/// A direct macOS redraw from every resource-completion worker also waits for
+/// that UI thread, so a page with many images can occupy the runtime pool with
+/// workers waiting for the same thread that is waiting for the module fetch.
+/// Coalescing redraws onto Tauri's main queue breaks that cycle.
+struct QueuedRedrawShell {
+    inner: Arc<dyn ShellProvider>,
+    app: ChuzzAppHandle,
+    redraw_pending: Arc<AtomicBool>,
+}
+
+impl QueuedRedrawShell {
+    fn new(inner: Arc<dyn ShellProvider>, app: ChuzzAppHandle) -> Self {
+        Self {
+            inner,
+            app,
+            redraw_pending: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl ShellProvider for QueuedRedrawShell {
+    fn request_redraw(&self) {
+        if self.redraw_pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let inner = Arc::clone(&self.inner);
+        let pending = Arc::clone(&self.redraw_pending);
+        if self
+            .app
+            .run_on_main_thread(move || {
+                pending.store(false, Ordering::Release);
+                inner.request_redraw();
+            })
+            .is_err()
+        {
+            self.redraw_pending.store(false, Ordering::Release);
+        }
+    }
+
+    fn set_cursor(&self, icon: Option<cursor_icon::CursorIcon>) {
+        self.inner.set_cursor(icon);
+    }
+
+    fn set_window_title(&self, title: String) {
+        self.inner.set_window_title(title);
+    }
+
+    fn set_ime_enabled(&self, is_enabled: bool) {
+        self.inner.set_ime_enabled(is_enabled);
+    }
+
+    fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32) {
+        self.inner.set_ime_cursor_area(x, y, width, height);
+    }
+
+    fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
+        self.inner.get_clipboard_text()
+    }
+
+    fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
+        self.inner.set_clipboard_text(text)
+    }
+
+    fn open_file_dialog(
+        &self,
+        multiple: bool,
+        filter: Option<FileDialogFilter>,
+    ) -> Vec<std::path::PathBuf> {
+        self.inner.open_file_dialog(multiple, filter)
+    }
+
+    fn request_window_close(&self) {
+        self.inner.request_window_close();
+    }
+
+    fn set_window_minimized(&self, minimized: bool) {
+        self.inner.set_window_minimized(minimized);
+    }
+
+    fn set_window_maximized(&self, maximized: bool) {
+        self.inner.set_window_maximized(maximized);
+    }
+
+    fn is_window_maximized(&self) -> bool {
+        self.inner.is_window_maximized()
+    }
+
+    fn set_window_decorations(&self, decorations: bool) {
+        self.inner.set_window_decorations(decorations);
+    }
+
+    fn drag_window(&self) {
+        self.inner.drag_window();
+    }
 }
 
 #[derive(Clone)]
@@ -322,6 +424,7 @@ impl Browser {
 
     fn build(startup: Option<Url>, wasm: Option<WasmPage>) -> Self {
         let first = startup.unwrap_or_else(|| Url::parse(NEW_TAB_URL).unwrap());
+        let user_agent_spoofing = stored_user_agent().spoofing;
         Self(Arc::new(BrowserInner {
             state: Mutex::new(BrowserState {
                 tabs: vec![TabState {
@@ -350,10 +453,11 @@ impl Browser {
                 next_seq: 1,
                 entries: VecDeque::new(),
             }),
-            net: Arc::new(NetProvider::with_user_agent(
+            net: Mutex::new(Arc::new(NetProvider::with_user_agent(
                 None,
-                &crate::identity::user_agent_from_env(),
-            )),
+                &crate::identity::user_agent_for_spoofing(user_agent_spoofing),
+            ))),
+            user_agent_spoofing: Mutex::new(user_agent_spoofing),
             completed: Mutex::new(VecDeque::new()),
             app: Mutex::new(None),
             wasm,
@@ -369,6 +473,30 @@ impl Browser {
         let browser = self.clone();
         let mut pending = VecDeque::new();
         document.add_poll_hook(move |document, _| browser.poll_document(document, &mut pending));
+    }
+
+    fn net(&self) -> Arc<NetProvider> {
+        Arc::clone(&self.0.net.lock().unwrap())
+    }
+
+    /// Open the process-wide profile jar before the first tab is scheduled.
+    pub async fn open_cookie_profile(
+        &self,
+        directory: impl AsRef<std::path::Path>,
+    ) -> Result<(), crate::cookie_store::CookieStoreError> {
+        let cookies = Arc::new(crate::cookie_store::BrowserCookieStore::open(directory).await?);
+        let user_agent_spoofing = *self.0.user_agent_spoofing.lock().unwrap();
+        *self.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_and_cookies(
+            None,
+            &crate::identity::user_agent_for_spoofing(user_agent_spoofing),
+            cookies,
+        ));
+        Ok(())
+    }
+
+    /// Drain cookie writes during orderly application shutdown.
+    pub async fn flush_cookie_store(&self) -> Result<(), crate::cookie_store::CookieStoreError> {
+        self.net().cookie_store().flush().await
     }
 
     fn app(&self) -> Option<ChuzzAppHandle> {
@@ -504,13 +632,18 @@ impl Browser {
                 continue;
             };
 
-            let shell_provider = ui.inner().shell_provider.clone();
+            let direct_shell = ui.inner().shell_provider.clone();
+            let shell_provider: Arc<dyn ShellProvider> = match self.app() {
+                Some(app) => Arc::new(QueuedRedrawShell::new(direct_shell, app)),
+                None => direct_shell,
+            };
             // A factory rather than a value: a module that fails to mount is
             // re-parsed from the same bytes, and that second parse needs its own
             // config because `DocumentConfig` is consumed by the first.
+            let net = self.net();
             let make_config = || DocumentConfig {
                 base_url: Some(bundle.resolved_url.clone()),
-                net_provider: Some(Arc::clone(&self.0.net) as _),
+                net_provider: Some(Arc::clone(&net) as _),
                 navigation_provider: Some(Arc::new(PageNavigation {
                     browser: Arc::downgrade(&self.0),
                     tab_id: bundle.tab_id,
@@ -571,13 +704,13 @@ impl Browser {
                             blitz_script::ScriptDocument::from_html(&html, make_config())
                                 .with_fetcher(crate::script_fetch::PageScripts::new(
                                     scripts,
-                                    Arc::clone(&self.0.net),
+                                    Arc::clone(&net),
                                     WINDOW_SCRIPT_DEADLINE,
                                 ));
-                        page.eval(WEB_API_SHIM);
+                        install_web_api_shim(&mut page, &net);
                         crate::net_bridge::install(
                             &mut page,
-                            Arc::clone(&self.0.net),
+                            Arc::clone(&net),
                             WINDOW_NETWORK_DEADLINE,
                             blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
                         );
@@ -598,13 +731,13 @@ impl Browser {
                     let mut page = blitz_script::ScriptDocument::from_html(&html, make_config())
                         .with_fetcher(crate::script_fetch::PageScripts::new(
                             scripts,
-                            Arc::clone(&self.0.net),
+                            Arc::clone(&net),
                             WINDOW_SCRIPT_DEADLINE,
                         ));
-                    page.eval(WEB_API_SHIM);
+                    install_web_api_shim(&mut page, &net);
                     crate::net_bridge::install(
                         &mut page,
-                        Arc::clone(&self.0.net),
+                        Arc::clone(&net),
                         WINDOW_NETWORK_DEADLINE,
                         blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
                     );
@@ -813,7 +946,7 @@ async fn fetch_page_module(
     document_url: &str,
     script: &crate::wasm_page::WasmScript,
 ) -> Option<PageModule> {
-    let net = &browser.0.net;
+    let net = browser.net();
     let base = Url::parse(document_url).ok()?;
     let src = match base.join(&script.src) {
         Ok(src) => src,
@@ -900,7 +1033,7 @@ async fn fetch_page(
     mut request: Request,
     force_revalidate: bool,
 ) -> PageBundle {
-    let net = &browser.0.net;
+    let net = browser.net();
     browser.note("info", "nav", format!("navigating to {}", request.url));
     if request.url.scheme() == "about" {
         return PageBundle {
@@ -1248,6 +1381,92 @@ pub fn debug_log(browser: State<'_, Browser>, since: Option<u64>) -> Vec<DebugEn
 #[tauri::command]
 pub fn status(browser: State<'_, Browser>) -> StatusReadout {
     browser.snapshots().3
+}
+
+/// The browser identity applied to new document and subresource requests.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserAgentState {
+    spoofing: bool,
+    locked: bool,
+    user_agent: String,
+}
+
+#[derive(Clone, Copy, Serialize, serde::Deserialize)]
+pub struct StoredUserAgent {
+    #[serde(default = "default_spoofing")]
+    pub spoofing: bool,
+}
+
+const fn default_spoofing() -> bool {
+    true
+}
+
+impl Default for StoredUserAgent {
+    fn default() -> Self {
+        Self { spoofing: true }
+    }
+}
+
+fn user_agent_path() -> Option<std::path::PathBuf> {
+    Some(crate::cookie_store::profile_directory().join("user-agent.json"))
+}
+
+pub fn stored_user_agent() -> StoredUserAgent {
+    user_agent_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn store_user_agent(value: StoredUserAgent) {
+    let Some(path) = user_agent_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(encoded) = serde_json::to_vec_pretty(&value) {
+        let _ = std::fs::write(path, encoded);
+    }
+}
+
+fn user_agent_state(browser: &Browser) -> UserAgentState {
+    let spoofing = *browser.0.user_agent_spoofing.lock().unwrap();
+    UserAgentState {
+        spoofing,
+        locked: crate::identity::environment_override_is_set(),
+        user_agent: crate::identity::user_agent_for_spoofing(spoofing),
+    }
+}
+
+#[tauri::command]
+pub fn user_agent(browser: State<'_, Browser>) -> UserAgentState {
+    user_agent_state(&browser)
+}
+
+/// Apply the compatibility identity immediately and reload the active tab.
+///
+/// The network provider owns its cache and User-Agent, so changing identity
+/// replaces that provider while retaining the profile cookie jar. The current
+/// document keeps the provider it was created with; reloading makes the
+/// visible page and every subresource agree on the new identity.
+#[tauri::command]
+pub fn set_user_agent_spoofing(browser: State<'_, Browser>, spoofing: bool) -> UserAgentState {
+    if crate::identity::environment_override_is_set() {
+        return user_agent_state(&browser);
+    }
+    *browser.0.user_agent_spoofing.lock().unwrap() = spoofing;
+    let cookies = browser.net().cookie_store();
+    *browser.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_and_cookies(
+        None,
+        &crate::identity::user_agent_for_spoofing(spoofing),
+        cookies,
+    ));
+    store_user_agent(StoredUserAgent { spoofing });
+    let active = browser.snapshots().1;
+    browser.schedule_current(active, true);
+    user_agent_state(&browser)
 }
 
 /// What the diagnostics switches are actually doing right now.

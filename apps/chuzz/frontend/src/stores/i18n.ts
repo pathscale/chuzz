@@ -46,6 +46,14 @@ const en = {
     off: "Off",
     locked: "held on by CHUZZ_CONTROL for this run",
   },
+  identity: {
+    title: "Website identity",
+    label: "Chrome compatibility",
+    hint: "send Chrome's browser identity so websites return their supported experience",
+    on: "On",
+    off: "Off",
+    locked: "held by CHUZZ_USER_AGENT for this run",
+  },
   browser: {
     newTab: "New tab",
     closeTab: "Close tab",

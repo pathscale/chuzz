@@ -1,0 +1,33 @@
+[
+    (
+        id: "diagnostics-debugging-selects",
+        group: "diagnostics",
+        what: "deep debugging can be enabled without restarting the browser",
+        open: Some("Settings"),
+        hover: None,
+        click: Some("#chuzz-deep-debugging-on"),
+        subject: "#chuzz-deep-debugging-on",
+        expect: SelectionChanges,
+    ),
+    (
+        id: "diagnostics-debugging-restores",
+        group: "diagnostics",
+        what: "deep debugging can be turned back off",
+        open: Some("Settings"),
+        hover: None,
+        click: Some("#chuzz-deep-debugging-off"),
+        subject: "#chuzz-deep-debugging-off",
+        expect: SelectionChanges,
+        covers: ["button:Deep debugging ", "button:Agent control "],
+    ),
+    (
+        id: "diagnostics-settings-closes",
+        group: "diagnostics",
+        what: "the suite returns to unobscured browser chrome before inventory",
+        open: None,
+        hover: None,
+        click: Some("#chuzz-settings-close"),
+        subject: "dialog:Appearance",
+        expect: Vanishes,
+    ),
+]

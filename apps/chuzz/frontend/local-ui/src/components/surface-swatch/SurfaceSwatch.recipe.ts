@@ -5,9 +5,12 @@ export const surfaceSwatch = recipe({
   element: "span",
   slots: { root: { base: "surface-swatch" } },
   props: {
+    controlId: {},
     color: {},
     label: {},
+    selected: {},
     x: {},
     y: {},
+    onSelect: {},
   },
 });

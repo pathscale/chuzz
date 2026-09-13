@@ -33,6 +33,7 @@ export function DiagnosticsSection(): JSX.Element {
       </Text>
 
       <OnOffRow
+        id="chuzz-agent-control"
         label={t("diagnostics.inspection")}
         hint={diagnostics.locked ? t("diagnostics.locked") : t("diagnostics.inspectionHint")}
         value={diagnostics.inspection}
@@ -47,6 +48,7 @@ export function DiagnosticsSection(): JSX.Element {
        * that does nothing.
        */}
       <OnOffRow
+        id="chuzz-deep-debugging"
         label={t("diagnostics.profiling")}
         hint={t("diagnostics.profilingHint")}
         value={diagnostics.profiling}
@@ -73,6 +75,7 @@ export function DiagnosticsSection(): JSX.Element {
  * handler. Read the version off the pin, not off that comment.
  */
 function OnOffRow(props: {
+  id: string;
   label: string;
   hint: string;
   value: boolean;
@@ -89,6 +92,8 @@ function OnOffRow(props: {
       </Flex>
       <Flex as="div" align="center" gap="sm" shrink={false}>
         <Button
+          id={`${props.id}-on`}
+          aria-label={`${props.label} ${t("diagnostics.on")}`}
           variant={props.value ? "solid" : "outline"}
           size="sm"
           aria-pressed={props.value ? "true" : "false"}
@@ -98,6 +103,8 @@ function OnOffRow(props: {
           {t("diagnostics.on")}
         </Button>
         <Button
+          id={`${props.id}-off`}
+          aria-label={`${props.label} ${t("diagnostics.off")}`}
           variant={props.value ? "outline" : "solid"}
           size="sm"
           aria-pressed={!props.value ? "true" : "false"}

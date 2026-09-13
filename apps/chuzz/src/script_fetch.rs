@@ -51,9 +51,8 @@ impl PageScripts {
         let net = Arc::clone(&self.net);
         let target = url.clone();
         let deadline = self.deadline;
-        let fetch = async move {
-            tokio::time::timeout(deadline, net.fetch_async(Request::get(target))).await
-        };
+        let fetch =
+            async move { nagoya::timeout(deadline, net.fetch_async(Request::get(target))).await };
 
         // Called from inside the runtime driving the page, so blocking the
         // thread outright would stall the executor being waited on.

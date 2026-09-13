@@ -10,6 +10,7 @@ import {
 import { api } from "~/api";
 import { type BrowserShortcut, resolveBrowserShortcut } from "~/lib/shortcuts";
 import { syncDiagnostics } from "~/stores/diagnostics";
+import { syncUserAgent } from "~/stores/user-agent";
 import type { DebugEntry, PanelSections, PanelState, StatusReadout, Tab, TabId } from "~/types";
 
 interface BrowserState {
@@ -25,6 +26,7 @@ interface BrowserState {
    * happened just now", which is the only question anyone asks of it.
    */
   debug: DebugEntry[];
+  addressInvalid: boolean;
 }
 
 const EMPTY: BrowserState = {
@@ -36,6 +38,7 @@ const EMPTY: BrowserState = {
   },
   status: { status: "blank", url: "", tabCount: 0, nodeCount: 0, transferred: "0 B" },
   debug: [],
+  addressInvalid: false,
 };
 
 /** Matches `DEBUG_LOG_CAPACITY` in `browser.rs`. */
@@ -51,6 +54,14 @@ const DEBUG_LIMIT = 500;
  */
 function createBrowserStore() {
   const [state, setState] = createStore<BrowserState>({ ...EMPTY });
+
+  const navigate = async (input: string): Promise<boolean> => {
+    const accepted = await api.navigate(state.activeTabId, input);
+    setState((draft) => {
+      draft.addressInvalid = !accepted;
+    });
+    return accepted;
+  };
 
   // Solid 2 removed `onMount`, and its `createEffect` takes a compute function
   // *and* a separate effect function: the one-argument form is typed `never`
@@ -77,6 +88,7 @@ function createBrowserStore() {
       // The diagnostics switches are window-wide rather than per-tab, so they
       // are adopted here alongside the rest of the startup read.
       void syncDiagnostics();
+      void syncUserAgent();
 
       void (async () => {
         const [tabs, activeTabId, panel, status, debug] = await Promise.all([
@@ -215,7 +227,7 @@ function createBrowserStore() {
           const target = event.target;
           if (target instanceof HTMLInputElement && target.id === "chuzz-address-bar") {
             if (typeof event.preventDefault === "function") event.preventDefault();
-            void api.navigate(state.activeTabId, target.value);
+            void navigate(target.value);
             return;
           }
         }
@@ -250,9 +262,11 @@ function createBrowserStore() {
     openTab: () => void api.openTab(),
     closeTab: (id: TabId) => void api.closeTab(id),
     /** Resolves false when the shell refused the input. */
-    navigate: (input: string) => {
-      const id = state.activeTabId;
-      return api.navigate(id, input);
+    navigate,
+    clearAddressError: () => {
+      setState((draft) => {
+        draft.addressInvalid = false;
+      });
     },
     goBack: () => void api.goBack(state.activeTabId),
     goForward: () => void api.goForward(state.activeTabId),

@@ -101,12 +101,23 @@ pub async fn capture(
 
     // The same loader the browser uses, so a capture cannot silently diverge
     // from what a tab would render.
-    let net_provider = std::sync::Arc::new(blitz_net::Provider::with_user_agent(
-        None,
-        &crate::identity::user_agent_from_env(),
-    ));
+    let cookies = std::sync::Arc::new(
+        crate::cookie_store::BrowserCookieStore::open(
+            crate::cookie_store::profile_directory().join("cookies"),
+        )
+        .await?,
+    );
+    let net_provider = std::sync::Arc::new(
+        crate::document_loader::NetProvider::with_user_agent_and_cookies(
+            None,
+            &crate::identity::user_agent_from_env(),
+            cookies,
+        ),
+    );
     // No prelude: a capture loads one page and has nothing to carry into it.
-    let mut document = crate::document_loader::load_for_capture(request, net_provider, "").await?;
+    let mut document =
+        crate::document_loader::load_for_capture(request, std::sync::Arc::clone(&net_provider), "")
+            .await?;
 
     // Images are fetched asynchronously and applied through the document's
     // message channel, which only drains inside `resolve`. Resolving once
@@ -124,11 +135,11 @@ pub async fn capture(
         if !pending {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        nagoya::sleep(std::time::Duration::from_millis(50)).await;
     }
     // A final settle: the last response may still be sitting on the channel,
     // and it is only applied by the `resolve` inside the render below.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    nagoya::sleep(std::time::Duration::from_millis(200)).await;
 
     let scale = capture_scale();
     // Physical pixels, the way a window sizes its surface.
@@ -145,7 +156,9 @@ pub async fn capture(
         )
     });
 
-    write_png(&buffer, device_width, device_height, output)
+    let result = write_png(&buffer, device_width, device_height, output);
+    net_provider.cookie_store().flush().await?;
+    result
 }
 
 /// Render a document built by a WebAssembly guest and write a PNG to `png_out`.
