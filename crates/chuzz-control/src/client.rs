@@ -16,7 +16,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use endpoint_libs::libs::ws::transport::{TransportStream, framed_json};
+use blitz_control_protocol::framed_json;
+use endpoint_libs::libs::ws::transport::TransportStream;
 use endpoint_libs::libs::ws::{MessageStream, WireMessage};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
