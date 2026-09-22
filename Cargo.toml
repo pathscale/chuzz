@@ -46,7 +46,11 @@ dioxus-native = { package = "ps-dioxus-native", version = "^0.7.3", default-feat
 # The one control surface: wire vocabulary, the document core, and both
 # transports. It used to be reached through `tauri-runtime-blitz`, which meant a
 # headless browser compiled a Tauri runtime with the runtime switched off.
-blitz-control-protocol = { version = "^0.5.1", default-features = false }
+# Path until Navigate publishes. crates.io 0.5.1 has Inspect, Act, Relaunch,
+# Quit only, and it predates endpoint-libs 3.2. Drop the path when 0.5.3 is on
+# crates.io.
+blitz-control-protocol = { path = "../ps-observability/crates/blitz-control-protocol", version = "^0.5.3", default-features = false }
+
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
 image = { version = "^0.25.6", default-features = false }
@@ -117,7 +121,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 nagoya = "^0.1"
 tokio = "1"
 url = "2.5"
-worktable = "^1.9.0-beta1"
+worktable = "^1.10.0-beta1"
 tauri = { version = "^2.11.5", default-features = false }
 # `diagnostics`, always, rather than behind a cargo feature.
 #
@@ -135,7 +139,7 @@ tauri = { version = "^2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-tauri-runtime-blitz = { version = "^0.4.0", default-features = false, features = [
+tauri-runtime-blitz = { path = "../tauri-runtime-blitz/crates/tauri-runtime-blitz", version = "^0.4.1", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }

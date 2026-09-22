@@ -16,7 +16,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use endpoint_libs::libs::ws::transport::{TransportStream, framed_json};
+use blitz_control_protocol::framed_json;
+use endpoint_libs::libs::ws::transport::TransportStream;
 use endpoint_libs::libs::ws::{MessageStream, WireMessage};
 use serde::{Deserialize, Serialize};
 use tokio::net::{UnixListener, UnixStream};

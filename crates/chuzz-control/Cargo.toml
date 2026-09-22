@@ -13,6 +13,7 @@ default = ["server"]
 server = ["dep:endpoint-libs", "dep:tokio"]
 
 [dependencies]
+blitz-control-protocol = { workspace = true, default-features = false }
 endpoint-libs = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync"], optional = true }
 serde.workspace = true
