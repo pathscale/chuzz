@@ -43,13 +43,25 @@ mkdir -p "$qa_home/Library/Application Support/ai.chuzz.browser" "$artifacts/pix
 printf '%s\n' '{"inspection":true,"profiling":false}' \
   > "$qa_home/Library/Application Support/ai.chuzz.browser/diagnostics.json"
 
+# The runtime publishes its descriptor under Rust's `std::env::temp_dir()`,
+# which is `$TMPDIR` when set and otherwise the per-user
+# `confstr(_CS_DARWIN_USER_TEMP_DIR)` directory, never `/tmp`. The CI runner
+# starts steps with `TMPDIR` unset, so the app wrote under `/var/folders/.../T`
+# while this script watched `/tmp` and timed out. Name the directory once and
+# export it, so the app, this script and ps-qa all resolve the same place.
+if [[ -z "${TMPDIR:-}" ]]; then
+  TMPDIR=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || printf '/tmp')
+fi
+TMPDIR=${TMPDIR%/}
+export TMPDIR
+
 "$fixture_bin" --port 49123 > "$artifacts/fixture.log" 2>&1 &
 server_pid=$!
 HOME="$qa_home" "$app/Contents/MacOS/chuzz-gui" \
   http://127.0.0.1:49123/ > "$artifacts/chuzz.log" 2>&1 &
 app_pid=$!
 
-descriptor_dir=${TMPDIR:-/tmp}/tauri-blitz-agent
+descriptor_dir=$TMPDIR/tauri-blitz-agent
 for _ in {1..200}; do
   candidate=$(find "$descriptor_dir" -maxdepth 1 -name "$app_pid-*.json" -print -quit 2>/dev/null || true)
   if [[ -n "$candidate" ]]; then
@@ -63,7 +75,7 @@ for _ in {1..200}; do
   sleep 0.1
 done
 if [[ -z "$descriptor" ]]; then
-  printf 'Chuzz published no control descriptor within 20 seconds\n' >&2
+  printf 'Chuzz published no control descriptor in %s within 20 seconds\n' "$descriptor_dir" >&2
   exit 1
 fi
 
