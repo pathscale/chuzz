@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use blitz_control_protocol::{NagoyaStream, framed_json_neutral};
 use endpoint_libs::libs::ws::transport::TransportStream;
 use endpoint_libs::libs::ws::{MessageStream, WireMessage};
-use serde_json::{Value, json};
 use nagoya::reactor::{Addr, Reactor, TcpStream};
+use serde_json::{Value, json};
 use std::os::unix::ffi::OsStrExt;
 
 pub const AGENT_CONTROL_TOOL: &str = "blitz.agent.control";
@@ -113,7 +113,9 @@ impl Client {
             .map_err(|_| std::io::Error::other("socket path is not a valid unix address"))?;
         let stream = TcpStream::connect(addr, client_reactor()).await?;
         Ok(Self {
-            stream: Box::new(TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)))),
+            stream: Box::new(TransportStream::new(framed_json_neutral(
+                NagoyaStream::new(stream),
+            ))),
             next_id: 1,
         })
     }
