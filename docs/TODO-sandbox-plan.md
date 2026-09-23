@@ -221,7 +221,7 @@ So: initialise the window, renderer and font stack, then apply the profile, **th
 first page.
 
 **There is no seam in `main` for that.** `apps/chuzz/src/tauri_main.rs:203` is
-`.run(|_, _| {})` on the end of the `tauri_runtime_blitz::builder()` chain, and it blocks —
+`.run(|_, _| {})` on the end of the `izumo::builder()` chain, and it blocks —
 it owns the event loop, the window and the renderer. Everything before it is pre-graphics;
 everything after it is exit. So the two obvious options are:
 

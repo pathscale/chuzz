@@ -25,12 +25,12 @@
   Do not reach for `rev` or `=` either: a git revision cannot be published and
   an exact pin is a range of one, so both split the graph the same way. A git
   `endpoint-libs` alongside the registry copy is precisely how this repository
-  ended up with two of it. There are no exceptions left: `tauri-runtime-blitz`
-  was the last git dependency, and it is `^0.1.0` from crates.io like the rest.
+  ended up with two of it. There are no exceptions left: `izumo`
+  was the last git dependency, and it is `^0.4` from crates.io like the rest.
 - **No lockfiles are committed. Not `Cargo.lock`, not `bun.lock`.** They were,
   and a lockfile is the one thing that can hold a caret dependency still: any
   version already recorded satisfies `^`, so cargo never reconsiders it. This
-  workspace sat on `ps-blitz` 0.4.4 and `tauri-runtime-blitz` 0.3.6 that way
+  workspace sat on `ps-blitz` 0.4.4 and `tauri-runtime-blitz` 0.3.6 (now izumo) that way
   while 0.4.5 and 0.3.7 were published, carrying fixes chuzz needed, and neither
   a local build nor CI could see it. A stale-but-valid pin is the dangerous
   kind; a stale-and-invalid one repairs itself, which is why the boa dependency
@@ -48,7 +48,7 @@
   points at directories that exist on one machine and the next plain `cargo
   build` would silently reuse it. Patch only the crates you are actually
   changing; every entry is a pin that stops being tested.
-- When you move the engine version, move `tauri-runtime-blitz`'s to match. Both
+- When you move the engine version, move `izumo`'s to match. Both
   resolve a ps-blitz, and two different ones put two engines in the graph, which
   surfaces as missing methods and unrelated `PaintScene` traits rather than as a
   version error. A caret on both sides makes the shared range the thing that

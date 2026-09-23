@@ -1,7 +1,7 @@
 //! The headless runtime for Blitz: one page, no window, driven over the
 //! control socket.
 //!
-//! The pair to `tauri-runtime-blitz`, which is the same engine embedded in a
+//! The pair to `izumo`, which is the same engine embedded in a
 //! Tauri window. That one is an adapter, about 4,000 lines letting Tauri host
 //! a Blitz document. This is the browser itself with the window left off, so
 //! it is a module here rather than a crate of its own: it needs

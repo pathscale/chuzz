@@ -20,7 +20,7 @@ homepage = "https://github.com/pathscale/chuzz"
 # nothing reconciled: the pin sat 44 commits behind while local builds moved on.
 # A revision fixed that and introduced its own tax, because a git dependency is
 # not a version: every engine release meant editing eight lines here and a
-# matching set in `tauri-runtime-blitz`, and the day those disagreed cargo put
+# matching set in `izumo`, and the day those disagreed cargo put
 # two engines in the graph and reported it as
 #
 #   expected `blitz_script::document::ScriptDocument`, found `ScriptDocument`
@@ -42,9 +42,9 @@ blitz-traits = { package = "ps-blitz-traits", version = "^0.4" }
 blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4" }
 dioxus-native = { package = "ps-dioxus-native", version = "^0.7", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
-# tauri-runtime-blitz uses for its agent-control surface.
+# izumo uses for its agent-control surface.
 # The one control surface: wire vocabulary, the document core, and both
-# transports. It used to be reached through `tauri-runtime-blitz`, which meant a
+# transports. It used to be reached through `izumo`, which meant a
 # headless browser compiled a Tauri runtime with the runtime switched off.
 # Path until Navigate publishes. crates.io 0.5.1 has Inspect, Act, Relaunch,
 # Quit only, and it predates endpoint-libs 3.2. Drop the path when 0.5.3 is on

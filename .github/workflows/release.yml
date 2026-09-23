@@ -189,7 +189,7 @@ jobs:
       # day a new engine package was added, because a path dependency resolves
       # against whatever is on disk and no local build could notice.
       #
-      # `Cargo.toml` now takes ps-blitz, tauri-runtime-blitz and endpoint-libs
+      # `Cargo.toml` now takes ps-blitz, izumo and endpoint-libs
       # from crates.io on a caret, and no lockfile is committed, so this job
       # resolves the newest published versions that satisfy the ranges. An
       # ordinary `cargo build` on any machine resolves the same thing. See

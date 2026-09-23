@@ -1,6 +1,6 @@
 //! Talking to a running browser over its control socket.
 //!
-//! The server side of this lives in `tauri-runtime-blitz`, which speaks MCP
+//! The server side of this lives in `izumo`, which speaks MCP
 //! JSON-RPC over endpoint-libs' length-delimited framing. Nothing in this repo
 //! could speak it, which meant the one interface built for checking the window
 //! without looking at it had no caller, so UI work was being reported on the
