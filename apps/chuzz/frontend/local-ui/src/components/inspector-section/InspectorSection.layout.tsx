@@ -26,7 +26,11 @@ const InspectorSection: Layout<typeof inspectorSection, InspectorSectionProps> =
         <Collapsible.Indicator {...slot.indicator} />
       </Collapsible.Trigger>
     </Collapsible.Heading>
-    <Collapsible.Content>
+    {/* `keepMounted` defaults to true, which leaves a closed section's body in
+        the document as an `aria-hidden` subtree. Unmounting it means a closed
+        section owns no nodes at all, rather than relying on CSS to flatten
+        them. The rows are derived from the store, so reopening loses nothing. */}
+    <Collapsible.Content keepMounted={false}>
       <Collapsible.Body {...slot.body}>{children}</Collapsible.Body>
     </Collapsible.Content>
   </Collapsible>
