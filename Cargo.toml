@@ -49,7 +49,7 @@ dioxus-native = { package = "ps-dioxus-native", version = "^0.7.3", default-feat
 # Path until Navigate publishes. crates.io 0.5.1 has Inspect, Act, Relaunch,
 # Quit only, and it predates endpoint-libs 3.2. Drop the path when 0.5.3 is on
 # crates.io.
-blitz-control-protocol = { path = "../ps-observability/crates/blitz-control-protocol", version = "^0.5.3", default-features = false }
+blitz-control-protocol = { version = "^0.5.3", default-features = false }
 
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
@@ -139,7 +139,7 @@ tauri = { version = "^2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-izumo = { path = "../tauri-runtime-blitz/crates/izumo", version = "^0.4.1", default-features = false, features = [
+izumo = { version = "^0.4.1", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }
