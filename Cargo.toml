@@ -32,15 +32,15 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same range gets the same crate rather than a second copy. To build against
 # a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
 # exercises what a release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.4.9" }
-blitz-html = { package = "ps-blitz-html", version = "^0.4.9" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.4" }
+blitz-html = { package = "ps-blitz-html", version = "^0.4" }
 blitz-net = { package = "ps-blitz-net", version = "^0.4" }
-blitz-script = { package = "ps-blitz-script", version = "^0.4.9" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.4.9" }
+blitz-script = { package = "ps-blitz-script", version = "^0.4" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.4" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4.9" }
-dioxus-native = { package = "ps-dioxus-native", version = "^0.7.3", default-features = false }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4" }
+dioxus-native = { package = "ps-dioxus-native", version = "^0.7", default-features = false }
 # The MCP framing the control server speaks, same source and feature as
 # tauri-runtime-blitz uses for its agent-control surface.
 # The one control surface: wire vocabulary, the document core, and both
@@ -49,7 +49,7 @@ dioxus-native = { package = "ps-dioxus-native", version = "^0.7.3", default-feat
 # Path until Navigate publishes. crates.io 0.5.1 has Inspect, Act, Relaunch,
 # Quit only, and it predates endpoint-libs 3.2. Drop the path when 0.5.3 is on
 # crates.io.
-blitz-control-protocol = { version = "^0.5.3", default-features = false }
+blitz-control-protocol = { version = "^0.5", default-features = false }
 
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
@@ -72,7 +72,7 @@ image = { version = "^0.25.6", default-features = false }
 # Both sides take it by version now, so cargo unifies them instead of two people
 # remembering to. A caret is also what ps-blitz declares, so the ranges agree by
 # construction rather than by coincidence.
-anyrender = { package = "ps-anyrender", version = "^0.13.0" }
+anyrender = { package = "ps-anyrender", version = "^0.13" }
 # `filters` is off by default in the backend, and with it off `push_layer`
 # discards both the element's `filter:` and its `backdrop-filter:`.
 #
@@ -83,8 +83,8 @@ anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # every backdrop inside a layer, which is every backdrop on a real page; the
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0", features = ["filters"] }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.4.9" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17", features = ["filters"] }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.4" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -139,7 +139,7 @@ tauri = { version = "^2.11.5", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-izumo = { version = "^0.4.1", default-features = false, features = [
+izumo = { version = "^0.4", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }

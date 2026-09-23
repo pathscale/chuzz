@@ -13,7 +13,7 @@ default = ["server"]
 server = ["dep:endpoint-libs", "dep:nagoya", "dep:futures"]
 
 [dependencies]
-nagoya = { version = "^0.1.11", features = ["reactor"], optional = true }
+nagoya = { version = "^0.1", features = ["reactor"], optional = true }
 futures = { version = "^0.3", optional = true }
 blitz-control-protocol = { workspace = true, default-features = false, features = ["client"] }
 endpoint-libs = { workspace = true, optional = true }
