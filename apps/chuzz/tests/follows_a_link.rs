@@ -23,8 +23,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use blitz_control_protocol::{
-    AgentAction, AgentControlRequest, DebugResponse, JsonRpcId, MessageStream, TransportStream,
-    decode_response, encode_agent_request, framed_json,
+    AgentAction, AgentControlRequest, DebugResponse, JsonRpcId, MessageStream, NagoyaStream,
+    TransportStream, decode_response, encode_agent_request, framed_json_neutral,
 };
 
 /// Kill the host however the test ends, including on a panic.
@@ -137,15 +137,17 @@ fn a_link_is_followed_and_storage_goes_with_it() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime");
-    runtime.block_on(async {
-        let socket = tokio::net::UnixStream::connect(&socket)
+    // The host serves on nagoya, and so does this client. Kept for the whole
+    // test: a dropped `Reactor` stops the thread that drives its sockets.
+    let reactor = nagoya::reactor::Reactor::start().expect("client reactor");
+    nagoya::block_on(async {
+        use std::os::unix::ffi::OsStrExt as _;
+        let addr = nagoya::reactor::Addr::path(socket.as_os_str().as_bytes())
+            .expect("socket path fits a unix address");
+        let socket = nagoya::reactor::TcpStream::connect(addr, &reactor.handle())
             .await
             .expect("connect async client");
-        let mut stream = TransportStream::new(framed_json(socket));
+        let mut stream = TransportStream::new(framed_json_neutral(NagoyaStream::new(socket)));
         let mut next_id = 0;
 
         let first = tree(&mut stream, &mut next_id).await;

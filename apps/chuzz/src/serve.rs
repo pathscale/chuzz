@@ -48,6 +48,7 @@ use std::sync::mpsc;
 
 use blitz_control_protocol::document::{DocumentCapture, inspect_document, snapshot_document};
 use blitz_control_protocol::in_process::DocumentControl;
+use blitz_control_protocol::latest::{Latest, Once};
 use blitz_control_protocol::server::{AgentControlServer, ControlBridgeRequest, Host};
 use blitz_control_protocol::{
     AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
@@ -434,11 +435,11 @@ fn restore_script(stored: Option<&StoredState>, destination: &Url) -> String {
     )
 }
 
-fn commit_render(events: &tokio::sync::watch::Sender<Option<DebugEvent>>, revision: &mut u64) {
+fn commit_render(events: &Latest<DebugEvent>, revision: &mut u64) {
     *revision = revision.saturating_add(1);
-    events.send_replace(Some(DebugEvent::PaintCommitted {
+    events.set_now(DebugEvent::PaintCommitted {
         revision: *revision,
-    }));
+    });
 }
 
 /// Load `target` and serve it over the inspection socket until killed.
@@ -559,41 +560,42 @@ pub fn serve(target: &str) -> Result<(), String> {
      *
      * A `SyncSender` with a zero-capacity channel would rendezvous, but the
      * server thread must not block indefinitely if this loop has gone away, so
-     * the reply travels on a per-request oneshot the caller owns.
+     * the reply travels in a per-request `Once` both sides hold: this loop
+     * fills it, the socket task awaits it.
      */
     const MAX_PENDING_REQUESTS: usize = 64;
     let (request_tx, request_rx) = mpsc::sync_channel::<(
         ControlBridgeRequest,
-        tokio::sync::oneshot::Sender<DebugResponse>,
+        Arc<Once<DebugResponse>>,
     )>(MAX_PENDING_REQUESTS);
 
     let bridge: blitz_control_protocol::server::ControlBridge = Arc::new(move |request| {
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        match request_tx.try_send((request, response_tx)) {
-            Ok(()) => response_rx,
-            Err(mpsc::TrySendError::Full((_, response_tx))) => {
+        let answer = Once::new();
+        match request_tx.try_send((request, Arc::clone(&answer))) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
                 verbose("request refused: queue full");
-                let _ = response_tx.send(DebugResponse::Error(DebugError {
+                answer.fill(DebugResponse::Error(DebugError {
                     code: "documentBusy".into(),
                     message: format!(
                         "the document already has {MAX_PENDING_REQUESTS} pending inspection \
                          requests"
                     ),
                 }));
-                response_rx
             }
-            Err(mpsc::TrySendError::Disconnected((_, response_tx))) => {
+            Err(mpsc::TrySendError::Disconnected(_)) => {
                 verbose("request refused: document gone");
-                let _ = response_tx.send(DebugResponse::Error(DebugError {
+                answer.fill(DebugResponse::Error(DebugError {
                     code: "documentUnavailable".into(),
                     message: "the document is no longer serving".into(),
                 }));
-                response_rx
             }
         }
+        answer
     });
 
-    let (render_events, render_event_receiver) = tokio::sync::watch::channel(None);
+    let render_events = Latest::new();
+    let render_event_receiver = Arc::clone(&render_events);
     // What this process calls itself over MCP. `diagnostics` is true because
     // this binary is built with the protocol's `capture` feature, so
     // `blitz.diagnostics` answers rather than erroring: advertising a tool that
@@ -700,9 +702,9 @@ pub fn serve(target: &str) -> Result<(), String> {
         if painted {
             commit_render(&render_events, &mut render_revision);
         }
-        if reply.send(response).is_err() {
-            break;
-        }
+        // A caller that stopped waiting leaves the `Once` behind unread; that
+        // is not a reason to stop serving everyone else.
+        reply.fill(response);
         // The page runs on a schedule, not only when the socket goes quiet.
         //
         // `recv_timeout` ticks the document when *no* request arrives, which
