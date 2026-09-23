@@ -162,7 +162,12 @@ nagoya.workspace = true
 # Tokio remains the I/O boundary for Tauri, HTTP, TCP and WebSocket. Portable
 # timers use Nagoya, so this list names only the runtime/synchronisation surface
 # those concrete I/O types require.
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+# Every tokio API this crate calls, declared here rather than borrowed from
+# whatever else in the graph happens to enable it. `rt-multi-thread` is
+# `new_multi_thread` and `block_in_place` (serve.rs, script_fetch.rs), `net` and
+# `io-util` the page server's sockets. The headless build has no Tauri to switch
+# them on, and it stopped compiling once chuzz-control no longer pulled tokio in.
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync"] }
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
