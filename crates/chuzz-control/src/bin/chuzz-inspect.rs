@@ -413,13 +413,9 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // A current-thread runtime: this is one connection doing one thing, and a
-    // worker pool for it would be ceremony.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-        .expect("a tokio runtime");
-    if let Err(error) = runtime.block_on(run(options)) {
+    // One connection doing one thing. The client owns a reactor of its own, so
+    // this only has to drive the future to completion.
+    if let Err(error) = nagoya::block_on(run(options)) {
         eprintln!("chuzz-inspect: {error}");
         std::process::exit(1);
     }
