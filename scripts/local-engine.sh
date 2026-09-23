@@ -32,19 +32,16 @@ It is deliberately untracked: it names paths that exist on one machine, and
 committing them fails every build everywhere else. Create it with a [patch]
 table per git source, pointing at your checkouts:
 
-[patch."https://github.com/pathscale/ps-blitz.git"]
+[patch.crates-io]
 ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
+ps-blitz-html = { path = "../ps-blitz/packages/blitz-html" }
+ps-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
+ps-blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
 ps-blitz-script = { path = "../ps-blitz/packages/blitz-script" }
-ps-blitz-shell = { path = "../ps-blitz/packages/blitz-shell" }
 ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
-blitz-html = { path = "../ps-blitz/packages/blitz-html" }
-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
-blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
-blitz-wasm = { path = "../ps-blitz/packages/blitz-wasm" }
-dioxus-native = { path = "../ps-blitz/packages/dioxus-native" }
-
-[patch."https://github.com/pathscale/tauri-runtime-blitz.git"]
-tauri-runtime-blitz = { path = "../tauri-runtime-blitz/crates/tauri-runtime-blitz" }
+ps-blitz-wasm = { path = "../ps-blitz/packages/blitz-wasm" }
+ps-dioxus-native = { path = "../ps-blitz/packages/dioxus-native" }
+izumo = { path = "../izumo/crates/izumo" }
 
 Patch only what you are actually working on. Every entry you add is a crate
 whose pin stops being tested.
