@@ -273,7 +273,12 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600, "descriptor must not be world readable");
 
             let addr = Addr::path(socket_path.as_os_str().as_bytes()).unwrap();
-            let stream = TcpStream::connect(addr, &Reactor::start().unwrap().handle())
+            // Held for the whole test. As a temporary inside the `connect` call
+            // it was dropped at the end of that statement, and dropping a
+            // `Reactor` stops the thread that drives its sockets: the request
+            // went out, the answer was never read, and the test hung for good.
+            let client_reactor = Reactor::start().unwrap();
+            let stream = TcpStream::connect(addr, &client_reactor.handle())
                 .await
                 .unwrap();
             let mut client = TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)));
