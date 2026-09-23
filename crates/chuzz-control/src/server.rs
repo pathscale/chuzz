@@ -20,9 +20,9 @@ use blitz_control_protocol::latest::{Flag, Once};
 use blitz_control_protocol::{NagoyaStream, framed_json_neutral};
 use endpoint_libs::libs::ws::transport::TransportStream;
 use endpoint_libs::libs::ws::{MessageStream, WireMessage};
-use serde::{Deserialize, Serialize};
 use nagoya::reactor::socket::TcpListener as BoundListener;
 use nagoya::reactor::{Addr, Reactor, TcpListener, TcpStream, block_on_with};
+use serde::{Deserialize, Serialize};
 use std::os::unix::ffi::OsStrExt;
 
 use crate::{AgentControlRequest, CONTROL_PROTOCOL_VERSION, ControlError, ControlResponse};
@@ -248,57 +248,58 @@ mod tests {
     #[test]
     fn a_client_gets_an_answer_and_teardown_removes_both_files() {
         nagoya::block_on(async {
-        let dir = std::env::temp_dir().join(format!("chuzz-control-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: single-threaded test, set before the server reads it.
-        unsafe { std::env::set_var("CHUZZ_CONTROL_DIR", &dir) };
+            let dir =
+                std::env::temp_dir().join(format!("chuzz-control-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: single-threaded test, set before the server reads it.
+            unsafe { std::env::set_var("CHUZZ_CONTROL_DIR", &dir) };
 
-        let bridge: ControlBridge = Arc::new(|_request| {
-            let answer = Once::new();
-            answer.fill(ControlResponse::Ok);
-            answer
-        });
-        let server = ControlServer::start(bridge).unwrap();
-        let socket_path = server.socket_path().to_path_buf();
-        let descriptor_path = socket_path.with_extension("json");
+            let bridge: ControlBridge = Arc::new(|_request| {
+                let answer = Once::new();
+                answer.fill(ControlResponse::Ok);
+                answer
+            });
+            let server = ControlServer::start(bridge).unwrap();
+            let socket_path = server.socket_path().to_path_buf();
+            let descriptor_path = socket_path.with_extension("json");
 
-        assert!(socket_path.exists(), "socket was not bound");
-        assert!(descriptor_path.exists(), "descriptor was not published");
+            assert!(socket_path.exists(), "socket was not bound");
+            assert!(descriptor_path.exists(), "descriptor was not published");
 
-        let mode = std::fs::metadata(&descriptor_path)
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "descriptor must not be world readable");
+            let mode = std::fs::metadata(&descriptor_path)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "descriptor must not be world readable");
 
-        let addr = Addr::path(socket_path.as_os_str().as_bytes()).unwrap();
-        let stream = TcpStream::connect(addr, &Reactor::start().unwrap().handle())
-            .await
+            let addr = Addr::path(socket_path.as_os_str().as_bytes()).unwrap();
+            let stream = TcpStream::connect(addr, &Reactor::start().unwrap().handle())
+                .await
+                .unwrap();
+            let mut client = TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)));
+            let request = serde_json::to_string(&AgentControlRequest::Inspect {
+                root: None,
+                max_depth: 2,
+                include_attrs: crate::AttrScope::None,
+            })
             .unwrap();
-        let mut client = TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)));
-        let request = serde_json::to_string(&AgentControlRequest::Inspect {
-            root: None,
-            max_depth: 2,
-            include_attrs: crate::AttrScope::None,
-        })
-        .unwrap();
-        client
-            .send(WireMessage::Text(request.into()))
-            .await
-            .unwrap();
-        let WireMessage::Text(reply) = client.recv().await.unwrap().unwrap() else {
-            panic!("expected a text reply");
-        };
-        assert_eq!(
-            serde_json::from_str::<ControlResponse>(&reply).unwrap(),
-            ControlResponse::Ok
-        );
+            client
+                .send(WireMessage::Text(request.into()))
+                .await
+                .unwrap();
+            let WireMessage::Text(reply) = client.recv().await.unwrap().unwrap() else {
+                panic!("expected a text reply");
+            };
+            assert_eq!(
+                serde_json::from_str::<ControlResponse>(&reply).unwrap(),
+                ControlResponse::Ok
+            );
 
-        drop(client);
-        drop(server);
-        assert!(!socket_path.exists(), "socket outlived the server");
-        assert!(!descriptor_path.exists(), "descriptor outlived the server");
-        let _ = std::fs::remove_dir_all(&dir);
+            drop(client);
+            drop(server);
+            assert!(!socket_path.exists(), "socket outlived the server");
+            assert!(!descriptor_path.exists(), "descriptor outlived the server");
+            let _ = std::fs::remove_dir_all(&dir);
         });
     }
 }

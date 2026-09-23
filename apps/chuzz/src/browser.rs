@@ -8,9 +8,9 @@ use blitz_html::HtmlProvider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::{Request, Url};
 use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
+use izumo::BlitzRuntime;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use izumo::BlitzRuntime;
 
 use crate::decode::decode_body;
 use crate::document_loader::{NetProvider, install_web_api_shim};

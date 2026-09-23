@@ -224,9 +224,7 @@ fn main() {
         }
     };
     let document_browser = browser.clone();
-    izumo::set_document_factory(move |url| {
-        frontend::document(document_browser.clone(), url)
-    });
+    izumo::set_document_factory(move |url| frontend::document(document_browser.clone(), url));
 
     // The UI thread has to be inside a Tokio runtime for the whole run.
     //
@@ -297,12 +295,10 @@ fn main() {
             // way back in: a window whose stored choice left inspection off can
             // still be started with the variable and reached.
             let stored = browser::stored_diagnostics();
-            izumo::apply_runtime_debug_options(
-                izumo::RuntimeDebugOptions {
-                    inspection_and_agent_control: control_override_enabled() || stored.inspection,
-                    deep_intrusive_profiling: stored.profiling,
-                },
-            )
+            izumo::apply_runtime_debug_options(izumo::RuntimeDebugOptions {
+                inspection_and_agent_control: control_override_enabled() || stored.inspection,
+                deep_intrusive_profiling: stored.profiling,
+            })
             .map_err(|error| format!("could not configure Blitz diagnostics: {error}"))?;
             if let Some(window) = app.get_webview_window("main") {
                 window.show()?;
