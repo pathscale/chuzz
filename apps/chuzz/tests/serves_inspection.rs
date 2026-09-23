@@ -25,9 +25,9 @@ use std::time::{Duration, Instant};
 
 use blitz_control_protocol::{
     AgentAction, AgentControlRequest, CaptureRequest, DebugEvent, DebugResponse, DebugStream,
-    DiagnosticsRequest, InputCommand, JsonRpcId, KeyPhase, MessageStream, Modifiers, PointerPhase,
-    TransportStream, WheelPhase, decode_diagnostics_event, decode_response, encode_agent_request,
-    encode_diagnostics_request, framed_json,
+    DiagnosticsRequest, InputCommand, JsonRpcId, KeyPhase, MessageStream, Modifiers, NagoyaStream,
+    PointerPhase, TransportStream, WheelPhase, decode_diagnostics_event, decode_response,
+    encode_agent_request, encode_diagnostics_request, framed_json_neutral,
 };
 
 async fn request(
@@ -193,15 +193,17 @@ fn serves_a_page_over_the_inspection_socket() {
         socket.display()
     );
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime");
-    runtime.block_on(async {
-        let socket = tokio::net::UnixStream::connect(&socket)
+    // The host serves on nagoya, and so does this client. Kept for the whole
+    // test: a dropped `Reactor` stops the thread that drives its sockets.
+    let reactor = nagoya::reactor::Reactor::start().expect("client reactor");
+    nagoya::block_on(async {
+        use std::os::unix::ffi::OsStrExt as _;
+        let addr = nagoya::reactor::Addr::path(socket.as_os_str().as_bytes())
+            .expect("socket path fits a unix address");
+        let socket = nagoya::reactor::TcpStream::connect(addr, &reactor.handle())
             .await
             .expect("connect async client");
-        let mut stream = TransportStream::new(framed_json(socket));
+        let mut stream = TransportStream::new(framed_json_neutral(NagoyaStream::new(socket)));
         let mut next_id = 0;
         let snapshot = request(
             &mut stream,
