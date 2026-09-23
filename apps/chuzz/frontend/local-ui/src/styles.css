@@ -494,12 +494,21 @@
   }
 
   /*
-   * A closed section takes no room because it is not there: `InspectorSection`
-   * passes `keepMounted={false}`, so its content unmounts. The library's
-   * `grid-template-rows` collapse never took effect in this engine (the body
-   * stayed full height in both states), which is why this used to be a
-   * `display: none` rule on the closed state.
+   * A closed section takes no room.
+   *
+   * `Collapsible` collapses by animating `grid-template-rows` from `1fr` to
+   * `0fr`, which is elegant and did not happen: the section's body stayed its
+   * full height in both states, so every section was permanently open and the
+   * triggers only moved a chevron. Measured in the window, collapsing the
+   * debugging section left the one below it at y=544 both times.
+   *
+   * `display: none` on the closed state is unambiguous in any engine, and this
+   * one has to work in two. The animation is the part worth losing.
    */
+  .inspector-section .collapsible__content[data-expanded="false"] {
+    display: none;
+  }
+
   .inspector-body {
     display: flex;
     flex-direction: column;
