@@ -10,10 +10,12 @@ publish = false
 # The socket server. Types are always available; the listener is opt-in so a
 # build that only speaks the protocol does not pull in a transport.
 default = ["server"]
-server = ["dep:endpoint-libs", "dep:tokio"]
+server = ["dep:endpoint-libs", "dep:nagoya", "dep:futures"]
 
 [dependencies]
-blitz-control-protocol = { workspace = true, default-features = false }
+nagoya = { version = "^0.1.11", features = ["reactor"], optional = true }
+futures = { version = "^0.3", optional = true }
+blitz-control-protocol = { workspace = true, default-features = false, features = ["client"] }
 endpoint-libs = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync"], optional = true }
 serde.workspace = true

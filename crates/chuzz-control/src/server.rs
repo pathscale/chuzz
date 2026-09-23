@@ -16,12 +16,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use blitz_control_protocol::framed_json;
+use blitz_control_protocol::latest::{Flag, Once};
+use blitz_control_protocol::{NagoyaStream, framed_json_neutral};
 use endpoint_libs::libs::ws::transport::TransportStream;
 use endpoint_libs::libs::ws::{MessageStream, WireMessage};
 use serde::{Deserialize, Serialize};
-use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::oneshot;
+use nagoya::reactor::socket::TcpListener as BoundListener;
+use nagoya::reactor::{Addr, Reactor, TcpListener, TcpStream, block_on_with};
+use std::os::unix::ffi::OsStrExt;
 
 use crate::{AgentControlRequest, CONTROL_PROTOCOL_VERSION, ControlError, ControlResponse};
 
@@ -37,12 +39,12 @@ pub struct ControlDescriptor {
 
 /// Runs a request on the UI thread and resolves when it has been answered.
 pub type ControlBridge =
-    Arc<dyn Fn(AgentControlRequest) -> oneshot::Receiver<ControlResponse> + Send + Sync + 'static>;
+    Arc<dyn Fn(AgentControlRequest) -> Arc<Once<ControlResponse>> + Send + Sync + 'static>;
 
 pub struct ControlServer {
     descriptor_path: PathBuf,
     socket_path: PathBuf,
-    shutdown: Option<oneshot::Sender<()>>,
+    shutdown: Option<Arc<Flag>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -54,12 +56,20 @@ impl ControlServer {
         let descriptor_path = socket_path.with_extension("json");
         if let Some(parent) = socket_path.parent() {
             std::fs::create_dir_all(parent)?;
+            // The directory carries the access control, set before anything
+            // inside it exists. A socket is created by bind already listening,
+            // so a mode applied to it afterwards is always late.
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
         // A stale socket from a killed process would refuse the bind.
         let _ = remove_file(&socket_path);
 
-        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
-        listener.set_nonblocking(true)?;
+        // Bound before `start` returns, so a caller that connects the moment it
+        // has the path finds something listening.
+        let addr = Addr::path(socket_path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::other("socket path is not a valid unix address"))?;
+        let listener = BoundListener::bind(addr, 128)
+            .map_err(|error| std::io::Error::other(format!("bind: {error:?}")))?;
         std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
 
         write_descriptor(
@@ -72,7 +82,8 @@ impl ControlServer {
             },
         )?;
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let shutdown_tx = Flag::new();
+        let shutdown_rx = Arc::clone(&shutdown_tx);
         let thread = thread::Builder::new()
             .name("chuzz-control".to_owned())
             .spawn(move || run(listener, bridge, shutdown_rx))?;
@@ -93,7 +104,7 @@ impl ControlServer {
 impl Drop for ControlServer {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
+            shutdown.raise();
         }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -121,50 +132,67 @@ fn write_descriptor(path: &std::path::Path, descriptor: &ControlDescriptor) -> i
         .open(path)?;
     file.write_all(&encoded)
 }
-
-fn run(
-    listener: std::os::unix::net::UnixListener,
-    bridge: ControlBridge,
-    shutdown: oneshot::Receiver<()>,
-) {
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-    else {
+fn run(listener: BoundListener, bridge: ControlBridge, shutdown: Arc<Flag>) {
+    // One reactor, owned by this thread, driving the listener and every
+    // connection on it: a nagoya socket only makes progress while its own
+    // reactor is polled.
+    let Ok(reactor) = Reactor::local() else {
         return;
     };
-    let local = tokio::task::LocalSet::new();
-    local.block_on(&runtime, async move {
-        let Ok(listener) = UnixListener::from_std(listener) else {
-            return;
-        };
-        tokio::pin!(shutdown);
+    let handle = reactor.handle();
+    let Ok(listener) = TcpListener::from_listener(listener, &handle) else {
+        return;
+    };
+
+    block_on_with(&reactor, async move {
+        use futures::StreamExt;
+        use futures::future::{Either, select};
+        use futures::stream::FuturesUnordered;
+
+        // Held and polled in place rather than spawned. nagoya's TaskSet never
+        // removes a finished task's entry, so a set fed by unbounded connection
+        // churn grows one entry per connection ever accepted.
+        let mut connections = FuturesUnordered::new();
+
         loop {
-            tokio::select! {
-                _ = &mut shutdown => break,
-                accepted = listener.accept() => match accepted {
-                    Ok((stream, _)) => {
-                        let bridge = Arc::clone(&bridge);
-                        // Several clients may watch at once; one slow reader
-                        // must not stall the others.
-                        tokio::task::spawn_local(handle_connection(stream, bridge));
-                    }
-                    Err(_) => break,
+            let stopping = shutdown.raised();
+            let accepted = listener.accept();
+            futures::pin_mut!(stopping, accepted);
+
+            let accepted = if connections.is_empty() {
+                match select(stopping, accepted).await {
+                    Either::Left(_) => break,
+                    Either::Right((accepted, _)) => accepted,
                 }
-            }
+            } else {
+                let progress = select(accepted, connections.next());
+                futures::pin_mut!(progress);
+                match select(stopping, progress).await {
+                    Either::Left(_) => break,
+                    Either::Right((Either::Left((accepted, _)), _)) => accepted,
+                    Either::Right((Either::Right(_), _)) => continue,
+                }
+            };
+
+            let Ok((stream, _)) = accepted else {
+                break;
+            };
+            // Several clients may watch at once; one slow reader must not stall
+            // the others.
+            connections.push(handle_connection(stream, Arc::clone(&bridge)));
         }
     });
 }
 
-async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
-    let mut stream = TransportStream::new(framed_json(stream));
+async fn handle_connection(stream: TcpStream, bridge: ControlBridge) {
+    let mut stream = TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)));
     while let Some(message) = stream.recv().await {
         let response = match message {
             // Ping, pong and close frames are transport bookkeeping, not
             // requests: answering them with a protocol error would be wrong.
             Ok(WireMessage::Text(text)) => match serde_json::from_str::<AgentControlRequest>(&text)
             {
-                Ok(request) => bridge(request).await.unwrap_or_else(|_| {
+                Ok(request) => bridge(request).recv().await.unwrap_or_else(|| {
                     ControlResponse::Error(ControlError::new(
                         "bridge_closed",
                         "the UI-thread control bridge closed",
@@ -217,17 +245,18 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_client_gets_an_answer_and_teardown_removes_both_files() {
+    #[test]
+    fn a_client_gets_an_answer_and_teardown_removes_both_files() {
+        nagoya::block_on(async {
         let dir = std::env::temp_dir().join(format!("chuzz-control-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: single-threaded test, set before the server reads it.
         unsafe { std::env::set_var("CHUZZ_CONTROL_DIR", &dir) };
 
         let bridge: ControlBridge = Arc::new(|_request| {
-            let (tx, rx) = oneshot::channel();
-            let _ = tx.send(ControlResponse::Ok);
-            rx
+            let answer = Once::new();
+            answer.fill(ControlResponse::Ok);
+            answer
         });
         let server = ControlServer::start(bridge).unwrap();
         let socket_path = server.socket_path().to_path_buf();
@@ -242,8 +271,11 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "descriptor must not be world readable");
 
-        let stream = UnixStream::connect(&socket_path).await.unwrap();
-        let mut client = TransportStream::new(framed_json(stream));
+        let addr = Addr::path(socket_path.as_os_str().as_bytes()).unwrap();
+        let stream = TcpStream::connect(addr, &Reactor::start().unwrap().handle())
+            .await
+            .unwrap();
+        let mut client = TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)));
         let request = serde_json::to_string(&AgentControlRequest::Inspect {
             root: None,
             max_depth: 2,
@@ -267,5 +299,6 @@ mod tests {
         assert!(!socket_path.exists(), "socket outlived the server");
         assert!(!descriptor_path.exists(), "descriptor outlived the server");
         let _ = std::fs::remove_dir_all(&dir);
+        });
     }
 }

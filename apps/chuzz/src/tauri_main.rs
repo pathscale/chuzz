@@ -224,7 +224,7 @@ fn main() {
         }
     };
     let document_browser = browser.clone();
-    tauri_runtime_blitz::set_document_factory(move |url| {
+    izumo::set_document_factory(move |url| {
         frontend::document(document_browser.clone(), url)
     });
 
@@ -253,7 +253,7 @@ fn main() {
     }
 
     let setup_browser = browser.clone();
-    tauri_runtime_blitz::builder()
+    izumo::builder()
         .manage(browser.clone())
         .invoke_handler(tauri::generate_handler![
             browser::list_tabs,
@@ -297,8 +297,8 @@ fn main() {
             // way back in: a window whose stored choice left inspection off can
             // still be started with the variable and reached.
             let stored = browser::stored_diagnostics();
-            tauri_runtime_blitz::apply_runtime_debug_options(
-                tauri_runtime_blitz::RuntimeDebugOptions {
+            izumo::apply_runtime_debug_options(
+                izumo::RuntimeDebugOptions {
                     inspection_and_agent_control: control_override_enabled() || stored.inspection,
                     deep_intrusive_profiling: stored.profiling,
                 },

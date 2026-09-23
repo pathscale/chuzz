@@ -16,11 +16,12 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use blitz_control_protocol::framed_json;
+use blitz_control_protocol::{NagoyaStream, framed_json_neutral};
 use endpoint_libs::libs::ws::transport::TransportStream;
 use endpoint_libs::libs::ws::{MessageStream, WireMessage};
 use serde_json::{Value, json};
-use tokio::net::UnixStream;
+use nagoya::reactor::{Addr, Reactor, TcpStream};
+use std::os::unix::ffi::OsStrExt;
 
 pub const AGENT_CONTROL_TOOL: &str = "blitz.agent.control";
 /// The other half of the surface: DOM and layout snapshots, renderer metrics,
@@ -83,6 +84,23 @@ pub struct Client {
     next_id: i64,
 }
 
+/// The reactor every control connection lives on.
+///
+/// A nagoya socket makes progress only while the reactor it was created on is
+/// polled, and this is a library: it does not own the caller's thread. One for
+/// the process rather than one per connection, because a thread per connection
+/// would be a thread per command.
+fn client_reactor() -> &'static nagoya::reactor::Handle {
+    static REACTOR: std::sync::OnceLock<(Reactor, nagoya::reactor::Handle)> =
+        std::sync::OnceLock::new();
+    let (_, handle) = REACTOR.get_or_init(|| {
+        let reactor = Reactor::start().expect("control reactor could not start");
+        let handle = reactor.handle();
+        (reactor, handle)
+    });
+    handle
+}
+
 impl Client {
     /// Connect to the browser named by a descriptor file.
     pub async fn connect(descriptor: &Path) -> Result<Self, Box<dyn std::error::Error>> {
@@ -91,9 +109,11 @@ impl Client {
             .as_str()
             .ok_or("the descriptor has no address")?;
         let path = address.strip_prefix("unix://").unwrap_or(address);
-        let stream = UnixStream::connect(path).await?;
+        let addr = Addr::path(path.as_bytes())
+            .map_err(|_| std::io::Error::other("socket path is not a valid unix address"))?;
+        let stream = TcpStream::connect(addr, client_reactor()).await?;
         Ok(Self {
-            stream: Box::new(TransportStream::new(framed_json(stream))),
+            stream: Box::new(TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)))),
             next_id: 1,
         })
     }

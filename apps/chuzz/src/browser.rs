@@ -10,7 +10,7 @@ use blitz_traits::net::{Request, Url};
 use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_runtime_blitz::BlitzRuntime;
+use izumo::BlitzRuntime;
 
 use crate::decode::decode_body;
 use crate::document_loader::{NetProvider, install_web_api_shim};
@@ -1501,8 +1501,8 @@ pub fn diagnostics_locked() -> bool {
 
 fn diagnostics_now() -> DiagnosticsState {
     DiagnosticsState {
-        inspection: tauri_runtime_blitz::agent_control_enabled(),
-        profiling: tauri_runtime_blitz::deep_profiling_enabled(),
+        inspection: izumo::agent_control_enabled(),
+        profiling: izumo::deep_profiling_enabled(),
         locked: diagnostics_locked(),
     }
 }
@@ -1569,7 +1569,7 @@ pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsS
         // environment.
         return Ok(diagnostics_now());
     }
-    tauri_runtime_blitz::apply_runtime_debug_options(tauri_runtime_blitz::RuntimeDebugOptions {
+    izumo::apply_runtime_debug_options(izumo::RuntimeDebugOptions {
         inspection_and_agent_control: inspection,
         deep_intrusive_profiling: profiling,
     })
