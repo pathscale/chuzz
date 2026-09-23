@@ -21,7 +21,6 @@ use endpoint_libs::libs::ws::transport::TransportStream;
 use endpoint_libs::libs::ws::{MessageStream, WireMessage};
 use nagoya::reactor::{Addr, Reactor, TcpStream};
 use serde_json::{Value, json};
-use std::os::unix::ffi::OsStrExt;
 
 pub const AGENT_CONTROL_TOOL: &str = "blitz.agent.control";
 /// The other half of the surface: DOM and layout snapshots, renderer metrics,
