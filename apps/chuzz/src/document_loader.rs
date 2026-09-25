@@ -710,22 +710,54 @@ pub(crate) const WEB_API_SHIM: &str = r#"
    * — which is unbounded recursion the moment both exist, and it took the
    * whole shim down with it.
    *
-   * The engine does not expose its real size to script: `innerWidth`,
-   * `outerWidth` and the client dimensions all read 0, and the layout rect
-   * comes back zero-width. So this is a stated default rather than a
-   * measurement, chosen to match the driver's default screenshot size. A page
-   * asking whether it has room for the desktop layout gets a truthful-looking
-   * desktop answer instead of the zero that silently forces every responsive
-   * design into its narrowest branch.
+   * The engine owns `innerWidth`/`innerHeight` as live accessors over the
+   * document's viewport, but a page's scripts run before the host sets that
+   * viewport, so at boot they read 0. The defaults below cover only that
+   * window, chosen to match the driver's default screenshot size: a page
+   * asking at boot whether it has room for the desktop layout gets a
+   * truthful-looking desktop answer instead of the zero that forces every
+   * responsive design into its narrowest branch. Once the engine reports a
+   * size, that size is the answer. The shim used to replace the accessors
+   * with the default for good, so a 1344-wide page reported 1440 forever and
+   * anything clamped to the viewport (an overlay, a tooltip) was placed
+   * against a width the page does not have.
+   *
+   * `engineSize` reads the engine's own getters, captured before anything
+   * here redefines the names, so nothing reads a shimmed size to compute a
+   * shimmed size: the recursion described above cannot come back.
    */
   var CHUZZ_VIEWPORT_WIDTH = 1440;
   var CHUZZ_VIEWPORT_HEIGHT = 960;
+  var engineSize = (function () {
+    var read = function (name) {
+      try {
+        var descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+        if (descriptor && typeof descriptor.get === 'function') {
+          var get = descriptor.get;
+          return function () {
+            try {
+              var value = Number(get.call(globalThis));
+              return value > 0 ? value : 0;
+            } catch (error) { return 0; }
+          };
+        }
+      } catch (error) {}
+      return function () { return 0; };
+    };
+    return { width: read('innerWidth'), height: read('innerHeight') };
+  })();
+  var viewportWidth = function () {
+    return engineSize.width() || CHUZZ_VIEWPORT_WIDTH;
+  };
+  var viewportHeight = function () {
+    return engineSize.height() || CHUZZ_VIEWPORT_HEIGHT;
+  };
   if (typeof globalThis.screen === 'undefined') {
     globalThis.screen = {
-      get width() { return CHUZZ_VIEWPORT_WIDTH; },
-      get height() { return CHUZZ_VIEWPORT_HEIGHT; },
-      get availWidth() { return CHUZZ_VIEWPORT_WIDTH; },
-      get availHeight() { return CHUZZ_VIEWPORT_HEIGHT; },
+      get width() { return viewportWidth(); },
+      get height() { return viewportHeight(); },
+      get availWidth() { return viewportWidth(); },
+      get availHeight() { return viewportHeight(); },
       colorDepth: 24,
       pixelDepth: 24,
       orientation: { type: 'landscape-primary', angle: 0 }
@@ -870,28 +902,35 @@ pub(crate) const WEB_API_SHIM: &str = r#"
    * must not skip the rest, and none of them may throw out of the shim.
    */
   (function () {
-    var assign = function (name, value) {
+    var publish = function (name, size) {
       try {
-        if (globalThis[name]) { return; }
         /*
-         * `defineProperty`, not assignment. The engine owns these names as
+         * `defineProperty`, not assignment: the engine owns these names as
          * read-only accessors, so `globalThis.innerWidth = 1440` fails
-         * silently and the page keeps reading 0. Redefining the property is
-         * what actually takes. The value is a plain number, never a getter:
-         * a getter that read another shimmed size recursed without bound.
+         * silently. The getter reads `viewportWidth`/`viewportHeight`, which
+         * read the engine's captured getters, never these names, so it cannot
+         * recurse. The setter mirrors a browser's [Replaceable] attribute: a
+         * page that assigns its own value keeps it.
          */
         Object.defineProperty(globalThis, name, {
           configurable: true,
           enumerable: true,
-          writable: true,
-          value: value
+          get: size,
+          set: function (value) {
+            Object.defineProperty(globalThis, name, {
+              configurable: true,
+              enumerable: true,
+              writable: true,
+              value: value
+            });
+          }
         });
       } catch (error) {}
     };
-    assign('innerWidth', CHUZZ_VIEWPORT_WIDTH);
-    assign('innerHeight', CHUZZ_VIEWPORT_HEIGHT);
-    assign('outerWidth', CHUZZ_VIEWPORT_WIDTH);
-    assign('outerHeight', CHUZZ_VIEWPORT_HEIGHT);
+    publish('innerWidth', viewportWidth);
+    publish('innerHeight', viewportHeight);
+    publish('outerWidth', viewportWidth);
+    publish('outerHeight', viewportHeight);
   })();
   /*
    * `location.origin`, and `location.host` with its port.
@@ -1069,8 +1108,8 @@ pub(crate) const WEB_API_SHIM: &str = r#"
           var bound = parseFloat(dimension[3]);
           if (dimension[4] === 'em' || dimension[4] === 'rem') bound = bound * 16;
           var actual = dimension[2] === 'width'
-            ? CHUZZ_VIEWPORT_WIDTH
-            : CHUZZ_VIEWPORT_HEIGHT;
+            ? viewportWidth()
+            : viewportHeight();
           matches = dimension[1] === 'min' ? actual >= bound : actual <= bound;
         }
       }
