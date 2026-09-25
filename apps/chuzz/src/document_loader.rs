@@ -1500,12 +1500,14 @@ pub(crate) const WEB_API_SHIM: &str = r#"
      * and input events) and by a size change it finds, and it disarms after
      * `QUIET_FRAMES` frames in which nothing changed.
      *
-     * Entries follow the specification's shape. `contentRect` and the box
-     * sizes all describe the border box, because the engine's computed style
-     * does not report padding or border widths to script; for the common case
-     * of a box without padding the two are the same. Like a browser, the
-     * first observation reports any size other than 0x0, and a callback that
-     * throws is reported without stopping the others.
+     * Entries follow the specification's shape. The content box is the border
+     * box less the padding and border `getComputedStyle` reports; an engine
+     * that does not report them (ps-blitz before its box-edge fix) reads as
+     * zero, and the content box falls back to the border box. `observe`
+     * honours `{ box: 'border-box' }`, and otherwise watches the content box
+     * as a browser does. Like a browser, the first observation reports any
+     * size other than 0x0, and a callback that throws is reported without
+     * stopping the others.
      */
     var QUIET_FRAMES = 30;
     var resizeObservers = [];
@@ -1514,26 +1516,48 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     var nextFrame = typeof globalThis.requestAnimationFrame === 'function'
       ? function (run) { globalThis.requestAnimationFrame(run); }
       : function (run) { setTimeout(run, 16); };
-    var borderBox = function (target) {
+    var measureBoxes = function (target) {
+      var border = { width: 0, height: 0 };
       try {
         var rect = target.getBoundingClientRect();
-        return { width: Number(rect.width) || 0, height: Number(rect.height) || 0 };
-      } catch (error) {
-        return { width: 0, height: 0 };
-      }
+        border = { width: Number(rect.width) || 0, height: Number(rect.height) || 0 };
+      } catch (error) {}
+      var edge = { top: 0, right: 0, bottom: 0, left: 0 };
+      try {
+        if (typeof globalThis.getComputedStyle === 'function') {
+          var style = globalThis.getComputedStyle(target);
+          var px = function (name) { return parseFloat(style && style[name]) || 0; };
+          edge = {
+            top: px('paddingTop') + px('borderTopWidth'),
+            right: px('paddingRight') + px('borderRightWidth'),
+            bottom: px('paddingBottom') + px('borderBottomWidth'),
+            left: px('paddingLeft') + px('borderLeftWidth')
+          };
+        }
+      } catch (error) {}
+      return {
+        border: border,
+        content: {
+          width: Math.max(0, border.width - edge.left - edge.right),
+          height: Math.max(0, border.height - edge.top - edge.bottom)
+        },
+        left: edge.left,
+        top: edge.top
+      };
     };
-    var resizeEntry = function (target, size) {
-      var boxSize = [{ inlineSize: size.width, blockSize: size.height }];
+    var resizeEntry = function (target, boxes) {
+      var content = boxes.content;
+      var contentBoxSize = [{ inlineSize: content.width, blockSize: content.height }];
       return {
         target: target,
         contentRect: {
-          x: 0, y: 0, top: 0, left: 0,
-          width: size.width, height: size.height,
-          right: size.width, bottom: size.height
+          x: boxes.left, y: boxes.top, top: boxes.top, left: boxes.left,
+          width: content.width, height: content.height,
+          right: boxes.left + content.width, bottom: boxes.top + content.height
         },
-        borderBoxSize: boxSize,
-        contentBoxSize: boxSize,
-        devicePixelContentBoxSize: boxSize
+        borderBoxSize: [{ inlineSize: boxes.border.width, blockSize: boxes.border.height }],
+        contentBoxSize: contentBoxSize,
+        devicePixelContentBoxSize: contentBoxSize
       };
     };
     var measureObservations = function () {
@@ -1546,11 +1570,12 @@ pub(crate) const WEB_API_SHIM: &str = r#"
         for (var j = 0; j < observer.observations.length; j++) {
           var observation = observer.observations[j];
           observing = true;
-          var size = borderBox(observation.target);
+          var boxes = measureBoxes(observation.target);
+          var size = observation.box === 'border-box' ? boxes.border : boxes.content;
           if (size.width !== observation.width || size.height !== observation.height) {
             observation.width = size.width;
             observation.height = size.height;
-            entries.push(resizeEntry(observation.target, size));
+            entries.push(resizeEntry(observation.target, boxes));
           }
         }
         if (entries.length) {
@@ -1587,15 +1612,19 @@ pub(crate) const WEB_API_SHIM: &str = r#"
         throw new TypeError("Failed to construct 'ResizeObserver': callback is not a function");
       }
       var record = { instance: this, callback: callback, observations: [] };
-      this.observe = function (target) {
+      this.observe = function (target, options) {
         if (!target) return;
+        var box = options && options.box === 'border-box' ? 'border-box' : 'content-box';
         if (resizeObservers.indexOf(record) === -1) resizeObservers.push(record);
         for (var i = 0; i < record.observations.length; i++) {
-          if (record.observations[i].target === target) return;
+          if (record.observations[i].target === target) {
+            record.observations[i].box = box;
+            return;
+          }
         }
         // 0x0 is the specification's initial "last reported" size, so the
         // first measurement reports the target unless it has no box.
-        record.observations.push({ target: target, width: 0, height: 0 });
+        record.observations.push({ target: target, box: box, width: 0, height: 0 });
         armMeasure();
       };
       this.unobserve = function (target) {
