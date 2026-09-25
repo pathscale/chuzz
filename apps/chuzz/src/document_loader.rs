@@ -1481,20 +1481,133 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     };
   }
   if (typeof globalThis.ResizeObserver === 'undefined') {
-    // A stub, and deliberately silent rather than firing once the way
-    // `IntersectionObserver` above does. The difference is what an invented
-    // entry would have to say: visibility has an answer that is right for most
-    // of a page ("yes"), and a size does not. Nothing here can measure a box
-    // from JavaScript, so the only entry this could deliver carries a zero
-    // `contentRect`, and a grid or carousel that divides by that width computes
-    // zero columns and renders nothing. Never firing leaves such a component on
-    // whatever it renders before it has measured, which is the better of the
-    // two wrong answers. Backing this with real box data is engine work.
+    /*
+     * A real observer over `getBoundingClientRect`, which returns laid-out
+     * boxes to script.
+     *
+     * This was a silent stub on the grounds that nothing could measure a box
+     * from JavaScript, so any entry would carry a zero size. That stopped
+     * being true, and the stub's silence became the bug: a component that
+     * measures, moves, and relies on the observer to settle (an overlay whose
+     * first measurement preceded its width limits) was left wherever its first
+     * frame put it.
+     *
+     * The engine has no resize notification to hook, so this measures. It does
+     * not measure forever: a page that observes something permanently would
+     * otherwise keep the frame loop busy, which is exactly the idle and drift
+     * that rendered QA fails a page for. Measuring is armed by anything that
+     * can change a size (an `observe`, a resize or scroll, pointer, keyboard
+     * and input events) and by a size change it finds, and it disarms after
+     * `QUIET_FRAMES` frames in which nothing changed.
+     *
+     * Entries follow the specification's shape. `contentRect` and the box
+     * sizes all describe the border box, because the engine's computed style
+     * does not report padding or border widths to script; for the common case
+     * of a box without padding the two are the same. Like a browser, the
+     * first observation reports any size other than 0x0, and a callback that
+     * throws is reported without stopping the others.
+     */
+    var QUIET_FRAMES = 30;
+    var resizeObservers = [];
+    var measureFrames = 0;
+    var measureScheduled = false;
+    var nextFrame = typeof globalThis.requestAnimationFrame === 'function'
+      ? function (run) { globalThis.requestAnimationFrame(run); }
+      : function (run) { setTimeout(run, 16); };
+    var borderBox = function (target) {
+      try {
+        var rect = target.getBoundingClientRect();
+        return { width: Number(rect.width) || 0, height: Number(rect.height) || 0 };
+      } catch (error) {
+        return { width: 0, height: 0 };
+      }
+    };
+    var resizeEntry = function (target, size) {
+      var boxSize = [{ inlineSize: size.width, blockSize: size.height }];
+      return {
+        target: target,
+        contentRect: {
+          x: 0, y: 0, top: 0, left: 0,
+          width: size.width, height: size.height,
+          right: size.width, bottom: size.height
+        },
+        borderBoxSize: boxSize,
+        contentBoxSize: boxSize,
+        devicePixelContentBoxSize: boxSize
+      };
+    };
+    var measureObservations = function () {
+      measureScheduled = false;
+      var changed = false;
+      var observing = false;
+      for (var i = 0; i < resizeObservers.length; i++) {
+        var observer = resizeObservers[i];
+        var entries = [];
+        for (var j = 0; j < observer.observations.length; j++) {
+          var observation = observer.observations[j];
+          observing = true;
+          var size = borderBox(observation.target);
+          if (size.width !== observation.width || size.height !== observation.height) {
+            observation.width = size.width;
+            observation.height = size.height;
+            entries.push(resizeEntry(observation.target, size));
+          }
+        }
+        if (entries.length) {
+          changed = true;
+          try {
+            observer.callback.call(observer.instance, entries, observer.instance);
+          } catch (error) {
+            setTimeout(function () { throw error; }, 0);
+          }
+        }
+      }
+      if (!observing) { measureFrames = 0; return; }
+      measureFrames = changed ? QUIET_FRAMES : measureFrames - 1;
+      if (measureFrames > 0) scheduleMeasure();
+    };
+    var scheduleMeasure = function () {
+      if (measureScheduled) return;
+      measureScheduled = true;
+      nextFrame(measureObservations);
+    };
+    var armMeasure = function () {
+      if (!resizeObservers.length) return;
+      measureFrames = QUIET_FRAMES;
+      scheduleMeasure();
+    };
+    ['resize', 'scroll', 'pointerdown', 'pointerup', 'click', 'keydown', 'input']
+      .forEach(function (type) {
+        try {
+          globalThis.addEventListener(type, armMeasure, { capture: true, passive: true });
+        } catch (error) {}
+      });
     globalThis.ResizeObserver = function (callback) {
-      this.callback = callback;
-      this.observe = function () {};
-      this.unobserve = function () {};
-      this.disconnect = function () {};
+      if (typeof callback !== 'function') {
+        throw new TypeError("Failed to construct 'ResizeObserver': callback is not a function");
+      }
+      var record = { instance: this, callback: callback, observations: [] };
+      this.observe = function (target) {
+        if (!target) return;
+        if (resizeObservers.indexOf(record) === -1) resizeObservers.push(record);
+        for (var i = 0; i < record.observations.length; i++) {
+          if (record.observations[i].target === target) return;
+        }
+        // 0x0 is the specification's initial "last reported" size, so the
+        // first measurement reports the target unless it has no box.
+        record.observations.push({ target: target, width: 0, height: 0 });
+        armMeasure();
+      };
+      this.unobserve = function (target) {
+        record.observations = record.observations.filter(function (observation) {
+          return observation.target !== target;
+        });
+      };
+      this.disconnect = function () {
+        record.observations = [];
+        resizeObservers = resizeObservers.filter(function (other) { return other !== record; });
+      };
+      this.takeRecords = function () { return []; };
     };
   }
   if (typeof globalThis.Image === 'undefined') {
