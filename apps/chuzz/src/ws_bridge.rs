@@ -29,7 +29,13 @@ use std::sync::{Arc, Mutex};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
+
+// The default 16 MiB frame cap disconnects pages that send a self-contained
+// image-rich JSON result in one frame. Keep a bounded cap, with room for the
+// 38 MiB OpenCaptchaWorld image-matching response and similarly sized pages.
+const MAX_MESSAGE_BYTES: usize = 128 << 20;
+const MAX_FRAME_BYTES: usize = 64 << 20;
 
 /// One thing that happened to one socket, waiting for the document thread.
 struct Event {
@@ -133,22 +139,28 @@ impl Bridge {
                 }
             };
 
-            let (stream, response) = match tokio_tungstenite::connect_async(request).await {
-                Ok(pair) => pair,
-                Err(error) => {
-                    // The page is told the same thing a browser tells it: the
-                    // connection failed. The detail goes in the error event
-                    // rather than being swallowed, because "it did not
-                    // connect" is the least useful sentence in networking.
-                    bridge.post(
-                        id,
-                        serde_json::json!({"type": "error", "message": format!("{error}")}),
-                    );
-                    bridge.post(id, closed(1006, "connect"));
-                    bridge.forget(id);
-                    return;
-                }
-            };
+            let config = WebSocketConfig::default()
+                .max_message_size(Some(MAX_MESSAGE_BYTES))
+                .max_frame_size(Some(MAX_FRAME_BYTES));
+            let (stream, response) =
+                match tokio_tungstenite::connect_async_with_config(request, Some(config), false)
+                    .await
+                {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        // The page is told the same thing a browser tells it: the
+                        // connection failed. The detail goes in the error event
+                        // rather than being swallowed, because "it did not
+                        // connect" is the least useful sentence in networking.
+                        bridge.post(
+                            id,
+                            serde_json::json!({"type": "error", "message": format!("{error}")}),
+                        );
+                        bridge.post(id, closed(1006, "connect"));
+                        bridge.forget(id);
+                        return;
+                    }
+                };
 
             // The subprotocol the server actually chose, which is not always
             // the first one offered and is what the page reads back off
