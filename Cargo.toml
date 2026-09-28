@@ -119,7 +119,7 @@ nagoya = "^0.1"
 tokio = "1"
 url = "2.5"
 worktable = "^1.10.0-beta1"
-tauri = { version = "^2.11.5", default-features = false }
+tauri = { version = "^2", default-features = false }
 # `diagnostics`, always, rather than behind a cargo feature.
 #
 # It is two runtime planes, and neither costs anything until it is switched on
