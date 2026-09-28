@@ -182,6 +182,24 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 worktable.workspace = true
 
+# The Edit menu hands its keystrokes to winit's view as key events; see
+# `menu_keys` in tauri_main.rs. Already in the tree through winit.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "^0.6"
+objc2-app-kit = { version = "^0.3", default-features = false, features = [
+  "std",
+  "NSApplication",
+  "NSEvent",
+  "NSGraphicsContext",
+  "NSResponder",
+  "NSWindow",
+] }
+objc2-foundation = { version = "^0.3", default-features = false, features = [
+  "std",
+  "NSGeometry",
+  "NSString",
+] }
+
 [dev-dependencies]
 # `flavor = "multi_thread"` in the script-fetch test: the blocking fetch takes
 # the `block_in_place` path, which only the multi-threaded runtime has, and
