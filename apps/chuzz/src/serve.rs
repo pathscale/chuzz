@@ -442,6 +442,23 @@ fn commit_render(events: &Latest<DebugEvent>, revision: &mut u64) {
     });
 }
 
+fn follow_navigation(
+    destination: Url,
+    document: &mut ScriptDocument,
+    origin: &mut String,
+    load: &impl Fn(Url, Option<&StoredState>) -> Result<Box<ScriptDocument>, String>,
+    render_events: &Latest<DebugEvent>,
+    render_revision: &mut u64,
+) -> Result<(), String> {
+    let carried = snapshot_storage(document, origin);
+    let arriving = destination.origin().ascii_serialization();
+    let next = load(destination, Some(&carried))?;
+    *document = *next;
+    *origin = arriving;
+    commit_render(render_events, render_revision);
+    Ok(())
+}
+
 /// Load `target` and serve it over the inspection socket until killed.
 pub fn serve(target: &str) -> Result<(), String> {
     let target = classify(target)?;
@@ -658,12 +675,37 @@ pub fn serve(target: &str) -> Result<(), String> {
                     ),
                     Err(error) => DebugResponse::Error(error),
                 },
-                // Everything else needs runtime state this mode does not have,
-                // and saying so is better than a plausible-looking Ack: a check
-                // that silently did nothing reports the page as broken.
+                AgentControlRequest::Navigate { url } => {
+                    // Resolved before the match, so the borrow of the standing
+                    // document ends before it is replaced.
+                    let resolved = document.inner().url().join(&url);
+                    match resolved {
+                        Ok(destination) => match follow_navigation(
+                            destination,
+                            &mut document,
+                            &mut origin,
+                            &load,
+                            &render_events,
+                            &mut render_revision,
+                        ) {
+                            Ok(()) => DebugResponse::Ack,
+                            Err(message) => DebugResponse::Error(DebugError {
+                                code: "navigationFailed".into(),
+                                message,
+                            }),
+                        },
+                        Err(error) => DebugResponse::Error(DebugError {
+                            code: "invalidArgument".into(),
+                            message: format!(
+                                "could not resolve {url:?} against the document URL: {error}"
+                            ),
+                        }),
+                    }
+                }
+                // The remaining request types are not implemented by this host.
                 _ => DebugResponse::Error(DebugError {
                     code: "unsupported".into(),
-                    message: "the headless page does not handle process lifecycle requests".into(),
+                    message: "the headless page does not handle this request".into(),
                 }),
             },
             ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Capture(request)) => {
@@ -768,18 +810,15 @@ pub fn serve(target: &str) -> Result<(), String> {
          */
         if let Some(destination) = navigation.take() {
             trace(&format!("following a link to {destination}"));
-            // Read out before the document that holds it goes. A page writes
-            // its settings on one route and reads them while booting the next,
-            // so a store that starts empty makes that read a miss and the
-            // application look like it never saved.
-            let carried = snapshot_storage(&mut document, &origin);
-            let arriving = destination.origin().ascii_serialization();
-            match load(destination, Some(&carried)) {
-                Ok(next) => {
-                    document = next;
-                    origin = arriving;
-                    commit_render(&render_events, &mut render_revision);
-                }
+            match follow_navigation(
+                destination,
+                &mut document,
+                &mut origin,
+                &load,
+                &render_events,
+                &mut render_revision,
+            ) {
+                Ok(()) => {}
                 Err(error) => trace(&format!("the navigation failed, staying put: {error}")),
             }
         }
