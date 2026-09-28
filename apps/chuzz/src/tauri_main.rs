@@ -5,6 +5,93 @@
 use tauri::Emitter as _;
 use tauri::Manager;
 
+/// The Edit menu's keystrokes, handed to the focused view as real key events.
+///
+/// A predefined Cut, Copy or Paste item claims Cmd+X, C or V as its key
+/// equivalent and then sends `cut:`, `copy:` or `paste:` to the first
+/// responder. That responder is winit's view, which implements none of them,
+/// so the keystroke died in the menu and no text field in the chrome or the
+/// page ever saw it. Blitz implements the clipboard itself on Cmd+key, so the
+/// fix is to deliver the key: these items keep the accelerators, and pressing
+/// one sends the same key down and up a keyboard would, through winit's own
+/// `keyDown:` and `keyUp:`.
+///
+/// winit reads the modifiers it reports from `flagsChanged:`, so the pair is
+/// followed by one carrying the keyboard's real modifiers. Without it an Edit
+/// item chosen with the mouse left winit believing Cmd was still held, and
+/// the next click was a Cmd-click.
+#[cfg(target_os = "macos")]
+mod menu_keys {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::{NSPoint, NSString};
+
+    pub(super) fn dispatch(key: &'static str, key_code: u16, shift: bool) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let application = NSApplication::sharedApplication(mtm);
+        let Some(window) = application.keyWindow() else {
+            return;
+        };
+        let Some(responder) = window.firstResponder() else {
+            return;
+        };
+
+        let mut flags = NSEventModifierFlags::Command;
+        if shift {
+            flags |= NSEventModifierFlags::Shift;
+        }
+        let characters = NSString::from_str(&if shift {
+            key.to_ascii_uppercase()
+        } else {
+            key.to_owned()
+        });
+        let unmodified = NSString::from_str(key);
+        let event = |kind, flags, characters: &NSString, unmodified: &NSString, key_code| {
+            NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                kind,
+                NSPoint::new(0.0, 0.0),
+                flags,
+                0.0,
+                window.windowNumber(),
+                None,
+                characters,
+                unmodified,
+                false,
+                key_code,
+            )
+        };
+        let down = event(
+            NSEventType::KeyDown,
+            flags,
+            &characters,
+            &unmodified,
+            key_code,
+        );
+        let up = event(
+            NSEventType::KeyUp,
+            flags,
+            &characters,
+            &unmodified,
+            key_code,
+        );
+        let empty = NSString::new();
+        let restore = event(
+            NSEventType::FlagsChanged,
+            NSEvent::modifierFlags_class(),
+            &empty,
+            &empty,
+            0,
+        );
+        if let (Some(down), Some(up), Some(restore)) = (down, up, restore) {
+            responder.keyDown(&down);
+            responder.keyUp(&up);
+            responder.flagsChanged(&restore);
+        }
+    }
+}
+
 /// The macOS menu bar, and the one item in it chuzz adds.
 ///
 /// Cmd-U already worked: the binding lives in the Solid chrome, in
@@ -15,8 +102,8 @@ use tauri::Manager;
 /// The whole bar has to be built, not just the one submenu. Setting a menu
 /// replaces Tauri's default wholesale, so leaving out the app submenu would
 /// take Quit, Hide and About with it, and leaving out Edit would break Copy and
-/// Paste in the address bar. Everything except View is predefined, so this adds
-/// an entry rather than reimplementing a menu bar.
+/// Paste in the address bar. The app and Window submenus remain predefined, so
+/// this adds an entry rather than reimplementing those menu items.
 ///
 /// The item emits `menu-view-source` and the chrome runs it through the same
 /// `runShortcut("view-source")` the keystroke does. A second implementation
@@ -46,22 +133,32 @@ fn build_menu<R: tauri::Runtime>(
         ],
     )?;
 
-    // Without this the address bar cannot copy or paste: on macOS those are
-    // menu-driven, and the webview never sees the keystroke if no item claims
-    // it.
+    // Custom items keep the standard accelerators and send key events through
+    // Winit's focused responder. Predefined Edit selectors bypass that path.
+    let undo = MenuItem::with_id(handle, MENU_EDIT_UNDO, "Undo", true, Some("CmdOrCtrl+Z"))?;
+    let redo = MenuItem::with_id(
+        handle,
+        MENU_EDIT_REDO,
+        "Redo",
+        true,
+        Some("CmdOrCtrl+Shift+Z"),
+    )?;
+    let separator = PredefinedMenuItem::separator(handle)?;
+    let cut = MenuItem::with_id(handle, MENU_EDIT_CUT, "Cut", true, Some("CmdOrCtrl+X"))?;
+    let copy = MenuItem::with_id(handle, MENU_EDIT_COPY, "Copy", true, Some("CmdOrCtrl+C"))?;
+    let paste = MenuItem::with_id(handle, MENU_EDIT_PASTE, "Paste", true, Some("CmdOrCtrl+V"))?;
+    let select_all = MenuItem::with_id(
+        handle,
+        MENU_EDIT_SELECT_ALL,
+        "Select All",
+        true,
+        Some("CmdOrCtrl+A"),
+    )?;
     let edit = Submenu::with_items(
         handle,
         "Edit",
         true,
-        &[
-            &PredefinedMenuItem::undo(handle, None)?,
-            &PredefinedMenuItem::redo(handle, None)?,
-            &PredefinedMenuItem::separator(handle)?,
-            &PredefinedMenuItem::cut(handle, None)?,
-            &PredefinedMenuItem::copy(handle, None)?,
-            &PredefinedMenuItem::paste(handle, None)?,
-            &PredefinedMenuItem::select_all(handle, None)?,
-        ],
+        &[&undo, &redo, &separator, &cut, &copy, &paste, &select_all],
     )?;
 
     // `CmdOrCtrl+U` rather than `Cmd+U`, to match what the chrome accepts.
@@ -91,6 +188,32 @@ fn build_menu<R: tauri::Runtime>(
 /// the two cannot drift apart.
 #[cfg(target_os = "macos")]
 const MENU_VIEW_SOURCE: &str = "menu-view-source";
+
+#[cfg(target_os = "macos")]
+const MENU_EDIT_UNDO: &str = "menu-edit-undo";
+#[cfg(target_os = "macos")]
+const MENU_EDIT_REDO: &str = "menu-edit-redo";
+#[cfg(target_os = "macos")]
+const MENU_EDIT_CUT: &str = "menu-edit-cut";
+#[cfg(target_os = "macos")]
+const MENU_EDIT_COPY: &str = "menu-edit-copy";
+#[cfg(target_os = "macos")]
+const MENU_EDIT_PASTE: &str = "menu-edit-paste";
+#[cfg(target_os = "macos")]
+const MENU_EDIT_SELECT_ALL: &str = "menu-edit-select-all";
+
+#[cfg(target_os = "macos")]
+fn edit_menu_key(id: &str) -> Option<(&'static str, u16, bool)> {
+    match id {
+        MENU_EDIT_UNDO => Some(("z", 6, false)),
+        MENU_EDIT_REDO => Some(("z", 6, true)),
+        MENU_EDIT_CUT => Some(("x", 7, false)),
+        MENU_EDIT_COPY => Some(("c", 8, false)),
+        MENU_EDIT_PASTE => Some(("v", 9, false)),
+        MENU_EDIT_SELECT_ALL => Some(("a", 0, false)),
+        _ => None,
+    }
+}
 
 // The modules live in the library beside this binary, because the headless
 // host is the same browser and compiles the same tree. See `lib.rs`.
@@ -287,6 +410,9 @@ fn main() {
                         // Emitted rather than handled here: the chrome owns
                         // what view-source means for the active tab.
                         let _ = app.emit(MENU_VIEW_SOURCE, ());
+                    } else if let Some((key, code, shift)) = edit_menu_key(event.id().as_ref()) {
+                        let _ =
+                            app.run_on_main_thread(move || menu_keys::dispatch(key, code, shift));
                     }
                 });
             }
