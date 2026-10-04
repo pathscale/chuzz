@@ -118,7 +118,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 nagoya = "^0.1"
 tokio = "1"
 url = "2.5"
-worktable = "^1.10.0-beta1"
+worktable = "^1.11.0"
 tauri = { version = "^2", default-features = false }
 # `diagnostics`, always, rather than behind a cargo feature.
 #
