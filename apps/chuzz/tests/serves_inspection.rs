@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use blitz_control_protocol::{
     AgentAction, AgentControlRequest, CaptureRequest, DebugEvent, DebugResponse, DebugStream,
     DiagnosticsRequest, InputCommand, JsonRpcId, KeyPhase, MessageStream, Modifiers, NagoyaStream,
-    PointerPhase, TransportStream, WheelPhase, decode_diagnostics_event, decode_response,
+    PointerPhase, TransportStream, WheelPhase, condense, decode_diagnostics_event, decode_response,
     encode_agent_request, encode_diagnostics_request, framed_json_neutral,
 };
 
@@ -498,6 +498,27 @@ fn serves_a_page_over_the_inspection_socket() {
             .await,
             DebugResponse::Ack
         ));
+        for level in [
+            condense::Level::Keywords,
+            condense::Level::Summary,
+            condense::Level::Preview,
+            condense::Level::Structure,
+            condense::Level::Content,
+        ] {
+            let response = request(
+                &mut stream,
+                &mut next_id,
+                &AgentControlRequest::Condense {
+                    level,
+                    options: condense::CondenseOptions::default(),
+                },
+            )
+            .await;
+            let DebugResponse::Condensation(page) = response else {
+                panic!("condense {level:?} should return a condensation, got {response:?}");
+            };
+            assert_eq!(page.level_name(), level_name(level));
+        }
         for unsupported in [AgentControlRequest::Relaunch, AgentControlRequest::Quit] {
             assert!(matches!(
                 request(&mut stream, &mut next_id, &unsupported).await,
@@ -505,4 +526,14 @@ fn serves_a_page_over_the_inspection_socket() {
             ));
         }
     });
+}
+
+fn level_name(level: condense::Level) -> &'static str {
+    match level {
+        condense::Level::Keywords => "keywords",
+        condense::Level::Summary => "summary",
+        condense::Level::Preview => "preview",
+        condense::Level::Structure => "structure",
+        condense::Level::Content => "content",
+    }
 }

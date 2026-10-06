@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+use blitz_control_protocol::condense;
 use blitz_control_protocol::document::{DocumentCapture, inspect_document, snapshot_document};
 use blitz_control_protocol::in_process::DocumentControl;
 use blitz_control_protocol::latest::{Latest, Once};
@@ -1167,6 +1168,31 @@ fn sanitize_inspection(
     DebugResponse::AgentSnapshot(snapshot)
 }
 
+fn condense_response(
+    policy: &HeadlessPolicy,
+    level: condense::Level,
+    options: condense::CondenseOptions,
+    inspect: impl FnOnce() -> DebugResponse,
+) -> DebugResponse {
+    // Condense reads raw semantic-node values. Do not let it bypass the
+    // bot-child depth, redaction, and output-size restrictions on Inspect.
+    if policy.bot_child {
+        return DebugResponse::Error(policy_denial(
+            "page condensation is disabled in bot-child mode",
+        ));
+    }
+
+    match inspect() {
+        DebugResponse::AgentSnapshot(snapshot) => {
+            DebugResponse::Condensation(level.select(condense::condense(&snapshot.nodes, options)))
+        }
+        _ => DebugResponse::Error(DebugError {
+            code: "unsupported".into(),
+            message: "the document has no semantic tree to condense".into(),
+        }),
+    }
+}
+
 fn bound_inspection_snapshot(snapshot: &mut blitz_control_protocol::AgentSnapshot) {
     fn trim_text(value: &mut String, field_limit: usize, remaining: &mut usize) {
         let mut end = value.len().min(field_limit).min(*remaining);
@@ -1890,6 +1916,12 @@ pub fn serve(target: &str) -> Result<(), String> {
                         }),
                     }
                 }
+                AgentControlRequest::Condense { level, options } => {
+                    condense_response(&policy, level, options, || {
+                        revision += 1;
+                        inspect_document(&mut document, None, 0, revision)
+                    })
+                }
                 // The remaining request types are not implemented by this host.
                 _ => DebugResponse::Error(DebugError {
                     code: "unsupported".into(),
@@ -2042,11 +2074,11 @@ pub fn serve(target: &str) -> Result<(), String> {
 mod tests {
     use super::{
         ActionContext, BOT_CHILD_MAX_INSPECT_BYTES, BOT_CHILD_MAX_WALL_TIME, HeadlessPolicy,
-        MAX_PROXY_BYTES, Target, Url, bound_inspection_snapshot, classify, domain_is_allowed,
-        parse_allowed_domains, parse_wall_time, proxy_connect_url, reserve_proxy_bytes,
-        sensitive_surface, submit_needs_permission, target_from,
+        MAX_PROXY_BYTES, Target, Url, bound_inspection_snapshot, classify, condense_response,
+        domain_is_allowed, parse_allowed_domains, parse_wall_time, proxy_connect_url,
+        reserve_proxy_bytes, sensitive_surface, submit_needs_permission, target_from,
     };
-    use blitz_control_protocol::{AgentSnapshot, SemanticNode};
+    use blitz_control_protocol::{AgentSnapshot, DebugResponse, SemanticNode, condense};
 
     fn fixture_root(label: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -2213,6 +2245,21 @@ mod tests {
         let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
         let url = Url::parse("https://8.8.8.8/").expect("parse public URL");
         assert!(policy.validate_url(&url).is_ok());
+    }
+
+    #[test]
+    fn bot_child_condense_is_denied_before_inspection() {
+        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let response = condense_response(
+            &policy,
+            condense::Level::Content,
+            condense::CondenseOptions::default(),
+            || panic!("bot-child condensation must not inspect the page"),
+        );
+        assert!(matches!(
+            response,
+            DebugResponse::Error(error) if error.code == "policyDenied"
+        ));
     }
 
     #[test]
