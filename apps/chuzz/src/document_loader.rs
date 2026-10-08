@@ -775,19 +775,57 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     globalThis.frameElement = null;
   }
   if (typeof globalThis.scrollX === 'undefined') {
-    // The document's scroll offset is the engine's and does not reach here, so
-    // these report the position a page loads at and never move. That is right
-    // at load, which is when the scripts that read them run, and it is the same
-    // choice `IntersectionObserver` above makes: a lazy loader reading `scrollY`
-    // concludes it is at the top of the page and shows what is above the fold.
-    // A page that binds a scroll handler and recomputes from these will not see
-    // the view move. Making them true is engine work.
-    globalThis.scrollX = 0;
-    globalThis.scrollY = 0;
-    globalThis.pageXOffset = 0;
-    globalThis.pageYOffset = 0;
-    globalThis.scrollTo = function () {};
-    globalThis.scrollBy = function () {};
+    // ScriptDocument has no synchronous host-call API. Queue a real viewport
+    // scroll through its IPC bridge; net_bridge applies it to the native DOM
+    // on the next document poll and refreshes this mirror from that viewport.
+    var viewportScroll = { x: 0, y: 0 };
+    globalThis.__chuzzScrollRefresh = function (position) {
+      if (!position) { return; }
+      viewportScroll.x = Number(position.x) || 0;
+      viewportScroll.y = Number(position.y) || 0;
+    };
+    Object.defineProperties(globalThis, {
+      scrollX: { configurable: true, enumerable: true, get: function () { return viewportScroll.x; } },
+      scrollY: { configurable: true, enumerable: true, get: function () { return viewportScroll.y; } },
+      pageXOffset: { configurable: true, enumerable: true, get: function () { return viewportScroll.x; } },
+      pageYOffset: { configurable: true, enumerable: true, get: function () { return viewportScroll.y; } }
+    });
+    var queueViewportScroll = function (mode, left, top) {
+      try {
+        if (globalThis.ipc && typeof globalThis.ipc.postMessage === 'function') {
+          globalThis.ipc.postMessage(JSON.stringify({
+            __chuzz_scroll: { mode: mode, left: left, top: top }
+          }));
+        }
+      } catch (error) {}
+    };
+    var scrollNumber = function (value) {
+      var number = Number(value);
+      return Number.isFinite(number) ? number : 0;
+    };
+    var scrollArguments = function (args) {
+      if (args.length < 2) {
+        var options = args.length === 0 ? undefined : args[0];
+        if (options === undefined || options === null) { return [undefined, undefined]; }
+        var dictionary = Object(options);
+        var left = dictionary.left;
+        var top = dictionary.top;
+        return [
+          left === undefined ? undefined : scrollNumber(left),
+          top === undefined ? undefined : scrollNumber(top)
+        ];
+      }
+      return [scrollNumber(args[0]), scrollNumber(args[1])];
+    };
+    globalThis.scrollTo = function (x, y) {
+      var position = scrollArguments(arguments);
+      queueViewportScroll('to', position[0], position[1]);
+    };
+    globalThis.scrollBy = function (x, y) {
+      var delta = scrollArguments(arguments);
+      queueViewportScroll('by', delta[0], delta[1]);
+    };
+    globalThis.scroll = globalThis.scrollTo;
   }
   if (typeof globalThis.requestIdleCallback === 'undefined') {
     globalThis.requestIdleCallback = function (callback) {
