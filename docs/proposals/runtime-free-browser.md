@@ -12,4 +12,10 @@ Activation requirements:
 - Update obsolete Tauri build and packaging instructions for the standalone shell.
 - Pass formatting, all-feature Clippy and workspace tests on the activated code, then meaningful rendered browser acceptance: navigation, cookie persistence across graceful quit/reopen, WebSocket negotiation, editing/IME and cache reuse.
 
+Required browser parity includes App/Edit/View/Window menus; focused-field Cmd-C/V/X/A/Z; View Source from both Cmd-U and menu; IME in both browser chrome and page inputs; and a painted mounted page through the existing headless and GUI control paths.
+
+Networking acceptance must cover one shared client across document/subresource/script/fetch/XHR paths, bounded per-origin connections, bodies larger than transport defaults, all supported redirect statuses with cookies at each hop, cross-origin sensitive-header removal and browser method rewriting. Advertise only decoded content encodings. Verify private per-profile RFC9111 cache keys and reuse; heuristic caching of Set-Cookie responses requires an explicit security decision rather than assuming it is safe. Preserve WebSocket subprotocol negotiation and deliberate frame/message limits.
+
+Use platform trust roots and one consistent process-wide crypto provider; blocking DNS must not occupy reactor/document threads. Existing application packaging and signing remain separate contracts: removing Tauri is not permission to remove or rotate signing identities.
+
 Local build configuration, generated files and working notes are deliberately excluded. Applying this patch is not proof that those requirements passed.
