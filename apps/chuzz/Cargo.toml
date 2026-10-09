@@ -65,7 +65,7 @@ gui = [
 wasm = ["dep:blitz-wasm", "dep:wasmi"]
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
 # page parses to an empty mount point and paints nothing.
-javascript = ["dep:blitz-script"]
+javascript = ["dep:blitz-script", "dep:objc2", "dep:objc2-core-media"]
 # Opt in for rendered QA as well as GUI builds. A minimal headless embedder
 # can still omit font discovery and provide its own faces.
 system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
@@ -158,6 +158,20 @@ wgpu = { version = "^29", default-features = false, features = [
   "dx12",
   "wgsl",
   "serde",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Owned Objective-C messaging for the system decoder. CoreMedia supplies the
+# platform ABI and Objective-C encodings for times and sample-buffer pointers.
+objc2 = { version = "^0.6", optional = true }
+objc2-core-media = { version = "^0.3", optional = true, default-features = false, features = [
+  "std",
+  "objc2",
+  "CMBase",
+  "CMFormatDescription",
+  "CMSampleBuffer",
+  "CMTime",
+  "CMTimeRange",
 ] }
 
 [dev-dependencies]

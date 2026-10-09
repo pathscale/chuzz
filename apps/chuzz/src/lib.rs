@@ -17,13 +17,8 @@
 /// Name the TLS provider, rather than letting the resolver imply one.
 ///
 /// `rustls` selects its cryptographic provider from crate features, and panics
-/// at the first handshake when the graph enables neither `ring` nor `aws-lc-rs`
-/// or enables both. Features are additive across a dependency graph, so which
-/// of those holds is an outcome of resolution rather than a decision anyone
-/// made. This repository commits no lockfile, so it is not fixed at any point
-/// in time either: one crate picking up `ring` in a later release is enough to
-/// turn every `https://` fetch and every `wss://` connection into a panicked
-/// worker on the next runner that resolves it.
+/// at the first handshake when the graph enables neither provider or
+/// both, and with no lockfile that is not fixed at any point in time.
 ///
 /// It presents as a site bug rather than a browser one. The socket never
 /// opens, Solid halts reactivity on the escaped error, and the page collapses
@@ -64,6 +59,8 @@ pub mod net_bridge;
 pub mod page_server;
 pub mod script_fetch;
 pub mod webgpu;
+#[cfg(feature = "javascript")]
+mod video;
 pub mod ws_bridge;
 // Loading a page needs the rasteriser for a visual assertion and the script
 // engine for a page worth asserting about, which is what `capture` and
