@@ -1052,6 +1052,8 @@
   var GPURenderPassEncoder = gpuType("GPURenderPassEncoder");
   var GPUComputePassEncoder = gpuType("GPUComputePassEncoder");
   var GPUQuerySet = gpuType("GPUQuerySet");
+  var GPURenderBundleEncoder = gpuType("GPURenderBundleEncoder");
+  var GPURenderBundle = gpuType("GPURenderBundle");
 
   method(GPUDevice.prototype, "createQuerySet", function (input) {
     var device = receiver(deviceStates, this, "GPUDevice");
@@ -1541,6 +1543,12 @@
 
   function passState(object) {
     var state = receiver(objectStates, object, "GPU pass encoder");
+    if (state.kind === "GPURenderBundleEncoder") {
+      if (state.finished || state.device.destroyed) {
+        throw new DOMException("GPURenderBundleEncoder is not open", "InvalidStateError");
+      }
+      return state;
+    }
     if ((state.kind !== "GPURenderPassEncoder" && state.kind !== "GPUComputePassEncoder") ||
         state.ended || state.encoder.finished || state.encoder.locked !== state ||
         state.device.destroyed) {
@@ -1551,7 +1559,7 @@
 
   function recordPass(object, op, args) {
     var state = passState(object);
-    countCommand(state.encoder);
+    countCommand(state.kind === "GPURenderBundleEncoder" ? state : state.encoder);
     if (op === "draw" || op === "drawIndexed" || op === "drawIndirect") {
       state.drawCount++;
       if (state.drawCount > state.maxDrawCount) {
@@ -1629,7 +1637,7 @@
   [GPURenderPassEncoder, GPUComputePassEncoder].forEach(function (type) {
     method(type.prototype, "setPipeline", function (pipeline) {
       var state = passState(this);
-      var kind = state.kind === "GPURenderPassEncoder" ? "GPURenderPipeline" : "GPUComputePipeline";
+      var kind = state.kind === "GPUComputePassEncoder" ? "GPUComputePipeline" : "GPURenderPipeline";
       recordPass(this, "pipeline", objectHandle(pipeline, kind, state.device));
     });
     method(type.prototype, "setBindGroup", function (index, group, dynamicOffsets, start, length) {
@@ -1652,6 +1660,9 @@
     });
     method(type.prototype, "end", function () {
       var state = passState(this);
+      if (state.kind === "GPURenderBundleEncoder") {
+        throw new TypeError("invalid GPU pass encoder receiver");
+      }
       state.ended = true;
       state.encoder.locked = null;
     });
@@ -1864,9 +1875,90 @@
     });
   });
 
+  method(GPUDevice.prototype, "createRenderBundleEncoder", function (input) {
+    var device = receiver(deviceStates, this, "GPUDevice");
+    var value = dictionary(input, "GPURenderBundleEncoderDescriptor", [
+      "label", "colorFormats", "depthStencilFormat", "sampleCount",
+      "depthReadOnly", "stencilReadOnly"
+    ]);
+    var object = created(device, GPURenderBundleEncoder, "GPURenderBundleEncoder",
+      "createRenderBundleEncoder", {
+        label: label(value.label),
+        colorFormats: Array.from(value.colorFormats).map(function (format) {
+          return format === null ? null : String(format);
+        }),
+        depthStencilFormat: optionalText(value.depthStencilFormat),
+        sampleCount: u32(value.sampleCount, "sampleCount", 1),
+        depthReadOnly: !!value.depthReadOnly,
+        stencilReadOnly: !!value.stencilReadOnly
+      });
+    var state = objectStates.get(object);
+    state.commands = [];
+    state.count = 0;
+    state.drawCount = 0;
+    state.maxDrawCount = Infinity;
+    state.finished = false;
+    return object;
+  });
+
+  // Both encoders record exactly the same draw and binding command shapes.
+  [
+    "setPipeline", "setBindGroup", "setVertexBuffer", "setIndexBuffer",
+    "draw", "drawIndexed", "drawIndirect", "drawIndexedIndirect"
+  ].forEach(function (name) {
+    method(GPURenderBundleEncoder.prototype, name, GPURenderPassEncoder.prototype[name]);
+  });
+
+  method(GPURenderBundleEncoder.prototype, "finish", function (input) {
+    var state = objectState(this, "GPURenderBundleEncoder");
+    if (state.finished) {
+      throw new DOMException("GPURenderBundleEncoder is not open", "InvalidStateError");
+    }
+    var value = dictionary(input, "GPURenderBundleDescriptor", ["label"]);
+    var handle = nextId++;
+    var object = makeGpuObject(GPURenderBundle, "GPURenderBundle", state.device, handle, value.label);
+    var bundle = objectStates.get(object);
+    bundle.commandCount = state.count;
+    bundle.drawCount = state.drawCount;
+    state.finished = true;
+    fire(state.device, "finishRenderBundle", handle, {
+      encoder: state.handle,
+      label: label(value.label),
+      commands: state.commands
+    });
+    state.commands = [];
+    return object;
+  });
+
+  method(GPURenderPassEncoder.prototype, "executeBundles", function (input) {
+    var state = passState(this);
+    if (state.kind !== "GPURenderPassEncoder") {
+      throw new TypeError("invalid GPURenderPassEncoder receiver");
+    }
+    var cost = 0;
+    var draws = 0;
+    var handles = Array.from(input).map(function (object) {
+      var bundle = objectState(object, "GPURenderBundle", state.device);
+      cost += bundle.commandCount + 1;
+      draws += bundle.drawCount;
+      if (state.encoder.count + cost >= 65536) {
+        throw new RangeError("WebGPU command limit reached in chuzz");
+      }
+      return bundle.handle;
+    });
+    if (state.drawCount + draws > state.maxDrawCount) {
+      throw operationError("GPURenderPassDescriptor.maxDrawCount exceeded");
+    }
+    recordPass(this, "executeBundles", handles);
+    state.encoder.count += cost;
+    state.drawCount += draws;
+  });
+
   unsupportedMethods(GPUDevice.prototype, "GPUDevice", [
-    "importExternalTexture",
-    "createRenderBundleEncoder"
+    "importExternalTexture"
+  ]);
+  unsupportedMethods(GPURenderBundleEncoder.prototype, "GPURenderBundleEncoder", [
+    "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
   ]);
 
   unsupportedMethods(GPUCommandEncoder.prototype, "GPUCommandEncoder", [
@@ -1874,7 +1966,6 @@
     "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
   ]);
   unsupportedMethods(GPURenderPassEncoder.prototype, "GPURenderPassEncoder", [
-    "executeBundles",
     "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
   ]);
   unsupportedMethods(GPUComputePassEncoder.prototype, "GPUComputePassEncoder", [
@@ -1912,7 +2003,9 @@
     ["GPUCommandBuffer", GPUCommandBuffer],
     ["GPURenderPassEncoder", GPURenderPassEncoder],
     ["GPUComputePassEncoder", GPUComputePassEncoder],
-    ["GPUQuerySet", GPUQuerySet]
+    ["GPUQuerySet", GPUQuerySet],
+    ["GPURenderBundleEncoder", GPURenderBundleEncoder],
+    ["GPURenderBundle", GPURenderBundle]
   ].forEach(function (entry) {
     Object.defineProperty(entry[1].prototype, Symbol.toStringTag, {
       value: entry[0],

@@ -222,7 +222,12 @@ impl DeviceConnection {
             "unconfigure" => self.unconfigure_canvas(handle, args),
             "currentTexture" => self.current_texture(handle, args).await,
             "present" => self.present_canvas(handle, args).await,
-            "createCommandEncoder" | "finish" | "submit" | "onSubmittedWorkDone" => {
+            "createCommandEncoder"
+            | "createRenderBundleEncoder"
+            | "finishRenderBundle"
+            | "finish"
+            | "submit"
+            | "onSubmittedWorkDone" => {
                 self.execute_encoding(&op, handle, args).await
             }
             _ => self.execute_pipeline(&op, handle, args).await,

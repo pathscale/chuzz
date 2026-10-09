@@ -10,15 +10,25 @@ const COMMAND_LIMIT: usize = 65536;
 pub(super) struct Objects {
     encoders: HashMap<u64, wgpu::CommandEncoder>,
     commands: HashMap<u64, wgpu::CommandBuffer>,
+    // Native bundle encoders borrow resources and are not Send. Keep only
+    // their owned descriptors between IPC calls, then replay at finish.
+    bundle_encoders: HashMap<u64, BundleDescriptor>,
+    bundles: HashMap<u64, Bundle>,
 }
 
 impl Objects {
     pub(super) fn contains(&self, handle: u64) -> bool {
-        self.encoders.contains_key(&handle) || self.commands.contains_key(&handle)
+        self.encoders.contains_key(&handle)
+            || self.commands.contains_key(&handle)
+            || self.bundle_encoders.contains_key(&handle)
+            || self.bundles.contains_key(&handle)
     }
 
     pub(super) fn count(&self) -> usize {
-        self.encoders.len() + self.commands.len()
+        self.encoders.len()
+            + self.commands.len()
+            + self.bundle_encoders.len()
+            + self.bundles.len()
     }
 }
 
@@ -34,6 +44,74 @@ struct Finish {
     encoder: u64,
     label: String,
     operations: Vec<Operation>,
+}
+
+struct Bundle {
+    native: Arc<wgpu::RenderBundle>,
+    command_count: usize,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BundleOptions {
+    label: String,
+    color_formats: Vec<Option<String>>,
+    depth_stencil_format: Option<String>,
+    sample_count: u32,
+    depth_read_only: bool,
+    stencil_read_only: bool,
+}
+
+struct BundleDescriptor {
+    label: String,
+    color_formats: Vec<Option<wgpu::TextureFormat>>,
+    depth_stencil: Option<wgpu::RenderBundleDepthStencil>,
+    sample_count: u32,
+}
+
+impl BundleDescriptor {
+    fn new(options: BundleOptions) -> Result<Self, GpuError> {
+        let color_formats = options
+            .color_formats
+            .iter()
+            .map(|format| format.as_deref().map(texture::format).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        let depth_stencil = options
+            .depth_stencil_format
+            .as_deref()
+            .map(|format| -> Result<_, GpuError> {
+                Ok(wgpu::RenderBundleDepthStencil {
+                    format: texture::format(format)?,
+                    depth_read_only: options.depth_read_only,
+                    stencil_read_only: options.stencil_read_only,
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            label: options.label,
+            color_formats,
+            depth_stencil,
+            sample_count: options.sample_count,
+        })
+    }
+
+    fn native(&self) -> wgpu::RenderBundleEncoderDescriptor<'_> {
+        wgpu::RenderBundleEncoderDescriptor {
+            label: Some(&self.label),
+            color_formats: &self.color_formats,
+            depth_stencil: self.depth_stencil,
+            sample_count: self.sample_count,
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleFinish {
+    encoder: u64,
+    label: String,
+    commands: Vec<PassCommand>,
 }
 
 #[derive(serde::Deserialize)]
@@ -187,6 +265,7 @@ enum PassCommand {
     BlendConstant([f64; 4]),
     StencilReference(u32),
     Dispatch([u32; 3]),
+    ExecuteBundles(Vec<u64>),
 }
 
 fn color(value: [f64; 4]) -> wgpu::Color {
@@ -331,6 +410,8 @@ impl DeviceConnection {
                 let mut resources = self.resources();
                 resources.encoding.encoders.remove(&handle);
                 resources.encoding.commands.remove(&handle);
+                resources.encoding.bundle_encoders.remove(&handle);
+                resources.encoding.bundles.remove(&handle);
                 Err(error)
             }
         }
@@ -366,19 +447,50 @@ impl DeviceConnection {
                 });
                 resources.encoding.encoders.insert(handle, encoder);
             }
+            "createRenderBundleEncoder" => {
+                resources.reserve(handle, 0)?;
+                let descriptor = BundleDescriptor::new(decode(args)?)?;
+                if !matches!(descriptor.sample_count, 1 | 4) {
+                    return Err(GpuError::validation("invalid render bundle sampleCount"));
+                }
+                if descriptor.color_formats.len() > self.device.limits().max_color_attachments as usize {
+                    return Err(GpuError::validation("too many render bundle color formats"));
+                }
+                // Validate now, without retaining a non-Send native encoder.
+                drop(self.device.create_render_bundle_encoder(&descriptor.native()));
+                resources.encoding.bundle_encoders.insert(handle, descriptor);
+            }
+            "finishRenderBundle" => {
+                let finish: BundleFinish = decode(args)?;
+                let descriptor = resources.encoding.bundle_encoders.remove(&finish.encoder)
+                    .ok_or_else(|| GpuError::validation("invalid or finished GPURenderBundleEncoder"))?;
+                resources.reserve(handle, 0)?;
+                if finish.commands.len() > COMMAND_LIMIT {
+                    return Err(GpuError::validation("WebGPU command limit reached in chuzz"));
+                }
+                let mut encoder = self.device.create_render_bundle_encoder(&descriptor.native());
+                replay_bundle(&resources, &mut encoder, &finish.commands)?;
+                let bundle = encoder.finish(&wgpu::RenderBundleDescriptor {
+                    label: Some(&finish.label),
+                });
+                resources.encoding.bundles.insert(handle, Bundle {
+                    native: Arc::new(bundle),
+                    command_count: finish.commands.len(),
+                });
+            }
             "finish" => {
                 let finish: Finish = decode(args)?;
                 resources.reserve(handle, 0)?;
                 let count = finish.operations.iter().try_fold(0_usize, |count, operation| {
                     let extra = match operation {
                         Operation::Render { commands, .. } | Operation::Compute { commands, .. } => {
-                            commands.len()
+                            commands.iter().try_fold(0_usize, |count, command| {
+                                command_budget(count, pass_command_cost(&resources, command)?)
+                            })?
                         }
                         _ => 0,
                     };
-                    count.checked_add(extra + 1)
-                        .filter(|count| *count <= COMMAND_LIMIT)
-                        .ok_or_else(|| GpuError::validation("WebGPU command limit reached in chuzz"))
+                    command_budget(count, extra + 1)
                 })?;
                 if count > COMMAND_LIMIT {
                     return Err(GpuError::validation("WebGPU command limit reached in chuzz"));
@@ -502,6 +614,15 @@ fn replay(
                             pass.draw_indirect(buffer, *offset);
                         }
                     }
+                    PassCommand::ExecuteBundles(handles) => {
+                        let bundles = handles.iter().map(|handle| {
+                            get(&resources.encoding.bundles, *handle, "GPURenderBundle")
+                                .map(|bundle| bundle.native.as_ref())
+                        }).collect::<Result<Vec<_>, _>>()?;
+                        // wgpu also resets pipeline, bindings and vertex/index
+                        // state after executing bundles, including an empty list.
+                        pass.execute_bundles(bundles);
+                    }
                     PassCommand::BeginOcclusionQuery(index) => pass.begin_occlusion_query(*index),
                     PassCommand::EndOcclusionQuery => pass.end_occlusion_query(),
                     PassCommand::Viewport(value) => {
@@ -596,3 +717,70 @@ fn replay(
     Ok(())
 }
 
+
+fn command_budget(count: usize, extra: usize) -> Result<usize, GpuError> {
+    count.checked_add(extra)
+        .filter(|count| *count <= COMMAND_LIMIT)
+        .ok_or_else(|| GpuError::validation("WebGPU command limit reached in chuzz"))
+}
+
+fn pass_command_cost(resources: &Resources, command: &PassCommand) -> Result<usize, GpuError> {
+    let mut count = 1;
+    if let PassCommand::ExecuteBundles(handles) = command {
+        for handle in handles {
+            let bundle = get(&resources.encoding.bundles, *handle, "GPURenderBundle")?;
+            // Count each reference even when its bundle has no commands.
+            count = command_budget(count, bundle.command_count + 1)?;
+        }
+    }
+    Ok(count)
+}
+
+fn replay_bundle<'a>(
+    resources: &'a Resources,
+    encoder: &mut wgpu::RenderBundleEncoder<'a>,
+    commands: &[PassCommand],
+) -> Result<(), GpuError> {
+    for command in commands {
+        match command {
+            PassCommand::Pipeline(handle) => {
+                encoder.set_pipeline(get(&resources.pipelines.render, *handle, "GPURenderPipeline")?);
+            }
+            PassCommand::BindGroup { index, group, offsets } => {
+                let group = group.map(|handle| {
+                    get(&resources.pipelines.groups, handle, "GPUBindGroup").map(Arc::as_ref)
+                }).transpose()?;
+                encoder.set_bind_group(*index, group, offsets);
+            }
+            PassCommand::VertexBuffer { slot, buffer, offset, size } => {
+                encoder.set_vertex_buffer(*slot, buffer_slice(resources, *buffer, *offset, *size)?);
+            }
+            PassCommand::IndexBuffer { buffer, format, offset, size } => {
+                encoder.set_index_buffer(buffer_slice(resources, *buffer, *offset, *size)?, *format);
+            }
+            PassCommand::Draw { count, instances, first, first_instance } => {
+                encoder.draw(draw_range(*first, *count)?, draw_range(*first_instance, *instances)?);
+            }
+            PassCommand::DrawIndexed { count, instances, first, base_vertex, first_instance } => {
+                encoder.draw_indexed(
+                    draw_range(*first, *count)?,
+                    *base_vertex,
+                    draw_range(*first_instance, *instances)?,
+                );
+            }
+            PassCommand::DrawIndirect { buffer, offset, indexed } => {
+                buffer_range(resources, *buffer, *offset, Some(if *indexed { 20 } else { 16 }))?;
+                let buffer = &get(&resources.buffers, *buffer, "GPUBuffer")?.buffer;
+                if *indexed {
+                    encoder.draw_indexed_indirect(buffer, *offset);
+                } else {
+                    encoder.draw_indirect(buffer, *offset);
+                }
+            }
+            _ => return Err(GpuError::validation(
+                "render pass command is not valid in GPURenderBundleEncoder",
+            )),
+        }
+    }
+    Ok(())
+}

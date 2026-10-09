@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU render bundle QA</title>
+  <style>
+    body { background: #050812; color: white; }
+    canvas { width: 256px; height: 256px; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <h1>WebGPU render bundle QA</h1>
+  <button id="run" type="button">Run WebGPU checks</button>
+  <p id="result" role="status">Ready</p>
+  <canvas id="frame" width="32" height="32" aria-label="Rendered red frame"></canvas>
+  <script type="module">
+    const result = document.getElementById("result");
+    const canvas = document.getElementById("frame");
+    const button = document.getElementById("run");
+    function assert(value, message) {
+      if (!value) throw new Error(message);
+    }
+    button.onclick = async () => {
+      button.setAttribute("disabled", "");
+      result.textContent = "Running";
+      let failed = false;
+      const fail = message => {
+        failed = true;
+        result.textContent = "FAIL: " + message;
+      };
+      const timeout = setTimeout(() => fail("WebGPU checks timed out"), 20000);
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        assert(adapter, "no WebGPU adapter");
+        const device = await adapter.requestDevice();
+        device.addEventListener("uncapturederror", event => fail(event.error.message));
+        device.lost.then(info => fail(info.message || "device lost"));
+        device.pushErrorScope("validation");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        const context = canvas.getContext("webgpu");
+        context.configure({
+          device, format, alphaMode: "opaque",
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+        });
+        const vertices = device.createBuffer({
+          size: 24, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(vertices, 0, new Float32Array([-1, -1, 3, -1, -1, 3]));
+        const indices = device.createBuffer({
+          size: 8, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(indices, 0, new Uint16Array([0, 1, 2, 0]));
+        const indirect = device.createBuffer({
+          size: 36, usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(indirect, 0, new Uint32Array([3, 1, 0, 0, 3, 1, 0, 0, 0]));
+        const alignment = device.limits.minUniformBufferOffsetAlignment;
+        const uniform = device.createBuffer({
+          size: alignment + 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(uniform, alignment, new Float32Array([1, 0, 0, 1]));
+        const layout = device.createBindGroupLayout({
+          entries: [{
+            binding: 0, visibility: GPUShaderStage.FRAGMENT,
+            buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: 16 }
+          }]
+        });
+        const group = device.createBindGroup({
+          layout, entries: [{ binding: 0, resource: { buffer: uniform, size: 16 } }]
+        });
+        const solidShader = device.createShaderModule({ code: `
+          @group(0) @binding(0) var<uniform> tint: vec4<f32>;
+          @vertex fn vertex(@location(0) position: vec2<f32>) -> @builtin(position) vec4<f32> {
+            return vec4<f32>(position, 0.0, 1.0);
+          }
+          @fragment fn fragment() -> @location(0) vec4<f32> { return tint; }
+        ` });
+        const solid = await device.createRenderPipelineAsync({
+          layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+          vertex: {
+            module: solidShader, entryPoint: "vertex",
+            buffers: [{
+              arrayStride: 8,
+              attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }]
+            }]
+          },
+          fragment: { module: solidShader, entryPoint: "fragment", targets: [{ format: "rgba16float" }] },
+          multisample: { count: 4 }
+        });
+        const geometryEncoder = device.createRenderBundleEncoder({
+          label: "all bundle draws", colorFormats: ["rgba16float"], sampleCount: 4
+        });
+        geometryEncoder.setPipeline(solid);
+        geometryEncoder.setBindGroup(0, group, new Uint32Array([0, alignment, 0]), 1, 1);
+        geometryEncoder.setVertexBuffer(0, vertices, 0, 24);
+        geometryEncoder.setIndexBuffer(indices, "uint16", 0, 8);
+        geometryEncoder.draw(3);
+        geometryEncoder.drawIndexed(3, 1, 0, 0, 0);
+        geometryEncoder.drawIndirect(indirect, 0);
+        geometryEncoder.drawIndexedIndirect(indirect, 16);
+        const geometry = geometryEncoder.finish({ label: "reusable geometry" });
+        assert(geometry instanceof GPURenderBundle, "wrong bundle brand");
+        let closed = false;
+        try { geometryEncoder.draw(3); }
+        catch (error) { closed = error.name === "InvalidStateError"; }
+        assert(closed, "finished bundle encoder accepted another draw");
+        const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST;
+        const resolved = device.createTexture({
+          size: [32, 32], format: "rgba16float", mipLevelCount: 2, usage
+        });
+        const copied = device.createTexture({
+          size: [32, 32], format: "rgba16float", mipLevelCount: 2, usage
+        });
+        const msaa = device.createTexture({
+          size: [32, 32], format: "rgba16float", sampleCount: 4,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT
+        });
+        const sampleShader = device.createShaderModule({ code: `
+          struct Vertex {
+            @builtin(position) position: vec4<f32>,
+            @location(0) uv: vec2<f32>
+          }
+          @group(0) @binding(0) var imageSampler: sampler;
+          @group(0) @binding(1) var image: texture_2d<f32>;
+          @vertex fn vertex(@builtin(vertex_index) index: u32) -> Vertex {
+            let coordinates = array<vec2<f32>, 3>(
+              vec2<f32>(0.0, 0.0), vec2<f32>(2.0, 0.0), vec2<f32>(0.0, 2.0));
+            var output: Vertex;
+            output.uv = coordinates[index];
+            output.position = vec4<f32>(output.uv * vec2<f32>(2.0, -2.0) +
+              vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+            return output;
+          }
+          @fragment fn fragment(input: Vertex) -> @location(0) vec4<f32> {
+            return textureSample(image, imageSampler, input.uv);
+          }
+        ` });
+        const sampler = device.createSampler({ minFilter: "linear", magFilter: "linear" });
+        function sampledBundle(targetFormat, source) {
+          const pipeline = device.createRenderPipeline({
+            layout: "auto",
+            vertex: { module: sampleShader, entryPoint: "vertex" },
+            fragment: { module: sampleShader, entryPoint: "fragment", targets: [{ format: targetFormat }] }
+          });
+          const bindings = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [{ binding: 0, resource: sampler }, { binding: 1, resource: source }]
+          });
+          const encoder = device.createRenderBundleEncoder({ colorFormats: [targetFormat] });
+          encoder.setPipeline(pipeline);
+          encoder.setBindGroup(0, bindings);
+          encoder.draw(3);
+          return encoder.finish();
+        }
+        const mip = sampledBundle("rgba16float", copied.createView({ baseMipLevel: 0, mipLevelCount: 1 }));
+        const output = sampledBundle(format, copied.createView({ baseMipLevel: 1, mipLevelCount: 1 }));
+        const current = context.getCurrentTexture();
+        const readback = device.createBuffer({
+          size: 256 * 32, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+        const encoder = device.createCommandEncoder();
+        const scene = encoder.beginRenderPass({
+          maxDrawCount: 8,
+          colorAttachments: [{
+            view: msaa.createView(),
+            resolveTarget: resolved.createView({ baseMipLevel: 0, mipLevelCount: 1 }),
+            loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 1]
+          }]
+        });
+        scene.executeBundles([geometry, geometry]);
+        scene.end();
+        encoder.copyTextureToTexture({ texture: resolved }, { texture: copied }, [32, 32]);
+        const mipPass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: copied.createView({ baseMipLevel: 1, mipLevelCount: 1 }),
+            loadOp: "clear", storeOp: "store"
+          }]
+        });
+        mipPass.executeBundles([mip]);
+        mipPass.end();
+        const finalPass = encoder.beginRenderPass({
+          colorAttachments: [{ view: current.createView(), loadOp: "clear", storeOp: "store" }]
+        });
+        finalPass.executeBundles([output]);
+        finalPass.executeBundles([]);
+        finalPass.end();
+        encoder.copyTextureToBuffer(
+          { texture: current },
+          { buffer: readback, bytesPerRow: 256, rowsPerImage: 32 },
+          [32, 32]
+        );
+        device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const mapped = readback.getMappedRange();
+        const pixel = Array.from(new Uint8Array(mapped, 16 * 256 + 16 * 4, 4));
+        assert(pixel.join(",") === (format === "bgra8unorm" ? "0,0,255,255" : "255,0,0,255"),
+          "MSAA/copy/mip/canvas pixel was " + pixel.join(","));
+        readback.unmap();
+        assert(mapped.byteLength === 0, "unmap did not detach readback");
+        await device.queue.onSubmittedWorkDone();
+        const error = await device.popErrorScope();
+        assert(!error, error ? error.message : "");
+        if (!failed) {
+          result.textContent = "READY: WebGPU bundle frame PASS";
+          console.log("READY: WebGPU bundle frame PASS");
+        }
+      } catch (error) {
+        fail(error.message);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+  </script>
+</body>
+</html>
