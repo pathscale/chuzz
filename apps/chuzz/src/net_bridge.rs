@@ -8,8 +8,7 @@
 //! 4 by name, and the pages laying out at 37% and 44% of a reference browser's
 //! height are the same story counted the same way.
 //!
-//! `blitz-script` has no way to register a host function, so this is built from
-//! the three things it does expose:
+//! The asynchronous network bridge uses three script surfaces:
 //!
 //! - `window.ipc.postMessage(text)`, a string channel from JavaScript to here;
 //! - `eval`, the same channel in reverse;
@@ -212,6 +211,7 @@ pub fn install(
     let poll_scroll_mailbox = scroll_mailbox.clone();
     let sockets = crate::ws_bridge::Bridge::new();
     let handler_sockets = sockets.clone();
+    gpu.install_canvas_readback(document);
     let handler_gpu = gpu.clone();
     let handler_base = base.clone();
     let poll_base = base.clone();
@@ -451,8 +451,8 @@ const NETWORK_API_SHIM: &str = r#"
       this.status = 0;
       this.statusText = "";
       this.responseText = "";
-      this.response = "";
       this.responseType = "";
+      this.response = "";
       this.onreadystatechange = null;
       this.onload = null;
       this.onerror = null;
@@ -512,4 +512,3 @@ const NETWORK_API_SHIM: &str = r#"
   }
 })();
 "#;
-

@@ -7,6 +7,8 @@
   var canvasContexts = new WeakMap();
   var offscreens = new WeakMap();
   var markers = new WeakMap();
+  // Readback request ids live above 2^52, clear of the bridge's own request counter.
+  var readbackSerial = 4503599627370496;
   var limit = 64 * 1024 * 1024;
 
   function missing(member) { throw new Error("not implemented in chuzz: " + member); }
@@ -315,7 +317,15 @@
     var pixels = canvasPixels(canvas);
     if (pixels) { return pixels; }
     if (source && source.data instanceof Uint8ClampedArray) { return source; }
-    return missing("CanvasRenderingContext2D.drawImage source readback");
+    // A WebGPU canvas or a decoded element: read its pixels back synchronously, after the GPU work queued before.
+    var gpu = String(canvas && canvas.tagName).toLowerCase() === "canvas" ? bridge.canvasSource(canvas) : null;
+    if (!gpu && String(source && source.tagName).toLowerCase() === "img") {
+      gpu = { kind: "element", handle: marker(source) };
+    }
+    if (!gpu) { return missing("CanvasRenderingContext2D.drawImage source readback"); }
+    var result = globalThis.__chuzzCanvasReadback(JSON.stringify(gpu), ++readbackSerial);
+    if (typeof result[0] === "string") { throw new DOMException(String(result[1]), "InvalidStateError"); }
+    return { width: result[0], height: result[1], data: result[2] };
   }
   function color(value) {
     value = String(value).trim().toLowerCase();

@@ -52,7 +52,7 @@ impl Flight {
 impl Bridge {
     pub(super) fn enqueue(&self, request: Request) {
         let id = request.id();
-        let startup = !matches!(&request, Request::Command { .. });
+        let startup = matches!(&request, Request::Adapter { .. } | Request::Device { .. });
         let slot = if startup {
             let Some(slot) = StartupSlot::acquire() else {
                 self.state().ready.push((
@@ -74,6 +74,7 @@ impl Bridge {
         {
             let mut state = self.state();
             if state.in_flight.len() >= REQUEST_LIMIT || state.in_flight.contains_key(&id) {
+                request.reject_readback("WebGPU request limit reached in chuzz");
                 state.ready.push((
                     id,
                     json!({
@@ -144,14 +145,24 @@ impl Bridge {
             };
             let id = request.id();
             if !self.request_live(id) {
+                request.reject_readback("WebGPU request timed out in chuzz");
                 continue;
             }
+            let completion = match &request {
+                Request::Readback { completion, .. } => Some(Arc::clone(completion)),
+                _ => None,
+            };
             // One command worker per document retains push/create/write/pop
             // ordering. Startup requests use separate tasks.
             let result = match nagoya::timeout(DEADLINE, self.execute(request)).await {
                 Ok(result) => result,
                 Err(_) => Err(GpuError::internal("WebGPU request timed out in chuzz")),
             };
+            if let Some(completion) = completion
+                && let Err(error) = &result
+            {
+                completion.finish(Err(GpuError::internal(error.message.clone())));
+            }
             self.complete_request(id, result);
         }
     }

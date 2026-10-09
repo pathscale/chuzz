@@ -18,6 +18,7 @@ mod encoder;
 mod external;
 mod host;
 mod pipeline;
+mod readback;
 mod resources;
 mod texture;
 
@@ -129,6 +130,14 @@ enum Request {
         #[serde(skip)]
         bytes: binary::Lease,
     },
+    // Only the native canvas callback can construct this request. Pixels
+    // return directly as a typed array rather than as JSON through IPC.
+    #[serde(skip)]
+    Readback {
+        id: u64,
+        source: external::Source,
+        completion: Arc<readback::Completion>,
+    },
 }
 
 impl Request {
@@ -136,7 +145,14 @@ impl Request {
         match self {
             Self::Adapter { id, .. }
             | Self::Device { id, .. }
-            | Self::Command { id, .. } => *id,
+            | Self::Command { id, .. }
+            | Self::Readback { id, .. } => *id,
+        }
+    }
+
+    fn reject_readback(&self, message: &str) {
+        if let Self::Readback { completion, .. } = self {
+            completion.finish(Err(GpuError::internal(message)));
         }
     }
 
@@ -399,6 +415,12 @@ impl Bridge {
                 .request_device(id, adapter, options)
                 .await
                 .map_err(GpuError::validation),
+            Request::Readback {
+                source, completion, ..
+            } => {
+                completion.finish(self.resolve_source(source).await);
+                Ok(Value::Null)
+            }
             Request::Command {
                 id,
                 device,
@@ -582,7 +604,7 @@ fn adapter_info(adapter: &wgpu::Adapter) -> Value {
         "architecture": "",
         "device": format!("{:04x}", info.device),
         "description": info.name,
-        "isFallbackAdapter": info.device_type == wgpu::DeviceType::Cpu,
+        "isFallbackAdapter": adapter.get_info().device_type == wgpu::DeviceType::Cpu,
     })
 }
 

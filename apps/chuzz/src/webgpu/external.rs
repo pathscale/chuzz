@@ -17,7 +17,7 @@ pub(super) struct Images {
 
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-enum Source {
+pub(super) enum Source {
     Bitmap { handle: u64 },
     Element { handle: u64 },
     Encoded {
@@ -158,8 +158,19 @@ impl Bridge {
         for (marker, image) in images {
             changed |= paint(document, marker, image);
         }
-        for mut request in incoming {
-            if let Request::Command { id, command, .. } = &mut request {
+        for request in incoming {
+            self.prepare_image_request(request, |marker| snapshot(document, marker));
+        }
+        changed
+    }
+
+    pub(super) fn prepare_image_request(
+        &self,
+        mut request: Request,
+        snapshot: impl Fn(u64) -> Option<Arc<RasterImageData>>,
+    ) {
+        match &mut request {
+            Request::Command { id, command, .. } => {
                 if let Some(source) = command.args.get_mut("source") {
                     let kind = source.get("kind").and_then(Value::as_str);
                     let marker = match kind {
@@ -168,7 +179,7 @@ impl Bridge {
                         _ => None,
                     };
                     if let Some(marker) = marker {
-                        let image = snapshot(document, marker);
+                        let image = snapshot(marker);
                         if kind == Some("element") || image.is_some() {
                             if let Some(image) = image {
                                 self.state().images.snapshots.insert(*id, image);
@@ -178,12 +189,22 @@ impl Bridge {
                     }
                 }
             }
-            self.enqueue(request);
+            Request::Readback {
+                id,
+                source: Source::Element { handle },
+                ..
+            } => {
+                if let Some(image) = snapshot(*handle) {
+                    self.state().images.snapshots.insert(*id, image);
+                }
+                *handle = *id;
+            }
+            _ => {}
         }
-        changed
+        self.enqueue(request);
     }
 
-    async fn resolve_source(&self, source: Source) -> Result<Arc<RasterImageData>, GpuError> {
+    pub(super) async fn resolve_source(&self, source: Source) -> Result<Arc<RasterImageData>, GpuError> {
         match source {
             Source::Bitmap { handle } => self.state().images.bitmaps.get(&handle).cloned()
                 .ok_or_else(|| GpuError::validation("ImageBitmap is closed or invalid")),
