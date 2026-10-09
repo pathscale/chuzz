@@ -1312,7 +1312,10 @@ fn settle_immediate(
         }
         let progressed = {
             let _turn = supervisor::operation(supervisor::Operation::Poll);
-            document.poll(None)
+            // Allow one batch of due callbacks, then drain only immediate
+            // work. Repeating timers and re-registered animation frames belong
+            // to later host ticks, not to this control's settle loop.
+            document.poll_for_settle(None, iterations == 0)
         };
         iterations = iterations.saturating_add(1);
         if started.elapsed() >= deadline {
