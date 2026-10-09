@@ -1944,8 +1944,13 @@ pub async fn load_for_capture(
         let mut passes_since_built = 0;
         for _ in 0..24 {
             nagoya::sleep(std::time::Duration::from_millis(25)).await;
-            document.eval("void 0");
             document.poll(None);
+            if document.has_pending_jobs() {
+                // Publish a progressing document to its host. The control
+                // loop resumes this checkpoint instead of waiting for the
+                // entire async initialization chain during loading.
+                break;
+            }
             let built = document
                 .inner()
                 .query_selector("body > * > *")

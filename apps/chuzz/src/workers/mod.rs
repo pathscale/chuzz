@@ -414,9 +414,8 @@ pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
                 if let Err(error) = result {
                     eprintln!("Uncaught worker event handler error: {error}");
                 }
-                if let Err(error) = context.run_jobs() {
-                    eprintln!("Uncaught worker event microtask error: {error}");
-                }
+                // The handler's microtasks run on the document's next poll, under its job budget:
+                // draining them here would let one message (a planet bake result) hold the page.
             });
         }
         delivered

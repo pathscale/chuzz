@@ -47,7 +47,9 @@ impl Operation {
     fn budget(self) -> Duration {
         match self {
             Self::Load | Self::Request => REQUEST_DEADLINE,
-            Self::Poll | Self::Resolve | Self::Action => Duration::from_secs(5),
+            // A hang guard, not a speed limit: one interpreted task (three.js compiling node
+            // materials for a planet) measured 4.9 s, so 5 s killed working pages.
+            Self::Poll | Self::Resolve | Self::Action => Duration::from_secs(15),
             Self::Storage => Duration::from_secs(2),
         }
     }

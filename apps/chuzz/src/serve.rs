@@ -1318,6 +1318,11 @@ fn settle_immediate(
             document.poll_for_settle(None, iterations == 0)
         };
         iterations = iterations.saturating_add(1);
+        // A yielded promise slice is progress, not a failure to settle:
+        // resolve the partial DOM and answer this request before the next one.
+        if document.has_pending_jobs() {
+            break;
+        }
         if started.elapsed() >= deadline {
             continue;
         }
