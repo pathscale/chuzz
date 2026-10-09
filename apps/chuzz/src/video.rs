@@ -1,8 +1,9 @@
 //! Media playback driven by document polling.
 //!
 //! Chuzz owns source selection, autoplay policy and element lifetime.
-//! The platform backend supplies a shared audio/video clock and RGBA frames;
-//! Blitz owns layout and painting. Remote bytes use Chuzz's network provider.
+//! Synchronous Rust codecs run as separate nagoya tasks over shared state.
+//! The host presents frames before publishing media events. Blitz owns layout
+//! and painting; remote bytes use Chuzz's network provider.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,12 +17,15 @@ use blitz_traits::net::Url;
 
 use crate::document_loader::NetProvider;
 
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "macos")]
+mod backend;
+mod demux;
+mod output;
+mod planar;
 mod source;
 
 const TIMEUPDATE_INTERVAL: Duration = Duration::from_millis(250);
+/// HTML fires `progress` at most about every 350ms while fetching.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(350);
 
 #[derive(Clone, serde::Serialize)]
 struct MediaError {
@@ -55,7 +59,7 @@ impl MediaError {
 struct Frame {
     width: u32,
     height: u32,
-    rgba: Arc<Vec<u8>>,
+    picture: Arc<ps_rust_h264::decoder::Frame>,
 }
 
 #[derive(Default)]
@@ -87,17 +91,7 @@ fn open_decoder(
     url: Url,
     preload: &str,
 ) -> Result<Box<dyn VideoDecoder>, MediaError> {
-    #[cfg(target_os = "macos")]
-    {
-        macos::open(net, url, preload).map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (net, url, preload);
-        Err(MediaError::unsupported(
-            "video decoding is unavailable on this platform",
-        ))
-    }
+    Ok(Box::new(backend::open(net, url, preload)))
 }
 
 #[derive(serde::Deserialize)]
@@ -136,10 +130,12 @@ struct Entry {
     src: String,
     url: Url,
     decoder: Option<Box<dyn VideoDecoder>>,
+    pixels: Arc<Vec<u8>>,
     duration: Option<f64>,
     position: f64,
     pending_seek: Option<f64>,
     last_timeupdate: Instant,
+    last_progress: Option<Instant>,
     width: u32,
     height: u32,
     buffered: Vec<[f64; 2]>,
@@ -173,10 +169,12 @@ impl Entry {
             src: url.to_string(),
             url,
             decoder: None,
+            pixels: Arc::new(Vec::new()),
             duration: None,
             position: 0.0,
             pending_seek: None,
             last_timeupdate: now,
+            last_progress: None,
             width: 0,
             height: 0,
             buffered: Vec::new(),
@@ -241,10 +239,9 @@ impl Entry {
             self.events.push("seeking");
         }
         self.seeking = true;
-        if self.metadata {
-            if let Some(decoder) = self.decoder.as_mut() {
-                decoder.seek(self.position)?;
-            }
+        self.has_frame = false;
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.seek(self.position)?;
             self.pending_seek = None;
         } else {
             self.pending_seek = Some(self.position);
@@ -309,11 +306,7 @@ impl Entry {
         Ok(())
     }
 
-    fn tick(
-        &mut self,
-        net: &Arc<NetProvider>,
-        now: Instant,
-    ) -> Result<Option<Frame>, MediaError> {
+    fn tick(&mut self, net: &Arc<NetProvider>, now: Instant) -> Result<Option<Frame>, MediaError> {
         if self.error.is_some() || !self.requested {
             return Ok(None);
         }
@@ -327,7 +320,14 @@ impl Entry {
             self.dirty = true;
         }
 
-        let mut snapshot = self.decoder.as_mut().unwrap().poll()?;
+        let decoder = self
+            .decoder
+            .as_mut()
+            .ok_or_else(|| MediaError::decode("the media decoder was released"))?;
+        if let Some(time) = self.pending_seek.take() {
+            decoder.seek(time)?;
+        }
+        let mut snapshot = decoder.poll()?;
         if !snapshot.src.is_empty() && self.src != snapshot.src {
             self.src = snapshot.src;
             self.dirty = true;
@@ -347,18 +347,20 @@ impl Entry {
                 self.metadata = true;
                 self.events.push("loadedmetadata");
             }
-            if let Some(time) = self.pending_seek.take() {
-                self.position = time.clamp(0.0, duration);
-                self.decoder.as_mut().unwrap().seek(self.position)?;
-                snapshot.frame = None;
-                snapshot.seeking = true;
-            }
         }
 
+        // Buffered ranges grow on every poll while fetching. Publish them with
+        // a throttled progress event so the fetch alone never keeps the
+        // document busy.
         if self.buffered != snapshot.buffered {
             self.buffered = snapshot.buffered;
-            self.events.push("progress");
-            self.dirty = true;
+            if self
+                .last_progress
+                .is_none_or(|last| now.duration_since(last) >= PROGRESS_INTERVAL)
+            {
+                self.last_progress = Some(now);
+                self.events.push("progress");
+            }
         }
         if self.seekable != snapshot.seekable {
             self.seekable = snapshot.seekable;
@@ -370,9 +372,11 @@ impl Entry {
             self.events.extend(["timeupdate", "seeked"]);
             self.dirty = true;
         }
-        if !self.seeking && self.position != snapshot.position {
+        // The clock moves on every poll. It is published with the next event
+        // (timeupdate every 250ms while playing), not as a change of its own,
+        // so a playing video does not keep the document from settling.
+        if !self.seeking {
             self.position = snapshot.position;
-            self.dirty = true;
         }
 
         let frame = if snapshot.seeking {
@@ -512,22 +516,15 @@ impl Host {
 
         for command in commands {
             if command.op == "load" || command.op == "release" {
-                if let Some(previous) = self.entries.remove(&command.id) {
-                    set_image(document, previous.node, None);
+                if let Some(mut previous) = self.entries.remove(&command.id) {
+                    let _ = set_image(document, previous.node, None, &mut previous.pixels);
                     changed = true;
                 }
-                if command.op == "release"
-                    || command.src.as_deref().is_none_or(str::is_empty)
-                {
+                if command.op == "release" || command.src.as_deref().is_none_or(str::is_empty) {
                     continue;
                 }
                 let selector = format!("video[data-chuzz-video='{}']", command.id);
-                let Some(node) = document
-                    .inner()
-                    .query_selector(&selector)
-                    .ok()
-                    .flatten()
-                else {
+                let Some(node) = document.inner().query_selector(&selector).ok().flatten() else {
                     continue;
                 };
                 let url = document
@@ -540,10 +537,6 @@ impl Host {
                 let mut entry = Entry::new(node, url, &command, now);
                 if !matches!(entry.url.scheme(), "http" | "https" | "file" | "data") {
                     entry.fail(MediaError::unsupported("unsupported video URL"));
-                } else if !cfg!(target_os = "macos") {
-                    entry.fail(MediaError::unsupported(
-                        "video decoding is unavailable on this platform",
-                    ));
                 }
                 self.entries.insert(command.id, entry);
                 continue;
@@ -562,7 +555,11 @@ impl Host {
         for (&id, entry) in &mut self.entries {
             match entry.tick(&self.net, now) {
                 Ok(Some(frame)) => {
-                    set_image(document, entry.node, Some(frame));
+                    if let Err(error) =
+                        set_image(document, entry.node, Some(frame), &mut entry.pixels)
+                    {
+                        entry.fail(error);
+                    }
                     changed = true;
                 }
                 Ok(None) => {}
@@ -577,37 +574,56 @@ impl Host {
     }
 }
 
-fn set_image(document: &mut ScriptDocument, id: NodeId, frame: Option<Frame>) {
-    // The guard must outlive the node borrow taken from it.
+fn set_image(
+    document: &mut ScriptDocument,
+    id: NodeId,
+    frame: Option<Frame>,
+    pixels: &mut Arc<Vec<u8>>,
+) -> Result<(), MediaError> {
+    // Release the element and node-cache leases before asking for exclusive
+    // access to the previous frame's allocation.
     let mut doc = document.inner_mut();
     let Some(node) = doc.get_node_mut(id) else {
-        return;
-    };
-    let Some(element) = node.element_data_mut() else {
-        return;
-    };
-    element.special_data = match frame {
-        Some(frame) => SpecialElementData::Image(Box::new(ImageData::Raster(
-            RasterImageData::new(frame.width, frame.height, frame.rgba),
-        ))),
-        None => SpecialElementData::None,
+        return Ok(());
     };
     node.cache_mut().clear();
-    // The public node API exposes the engine's damage value without requiring
-    // Chuzz to depend on Stylo. Set every declared damage flag so intrinsic
-    // dimensions and repaint-in-place both reach resolve and capture.
+    let Some(element) = node.element_data_mut() else {
+        return Ok(());
+    };
+    element.special_data = SpecialElementData::None;
+
+    if let Some(frame) = frame {
+        // A retained paint scene may still own the old allocation. Never
+        // mutate those pixels or copy them merely to overwrite them.
+        if Arc::get_mut(pixels).is_none() {
+            *pixels = Arc::new(Vec::new());
+        }
+        let buffer = Arc::get_mut(pixels)
+            .ok_or_else(|| MediaError::decode("the video pixel buffer is shared"))?;
+        planar::i420(
+            frame.width,
+            frame.height,
+            8,
+            [&frame.picture.y, &frame.picture.u, &frame.picture.v],
+            buffer,
+        )?;
+        element.special_data = SpecialElementData::Image(Box::new(ImageData::Raster(
+            RasterImageData::new(frame.width, frame.height, Arc::clone(pixels)),
+        )));
+    }
+
+    // Both intrinsic-size changes and repainting an unchanged replaced box
+    // must invalidate layout and the next captured or visible paint.
     if let Some(damage) = node.damage() {
         node.insert_damage(damage.union(damage.complement()));
     }
     node.set_dirty_descendants();
     node.mark_ancestors_dirty();
+    Ok(())
 }
 
 pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
-    document.eval(&format!(
-        "globalThis.__chuzzVideoSupported = {};",
-        cfg!(target_os = "macos")
-    ));
+    document.eval("globalThis.__chuzzVideoSupported = true;");
     document.eval(include_str!("video.ts"));
     let mut host = Host {
         net,

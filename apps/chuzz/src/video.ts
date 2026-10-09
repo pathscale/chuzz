@@ -449,8 +449,19 @@
       type = String(type).toLowerCase();
       if (!globalThis.__chuzzVideoSupported) return '';
       if (!/^video\/mp4(?:\s*;|$)/.test(type)) return '';
-      if (type.indexOf('av01') >= 0 || type.indexOf('vp09') >= 0) return '';
-      return 'maybe';
+      var codecs = /\bcodecs\s*=\s*"?([^";]+)/.exec(type);
+      if (!codecs) return 'maybe';
+      var values = codecs[1].split(',');
+      var hasVideo = false;
+      for (var index = 0; index < values.length; index++) {
+        var codec = values[index].trim();
+        if (/^avc[13](?:\.[0-9a-f]{6})?$/.test(codec)) {
+          hasVideo = true;
+        } else if (codec !== 'mp4a.40.2') {
+          return '';
+        }
+      }
+      return hasVideo ? 'probably' : '';
     }
   });
 

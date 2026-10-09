@@ -65,7 +65,13 @@ gui = [
 wasm = ["dep:blitz-wasm", "dep:wasmi"]
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
 # page parses to an empty mount point and paints nothing.
-javascript = ["dep:blitz-script", "dep:objc2", "dep:objc2-core-media", "dep:block2"]
+javascript = [
+  "dep:blitz-script",
+  "dep:mp4parse",
+  "dep:ps-rust_h264",
+  "dep:symphonia",
+  "dep:cpal",
+]
 # Opt in for rendered QA as well as GUI builds. A minimal headless embedder
 # can still omit font discovery and provide its own faces.
 system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
@@ -160,6 +166,10 @@ blitz-control-protocol = { workspace = true, features = ["engine", "server", "ca
 izumo = { workspace = true, optional = true }
 nago-wss.workspace = true
 worktable.workspace = true
+mp4parse = { version = "^0.17", optional = true }
+# The VIDEORUST brief explicitly selects this synchronous local fork.
+ps-rust_h264 = { package = "rust_h264", version = "^0.4", path = "../../../ps-rust_h264", optional = true }
+symphonia = { version = "^0.5.5", default-features = false, features = ["aac"], optional = true }
 # The headless painter is CPU-only, so page WebGPU must also be able to open
 # a device without the GUI renderer. Match ps-blitz's published wgpu range.
 wgpu = { version = "^29", default-features = false, features = [
@@ -172,21 +182,9 @@ wgpu = { version = "^29", default-features = false, features = [
   "serde",
 ] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# Owned Objective-C messaging for the system decoder. CoreMedia supplies the
-# platform ABI and Objective-C encodings for times and sample-buffer pointers.
-objc2 = { version = "^0.6", optional = true }
-# AVPlayer's asynchronous seek completion uses the Objective-C block ABI.
-block2 = { version = "^0.6", optional = true }
-objc2-core-media = { version = "^0.3", optional = true, default-features = false, features = [
-  "std",
-  "objc2",
-  "CMBase",
-  "CMFormatDescription",
-  "CMSampleBuffer",
-  "CMTime",
-  "CMTimeRange",
-] }
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+# Device output only. This release uses CoreAudio C bindings without objc2.
+cpal = { version = "^0.15.3", default-features = false, optional = true }
 
 [dev-dependencies]
 # Assembles `fixtures/panel.wat` into a module in-process, so the capture test
@@ -196,3 +194,4 @@ wat = "1"
 
 [build-dependencies]
 brotli.workspace = true
+
