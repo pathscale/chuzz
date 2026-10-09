@@ -13,6 +13,9 @@ use serde_json::{Map, Value, json};
 
 mod buffer;
 mod canvas;
+mod encoder;
+mod host;
+mod pipeline;
 mod resources;
 mod texture;
 
@@ -139,7 +142,12 @@ impl Request {
                 device, command, ..
             } if !matches!(
                 command.op.as_str(),
-                "popErrorScope" | "pushErrorScope" | "destroy"
+                "popErrorScope"
+                    | "pushErrorScope"
+                    | "destroy"
+                    | "getCompilationInfo"
+                    | "createRenderPipelineAsync"
+                    | "createComputePipelineAsync"
             ) => Some(*device),
             _ => None,
         }
@@ -249,6 +257,8 @@ struct State {
     devices: HashMap<u64, Arc<DeviceConnection>>,
     requests: VecDeque<Request>,
     running: bool,
+    polling: bool,
+    in_flight: HashMap<u64, host::Flight>,
     ready: Vec<(u64, Value)>,
     events: Vec<(u64, Value)>,
     frames: HashMap<u64, canvas::Frame>,
@@ -292,74 +302,15 @@ impl Bridge {
         let Ok(request) = serde_json::from_str::<Request>(message) else {
             return false;
         };
-        {
-            let mut state = self.state();
-            if state.requests.len() >= REQUEST_LIMIT {
-                state.ready.push((
-                    request.id(),
-                    json!({
-                        "ok": false,
-                        "error": "WebGPU request limit reached in chuzz"
-                    }),
-                ));
-                return true;
-            }
-            state.requests.push_back(request);
-            if state.running {
-                return true;
-            }
-            state.running = true;
-        }
-
-        // One worker per document preserves ordering across synchronous page
-        // methods, including push/write/pop and create/unmap/map sequences.
-        let bridge = self.clone();
-        let _ = nagoya::spawn(async move {
-            loop {
-                let request = {
-                    let mut state = bridge.state();
-                    match state.requests.pop_front() {
-                        Some(request) => request,
-                        None => {
-                            state.running = false;
-                            return;
-                        }
-                    }
-                };
-                let id = request.id();
-                let error_device = request.error_device();
-                let result = match nagoya::timeout(DEADLINE, bridge.execute(request)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(GpuError::internal("WebGPU request timed out in chuzz")),
-                };
-                let payload = match result {
-                    Ok(value) => json!({"ok": true, "value": value}),
-                    Err(error) => {
-                        let device = error_device
-                            .and_then(|id| bridge.state().devices.get(&id).cloned());
-                        if let Some(device) = &device {
-                            device.report(&error);
-                        }
-                        json!({
-                            "ok": false,
-                            "error": error.message,
-                            "reported": device.is_some()
-                        })
-                    }
-                };
-                bridge.state().ready.push((id, payload));
-            }
-        });
+        self.enqueue(request);
         true
     }
 
     pub(crate) fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        // Nonblocking polling delivers driver loss and mapping callbacks even
-        // when the page has stopped issuing GPU commands.
-        let devices: Vec<_> = self.state().devices.values().cloned().collect();
-        for device in devices {
-            let _ = device.device.poll(wgpu::PollType::Poll);
-        }
+        // Deadlines are host state, not page timers. No driver work runs on
+        // the document thread, including nominally nonblocking device.poll.
+        self.expire_requests();
+        self.poll_devices();
 
         let (ready, events, frames) = {
             let mut state = self.state();
@@ -453,6 +404,9 @@ impl Bridge {
             "isFallbackAdapter": adapter.get_info().device_type == wgpu::DeviceType::Cpu,
         });
         let mut state = self.state();
+        if !state.in_flight.get(&id).is_some_and(host::Flight::live) {
+            return Err("GPU adapter request expired in chuzz".to_owned());
+        }
         if state.adapters.len() + state.devices.len() >= OBJECT_LIMIT {
             return Err("WebGPU object limit reached in chuzz".to_owned());
         }
@@ -549,6 +503,9 @@ impl Bridge {
         }));
 
         let mut state = self.state();
+        if !state.in_flight.get(&id).is_some_and(host::Flight::live) {
+            return Err("GPU device request expired in chuzz".to_owned());
+        }
         if state.adapters.len() + state.devices.len() >= OBJECT_LIMIT {
             return Err("WebGPU object limit reached in chuzz".to_owned());
         }

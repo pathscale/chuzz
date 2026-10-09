@@ -14,6 +14,7 @@
   var queueStates = new WeakMap();
   var bufferStates = new WeakMap();
   var textureStates = new WeakMap();
+  var objectStates = new WeakMap();
   var canvasStates = new WeakMap();
   var contextStates = new WeakMap();
   var contexts = Object.create(null);
@@ -62,7 +63,7 @@
       throw new TypeError(member + " must be a dictionary");
     }
     Object.keys(value).forEach(function (name) {
-      if (allowed.indexOf(name) === -1) {
+      if (value[name] !== undefined && allowed.indexOf(name) === -1) {
         missing(member + "." + name);
       }
     });
@@ -96,18 +97,15 @@
   function send(operation, fields) {
     return new Promise(function (resolve, reject) {
       var id = nextId++;
-      var timer = setTimeout(function () {
-        if (!pending[id]) { return; }
-        delete pending[id];
-        reject(new Error("WebGPU host did not answer in chuzz: " + operation));
-      }, 15000);
-      pending[id] = { resolve: resolve, reject: reject, timer: timer };
+      // The host poll loop owns request deadlines. A page timer here becomes
+      // script-pump work and can hold document load while host replies wait
+      // for that same document to poll.
+      pending[id] = { resolve: resolve, reject: reject };
       fields.webgpu = operation;
       fields.id = id;
       try {
         window.ipc.postMessage(JSON.stringify(fields));
       } catch (error) {
-        clearTimeout(timer);
         delete pending[id];
         reject(error);
       }
@@ -118,10 +116,10 @@
     var entry = pending[id];
     if (!entry) { return; }
     delete pending[id];
-    clearTimeout(entry.timer);
     if (result.ok) { entry.resolve(result.value); }
     else {
       var error = new Error(result.error);
+      error.kind = result.kind;
       error.reported = !!result.reported;
       entry.reject(error);
     }
@@ -758,9 +756,9 @@
         descriptor[name] = uint(value[name], name, undefined, 4294967295);
       }
     });
-    var object = Object.create(GPUTextureView.prototype);
-    object.label = descriptor.label;
-    fire(state.device, "createView", nextId++, {
+    var handle = nextId++;
+    var object = makeGpuObject(GPUTextureView, "GPUTextureView", state.device, handle, descriptor.label);
+    fire(state.device, "createView", handle, {
       texture: state.handle,
       descriptor: descriptor
     });
@@ -820,9 +818,9 @@
     if (value.maxAnisotropy !== undefined) {
       descriptor.maxAnisotropy = uint(value.maxAnisotropy, "maxAnisotropy", undefined, 65535);
     }
-    var object = Object.create(GPUSampler.prototype);
-    object.label = descriptor.label;
-    fire(device, "createSampler", nextId++, descriptor);
+    var handle = nextId++;
+    var object = makeGpuObject(GPUSampler, "GPUSampler", device, handle, descriptor.label);
+    fire(device, "createSampler", handle, descriptor);
     return object;
   });
 
@@ -958,26 +956,735 @@
     });
   };
 
+  function gpuType(name) {
+    return function () { throw new TypeError("Illegal constructor: " + name); };
+  }
+  var GPUShaderModule = gpuType("GPUShaderModule");
+  var GPUCompilationInfo = gpuType("GPUCompilationInfo");
+  var GPUCompilationMessage = gpuType("GPUCompilationMessage");
+  var GPUBindGroupLayout = gpuType("GPUBindGroupLayout");
+  var GPUPipelineLayout = gpuType("GPUPipelineLayout");
+  var GPUBindGroup = gpuType("GPUBindGroup");
+  var GPURenderPipeline = gpuType("GPURenderPipeline");
+  var GPUComputePipeline = gpuType("GPUComputePipeline");
+  var GPUCommandEncoder = gpuType("GPUCommandEncoder");
+  var GPUCommandBuffer = gpuType("GPUCommandBuffer");
+  var GPURenderPassEncoder = gpuType("GPURenderPassEncoder");
+  var GPUComputePassEncoder = gpuType("GPUComputePassEncoder");
+
+  function GPUPipelineError(message, options) {
+    if (!(this instanceof GPUPipelineError)) { throw new TypeError("Illegal constructor"); }
+    options = dictionary(options, "GPUPipelineErrorInit", ["reason"]);
+    if (options.reason !== "validation" && options.reason !== "internal") {
+      throw new TypeError("invalid GPUPipelineError.reason");
+    }
+    var error = new Error(String(message));
+    Object.setPrototypeOf(error, GPUPipelineError.prototype);
+    readonly(error, "reason", options.reason);
+    return error;
+  }
+  Object.setPrototypeOf(GPUPipelineError.prototype, Error.prototype);
+  Object.defineProperty(GPUPipelineError.prototype, "name", {
+    value: "GPUPipelineError", configurable: true
+  });
+
+  function u32(value, name, fallback) {
+    return uint(value, name, fallback, 4294967295);
+  }
+
+  function signed(value, name, fallback) {
+    if (value === undefined) { return fallback; }
+    value = Number(value);
+    if (!Number.isInteger(value) || value < -2147483648 || value > 2147483647) {
+      throw new TypeError("invalid " + name);
+    }
+    return value;
+  }
+
+  function number(value, name, fallback) {
+    if (value === undefined && fallback !== undefined) { return fallback; }
+    value = Number(value);
+    if (!Number.isFinite(value)) { throw new TypeError("invalid " + name); }
+    return value;
+  }
+
+  function text(value, fallback) {
+    return value === undefined ? fallback : String(value);
+  }
+
+  function optionalText(value) {
+    return value === undefined ? null : String(value);
+  }
+
+  function makeGpuObject(type, kind, device, handle, name) {
+    var object = Object.create(type.prototype);
+    object.label = label(name);
+    objectStates.set(object, {
+      kind: kind, device: device, handle: handle, object: object
+    });
+    return object;
+  }
+
+  function objectState(object, kind, device) {
+    var state;
+    if (kind === "GPUBuffer") { state = receiver(bufferStates, object, kind); }
+    else if (kind === "GPUTexture") { state = receiver(textureStates, object, kind); }
+    else {
+      state = receiver(objectStates, object, kind);
+      if (state.kind !== kind) { throw new TypeError("invalid " + kind); }
+    }
+    if (device && state.device !== device) {
+      throw new TypeError(kind + " belongs to another GPUDevice");
+    }
+    if (state.destroyed || state.device.destroyed) {
+      throw operationError(kind + " is unavailable");
+    }
+    return state;
+  }
+
+  function objectHandle(object, kind, device) {
+    return objectState(object, kind, device).handle;
+  }
+
+  function created(device, type, kind, op, descriptor) {
+    var handle = nextId++;
+    var object = makeGpuObject(type, kind, device, handle, descriptor.label);
+    fire(device, op, handle, descriptor);
+    return object;
+  }
+
+  method(GPUDevice.prototype, "createShaderModule", function (input) {
+    var device = receiver(deviceStates, this, "GPUDevice");
+    var value = dictionary(input, "GPUShaderModuleDescriptor", [
+      "label", "code", "compilationHints"
+    ]);
+    if (value.compilationHints !== undefined) {
+      missing("GPUShaderModuleDescriptor.compilationHints");
+    }
+    if (value.code === undefined) { throw new TypeError("GPUShaderModuleDescriptor.code is required"); }
+    return created(device, GPUShaderModule, "GPUShaderModule", "createShaderModule", {
+      label: label(value.label), code: String(value.code)
+    });
+  });
+
+  method(GPUShaderModule.prototype, "getCompilationInfo", function () {
+    var state = objectState(this, "GPUShaderModule");
+    return command(state.device, "getCompilationInfo", state.handle).then(function (value) {
+      var info = Object.create(GPUCompilationInfo.prototype);
+      var messages = value.messages.map(function (value) {
+        var message = Object.create(GPUCompilationMessage.prototype);
+        ["message", "type", "lineNum", "linePos", "offset", "length"].forEach(function (name) {
+          readonly(message, name, value[name]);
+        });
+        return Object.freeze(message);
+      });
+      readonly(info, "messages", Object.freeze(messages));
+      return Object.freeze(info);
+    });
+  });
+
+  method(GPUDevice.prototype, "createBindGroupLayout", function (input) {
+    var device = receiver(deviceStates, this, "GPUDevice");
+    var value = dictionary(input, "GPUBindGroupLayoutDescriptor", ["label", "entries"]);
+    var entries = Array.from(value.entries).map(function (input) {
+      var value = dictionary(input, "GPUBindGroupLayoutEntry", [
+        "binding", "visibility", "buffer", "sampler", "texture", "storageTexture", "externalTexture"
+      ]);
+      if (value.externalTexture !== undefined) {
+        missing("GPUBindGroupLayoutEntry.externalTexture");
+      }
+      var entry = {
+        binding: u32(value.binding, "binding"),
+        visibility: u32(value.visibility, "visibility")
+      };
+      if (value.buffer !== undefined) {
+        var buffer = dictionary(value.buffer, "GPUBufferBindingLayout", [
+          "type", "hasDynamicOffset", "minBindingSize"
+        ]);
+        entry.buffer = {
+          type: text(buffer.type, "uniform"),
+          hasDynamicOffset: !!buffer.hasDynamicOffset,
+          minBindingSize: uint(buffer.minBindingSize, "minBindingSize", 0)
+        };
+      }
+      if (value.sampler !== undefined) {
+        var sampler = dictionary(value.sampler, "GPUSamplerBindingLayout", ["type"]);
+        entry.sampler = { type: text(sampler.type, "filtering") };
+      }
+      if (value.texture !== undefined) {
+        var texture = dictionary(value.texture, "GPUTextureBindingLayout", [
+          "sampleType", "viewDimension", "multisampled"
+        ]);
+        entry.texture = {
+          sampleType: text(texture.sampleType, "float"),
+          viewDimension: text(texture.viewDimension, "2d"),
+          multisampled: !!texture.multisampled
+        };
+      }
+      if (value.storageTexture !== undefined) {
+        var storage = dictionary(value.storageTexture, "GPUStorageTextureBindingLayout", [
+          "access", "format", "viewDimension"
+        ]);
+        if (storage.format === undefined) { throw new TypeError("storageTexture.format is required"); }
+        entry.storageTexture = {
+          access: text(storage.access, "write-only"),
+          format: String(storage.format),
+          viewDimension: text(storage.viewDimension, "2d")
+        };
+      }
+      return entry;
+    });
+    return created(device, GPUBindGroupLayout, "GPUBindGroupLayout", "createBindGroupLayout", {
+      label: label(value.label), entries: entries
+    });
+  });
+
+  method(GPUDevice.prototype, "createPipelineLayout", function (input) {
+    var device = receiver(deviceStates, this, "GPUDevice");
+    var value = dictionary(input, "GPUPipelineLayoutDescriptor", ["label", "bindGroupLayouts"]);
+    return created(device, GPUPipelineLayout, "GPUPipelineLayout", "createPipelineLayout", {
+      label: label(value.label),
+      bindGroupLayouts: Array.from(value.bindGroupLayouts).map(function (layout) {
+        return layout === null ? null : objectHandle(layout, "GPUBindGroupLayout", device);
+      })
+    });
+  });
+
+  method(GPUDevice.prototype, "createBindGroup", function (input) {
+    var device = receiver(deviceStates, this, "GPUDevice");
+    var value = dictionary(input, "GPUBindGroupDescriptor", ["label", "layout", "entries"]);
+    return created(device, GPUBindGroup, "GPUBindGroup", "createBindGroup", {
+      label: label(value.label),
+      layout: objectHandle(value.layout, "GPUBindGroupLayout", device),
+      entries: Array.from(value.entries).map(function (input) {
+        var value = dictionary(input, "GPUBindGroupEntry", ["binding", "resource"]);
+        var state = objectStates.get(value.resource);
+        var resource;
+        if (state && state.kind === "GPUSampler") {
+          resource = { kind: "sampler", handle: objectHandle(value.resource, "GPUSampler", device) };
+        } else if (state && state.kind === "GPUTextureView") {
+          resource = { kind: "view", handle: objectHandle(value.resource, "GPUTextureView", device) };
+        } else {
+          var buffer = dictionary(value.resource, "GPUBufferBinding", ["buffer", "offset", "size"]);
+          resource = {
+            kind: "buffer",
+            handle: objectHandle(buffer.buffer, "GPUBuffer", device),
+            offset: uint(buffer.offset, "offset", 0),
+            size: buffer.size === undefined ? null : uint(buffer.size, "size")
+          };
+        }
+        return { binding: u32(value.binding, "binding"), resource: resource };
+      })
+    });
+  });
+
+  function pipelineLayout(value, device) {
+    if (value === "auto") { return null; }
+    return objectHandle(value, "GPUPipelineLayout", device);
+  }
+
+  function shaderStage(input, device, kind) {
+    var allowed = ["module", "entryPoint", "constants"];
+    if (kind === "vertex") { allowed.push("buffers"); }
+    if (kind === "fragment") { allowed.push("targets"); }
+    var value = dictionary(input, "GPU" + kind + "State", allowed);
+    var constants = dictionary(value.constants, "GPUPipelineConstants", Object.keys(value.constants || {}));
+    var copied = Object.create(null);
+    Object.keys(constants).forEach(function (name) {
+      if (constants[name] !== undefined) { copied[name] = number(constants[name], "constant " + name); }
+    });
+    var stage = {
+      module: objectHandle(value.module, "GPUShaderModule", device),
+      entryPoint: optionalText(value.entryPoint),
+      constants: copied
+    };
+    if (kind === "vertex") {
+      stage.buffers = value.buffers === undefined ? [] : Array.from(value.buffers).map(function (input) {
+        if (input === null) { return { arrayStride: 0, stepMode: "vertex", attributes: [] }; }
+        var value = dictionary(input, "GPUVertexBufferLayout", ["arrayStride", "stepMode", "attributes"]);
+        return {
+          arrayStride: uint(value.arrayStride, "arrayStride"),
+          stepMode: text(value.stepMode, "vertex"),
+          attributes: Array.from(value.attributes).map(function (input) {
+            var value = dictionary(input, "GPUVertexAttribute", ["format", "offset", "shaderLocation"]);
+            if (value.format === undefined) { throw new TypeError("GPUVertexAttribute.format is required"); }
+            return {
+              format: String(value.format),
+              offset: uint(value.offset, "offset"),
+              shaderLocation: u32(value.shaderLocation, "shaderLocation")
+            };
+          })
+        };
+      });
+    }
+    if (kind === "fragment") {
+      stage.targets = Array.from(value.targets).map(function (input) {
+        if (input === null) { return null; }
+        var value = dictionary(input, "GPUColorTargetState", ["format", "blend", "writeMask"]);
+        if (value.format === undefined) { throw new TypeError("GPUColorTargetState.format is required"); }
+        var blend = null;
+        if (value.blend !== undefined) {
+          var parts = dictionary(value.blend, "GPUBlendState", ["color", "alpha"]);
+          blend = { color: blendComponent(parts.color), alpha: blendComponent(parts.alpha) };
+        }
+        return {
+          format: String(value.format), blend: blend,
+          writeMask: u32(value.writeMask, "writeMask", 15)
+        };
+      });
+    }
+    return stage;
+  }
+
+  function blendComponent(input) {
+    var value = dictionary(input, "GPUBlendComponent", ["operation", "srcFactor", "dstFactor"]);
+    return {
+      operation: text(value.operation, "add"),
+      srcFactor: text(value.srcFactor, "one"),
+      dstFactor: text(value.dstFactor, "zero")
+    };
+  }
+
+  function stencilFace(input) {
+    var value = dictionary(input, "GPUStencilFaceState", ["compare", "failOp", "depthFailOp", "passOp"]);
+    return {
+      compare: text(value.compare, "always"),
+      failOp: text(value.failOp, "keep"),
+      depthFailOp: text(value.depthFailOp, "keep"),
+      passOp: text(value.passOp, "keep")
+    };
+  }
+
+  function pipelineDescriptor(input, device, render) {
+    var value = dictionary(input, render ? "GPURenderPipelineDescriptor" : "GPUComputePipelineDescriptor",
+      render ? ["label", "layout", "vertex", "fragment", "primitive", "depthStencil", "multisample"]
+        : ["label", "layout", "compute"]);
+    var descriptor = { label: label(value.label), layout: pipelineLayout(value.layout, device) };
+    if (!render) {
+      descriptor.compute = shaderStage(value.compute, device, "compute");
+      return descriptor;
+    }
+    descriptor.vertex = shaderStage(value.vertex, device, "vertex");
+    descriptor.fragment = value.fragment === undefined ? null : shaderStage(value.fragment, device, "fragment");
+    var primitive = dictionary(value.primitive, "GPUPrimitiveState", [
+      "topology", "stripIndexFormat", "frontFace", "cullMode", "unclippedDepth"
+    ]);
+    descriptor.primitive = {
+      topology: text(primitive.topology, "triangle-list"),
+      stripIndexFormat: optionalText(primitive.stripIndexFormat),
+      frontFace: text(primitive.frontFace, "ccw"),
+      cullMode: primitive.cullMode === undefined || primitive.cullMode === "none"
+        ? null : String(primitive.cullMode),
+      unclippedDepth: !!primitive.unclippedDepth
+    };
+    descriptor.depthStencil = null;
+    if (value.depthStencil !== undefined) {
+      var depth = dictionary(value.depthStencil, "GPUDepthStencilState", [
+        "format", "depthWriteEnabled", "depthCompare", "stencilFront", "stencilBack",
+        "stencilReadMask", "stencilWriteMask", "depthBias", "depthBiasSlopeScale", "depthBiasClamp"
+      ]);
+      if (depth.format === undefined) { throw new TypeError("GPUDepthStencilState.format is required"); }
+      descriptor.depthStencil = {
+        format: String(depth.format),
+        depthWriteEnabled: depth.depthWriteEnabled === undefined ? null : !!depth.depthWriteEnabled,
+        depthCompare: optionalText(depth.depthCompare),
+        stencilFront: stencilFace(depth.stencilFront),
+        stencilBack: stencilFace(depth.stencilBack),
+        stencilReadMask: u32(depth.stencilReadMask, "stencilReadMask", 4294967295),
+        stencilWriteMask: u32(depth.stencilWriteMask, "stencilWriteMask", 4294967295),
+        depthBias: signed(depth.depthBias, "depthBias", 0),
+        depthBiasSlopeScale: number(depth.depthBiasSlopeScale, "depthBiasSlopeScale", 0),
+        depthBiasClamp: number(depth.depthBiasClamp, "depthBiasClamp", 0)
+      };
+    }
+    var samples = dictionary(value.multisample, "GPUMultisampleState", [
+      "count", "mask", "alphaToCoverageEnabled"
+    ]);
+    descriptor.multisample = {
+      count: u32(samples.count, "count", 1),
+      mask: u32(samples.mask, "mask", 4294967295),
+      alphaToCoverageEnabled: !!samples.alphaToCoverageEnabled
+    };
+    return descriptor;
+  }
+
+  function installPipeline(name, render, asynchronous) {
+    var type = render ? GPURenderPipeline : GPUComputePipeline;
+    var kind = render ? "GPURenderPipeline" : "GPUComputePipeline";
+    method(GPUDevice.prototype, name, function (input) {
+      var device = receiver(deviceStates, this, "GPUDevice");
+      if (!asynchronous) {
+        return created(device, type, kind, name, pipelineDescriptor(input, device, render));
+      }
+      try {
+        var descriptor = pipelineDescriptor(input, device, render);
+        var handle = nextId++;
+        return command(device, name, handle, descriptor).then(function () {
+          return makeGpuObject(type, kind, device, handle, descriptor.label);
+        }, function (error) {
+          throw new GPUPipelineError(error.message, {
+            reason: error.kind === "validation" ? "validation" : "internal"
+          });
+        });
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    });
+    method(type.prototype, "getBindGroupLayout", function (index) {
+      var state = objectState(this, kind);
+      var handle = nextId++;
+      var object = makeGpuObject(GPUBindGroupLayout, "GPUBindGroupLayout", state.device, handle, "");
+      fire(state.device, "getBindGroupLayout", handle, {
+        pipeline: state.handle,
+        kind: render ? "render" : "compute",
+        index: u32(index, "index")
+      });
+      return object;
+    });
+  }
+  installPipeline("createRenderPipeline", true, false);
+  installPipeline("createRenderPipelineAsync", true, true);
+  installPipeline("createComputePipeline", false, false);
+  installPipeline("createComputePipelineAsync", false, true);
+
+  function clearColor(input) {
+    if (input === undefined) { return [0, 0, 0, 0]; }
+    if (input && typeof input[Symbol.iterator] === "function") {
+      var sequence = Array.from(input);
+      if (sequence.length !== 4) { throw new TypeError("GPUColor requires four components"); }
+      return sequence.map(function (value) { return number(value, "GPUColor"); });
+    }
+    var value = dictionary(input, "GPUColor", ["r", "g", "b", "a"]);
+    return [
+      number(value.r, "GPUColor.r"), number(value.g, "GPUColor.g"),
+      number(value.b, "GPUColor.b"), number(value.a, "GPUColor.a")
+    ];
+  }
+
+  function renderPassDescriptor(input, device) {
+    var value = dictionary(input, "GPURenderPassDescriptor", [
+      "label", "colorAttachments", "depthStencilAttachment", "occlusionQuerySet",
+      "timestampWrites", "maxDrawCount"
+    ]);
+    ["occlusionQuerySet", "timestampWrites", "maxDrawCount"].forEach(function (name) {
+      if (value[name] !== undefined) { missing("GPURenderPassDescriptor." + name); }
+    });
+    var descriptor = {
+      label: label(value.label),
+      colorAttachments: Array.from(value.colorAttachments).map(function (input) {
+        if (input === null) { return null; }
+        var value = dictionary(input, "GPURenderPassColorAttachment", [
+          "view", "resolveTarget", "depthSlice", "clearValue", "loadOp", "storeOp"
+        ]);
+        if (value.loadOp === undefined || value.storeOp === undefined) {
+          throw new TypeError("color attachment requires loadOp and storeOp");
+        }
+        return {
+          view: objectHandle(value.view, "GPUTextureView", device),
+          resolveTarget: value.resolveTarget === undefined || value.resolveTarget === null
+            ? null : objectHandle(value.resolveTarget, "GPUTextureView", device),
+          depthSlice: value.depthSlice === undefined ? null : u32(value.depthSlice, "depthSlice"),
+          clearValue: clearColor(value.clearValue),
+          loadOp: String(value.loadOp), storeOp: String(value.storeOp)
+        };
+      }),
+      depthStencilAttachment: null,
+      commands: []
+    };
+    if (value.depthStencilAttachment !== undefined) {
+      var depth = dictionary(value.depthStencilAttachment, "GPURenderPassDepthStencilAttachment", [
+        "view", "depthClearValue", "depthLoadOp", "depthStoreOp", "depthReadOnly",
+        "stencilClearValue", "stencilLoadOp", "stencilStoreOp", "stencilReadOnly"
+      ]);
+      descriptor.depthStencilAttachment = {
+        view: objectHandle(depth.view, "GPUTextureView", device),
+        depthClearValue: number(depth.depthClearValue, "depthClearValue", 0),
+        depthLoadOp: optionalText(depth.depthLoadOp),
+        depthStoreOp: optionalText(depth.depthStoreOp),
+        depthReadOnly: !!depth.depthReadOnly,
+        stencilClearValue: u32(depth.stencilClearValue, "stencilClearValue", 0),
+        stencilLoadOp: optionalText(depth.stencilLoadOp),
+        stencilStoreOp: optionalText(depth.stencilStoreOp),
+        stencilReadOnly: !!depth.stencilReadOnly
+      };
+    }
+    return descriptor;
+  }
+
+  function encoderState(object) {
+    var state = objectState(object, "GPUCommandEncoder");
+    if (state.finished || state.locked) {
+      throw new DOMException("GPUCommandEncoder is not open", "InvalidStateError");
+    }
+    return state;
+  }
+
+  function countCommand(state) {
+    if (state.count >= 65536) { throw new RangeError("WebGPU command limit reached in chuzz"); }
+    state.count++;
+  }
+
+  function recordEncoder(object, op, args) {
+    var state = encoderState(object);
+    countCommand(state);
+    state.operations.push({ op: op, args: args });
+  }
+
+  function passState(object) {
+    var state = receiver(objectStates, object, "GPU pass encoder");
+    if ((state.kind !== "GPURenderPassEncoder" && state.kind !== "GPUComputePassEncoder") ||
+        state.ended || state.encoder.finished || state.encoder.locked !== state ||
+        state.device.destroyed) {
+      throw new DOMException("GPU pass encoder is not open", "InvalidStateError");
+    }
+    return state;
+  }
+
+  function recordPass(object, op, args) {
+    var state = passState(object);
+    countCommand(state.encoder);
+    state.commands.push({ op: op, args: args });
+  }
+
+  method(GPUDevice.prototype, "createCommandEncoder", function (input) {
+    var device = receiver(deviceStates, this, "GPUDevice");
+    var value = dictionary(input, "GPUCommandEncoderDescriptor", ["label"]);
+    var object = created(device, GPUCommandEncoder, "GPUCommandEncoder", "createCommandEncoder", {
+      label: label(value.label)
+    });
+    var state = objectStates.get(object);
+    state.finished = false;
+    state.locked = null;
+    state.operations = [];
+    state.count = 0;
+    return object;
+  });
+
+  function beginPass(encoder, input, render) {
+    var state = encoderState(encoder);
+    var descriptor;
+    if (render) { descriptor = renderPassDescriptor(input, state.device); }
+    else {
+      var value = dictionary(input, "GPUComputePassDescriptor", ["label", "timestampWrites"]);
+      if (value.timestampWrites !== undefined) { missing("GPUComputePassDescriptor.timestampWrites"); }
+      descriptor = { label: label(value.label), commands: [] };
+    }
+    countCommand(state);
+    var type = render ? GPURenderPassEncoder : GPUComputePassEncoder;
+    var kind = render ? "GPURenderPassEncoder" : "GPUComputePassEncoder";
+    var object = makeGpuObject(type, kind, state.device, 0, descriptor.label);
+    var pass = objectStates.get(object);
+    pass.encoder = state;
+    pass.commands = descriptor.commands;
+    pass.ended = false;
+    state.locked = pass;
+    state.operations.push({ op: render ? "render" : "compute", args: descriptor });
+    return object;
+  }
+  method(GPUCommandEncoder.prototype, "beginRenderPass", function (input) {
+    return beginPass(this, input, true);
+  });
+  method(GPUCommandEncoder.prototype, "beginComputePass", function (input) {
+    return beginPass(this, input, false);
+  });
+  method(GPUCommandEncoder.prototype, "finish", function (input) {
+    var state = encoderState(this);
+    var value = dictionary(input, "GPUCommandBufferDescriptor", ["label"]);
+    var handle = nextId++;
+    var object = makeGpuObject(GPUCommandBuffer, "GPUCommandBuffer", state.device, handle, value.label);
+    objectStates.get(object).submitted = false;
+    state.finished = true;
+    fire(state.device, "finish", handle, {
+      encoder: state.handle,
+      label: label(value.label),
+      operations: state.operations
+    });
+    state.operations = [];
+    return object;
+  });
+
+  [GPURenderPassEncoder, GPUComputePassEncoder].forEach(function (type) {
+    method(type.prototype, "setPipeline", function (pipeline) {
+      var state = passState(this);
+      var kind = state.kind === "GPURenderPassEncoder" ? "GPURenderPipeline" : "GPUComputePipeline";
+      recordPass(this, "pipeline", objectHandle(pipeline, kind, state.device));
+    });
+    method(type.prototype, "setBindGroup", function (index, group, dynamicOffsets, start, length) {
+      var state = passState(this);
+      var offsets = dynamicOffsets === undefined ? [] : Array.from(dynamicOffsets);
+      if (start !== undefined || length !== undefined) {
+        start = uint(start, "dynamicOffsetsDataStart", 0);
+        length = uint(length, "dynamicOffsetsDataLength", offsets.length - start);
+        if (start > offsets.length || length > offsets.length - start) {
+          throw new RangeError("dynamic offsets range is out of bounds");
+        }
+        offsets = offsets.slice(start, start + length);
+      }
+      offsets = offsets.map(function (value) { return u32(value, "dynamic offset"); });
+      recordPass(this, "bindGroup", {
+        index: u32(index, "index"),
+        group: group === null ? null : objectHandle(group, "GPUBindGroup", state.device),
+        offsets: offsets
+      });
+    });
+    method(type.prototype, "end", function () {
+      var state = passState(this);
+      state.ended = true;
+      state.encoder.locked = null;
+    });
+  });
+
+  method(GPURenderPassEncoder.prototype, "setVertexBuffer", function (slot, buffer, offset, size) {
+    var state = passState(this);
+    if (buffer === null) { missing("GPURenderPassEncoder.setVertexBuffer(null)"); }
+    recordPass(this, "vertexBuffer", {
+      slot: u32(slot, "slot"),
+      buffer: objectHandle(buffer, "GPUBuffer", state.device),
+      offset: uint(offset, "offset", 0),
+      size: size === undefined ? null : uint(size, "size")
+    });
+  });
+  method(GPURenderPassEncoder.prototype, "setIndexBuffer", function (buffer, format, offset, size) {
+    var state = passState(this);
+    recordPass(this, "indexBuffer", {
+      buffer: objectHandle(buffer, "GPUBuffer", state.device),
+      format: String(format),
+      offset: uint(offset, "offset", 0),
+      size: size === undefined ? null : uint(size, "size")
+    });
+  });
+  method(GPURenderPassEncoder.prototype, "draw", function (count, instances, first, firstInstance) {
+    recordPass(this, "draw", {
+      count: u32(count, "vertexCount"), instances: u32(instances, "instanceCount", 1),
+      first: u32(first, "firstVertex", 0), firstInstance: u32(firstInstance, "firstInstance", 0)
+    });
+  });
+  method(GPURenderPassEncoder.prototype, "drawIndexed", function (count, instances, first, baseVertex, firstInstance) {
+    recordPass(this, "drawIndexed", {
+      count: u32(count, "indexCount"), instances: u32(instances, "instanceCount", 1),
+      first: u32(first, "firstIndex", 0), baseVertex: signed(baseVertex, "baseVertex", 0),
+      firstInstance: u32(firstInstance, "firstInstance", 0)
+    });
+  });
+  method(GPURenderPassEncoder.prototype, "setViewport", function (x, y, width, height, minDepth, maxDepth) {
+    recordPass(this, "viewport", [
+      number(x, "x"), number(y, "y"), number(width, "width"), number(height, "height"),
+      number(minDepth, "minDepth"), number(maxDepth, "maxDepth")
+    ]);
+  });
+  method(GPURenderPassEncoder.prototype, "setScissorRect", function (x, y, width, height) {
+    recordPass(this, "scissor", [
+      u32(x, "x"), u32(y, "y"), u32(width, "width"), u32(height, "height")
+    ]);
+  });
+  method(GPURenderPassEncoder.prototype, "setBlendConstant", function (value) {
+    recordPass(this, "blendConstant", clearColor(value));
+  });
+  method(GPURenderPassEncoder.prototype, "setStencilReference", function (value) {
+    recordPass(this, "stencilReference", u32(value, "reference"));
+  });
+  method(GPUComputePassEncoder.prototype, "dispatchWorkgroups", function (x, y, z) {
+    recordPass(this, "dispatch", [
+      u32(x, "workgroupCountX"), u32(y, "workgroupCountY", 1), u32(z, "workgroupCountZ", 1)
+    ]);
+  });
+
+  function textureCopy(input, device) {
+    var value = dictionary(input, "GPUTexelCopyTextureInfo", [
+      "texture", "mipLevel", "origin", "aspect"
+    ]);
+    return {
+      texture: objectHandle(value.texture, "GPUTexture", device),
+      mipLevel: u32(value.mipLevel, "mipLevel", 0),
+      origin: origin(value.origin),
+      aspect: text(value.aspect, "all")
+    };
+  }
+  function bufferCopy(input, device) {
+    var value = dictionary(input, "GPUTexelCopyBufferInfo", [
+      "buffer", "offset", "bytesPerRow", "rowsPerImage"
+    ]);
+    return {
+      buffer: objectHandle(value.buffer, "GPUBuffer", device),
+      offset: uint(value.offset, "offset", 0),
+      bytesPerRow: value.bytesPerRow === undefined ? null : u32(value.bytesPerRow, "bytesPerRow"),
+      rowsPerImage: value.rowsPerImage === undefined ? null : u32(value.rowsPerImage, "rowsPerImage")
+    };
+  }
+  method(GPUCommandEncoder.prototype, "copyBufferToBuffer", function (source, sourceOffset, destination, destinationOffset, size) {
+    var state = encoderState(this);
+    recordEncoder(this, "copyBufferToBuffer", {
+      source: objectHandle(source, "GPUBuffer", state.device),
+      sourceOffset: uint(sourceOffset, "sourceOffset"),
+      destination: objectHandle(destination, "GPUBuffer", state.device),
+      destinationOffset: uint(destinationOffset, "destinationOffset"),
+      size: uint(size, "size")
+    });
+  });
+  method(GPUCommandEncoder.prototype, "copyBufferToTexture", function (source, destination, size) {
+    var state = encoderState(this);
+    recordEncoder(this, "copyBufferToTexture", {
+      source: bufferCopy(source, state.device),
+      destination: textureCopy(destination, state.device),
+      size: extent(size, "GPUExtent3D")
+    });
+  });
+  method(GPUCommandEncoder.prototype, "copyTextureToBuffer", function (source, destination, size) {
+    var state = encoderState(this);
+    recordEncoder(this, "copyTextureToBuffer", {
+      source: textureCopy(source, state.device),
+      destination: bufferCopy(destination, state.device),
+      size: extent(size, "GPUExtent3D")
+    });
+  });
+  method(GPUCommandEncoder.prototype, "copyTextureToTexture", function (source, destination, size) {
+    var state = encoderState(this);
+    recordEncoder(this, "copyTextureToTexture", {
+      source: textureCopy(source, state.device),
+      destination: textureCopy(destination, state.device),
+      size: extent(size, "GPUExtent3D")
+    });
+  });
+
+  method(GPUQueue.prototype, "submit", function (input) {
+    var device = receiver(queueStates, this, "GPUQueue");
+    var states = Array.from(input).map(function (object) {
+      return objectState(object, "GPUCommandBuffer", device);
+    });
+    var seen = new Set();
+    states.forEach(function (state) {
+      if (state.submitted || seen.has(state.handle)) {
+        throw operationError("GPUCommandBuffer has already been submitted");
+      }
+      seen.add(state.handle);
+    });
+    states.forEach(function (state) { state.submitted = true; });
+    fire(device, "submit", 0, states.map(function (state) { return state.handle; }));
+  });
+  method(GPUQueue.prototype, "onSubmittedWorkDone", function () {
+    var device = receiver(queueStates, this, "GPUQueue");
+    return command(device, "onSubmittedWorkDone").then(function () {});
+  });
+
   unsupportedMethods(GPUDevice.prototype, "GPUDevice", [
     "importExternalTexture",
-    "createBindGroupLayout",
-    "createPipelineLayout",
-    "createBindGroup",
-    "createShaderModule",
-    "createComputePipeline",
-    "createRenderPipeline",
-    "createComputePipelineAsync",
-    "createRenderPipelineAsync",
-    "createCommandEncoder",
     "createRenderBundleEncoder",
     "createQuerySet"
   ]);
   unsupportedProperty(GPUDevice.prototype, "GPUDevice", "adapterInfo");
 
-  unsupportedMethods(GPUQueue.prototype, "GPUQueue", [
-    "submit",
-    "onSubmittedWorkDone",
-    "copyExternalImageToTexture"
+  unsupportedMethods(GPUQueue.prototype, "GPUQueue", ["copyExternalImageToTexture"]);
+  unsupportedMethods(GPUCommandEncoder.prototype, "GPUCommandEncoder", [
+    "clearBuffer", "resolveQuerySet", "writeTimestamp",
+    "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
+  ]);
+  unsupportedMethods(GPURenderPassEncoder.prototype, "GPURenderPassEncoder", [
+    "drawIndirect", "drawIndexedIndirect", "executeBundles",
+    "beginOcclusionQuery", "endOcclusionQuery",
+    "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
+  ]);
+  unsupportedMethods(GPUComputePassEncoder.prototype, "GPUComputePassEncoder", [
+    "dispatchWorkgroupsIndirect", "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
   ]);
 
   [
@@ -997,7 +1704,20 @@
     ["GPUInternalError", GPUInternalError],
     ["GPUUncapturedErrorEvent", GPUUncapturedErrorEvent],
     ["GPUSupportedFeatures", GPUSupportedFeatures],
-    ["GPUSupportedLimits", GPUSupportedLimits]
+    ["GPUSupportedLimits", GPUSupportedLimits],
+    ["GPUShaderModule", GPUShaderModule],
+    ["GPUCompilationInfo", GPUCompilationInfo],
+    ["GPUCompilationMessage", GPUCompilationMessage],
+    ["GPUBindGroupLayout", GPUBindGroupLayout],
+    ["GPUPipelineLayout", GPUPipelineLayout],
+    ["GPUBindGroup", GPUBindGroup],
+    ["GPURenderPipeline", GPURenderPipeline],
+    ["GPUComputePipeline", GPUComputePipeline],
+    ["GPUPipelineError", GPUPipelineError],
+    ["GPUCommandEncoder", GPUCommandEncoder],
+    ["GPUCommandBuffer", GPUCommandBuffer],
+    ["GPURenderPassEncoder", GPURenderPassEncoder],
+    ["GPUComputePassEncoder", GPUComputePassEncoder]
   ].forEach(function (entry) {
     Object.defineProperty(entry[1].prototype, Symbol.toStringTag, {
       value: entry[0],
@@ -1027,6 +1747,7 @@
   });
   constants("GPUShaderStage", { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
   constants("GPUMapMode", { READ: 1, WRITE: 2 });
+  constants("GPUColorWrite", { RED: 1, GREEN: 2, BLUE: 4, ALPHA: 8, ALL: 15 });
 
   // Blitz shares the element prototype. Intercept only canvas WebGPU calls
   // and retain the native answers and context ownership for other types.

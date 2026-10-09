@@ -90,6 +90,8 @@ pub(super) struct Resources {
     pub views: HashMap<u64, (u64, Arc<wgpu::TextureView>)>,
     pub samplers: HashMap<u64, Arc<wgpu::Sampler>>,
     pub canvases: HashMap<u64, canvas::Configuration>,
+    pub pipelines: pipeline::Objects,
+    pub encoding: encoder::Objects,
 }
 
 impl Resources {
@@ -99,13 +101,17 @@ impl Resources {
             || self.textures.contains_key(&handle)
             || self.views.contains_key(&handle)
             || self.samplers.contains_key(&handle)
+            || self.pipelines.contains(handle)
+            || self.encoding.contains(handle)
         {
             return Err(GpuError::validation("invalid or reused WebGPU handle"));
         }
         let count = self.buffers.len()
             + self.textures.len()
             + self.views.len()
-            + self.samplers.len();
+            + self.samplers.len()
+            + self.pipelines.count()
+            + self.encoding.count();
         if count >= RESOURCE_LIMIT {
             return Err(GpuError::validation(
                 "WebGPU resource limit reached in chuzz",
@@ -174,9 +180,10 @@ impl DeviceConnection {
             "unconfigure" => self.unconfigure_canvas(handle, args),
             "currentTexture" => self.current_texture(handle, args).await,
             "present" => self.present_canvas(handle, args).await,
-            _ => Err(GpuError::validation(format!(
-                "not implemented in chuzz: {op}"
-            ))),
+            "createCommandEncoder" | "finish" | "submit" | "onSubmittedWorkDone" => {
+                self.execute_encoding(&op, handle, args).await
+            }
+            _ => self.execute_pipeline(&op, handle, args).await,
         }
     }
 }
