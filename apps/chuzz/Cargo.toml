@@ -89,9 +89,8 @@ webp = ["image/webp"]
 # The cost is the rasteriser, blitz-paint and the PNG encoder in every build.
 # None of it is reachable from the window, so it is size, not behaviour.
 #
-# `--capture-wasm` is the sibling entry point and rides the same flag, so this
-# pulls in `wasm` for the guest binding on top of the rasteriser and the PNG
-# encoder.
+# `--capture-wasm` is the sibling entry point and rides the same flag, so a
+# guest-built page cannot render one way in a tab and another in a capture.
 capture = [
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
@@ -112,9 +111,9 @@ scrollbars = ["blitz-dom/scrollbars"]
 # by hand was how the logo broke.
 #
 # `system-fonts` is NOT here. It went behind `gui` with the rest of the window,
-# because it is a system dependency: on Linux it reaches parley's font
-# enumeration and therefore fontconfig, and a headless build then wants
-# development headers for a browser that opens no window and paints no glyph.
+# because it is a system dependency: on Linux it reaches parley's enumeration
+# and therefore fontconfig, and a headless build then wants development headers
+# for a browser that opens no window and paints no glyph.
 # ps-blitz took it out of blitz-dom's own defaults for this reason in
 # "build: no font dependency in a headless build"; naming it again here put it
 # straight back.
@@ -149,6 +148,17 @@ blitz-control-protocol = { workspace = true, features = ["engine", "server", "ca
 izumo = { workspace = true, optional = true }
 nago-wss.workspace = true
 worktable.workspace = true
+# The headless painter is CPU-only, so page WebGPU must also be able to open
+# a device without the GUI renderer. Match ps-blitz's published wgpu range.
+wgpu = { version = "^29", default-features = false, features = [
+  "std",
+  "parking_lot",
+  "metal",
+  "vulkan",
+  "dx12",
+  "wgsl",
+  "serde",
+] }
 
 [dev-dependencies]
 # Assembles `fixtures/panel.wat` into a module in-process, so the capture test
@@ -158,3 +168,4 @@ wat = "1"
 
 [build-dependencies]
 brotli.workspace = true
+

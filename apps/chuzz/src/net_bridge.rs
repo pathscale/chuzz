@@ -192,6 +192,7 @@ pub fn install(
     // After the web-API shim, so the real socket replaces the inert one that
     // shim installs when nothing better exists.
     document.eval(crate::ws_bridge::WEBSOCKET_SHIM);
+    document.eval(crate::webgpu::WEBGPU_SHIM);
 
     let initial_cookie = base
         .as_ref()
@@ -209,6 +210,8 @@ pub fn install(
     let poll_scroll_mailbox = scroll_mailbox.clone();
     let sockets = crate::ws_bridge::Bridge::new();
     let handler_sockets = sockets.clone();
+    let gpu = crate::webgpu::Bridge::default();
+    let handler_gpu = gpu.clone();
     let handler_base = base.clone();
     let poll_base = base.clone();
     let poll_net = Arc::clone(&net);
@@ -217,9 +220,9 @@ pub fn install(
     let mut last_scroll = (initial_scroll.x, initial_scroll.y);
 
     document.set_ipc_handler(move |message| {
-        // Sockets first: setting an IPC handler replaces it rather than adding
-        // to it, so one handler carries both and each claims its own.
-        if handler_sockets.handle(&message) {
+        // Setting an IPC handler replaces it rather than adding to it.
+        // Each bridge claims its own messages through this shared handler.
+        if handler_sockets.handle(&message) || handler_gpu.handle(&message) {
             return;
         }
         if let Ok(assignment) = serde_json::from_str::<CookieAssignment>(&message) {
@@ -303,9 +306,9 @@ pub fn install(
             last_cookie = current_cookie;
         }
 
-        // Socket events and fetch results share a pass, and either alone is
+        // Bridge events and fetch results share a pass, and any of them is
         // reason enough to draw a frame.
-        let drew = sockets.drain_into(document);
+        let drew = sockets.drain_into(document) | gpu.drain_into(document);
         let mut scroll_changed = false;
         for command in poll_scroll_mailbox.drain() {
             if apply_viewport_scroll(document, command) {
@@ -493,3 +496,4 @@ const NETWORK_API_SHIM: &str = r#"
   }
 })();
 "#;
+

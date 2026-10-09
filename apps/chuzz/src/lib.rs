@@ -63,6 +63,7 @@ pub mod net_bridge;
 // fact about serving a directory, not about having no window.
 pub mod page_server;
 pub mod script_fetch;
+pub mod webgpu;
 pub mod ws_bridge;
 // Loading a page needs the rasteriser for a visual assertion and the script
 // engine for a page worth asserting about, which is what `capture` and
@@ -73,3 +74,4 @@ pub mod serve;
 // guest-built page cannot render one way in a tab and another in a capture.
 #[cfg(feature = "wasm")]
 pub mod wasm_page;
+
