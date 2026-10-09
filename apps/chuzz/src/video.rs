@@ -1,31 +1,26 @@
-//! Progressive video, driven by document polling.
+//! Media playback driven by document polling.
 //!
-//! Browser policy and the media clock stay here. A platform decoder supplies
-//! presentation timestamps and RGBA frames; Blitz owns sizing and painting.
-//! The script bridge drains commands during host polls and does not replace
-//! the IPC handler used by fetch, cookies and WebSocket.
+//! Chuzz owns source selection, autoplay policy and element lifetime.
+//! The platform backend supplies a shared audio/video clock and RGBA frames;
+//! Blitz owns layout and painting. Remote bytes use Chuzz's network provider.
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::Poll;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use blitz_dom::Document as _;
 use blitz_dom::NodeId;
 use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
 use blitz_script::ScriptDocument;
-use blitz_traits::net::{Bytes, Request};
+use blitz_traits::net::Url;
 
 use crate::document_loader::NetProvider;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod source;
 
-const FETCH_DEADLINE: Duration = Duration::from_secs(20);
-const MAX_MOVIE_BYTES: usize = 128 * 1024 * 1024;
-const FRAMES_PER_POLL: usize = 8;
 const TIMEUPDATE_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, serde::Serialize)]
@@ -58,27 +53,47 @@ impl MediaError {
 }
 
 struct Frame {
-    time: f64,
     width: u32,
     height: u32,
     rgba: Arc<Vec<u8>>,
 }
 
-/// A decoder has no clock, DOM, network provider or autoplay policy.
-trait VideoDecoder {
-    fn duration(&self) -> f64;
-    fn next_frame(&mut self) -> Result<Option<Frame>, MediaError>;
-    fn seek(&mut self, time: f64) -> Result<(), MediaError>;
+#[derive(Default)]
+struct Snapshot {
+    duration: Option<f64>,
+    position: f64,
+    width: u32,
+    height: u32,
+    buffered: Vec<[f64; 2]>,
+    seekable: Vec<[f64; 2]>,
+    seeking: bool,
+    waiting: bool,
+    playing: bool,
+    enough: bool,
+    frame: Option<Frame>,
+    src: String,
 }
 
-fn open_decoder(bytes: &[u8]) -> Result<Box<dyn VideoDecoder>, MediaError> {
+/// All methods run on the document thread. Completion callbacks only update
+/// atomic state; they never access the DOM or script context.
+trait VideoDecoder {
+    fn configure(&mut self, paused: bool, muted: bool, volume: f64, rate: f64);
+    fn seek(&mut self, time: f64) -> Result<(), MediaError>;
+    fn poll(&mut self) -> Result<Snapshot, MediaError>;
+}
+
+fn open_decoder(
+    net: Arc<NetProvider>,
+    url: Url,
+    preload: &str,
+) -> Result<Box<dyn VideoDecoder>, MediaError> {
     #[cfg(target_os = "macos")]
     {
-        macos::open(bytes).map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
+        macos::open(net, url, preload).map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = bytes;
+        let _ = (net, url, preload);
         Err(MediaError::unsupported(
             "video decoding is unavailable on this platform",
         ))
@@ -97,208 +112,324 @@ struct Command {
     time: Option<f64>,
     #[serde(default)]
     looping: bool,
+    #[serde(default)]
+    muted: bool,
+    #[serde(default = "one")]
+    volume: f64,
+    #[serde(default = "one")]
+    rate: f64,
+    #[serde(default)]
+    activated: bool,
+    #[serde(default)]
+    preload: String,
+    #[serde(default)]
+    force: bool,
 }
 
-struct Delivery {
-    id: u64,
-    generation: u64,
-    result: Result<(String, Bytes), MediaError>,
+fn one() -> f64 {
+    1.0
 }
 
 struct Entry {
     node: NodeId,
     generation: u64,
     src: String,
+    url: Url,
     decoder: Option<Box<dyn VideoDecoder>>,
-    cancelled: Arc<AtomicBool>,
-    next: Option<Frame>,
-    duration: f64,
+    duration: Option<f64>,
     position: f64,
-    anchor_position: f64,
-    anchor: Instant,
+    pending_seek: Option<f64>,
     last_timeupdate: Instant,
     width: u32,
     height: u32,
+    buffered: Vec<[f64; 2]>,
+    seekable: Vec<[f64; 2]>,
     metadata: bool,
     has_frame: bool,
-    eof: bool,
     paused: bool,
     ended: bool,
+    seeking: bool,
+    waiting: bool,
+    enough: bool,
     looping: bool,
+    muted: bool,
+    volume: f64,
+    rate: f64,
+    activated: bool,
+    preload: String,
+    requested: bool,
     reported_playing: bool,
+    ready_state: u8,
     dirty: bool,
     error: Option<MediaError>,
     events: Vec<&'static str>,
 }
 
-impl Drop for Entry {
-    fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Release);
-    }
-}
-
 impl Entry {
-    fn new(node: NodeId, command: &Command, now: Instant) -> Self {
+    fn new(node: NodeId, url: Url, command: &Command, now: Instant) -> Self {
         Self {
             node,
             generation: command.generation,
-            src: command.src.clone().unwrap_or_default(),
+            src: url.to_string(),
+            url,
             decoder: None,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            next: None,
-            duration: 0.0,
+            duration: None,
             position: 0.0,
-            anchor_position: 0.0,
-            anchor: now,
+            pending_seek: None,
             last_timeupdate: now,
             width: 0,
             height: 0,
+            buffered: Vec::new(),
+            seekable: Vec::new(),
             metadata: false,
             has_frame: false,
-            eof: false,
             paused: true,
             ended: false,
+            seeking: false,
+            waiting: false,
+            enough: false,
             looping: command.looping,
+            muted: command.muted,
+            volume: command.volume.clamp(0.0, 1.0),
+            rate: command.rate.clamp(0.0, 16.0),
+            activated: command.activated,
+            preload: command.preload.clone(),
+            requested: command.force || command.preload != "none",
             reported_playing: false,
+            ready_state: 0,
             dirty: true,
             error: None,
-            events: Vec::new(),
+            events: vec!["loadstart"],
         }
     }
 
-    fn time(&self, now: Instant) -> f64 {
-        if self.paused || self.decoder.is_none() {
-            self.position
-        } else {
-            (self.anchor_position + now.duration_since(self.anchor).as_secs_f64())
-                .min(self.duration)
+    fn audible_allowed(&self) -> bool {
+        self.muted || self.volume == 0.0 || self.activated
+    }
+
+    fn configure_decoder(&mut self) {
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.configure(
+                self.paused,
+                self.muted || !self.activated,
+                self.volume,
+                self.rate,
+            );
         }
     }
 
     fn fail(&mut self, error: MediaError) {
-        self.cancelled.store(true, Ordering::Release);
         self.decoder = None;
-        self.next = None;
         self.paused = true;
+        self.seeking = false;
+        self.waiting = false;
         self.reported_playing = false;
+        self.ready_state = 0;
         self.error = Some(error);
         self.events.push("error");
         self.dirty = true;
     }
 
-    fn seek(&mut self, time: f64, now: Instant) -> Result<(), MediaError> {
-        self.position = if self.decoder.is_some() {
-            time.clamp(0.0, self.duration)
-        } else {
-            time.max(0.0)
-        };
-        if let Some(decoder) = self.decoder.as_mut() {
-            decoder.seek(self.position)?;
-        }
-        self.anchor = now;
-        self.anchor_position = self.position;
-        self.next = None;
-        self.eof = false;
-        self.has_frame = false;
+    fn seek(&mut self, time: f64) -> Result<(), MediaError> {
+        self.position = self
+            .duration
+            .map_or(time.max(0.0), |duration| time.clamp(0.0, duration));
+        self.requested = true;
         self.ended = false;
         self.reported_playing = false;
+        if !self.seeking {
+            self.events.push("seeking");
+        }
+        self.seeking = true;
+        if self.metadata {
+            if let Some(decoder) = self.decoder.as_mut() {
+                decoder.seek(self.position)?;
+            }
+            self.pending_seek = None;
+        } else {
+            self.pending_seek = Some(self.position);
+        }
         self.dirty = true;
         Ok(())
     }
 
-    fn command(&mut self, command: &Command, now: Instant) -> Result<(), MediaError> {
+    fn command(&mut self, command: &Command) -> Result<(), MediaError> {
         self.looping = command.looping;
+        self.muted = command.muted;
+        if command.volume.is_finite() {
+            self.volume = command.volume.clamp(0.0, 1.0);
+        }
+        if command.rate.is_finite() {
+            self.rate = command.rate.clamp(0.0, 16.0);
+        }
+        self.activated |= command.activated;
+        self.preload.clone_from(&command.preload);
+        if self.preload != "none" {
+            self.requested = true;
+        }
+
+        if !self.audible_allowed() && !self.paused {
+            self.paused = true;
+            self.reported_playing = false;
+            self.events.push("pause");
+        }
+
         match command.op.as_str() {
             "play" if self.error.is_none() => {
-                if self.ended {
-                    self.seek(0.0, now)?;
-                }
-                if self.paused {
-                    self.anchor = now;
-                    self.anchor_position = self.position;
-                    self.paused = false;
-                    self.reported_playing = false;
-                    self.events.push("play");
-                    self.dirty = true;
+                if !self.audible_allowed() {
+                    self.events.push("blocked");
+                } else {
+                    self.requested = true;
+                    if self.ended {
+                        self.seek(0.0)?;
+                    }
+                    if self.paused {
+                        self.paused = false;
+                        self.reported_playing = false;
+                        self.events.push("play");
+                    }
                 }
             }
             "pause" => {
                 if !self.paused {
-                    self.position = self.time(now);
                     self.paused = true;
                     self.reported_playing = false;
                     self.events.push("pause");
-                    self.dirty = true;
                 }
             }
             "seek" => {
                 if let Some(time) = command.time.filter(|time| time.is_finite()) {
-                    self.seek(time, now)?;
+                    self.seek(time)?;
                 }
             }
             _ => {}
         }
-        Ok(())
-    }
-
-    fn loaded(&mut self, src: String, bytes: Bytes, now: Instant) -> Result<(), MediaError> {
-        let mut decoder = open_decoder(&bytes)?;
-        self.duration = decoder.duration();
-        self.position = self.position.clamp(0.0, self.duration);
-        if self.position > 0.0 {
-            decoder.seek(self.position)?;
-        }
-        self.src = src;
-        self.decoder = Some(decoder);
-        self.anchor = now;
-        self.anchor_position = self.position;
-        self.last_timeupdate = now;
+        self.configure_decoder();
         self.dirty = true;
         Ok(())
     }
 
-    fn tick(&mut self, now: Instant) -> Result<Option<Frame>, MediaError> {
-        if self.decoder.is_none() || self.error.is_some() {
+    fn tick(
+        &mut self,
+        net: &Arc<NetProvider>,
+        now: Instant,
+    ) -> Result<Option<Frame>, MediaError> {
+        if self.error.is_some() || !self.requested {
             return Ok(None);
         }
-        if self.paused && self.has_frame {
-            return Ok(None);
+        if self.decoder.is_none() {
+            self.decoder = Some(open_decoder(
+                Arc::clone(net),
+                self.url.clone(),
+                &self.preload,
+            )?);
+            self.configure_decoder();
+            self.dirty = true;
         }
 
-        let target = self.time(now);
-        self.position = target;
-        let mut selected = None;
+        let mut snapshot = self.decoder.as_mut().unwrap().poll()?;
+        if !snapshot.src.is_empty() && self.src != snapshot.src {
+            self.src = snapshot.src;
+            self.dirty = true;
+        }
 
-        // Decode a bounded number of samples per host turn. Retain at most
-        // one future frame; never decode the whole movie into memory.
-        for _ in 0..FRAMES_PER_POLL {
-            if self.next.is_none() && !self.eof {
-                self.next = self.decoder.as_mut().unwrap().next_frame()?;
-                self.eof = self.next.is_none();
+        if let Some(duration) = snapshot.duration {
+            if self.duration != Some(duration) {
+                self.duration = Some(duration);
+                self.events.push("durationchange");
             }
-            let Some(frame) = self.next.as_ref() else {
-                break;
-            };
-            if frame.time > target && self.has_frame {
-                break;
+            if self.width != snapshot.width || self.height != snapshot.height {
+                self.width = snapshot.width;
+                self.height = snapshot.height;
+                self.events.push("resize");
             }
-            let frame = self.next.take().unwrap();
-            self.width = frame.width;
-            self.height = frame.height;
-            self.has_frame = true;
             if !self.metadata {
                 self.metadata = true;
-                self.events
-                    .extend(["loadedmetadata", "loadeddata", "canplay"]);
+                self.events.push("loadedmetadata");
             }
-            selected = Some(frame);
+            if let Some(time) = self.pending_seek.take() {
+                self.position = time.clamp(0.0, duration);
+                self.decoder.as_mut().unwrap().seek(self.position)?;
+                snapshot.frame = None;
+                snapshot.seeking = true;
+            }
         }
 
-        if self.eof && !self.has_frame {
-            return Err(MediaError::decode("the video contains no decodable frames"));
-        }
-        if !self.paused && self.has_frame {
+        if self.buffered != snapshot.buffered {
+            self.buffered = snapshot.buffered;
+            self.events.push("progress");
             self.dirty = true;
+        }
+        if self.seekable != snapshot.seekable {
+            self.seekable = snapshot.seekable;
+            self.dirty = true;
+        }
+
+        if self.seeking && self.metadata && !snapshot.seeking {
+            self.seeking = false;
+            self.events.extend(["timeupdate", "seeked"]);
+            self.dirty = true;
+        }
+        if !self.seeking && self.position != snapshot.position {
+            self.position = snapshot.position;
+            self.dirty = true;
+        }
+
+        let frame = if snapshot.seeking {
+            None
+        } else {
+            snapshot.frame.take()
+        };
+        if let Some(frame) = frame.as_ref() {
+            if self.width != frame.width || self.height != frame.height {
+                self.width = frame.width;
+                self.height = frame.height;
+                self.events.push("resize");
+            }
+            if !self.has_frame {
+                self.has_frame = true;
+                self.events.push("loadeddata");
+            }
+            self.dirty = true;
+        }
+
+        let ready_state = if !self.metadata {
+            0
+        } else if self.seeking || !self.has_frame {
+            1
+        } else if snapshot.enough {
+            4
+        } else if snapshot.waiting {
+            2
+        } else if self
+            .buffered
+            .iter()
+            .any(|range| range[0] <= self.position && range[1] > self.position + 0.1)
+        {
+            3
+        } else {
+            2
+        };
+        if self.ready_state < 3 && ready_state >= 3 {
+            self.events.push("canplay");
+        }
+        if ready_state == 4 && !self.enough {
+            self.events.push("canplaythrough");
+        }
+        self.enough = ready_state == 4;
+        if self.ready_state != ready_state {
+            self.ready_state = ready_state;
+            self.dirty = true;
+        }
+
+        let waiting = !self.paused && !self.seeking && snapshot.waiting;
+        if waiting && !self.waiting {
+            self.events.push("waiting");
+            self.reported_playing = false;
+        }
+        self.waiting = waiting;
+
+        if !self.paused && !self.seeking && self.has_frame && snapshot.playing {
             if !self.reported_playing {
                 self.reported_playing = true;
                 self.events.push("playing");
@@ -307,39 +438,50 @@ impl Entry {
                 self.last_timeupdate = now;
                 self.events.push("timeupdate");
             }
-            if self.eof && target >= self.duration {
-                if self.looping {
-                    self.seek(0.0, now)?;
-                    self.reported_playing = true;
-                } else {
-                    self.position = self.duration;
-                    self.paused = true;
-                    self.ended = true;
-                    self.reported_playing = false;
-                    self.events.extend(["timeupdate", "ended"]);
-                }
-            }
         }
-        Ok(selected)
+
+        if !self.paused
+            && !self.seeking
+            && self.rate > 0.0
+            && self
+                .duration
+                .is_some_and(|duration| self.position >= duration - 0.001)
+        {
+            if self.looping {
+                self.seek(0.0)?;
+            } else {
+                self.position = self.duration.unwrap();
+                self.paused = true;
+                self.ended = true;
+                self.reported_playing = false;
+                self.events.extend(["timeupdate", "pause", "ended"]);
+                self.configure_decoder();
+            }
+            self.dirty = true;
+        }
+        Ok(frame)
     }
 
     fn publish(&mut self, document: &mut ScriptDocument, id: u64) {
-        let ready_state = if self.error.is_some() {
-            0
-        } else if self.has_frame {
-            4
-        } else if self.metadata {
+        let network_state = if self.error.is_some() {
+            3
+        } else if self.decoder.is_none() || self.enough || self.paused && self.metadata {
             1
         } else {
-            0
+            2
         };
         let payload = serde_json::json!({
             "src": self.src,
-            "duration": self.metadata.then_some(self.duration),
+            "duration": self.duration,
             "time": self.position,
             "paused": self.paused,
             "ended": self.ended,
-            "readyState": ready_state,
+            "seeking": self.seeking,
+            "readyState": self.ready_state,
+            "networkState": network_state,
+            "buffered": self.buffered,
+            "seekable": self.seekable,
+            "hasFrame": self.has_frame,
             "width": self.width,
             "height": self.height,
             "error": self.error,
@@ -356,79 +498,9 @@ impl Entry {
 struct Host {
     net: Arc<NetProvider>,
     entries: HashMap<u64, Entry>,
-    inbox: Arc<Mutex<Vec<Delivery>>>,
 }
 
 impl Host {
-    fn fetch(&self, document: &ScriptDocument, id: u64, entry: &Entry) {
-        let url = document.inner().url().join(&entry.src);
-        let net = Arc::clone(&self.net);
-        let cancelled = Arc::clone(&entry.cancelled);
-        let inbox = Arc::downgrade(&self.inbox);
-        let generation = entry.generation;
-
-        let _ = nagoya::spawn(async move {
-            let result = match url {
-                Ok(url) if matches!(url.scheme(), "http" | "https" | "file" | "data") => {
-                    let mut fetch = Box::pin(nagoya::timeout(
-                        FETCH_DEADLINE,
-                        net.fetch_response_async(Request::get(url)),
-                    ));
-                    let stop = Arc::clone(&cancelled);
-                    let mut stopped = Box::pin(async move {
-                        while !stop.load(Ordering::Acquire) {
-                            nagoya::sleep(Duration::from_millis(5)).await;
-                        }
-                    });
-                    let result = std::future::poll_fn(|context| {
-                        if stopped.as_mut().poll(context).is_ready() {
-                            return Poll::Ready(None);
-                        }
-                        match fetch.as_mut().poll(context) {
-                            Poll::Ready(result) => Poll::Ready(Some(result)),
-                            Poll::Pending => Poll::Pending,
-                        }
-                    })
-                    .await;
-                    match result {
-                        None => return,
-                        Some(Ok(Ok(response))) if !response.status.is_success() => {
-                            Err(MediaError::network(format!(
-                                "video request returned HTTP {}",
-                                response.status
-                            )))
-                        }
-                        Some(Ok(Ok(response))) if response.body.len() > MAX_MOVIE_BYTES => {
-                            Err(MediaError::unsupported(
-                                "the progressive video exceeds the 128 MiB limit",
-                            ))
-                        }
-                        Some(Ok(Ok(response))) => {
-                            Ok((response.url.to_string(), response.body))
-                        }
-                        Some(Ok(Err(error))) => {
-                            Err(MediaError::network(format!("video fetch failed: {error:?}")))
-                        }
-                        Some(Err(_)) => Err(MediaError::network("video fetch timed out")),
-                    }
-                }
-                _ => Err(MediaError::unsupported("unsupported video URL")),
-            };
-            if cancelled.load(Ordering::Acquire) {
-                return;
-            }
-            if let Some(inbox) = inbox.upgrade()
-                && let Ok(mut queue) = inbox.lock()
-            {
-                queue.push(Delivery {
-                    id,
-                    generation,
-                    result,
-                });
-            }
-        });
-    }
-
     fn poll(&mut self, document: &mut ScriptDocument) -> bool {
         let now = Instant::now();
         let commands = document
@@ -458,10 +530,17 @@ impl Host {
                 else {
                     continue;
                 };
-                let mut entry = Entry::new(node, &command, now);
-                if cfg!(target_os = "macos") {
-                    self.fetch(document, command.id, &entry);
-                } else {
+                let url = document
+                    .inner()
+                    .url()
+                    .join(command.src.as_deref().unwrap_or_default());
+                let Ok(url) = url else {
+                    continue;
+                };
+                let mut entry = Entry::new(node, url, &command, now);
+                if !matches!(entry.url.scheme(), "http" | "https" | "file" | "data") {
+                    entry.fail(MediaError::unsupported("unsupported video URL"));
+                } else if !cfg!(target_os = "macos") {
                     entry.fail(MediaError::unsupported(
                         "video decoding is unavailable on this platform",
                     ));
@@ -472,28 +551,8 @@ impl Host {
 
             if let Some(entry) = self.entries.get_mut(&command.id)
                 && entry.generation == command.generation
-                && let Err(error) = entry.command(&command, now)
+                && let Err(error) = entry.command(&command)
             {
-                entry.fail(error);
-            }
-        }
-
-        let deliveries = self
-            .inbox
-            .lock()
-            .map(|mut queue| std::mem::take(&mut *queue))
-            .unwrap_or_default();
-        for delivery in deliveries {
-            let Some(entry) = self.entries.get_mut(&delivery.id) else {
-                continue;
-            };
-            if entry.generation != delivery.generation {
-                continue;
-            }
-            let result = delivery
-                .result
-                .and_then(|(src, bytes)| entry.loaded(src, bytes, now));
-            if let Err(error) = result {
                 entry.fail(error);
             }
         }
@@ -501,11 +560,10 @@ impl Host {
         self.entries
             .retain(|_, entry| document.inner().get_node(entry.node).is_some());
         for (&id, entry) in &mut self.entries {
-            match entry.tick(now) {
+            match entry.tick(&self.net, now) {
                 Ok(Some(frame)) => {
                     set_image(document, entry.node, Some(frame));
                     changed = true;
-                    entry.dirty = true;
                 }
                 Ok(None) => {}
                 Err(error) => entry.fail(error),
@@ -554,7 +612,6 @@ pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
     let mut host = Host {
         net,
         entries: HashMap::new(),
-        inbox: Arc::new(Mutex::new(Vec::new())),
     };
     document.add_poll_hook(move |document, _| host.poll(document));
 }

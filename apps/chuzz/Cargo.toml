@@ -65,7 +65,7 @@ gui = [
 wasm = ["dep:blitz-wasm", "dep:wasmi"]
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
 # page parses to an empty mount point and paints nothing.
-javascript = ["dep:blitz-script", "dep:objc2", "dep:objc2-core-media"]
+javascript = ["dep:blitz-script", "dep:objc2", "dep:objc2-core-media", "dep:block2"]
 # Opt in for rendered QA as well as GUI builds. A minimal headless embedder
 # can still omit font discovery and provide its own faces.
 system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
@@ -76,11 +76,15 @@ webp = ["image/webp"]
 # Render a page headlessly to a PNG, through `--capture` and `--capture-wasm`.
 #
 # On by default. It was off, on the reasoning that the windowed browser never
-# needs the CPU rasteriser, and that reasoning cost more than it saved: a plain
-# `cargo build` produced a binary where `--capture` was silently not a flag,
-# which reads as the flag being broken rather than absent. Every build script
-# that wanted it had to remember to ask, and `build-app.sh` (the one the
-# release workflow runs) did not, so the shipped app could not capture at all.
+# needs the CPU rasteriser, and that reasoning cost more than a page that
+# fails to render: a plain `cargo build` produced a binary where `--capture`
+# was silently not a flag, which reads as the flag being broken rather than
+# absent. Every build script wanted it had to remember to ask, and
+# `build-app.sh` (the one the release workflow runs) did not, so the shipped app
+# could not capture at all.
+#
+# `--capture-wasm` is the sibling entry point and rides the same flag, so a
+# guest-built page cannot render one way in a tab and another in a capture.
 #
 # This is a standalone feature set: `--no-default-features --features
 # capture` selects the CPU rasteriser and PNG encoder without requiring the
@@ -89,8 +93,16 @@ webp = ["image/webp"]
 # The cost is the rasteriser, blitz-paint and the PNG encoder in every build.
 # None of it is reachable from the window, so it is size, not behaviour.
 #
-# `--capture-wasm` is the sibling entry point and rides the same flag, so a
-# guest-built page cannot render one way in a tab and another in a capture.
+# Must be the same anyrender blitz-paint links against, or PaintScene is two
+# unrelated traits and the painter cannot be passed to paint_scene. That used to
+# mean keeping a revision here equal by hand to the one in
+# `ps-blitz/Cargo.toml`, and it rotted exactly as you would expect: ps-blitz
+# moved to acb9714 while this stayed on 0e4122b, breaking every `--capture`
+# build with
+#
+#   error[E0277]: the trait bound `VelloCpuScenePainter: PaintScene` is not satisfied
+#
+# with both sides pointing at the same file.
 capture = [
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
@@ -164,6 +176,8 @@ wgpu = { version = "^29", default-features = false, features = [
 # Owned Objective-C messaging for the system decoder. CoreMedia supplies the
 # platform ABI and Objective-C encodings for times and sample-buffer pointers.
 objc2 = { version = "^0.6", optional = true }
+# AVPlayer's asynchronous seek completion uses the Objective-C block ABI.
+block2 = { version = "^0.6", optional = true }
 objc2-core-media = { version = "^0.3", optional = true, default-features = false, features = [
   "std",
   "objc2",
@@ -182,4 +196,3 @@ wat = "1"
 
 [build-dependencies]
 brotli.workspace = true
-
