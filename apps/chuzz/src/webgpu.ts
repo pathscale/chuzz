@@ -308,9 +308,18 @@
 
   function limits(values) {
     var object = Object.create(GPUSupportedLimits.prototype);
-    Object.keys(values).forEach(function (name) {
+    var names = Object.keys(values);
+    names.forEach(function (name) {
       readonly(object, name, values[name]);
     });
+    method(object, "keys", function () { return names[Symbol.iterator](); });
+    method(object, "values", function () {
+      return names.map(function (name) { return values[name]; })[Symbol.iterator]();
+    });
+    method(object, "entries", function () {
+      return names.map(function (name) { return [name, values[name]]; })[Symbol.iterator]();
+    });
+    method(object, Symbol.iterator, object.entries);
     return Object.freeze(object);
   }
 
@@ -321,6 +330,7 @@
     readonly(object, "features", features(value.features));
     readonly(object, "limits", limits(value.limits));
     readonly(object, "isFallbackAdapter", value.isFallbackAdapter);
+    readonly(object, "info", Object.freeze(value.info));
     return object;
   }
 
@@ -345,6 +355,7 @@
     readonly(object, "features", features(value.features));
     readonly(object, "limits", limits(value.limits));
     readonly(object, "queue", queue);
+    readonly(object, "adapterInfo", Object.freeze(value.info));
     readonly(object, "label", value.label);
     return object;
   }
@@ -415,8 +426,10 @@
     }
   });
 
-  unsupportedProperty(GPUAdapter.prototype, "GPUAdapter", "info");
-  unsupportedMethods(GPUAdapter.prototype, "GPUAdapter", ["requestAdapterInfo"]);
+  method(GPUAdapter.prototype, "requestAdapterInfo", function () {
+    if (!adapterHandles.has(this)) { return Promise.reject(new TypeError("invalid GPUAdapter")); }
+    return Promise.resolve(this.info);
+  });
 
   Object.defineProperty(GPUDevice.prototype, "lost", {
     get: function () { return receiver(deviceStates, this, "GPUDevice").lost; },
@@ -719,7 +732,8 @@
     textureStates.set(object, {
       handle: handle,
       device: device,
-      destroyed: false
+      destroyed: false,
+      canvas: null
     });
     object.label = options.label;
     readonly(object, "width", options.size[0]);
@@ -758,6 +772,7 @@
     });
     var handle = nextId++;
     var object = makeGpuObject(GPUTextureView, "GPUTextureView", state.device, handle, descriptor.label);
+    objectStates.get(object).texture = state;
     fire(state.device, "createView", handle, {
       texture: state.handle,
       descriptor: descriptor
@@ -782,13 +797,20 @@
     var source = dictionary(layout, "GPUTexelCopyBufferLayout", [
       "offset", "bytesPerRow", "rowsPerImage"
     ]);
+    var offset = uint(source.offset, "offset", 0);
+    var view = byteView(data);
+    if (offset > view.byteLength) {
+      throw operationError("GPUQueue.writeTexture offset is out of bounds");
+    }
+    // Offset is measured from this view, including for a DataView or a
+    // subarray. Drop unused leading bytes before crossing the IPC boundary.
     fire(device, "writeTexture", 0, {
       texture: texture.handle,
       mipLevel: uint(target.mipLevel, "mipLevel", 0, 4294967295),
       origin: origin(target.origin),
       aspect: target.aspect === undefined ? "all" : String(target.aspect),
-      data: copyBytes(data, 0, undefined, false),
-      offset: uint(source.offset, "offset", 0),
+      data: copyBytes(view, offset, undefined, false),
+      offset: 0,
       bytesPerRow: source.bytesPerRow === undefined ? null
         : uint(source.bytesPerRow, "bytesPerRow", undefined, 4294967295),
       rowsPerImage: source.rowsPerImage === undefined ? null
@@ -837,11 +859,64 @@
   }
 
   function expireCurrent(state, destroy) {
+    state.presentable = false;
     if (!state.current) { return; }
     var texture = textureStates.get(state.current);
     texture.destroyed = true;
     if (destroy) { fire(texture.device, "destroyTexture", texture.handle); }
     state.current = null;
+  }
+
+  function configureNativeCanvas(state) {
+    var size = canvasSize(state.canvas);
+    state.size = size;
+    fire(state.device, "configure", state.handle, {
+      generation: state.generation,
+      format: state.configuration.format,
+      usage: state.configuration.usage,
+      alphaMode: state.configuration.alphaMode,
+      viewFormats: state.configuration.viewFormats,
+      width: size[0],
+      height: size[1]
+    });
+  }
+
+  function resizeCanvas(state, force) {
+    if (!state || !state.configuration || !state.device) { return; }
+    var size = canvasSize(state.canvas);
+    if (!force && state.size && size[0] === state.size[0] && size[1] === state.size[1]) {
+      return;
+    }
+    expireCurrent(state, true);
+    state.generation++;
+    configureNativeCanvas(state);
+  }
+
+  var reflectedCanvases = new WeakSet();
+  function reflectCanvas(canvas) {
+    if (reflectedCanvases.has(canvas)) { return; }
+    reflectedCanvases.add(canvas);
+    ["width", "height"].forEach(function (name) {
+      var fallback = name === "width" ? 300 : 150;
+      var initial = canvas[name];
+      if (initial !== undefined && canvas.getAttribute(name) === null) {
+        canvas.setAttribute(name, String(uint(initial, name, fallback, 4294967295)));
+      }
+      Object.defineProperty(canvas, name, {
+        configurable: true,
+        enumerable: true,
+        get: function () {
+          var value = canvas.getAttribute(name);
+          return value === null ? fallback : uint(Number(value), name, fallback, 4294967295);
+        },
+        set: function (value) {
+          canvas.setAttribute(name, String(uint(value, name, undefined, 4294967295)));
+          resizeCanvas(contextStates.get(canvasStates.get(canvas)), true);
+          if (globalThis.__chuzzGpuResize2D) { globalThis.__chuzzGpuResize2D(canvas); }
+        }
+      });
+      if (canvas.getAttribute(name) === null) { canvas.setAttribute(name, String(fallback)); }
+    });
   }
 
   method(GPUCanvasContext.prototype, "configure", function (input) {
@@ -876,15 +951,10 @@
       format: format,
       usage: usage,
       alphaMode: alpha,
-      viewFormats: views
+      viewFormats: views,
+      colorSpace: "srgb"
     };
-    fire(device, "configure", state.handle, {
-      generation: state.generation,
-      format: format,
-      usage: usage,
-      alphaMode: alpha,
-      viewFormats: views
-    });
+    configureNativeCanvas(state);
   });
   method(GPUCanvasContext.prototype, "unconfigure", function () {
     var state = receiver(contextStates, this, "GPUCanvasContext");
@@ -901,6 +971,7 @@
     if (!state.configuration || !state.device || state.device.destroyed) {
       throw new DOMException("GPUCanvasContext is not configured", "InvalidStateError");
     }
+    resizeCanvas(state, false);
     var size = canvasSize(state.canvas);
     if (size[0] === 0 || size[1] === 0) {
       throw operationError("GPUCanvasContext has an empty drawing buffer");
@@ -920,6 +991,8 @@
       format: state.configuration.format,
       usage: state.configuration.usage
     }, handle);
+    textureStates.get(state.current).canvas = state;
+    state.presentable = false;
     fire(state.device, "currentTexture", handle, {
       canvas: state.handle,
       generation: state.generation,
@@ -928,7 +1001,13 @@
     });
     return state.current;
   });
-  unsupportedMethods(GPUCanvasContext.prototype, "GPUCanvasContext", ["getConfiguration"]);
+  method(GPUCanvasContext.prototype, "getConfiguration", function () {
+    var state = receiver(contextStates, this, "GPUCanvasContext");
+    if (!state.configuration) { return null; }
+    var value = Object.assign({}, state.configuration);
+    value.viewFormats = value.viewFormats.slice();
+    return value;
+  });
 
   globalThis.__chuzzGpuCanvasLive = function (handle, generation, width, height) {
     var state = contexts[handle];
@@ -941,7 +1020,8 @@
   globalThis.__chuzzGpuFlushCanvases = function () {
     Object.keys(contexts).forEach(function (handle) {
       var state = contexts[handle];
-      if (!state.current) { return; }
+      resizeCanvas(state, false);
+      if (!state.current || !state.presentable) { return; }
       var texture = textureStates.get(state.current);
       if (texture.destroyed || !state.device || state.device.destroyed) {
         expireCurrent(state, true);
@@ -971,6 +1051,27 @@
   var GPUCommandBuffer = gpuType("GPUCommandBuffer");
   var GPURenderPassEncoder = gpuType("GPURenderPassEncoder");
   var GPUComputePassEncoder = gpuType("GPUComputePassEncoder");
+  var GPUQuerySet = gpuType("GPUQuerySet");
+
+  method(GPUDevice.prototype, "createQuerySet", function (input) {
+    var device = receiver(deviceStates, this, "GPUDevice");
+    var value = dictionary(input, "GPUQuerySetDescriptor", ["label", "type", "count"]);
+    if (value.type !== "occlusion") { missing("GPUQuerySet.type." + value.type); }
+    var count = u32(value.count, "GPUQuerySet.count");
+    var object = created(device, GPUQuerySet, "GPUQuerySet", "createQuerySet", {
+      label: label(value.label), type: value.type, count: count
+    });
+    readonly(object, "type", value.type);
+    readonly(object, "count", count);
+    return object;
+  });
+  method(GPUQuerySet.prototype, "destroy", function () {
+    var state = receiver(objectStates, this, "GPUQuerySet");
+    if (state.kind !== "GPUQuerySet") { throw new TypeError("invalid GPUQuerySet"); }
+    if (state.destroyed) { return; }
+    state.destroyed = true;
+    fire(state.device, "destroyQuerySet", state.handle);
+  });
 
   function GPUPipelineError(message, options) {
     if (!(this instanceof GPUPipelineError)) { throw new TypeError("Illegal constructor"); }
@@ -1366,11 +1467,19 @@
       "label", "colorAttachments", "depthStencilAttachment", "occlusionQuerySet",
       "timestampWrites", "maxDrawCount"
     ]);
-    ["occlusionQuerySet", "timestampWrites", "maxDrawCount"].forEach(function (name) {
-      if (value[name] !== undefined) { missing("GPURenderPassDescriptor." + name); }
-    });
+    if (value.timestampWrites !== undefined) { missing("GPURenderPassDescriptor.timestampWrites"); }
+    if (value.maxDrawCount !== undefined) { uint(value.maxDrawCount, "maxDrawCount"); }
+    var canvasTextures = [];
+    function viewHandle(view) {
+      var state = objectState(view, "GPUTextureView", device);
+      if (state.texture && state.texture.canvas) { canvasTextures.push(state.texture); }
+      return state.handle;
+    }
     var descriptor = {
       label: label(value.label),
+      canvasTextures: canvasTextures,
+      occlusionQuerySet: value.occlusionQuerySet === undefined || value.occlusionQuerySet === null
+        ? null : objectHandle(value.occlusionQuerySet, "GPUQuerySet", device),
       colorAttachments: Array.from(value.colorAttachments).map(function (input) {
         if (input === null) { return null; }
         var value = dictionary(input, "GPURenderPassColorAttachment", [
@@ -1380,9 +1489,9 @@
           throw new TypeError("color attachment requires loadOp and storeOp");
         }
         return {
-          view: objectHandle(value.view, "GPUTextureView", device),
+          view: viewHandle(value.view),
           resolveTarget: value.resolveTarget === undefined || value.resolveTarget === null
-            ? null : objectHandle(value.resolveTarget, "GPUTextureView", device),
+            ? null : viewHandle(value.resolveTarget),
           depthSlice: value.depthSlice === undefined ? null : u32(value.depthSlice, "depthSlice"),
           clearValue: clearColor(value.clearValue),
           loadOp: String(value.loadOp), storeOp: String(value.storeOp)
@@ -1443,6 +1552,12 @@
   function recordPass(object, op, args) {
     var state = passState(object);
     countCommand(state.encoder);
+    if (op === "draw" || op === "drawIndexed" || op === "drawIndirect") {
+      state.drawCount++;
+      if (state.drawCount > state.maxDrawCount) {
+        throw operationError("GPURenderPassDescriptor.maxDrawCount exceeded");
+      }
+    }
     state.commands.push({ op: op, args: args });
   }
 
@@ -1456,6 +1571,7 @@
     state.finished = false;
     state.locked = null;
     state.operations = [];
+    state.canvasTextures = new Set();
     state.count = 0;
     return object;
   });
@@ -1469,6 +1585,10 @@
       if (value.timestampWrites !== undefined) { missing("GPUComputePassDescriptor.timestampWrites"); }
       descriptor = { label: label(value.label), commands: [] };
     }
+    (descriptor.canvasTextures || []).forEach(function (texture) {
+      state.canvasTextures.add(texture);
+    });
+    delete descriptor.canvasTextures;
     countCommand(state);
     var type = render ? GPURenderPassEncoder : GPUComputePassEncoder;
     var kind = render ? "GPURenderPassEncoder" : "GPUComputePassEncoder";
@@ -1477,6 +1597,8 @@
     pass.encoder = state;
     pass.commands = descriptor.commands;
     pass.ended = false;
+    pass.drawCount = 0;
+    pass.maxDrawCount = render ? uint(input.maxDrawCount, "maxDrawCount", 50000000) : 0;
     state.locked = pass;
     state.operations.push({ op: render ? "render" : "compute", args: descriptor });
     return object;
@@ -1493,6 +1615,7 @@
     var handle = nextId++;
     var object = makeGpuObject(GPUCommandBuffer, "GPUCommandBuffer", state.device, handle, value.label);
     objectStates.get(object).submitted = false;
+    objectStates.get(object).canvasTextures = Array.from(state.canvasTextures);
     state.finished = true;
     fire(state.device, "finish", handle, {
       encoder: state.handle,
@@ -1658,7 +1781,15 @@
       }
       seen.add(state.handle);
     });
-    states.forEach(function (state) { state.submitted = true; });
+    states.forEach(function (state) {
+      state.submitted = true;
+      (state.canvasTextures || []).forEach(function (texture) {
+        var canvas = texture.canvas;
+        if (canvas && canvas.current && textureStates.get(canvas.current) === texture) {
+          canvas.presentable = true;
+        }
+      });
+    });
     fire(device, "submit", 0, states.map(function (state) { return state.handle; }));
   });
   method(GPUQueue.prototype, "onSubmittedWorkDone", function () {
@@ -1666,25 +1797,88 @@
     return command(device, "onSubmittedWorkDone").then(function () {});
   });
 
+  method(GPUQueue.prototype, "copyExternalImageToTexture", function (input, output, size) {
+    var device = receiver(queueStates, this, "GPUQueue");
+    var source = dictionary(input, "GPUImageCopyExternalImage", ["source", "origin", "flipY"]);
+    var destination = dictionary(output, "GPUImageCopyTextureTagged", [
+      "texture", "mipLevel", "origin", "aspect", "colorSpace", "premultipliedAlpha"
+    ]);
+    var texture = objectState(destination.texture, "GPUTexture", device);
+    var from = origin(source.origin);
+    if (from[2] !== 0) { throw new TypeError("external image origin must be two-dimensional"); }
+    if (!globalThis.__chuzzGpuImageSource) { missing("GPUQueue.copyExternalImageToTexture"); }
+    var colorSpace = text(destination.colorSpace, "srgb");
+    if (colorSpace !== "srgb") { missing("GPUImageCopyTextureTagged.colorSpace." + colorSpace); }
+    fire(device, "copyExternalImageToTexture", 0, {
+      source: globalThis.__chuzzGpuImageSource(source.source),
+      sourceOrigin: from.slice(0, 2),
+      flipY: !!source.flipY,
+      texture: texture.handle,
+      mipLevel: u32(destination.mipLevel, "mipLevel", 0),
+      origin: origin(destination.origin),
+      aspect: text(destination.aspect, "all"),
+      colorSpace: colorSpace,
+      premultipliedAlpha: !!destination.premultipliedAlpha,
+      size: extent(size, "GPUExtent3D")
+    });
+  });
+  method(GPUCommandEncoder.prototype, "resolveQuerySet", function (query, first, count, buffer, offset) {
+    var state = encoderState(this);
+    recordEncoder(this, "resolveQuerySet", {
+      query: objectHandle(query, "GPUQuerySet", state.device),
+      first: u32(first, "firstQuery"),
+      count: u32(count, "queryCount"),
+      destination: objectHandle(buffer, "GPUBuffer", state.device),
+      offset: uint(offset, "destinationOffset")
+    });
+  });
+  method(GPUCommandEncoder.prototype, "clearBuffer", function (buffer, offset, size) {
+    var state = encoderState(this);
+    recordEncoder(this, "clearBuffer", {
+      buffer: objectHandle(buffer, "GPUBuffer", state.device),
+      offset: uint(offset, "offset", 0),
+      size: size === undefined ? null : uint(size, "size")
+    });
+  });
+  method(GPURenderPassEncoder.prototype, "beginOcclusionQuery", function (index) {
+    recordPass(this, "beginOcclusionQuery", u32(index, "queryIndex"));
+  });
+  method(GPURenderPassEncoder.prototype, "endOcclusionQuery", function () {
+    recordPass(this, "endOcclusionQuery", null);
+  });
+  ["drawIndirect", "drawIndexedIndirect"].forEach(function (name) {
+    method(GPURenderPassEncoder.prototype, name, function (buffer, offset) {
+      var state = passState(this);
+      recordPass(this, "drawIndirect", {
+        buffer: objectHandle(buffer, "GPUBuffer", state.device),
+        offset: uint(offset, "indirectOffset"),
+        indexed: name === "drawIndexedIndirect"
+      });
+    });
+  });
+  method(GPUComputePassEncoder.prototype, "dispatchWorkgroupsIndirect", function (buffer, offset) {
+    var state = passState(this);
+    recordPass(this, "dispatchIndirect", {
+      buffer: objectHandle(buffer, "GPUBuffer", state.device),
+      offset: uint(offset, "indirectOffset")
+    });
+  });
+
   unsupportedMethods(GPUDevice.prototype, "GPUDevice", [
     "importExternalTexture",
-    "createRenderBundleEncoder",
-    "createQuerySet"
+    "createRenderBundleEncoder"
   ]);
-  unsupportedProperty(GPUDevice.prototype, "GPUDevice", "adapterInfo");
 
-  unsupportedMethods(GPUQueue.prototype, "GPUQueue", ["copyExternalImageToTexture"]);
   unsupportedMethods(GPUCommandEncoder.prototype, "GPUCommandEncoder", [
-    "clearBuffer", "resolveQuerySet", "writeTimestamp",
+    "writeTimestamp",
     "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
   ]);
   unsupportedMethods(GPURenderPassEncoder.prototype, "GPURenderPassEncoder", [
-    "drawIndirect", "drawIndexedIndirect", "executeBundles",
-    "beginOcclusionQuery", "endOcclusionQuery",
+    "executeBundles",
     "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
   ]);
   unsupportedMethods(GPUComputePassEncoder.prototype, "GPUComputePassEncoder", [
-    "dispatchWorkgroupsIndirect", "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
+    "insertDebugMarker", "pushDebugGroup", "popDebugGroup"
   ]);
 
   [
@@ -1717,7 +1911,8 @@
     ["GPUCommandEncoder", GPUCommandEncoder],
     ["GPUCommandBuffer", GPUCommandBuffer],
     ["GPURenderPassEncoder", GPURenderPassEncoder],
-    ["GPUComputePassEncoder", GPUComputePassEncoder]
+    ["GPUComputePassEncoder", GPUComputePassEncoder],
+    ["GPUQuerySet", GPUQuerySet]
   ].forEach(function (entry) {
     Object.defineProperty(entry[1].prototype, Symbol.toStringTag, {
       value: entry[0],
@@ -1764,6 +1959,7 @@
       if (String(this.tagName).toLowerCase() !== "canvas") {
         return getContext.apply(this, arguments);
       }
+      reflectCanvas(this);
       var existing = canvasStates.get(this);
       if (type !== "webgpu") {
         if (existing) { return null; }
@@ -1781,7 +1977,9 @@
         generation: 0,
         device: null,
         configuration: null,
-        current: null
+        current: null,
+        presentable: false,
+        size: null
       };
       this.setAttribute("data-chuzz-webgpu", String(handle));
       readonly(object, "canvas", this);
@@ -1791,6 +1989,44 @@
       return object;
     });
   }
+
+  globalThis.__chuzzGpuImageBridge = {
+    nextHandle: function () { return nextId++; },
+    send: function (op, handle, args) {
+      return send("command", {
+        device: 0,
+        command: { op: op, handle: handle, args: args }
+      });
+    },
+    reflectCanvas: reflectCanvas,
+    claim2D: function (canvas) {
+      if (canvasStates.has(canvas)) { return false; }
+      otherContexts.set(canvas, "2d");
+      return true;
+    },
+    canvasSource: function (canvas) {
+      var context = canvasStates.get(canvas);
+      if (!context) { return null; }
+      var state = contextStates.get(context);
+      resizeCanvas(state, false);
+      if (!state.configuration || !state.device || state.device.destroyed) {
+        throw new DOMException("GPUCanvasContext is not configured", "InvalidStateError");
+      }
+      if (state.current) {
+        return {
+          kind: "texture",
+          device: state.device.handle,
+          texture: objectHandle(state.current, "GPUTexture", state.device),
+          premultipliedAlpha: state.configuration.alphaMode === "premultiplied"
+        };
+      }
+      var size = canvasSize(canvas);
+      return {
+        kind: "canvas", canvas: state.handle, generation: state.generation,
+        width: size[0], height: size[1]
+      };
+    }
+  };
 
   Object.defineProperty(navigator, "gpu", {
     value: Object.create(GPU.prototype),

@@ -592,39 +592,78 @@ pub(crate) const WEB_API_SHIM: &str = r#"
    * so the script really loads. That is the whole trick: no blob registry, no
    * new scheme, and a resource that behaves like one everywhere it is used.
    *
-   * Text only. The parts are joined as strings and encoded with `btoa`, which
-   * is defined over bytes, so a blob built from an `ArrayBuffer` or a typed
-   * array is not represented faithfully. That is the honest limit of doing
-   * this in JavaScript, and it covers the case that matters: a bundle, a
-   * stylesheet, a JSON document. `size` is the length in code units rather
-   * than in bytes for the same reason.
+   * Binary parts retain their bytes, including typed-array offsets. Text is
+   * encoded as UTF-8, and Blob slices and object URLs use that same storage.
    */
   if (typeof globalThis.Blob === 'undefined') {
+    var blobBytes = new WeakMap();
     globalThis.Blob = function (parts, options) {
-      var text = '';
-      if (parts) {
-        for (var i = 0; i < parts.length; i++) {
-          text += String(parts[i]);
+      if (!(this instanceof globalThis.Blob)) { throw new TypeError('Illegal constructor'); }
+      var chunks = [];
+      var size = 0;
+      Array.from(parts || []).forEach(function (part) {
+        var bytes;
+        if (blobBytes.has(part)) { bytes = blobBytes.get(part); }
+        else if (part instanceof ArrayBuffer) { bytes = new Uint8Array(part); }
+        else if (ArrayBuffer.isView(part)) {
+          bytes = new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+        } else { bytes = new TextEncoder().encode(String(part)); }
+        size += bytes.length;
+        if (!Number.isSafeInteger(size) || size > 64 * 1024 * 1024) {
+          throw new RangeError('Blob allocation limit reached in chuzz');
         }
-      }
-      this.__text = text;
-      this.type = (options && options.type) ? String(options.type) : '';
-      this.size = text.length;
-      this.text = function () { return Promise.resolve(text); };
-      this.slice = function (start, end, type) {
-        return new globalThis.Blob([text.slice(start, end)], { type: type || this.type });
-      };
+        chunks.push(bytes);
+      });
+      var data = new Uint8Array(size);
+      var offset = 0;
+      chunks.forEach(function (chunk) { data.set(chunk, offset); offset += chunk.length; });
+      blobBytes.set(this, data);
+      Object.defineProperty(this, 'size', { value: size, enumerable: true });
+      var type = options && options.type ? String(options.type) : '';
+      type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+      Object.defineProperty(this, 'type', { value: type, enumerable: true });
     };
+    globalThis.Blob.prototype.arrayBuffer = function () {
+      return Promise.resolve(blobBytes.get(this).slice().buffer);
+    };
+    globalThis.Blob.prototype.text = function () {
+      return Promise.resolve(new TextDecoder().decode(blobBytes.get(this)));
+    };
+    Object.defineProperty(globalThis.Blob.prototype, '__text', {
+      get: function () { return new TextDecoder().decode(blobBytes.get(this)); }
+    });
+    globalThis.Blob.prototype.slice = function (start, end, type) {
+      var bytes = blobBytes.get(this);
+      function relative(value, fallback) {
+        if (value === undefined) { return fallback; }
+        value = Number(value);
+        value = Number.isNaN(value) ? 0 : Math.trunc(value);
+        return value < 0 ? Math.max(bytes.length + value, 0) : Math.min(value, bytes.length);
+      }
+      start = relative(start, 0);
+      end = relative(end, bytes.length);
+      return new globalThis.Blob([bytes.subarray(start, Math.max(start, end))], { type: type || '' });
+    };
+    globalThis.__chuzzBlobBytes = function (blob) { return blobBytes.get(blob); };
   }
   if (typeof globalThis.URL !== 'undefined'
       && typeof globalThis.URL.createObjectURL !== 'function') {
     var objectUrls = Object.create(null);
     globalThis.URL.createObjectURL = function (object) {
-      var text = object && typeof object.__text === 'string' ? object.__text : String(object);
+      var bytes = globalThis.__chuzzBlobBytes && globalThis.__chuzzBlobBytes(object);
+      var text = '';
+      if (bytes) {
+        for (var offset = 0; offset < bytes.length; offset += 8192) {
+          text += String.fromCharCode.apply(null, bytes.subarray(offset, offset + 8192));
+        }
+      } else {
+        var source = object && typeof object.__text === 'string' ? object.__text : String(object);
+        text = unescape(encodeURIComponent(source));
+      }
       var type = (object && object.type) ? object.type : 'application/octet-stream';
       var handle;
       try {
-        handle = 'data:' + type + ';base64,' + globalThis.btoa(unescape(encodeURIComponent(text)));
+        handle = 'data:' + type + ';base64,' + globalThis.btoa(text);
       } catch (error) {
         // A blob this cannot encode is still worth a handle: revoking it must
         // not throw, and a caller that only stores it is not broken by us.
@@ -1686,64 +1725,7 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       this.takeRecords = function () { return []; };
     };
   }
-  if (typeof globalThis.Image === 'undefined') {
-    // A stub. It reports every image as loaded without fetching anything, so a
-    // preloader, which is what most constructed `Image`s are, runs its
-    // callback and the page proceeds. Code that waits for the load and then
-    // reads pixels or natural dimensions gets nothing useful, and the zero
-    // dimensions below are left honest rather than invented for that reason.
-    // Images the *document* references are fetched and painted by the engine;
-    // this is only the JavaScript constructor.
-    globalThis.Image = function (width, height) {
-      var image = this;
-      var handlers = [];
-      var source = '';
-      this.width = width === undefined ? 0 : width;
-      this.height = height === undefined ? 0 : height;
-      this.naturalWidth = 0;
-      this.naturalHeight = 0;
-      this.complete = false;
-      this.onload = null;
-      this.onerror = null;
-      this.crossOrigin = null;
-      this.decoding = 'auto';
-      this.loading = 'eager';
-      this.addEventListener = function (type, handler) {
-        if (typeof handler === 'function') { handlers.push([String(type), handler]); }
-      };
-      this.removeEventListener = function (type, handler) {
-        for (var index = handlers.length - 1; index >= 0; index--) {
-          if (handlers[index][0] === String(type) && handlers[index][1] === handler) {
-            handlers.splice(index, 1);
-          }
-        }
-      };
-      this.dispatchEvent = function () { return false; };
-      this.decode = function () { return Promise.resolve(); };
-      Object.defineProperty(this, 'src', {
-        configurable: true,
-        get: function () { return source; },
-        set: function (value) {
-          source = String(value);
-          // Asynchronously, the way a real load completes. Firing during the
-          // assignment would reach a handler the caller attaches on the next
-          // line, which is the ordinary way this is written.
-          setTimeout(function () {
-            image.complete = true;
-            var event = { type: 'load', target: image };
-            if (typeof image.onload === 'function') {
-              try { image.onload(event); } catch (error) { /* the page's handler threw */ }
-            }
-            var listeners = handlers.slice();
-            for (var index = 0; index < listeners.length; index++) {
-              if (listeners[index][0] !== 'load') { continue; }
-              try { listeners[index][1](event); } catch (error) { /* likewise */ }
-            }
-          }, 0);
-        }
-      });
-    };
-  }
+
   if (typeof globalThis.Path2D === 'undefined') {
     // The path is really accumulated; what is missing is anything that reads
     // it. A page constructing a Path2D is about to hand it to a canvas context,

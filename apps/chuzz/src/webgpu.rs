@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 mod buffer;
 mod canvas;
 mod encoder;
+mod external;
 mod host;
 mod pipeline;
 mod resources;
@@ -21,7 +22,8 @@ mod texture;
 
 use resources::{Command, GpuError, Resources};
 
-pub(crate) const WEBGPU_SHIM: &str = include_str!("webgpu.ts");
+pub(crate) const WEBGPU_SHIM: &str =
+    concat!(include_str!("webgpu.ts"), "\n", include_str!("webgpu/images.ts"));
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const OBJECT_LIMIT: usize = 64;
@@ -65,14 +67,8 @@ const LIMIT_NAMES: &[&str] = &[
 // as WebGPU feature names or accepted in a device descriptor.
 const FEATURE_NAMES: &[(&str, wgpu::Features)] = &[
     ("depth-clip-control", wgpu::Features::DEPTH_CLIP_CONTROL),
-    (
-        "depth32float-stencil8",
-        wgpu::Features::DEPTH32FLOAT_STENCIL8,
-    ),
-    (
-        "texture-compression-bc",
-        wgpu::Features::TEXTURE_COMPRESSION_BC,
-    ),
+    ("depth32float-stencil8", wgpu::Features::DEPTH32FLOAT_STENCIL8),
+    ("texture-compression-bc", wgpu::Features::TEXTURE_COMPRESSION_BC),
     (
         "texture-compression-etc2",
         wgpu::Features::TEXTURE_COMPRESSION_ETC2,
@@ -81,11 +77,8 @@ const FEATURE_NAMES: &[(&str, wgpu::Features)] = &[
         "texture-compression-astc",
         wgpu::Features::TEXTURE_COMPRESSION_ASTC,
     ),
-    ("timestamp-query", wgpu::Features::TIMESTAMP_QUERY),
-    (
-        "indirect-first-instance",
-        wgpu::Features::INDIRECT_FIRST_INSTANCE,
-    ),
+    // Do not advertise timestamps until timestampWrites can be replayed.
+    ("indirect-first-instance", wgpu::Features::INDIRECT_FIRST_INSTANCE),
     ("shader-f16", wgpu::Features::SHADER_F16),
     (
         "rg11b10ufloat-renderable",
@@ -118,7 +111,10 @@ struct DeviceOptions {
 #[serde(tag = "webgpu", deny_unknown_fields)]
 enum Request {
     #[serde(rename = "requestAdapter")]
-    Adapter { id: u64, options: AdapterOptions },
+    Adapter {
+        id: u64,
+        options: AdapterOptions,
+    },
     #[serde(rename = "requestDevice")]
     Device {
         id: u64,
@@ -136,7 +132,9 @@ enum Request {
 impl Request {
     fn id(&self) -> u64 {
         match self {
-            Self::Adapter { id, .. } | Self::Device { id, .. } | Self::Command { id, .. } => *id,
+            Self::Adapter { id, .. }
+            | Self::Device { id, .. }
+            | Self::Command { id, .. } => *id,
         }
     }
 
@@ -152,10 +150,7 @@ impl Request {
                     | "getCompilationInfo"
                     | "createRenderPipelineAsync"
                     | "createComputePipelineAsync"
-            ) =>
-            {
-                Some(*device)
-            }
+            ) => Some(*device),
             _ => None,
         }
     }
@@ -220,10 +215,9 @@ impl DeviceConnection {
                 Ok(Value::Null)
             }
             "pushErrorScope" => {
-                let filter = command
-                    .args
-                    .as_str()
-                    .ok_or_else(|| GpuError::validation("invalid GPUErrorFilter"))?;
+                let filter = command.args.as_str().ok_or_else(|| {
+                    GpuError::validation("invalid GPUErrorFilter")
+                })?;
                 if !matches!(filter, "validation" | "out-of-memory" | "internal") {
                     return Err(GpuError::validation("invalid GPUErrorFilter"));
                 }
@@ -263,6 +257,8 @@ impl Drop for DeviceConnection {
 struct State {
     adapters: HashMap<u64, Arc<wgpu::Adapter>>,
     devices: HashMap<u64, Arc<DeviceConnection>>,
+    incoming: VecDeque<Request>,
+    images: external::Images,
     requests: VecDeque<Request>,
     running: bool,
     polling: bool,
@@ -310,11 +306,27 @@ impl Bridge {
         let Ok(request) = serde_json::from_str::<Request>(message) else {
             return false;
         };
-        self.enqueue(request);
+        // DOM snapshots belong to the document thread. Prepare the whole
+        // incoming batch there before passing it to the ordered host worker.
+        let mut state = self.state();
+        if state.incoming.len() + state.in_flight.len() >= REQUEST_LIMIT {
+            state.ready.push((
+                request.id(),
+                json!({
+                    "ok": false,
+                    "error": "WebGPU request limit reached in chuzz",
+                    "kind": "internal",
+                    "reported": false
+                }),
+            ));
+        } else {
+            state.incoming.push_back(request);
+        }
         true
     }
 
     pub(crate) fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
+        let images_changed = self.prepare_images(document);
         // Deadlines are host state, not page timers. No driver work runs on
         // the document thread, including nominally nonblocking device.poll.
         self.expire_requests();
@@ -328,18 +340,22 @@ impl Bridge {
                 std::mem::take(&mut state.frames),
             )
         };
-        let mut changed = !ready.is_empty() || !events.is_empty();
+        let mut changed = images_changed || !ready.is_empty() || !events.is_empty();
         // Install newly requested JS devices before delivering their events.
         for (id, payload) in ready {
-            document.eval(&format!("globalThis.__chuzzGpuResolve({id}, {payload});"));
+            document.eval(&format!(
+                "globalThis.__chuzzGpuResolve({id}, {payload});"
+            ));
         }
         for (id, payload) in events {
-            document.eval(&format!("globalThis.__chuzzGpuEvent({id}, {payload});"));
+            document.eval(&format!(
+                "globalThis.__chuzzGpuEvent({id}, {payload});"
+            ));
         }
         for frame in frames.into_values() {
             changed |= frame.paint(document);
         }
-        // Present each acquired canvas texture at the end of this host turn.
+        // Present each submitted canvas texture at the end of this host turn.
         // The shim expires it synchronously and queues the native readback.
         document.eval("globalThis.__chuzzGpuFlushCanvases();");
         changed
@@ -360,8 +376,15 @@ impl Bridge {
                 .await
                 .map_err(GpuError::validation),
             Request::Command {
-                device, command, ..
+                id,
+                device,
+                command,
             } => {
+                // Image operations use the same ordered, bounded worker as
+                // GPU commands, without requiring a GPUDevice.
+                if device == 0 {
+                    return self.execute_image(id, command).await;
+                }
                 let device = self
                     .state()
                     .devices
@@ -411,6 +434,7 @@ impl Bridge {
             "handle": id,
             "features": feature_names(adapter.features()),
             "limits": limits_value(&adapter.limits())?,
+            "info": adapter_info(&adapter),
             "isFallbackAdapter": adapter.get_info().device_type == wgpu::DeviceType::Cpu,
         });
         let mut state = self.state();
@@ -432,10 +456,11 @@ impl Bridge {
     ) -> Result<Value, String> {
         // Consume the adapter before awaiting. wgpu warns that a second
         // request_device on the same adapter can panic.
-        let adapter =
-            self.state().adapters.remove(&adapter_id).ok_or_else(|| {
-                "GPUAdapter is invalid or has already requested a device".to_owned()
-            })?;
+        let adapter = self
+            .state()
+            .adapters
+            .remove(&adapter_id)
+            .ok_or_else(|| "GPUAdapter is invalid or has already requested a device".to_owned())?;
 
         let mut features = wgpu::Features::empty();
         for name in &options.required_features {
@@ -457,10 +482,7 @@ impl Bridge {
                     "not implemented in chuzz: GPUDeviceDescriptor.requiredLimits.{name}"
                 ));
             }
-            if value
-                .as_u64()
-                .is_none_or(|value| value > 9_007_199_254_740_991)
-            {
+            if value.as_u64().is_none_or(|value| value > 9_007_199_254_740_991) {
                 return Err(format!("invalid WebGPU limit: {name}"));
             }
         }
@@ -487,6 +509,7 @@ impl Bridge {
             "label": options.label,
             "features": feature_names(device.features()),
             "limits": limits_value(&device.limits())?,
+            "info": adapter_info(&adapter),
         });
         let connection = Arc::new(DeviceConnection {
             id,
@@ -500,23 +523,19 @@ impl Bridge {
 
         let owner = connection.owner.clone();
         let lost = Arc::clone(&connection.lost);
-        connection
-            .device
-            .set_device_lost_callback(move |reason, message| {
-                let reason = match reason {
-                    wgpu::DeviceLostReason::Destroyed => "destroyed",
-                    wgpu::DeviceLostReason::Unknown => "unknown",
-                };
-                post_loss(&owner, id, &lost, reason, message);
-            });
+        connection.device.set_device_lost_callback(move |reason, message| {
+            let reason = match reason {
+                wgpu::DeviceLostReason::Destroyed => "destroyed",
+                wgpu::DeviceLostReason::Unknown => "unknown",
+            };
+            post_loss(&owner, id, &lost, reason, message);
+        });
         let weak = Arc::downgrade(&connection);
-        connection
-            .device
-            .on_uncaptured_error(Arc::new(move |error| {
-                if let Some(connection) = weak.upgrade() {
-                    connection.report(&GpuError::from(error));
-                }
-            }));
+        connection.device.on_uncaptured_error(Arc::new(move |error| {
+            if let Some(connection) = weak.upgrade() {
+                connection.report(&GpuError::from(error));
+            }
+        }));
 
         let mut state = self.state();
         if !state.in_flight.get(&id).is_some_and(host::Flight::live) {
@@ -528,6 +547,17 @@ impl Bridge {
         state.devices.insert(id, connection);
         Ok(value)
     }
+}
+
+fn adapter_info(adapter: &wgpu::Adapter) -> Value {
+    let info = adapter.get_info();
+    json!({
+        "vendor": format!("{:04x}", info.vendor),
+        "architecture": "",
+        "device": format!("{:04x}", info.device),
+        "description": info.name,
+        "isFallbackAdapter": info.device_type == wgpu::DeviceType::Cpu,
+    })
 }
 
 fn feature_names(features: wgpu::Features) -> Vec<&'static str> {
@@ -547,3 +577,4 @@ fn limits_value(limits: &wgpu::Limits) -> Result<Value, String> {
     }
     Ok(Value::Object(public))
 }
+

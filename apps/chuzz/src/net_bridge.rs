@@ -6,7 +6,7 @@
 //! incomplete page: it renders the shell and stops. Measured over a
 //! hundred-site corpus, `XMLHttpRequest` was missing on 6 sites and `fetch` on
 //! 4 by name, and the pages laying out at 37% and 44% of a reference browser's
-//! height are the same story counted a different way.
+//! height are the same story counted the same way.
 //!
 //! `blitz-script` has no way to register a host function, so this is built from
 //! the three things it does expose:
@@ -284,6 +284,7 @@ pub fn install(
                     "ok": true,
                     "status": 200,
                     "body": decode_body(&bytes),
+                    "bytes": &bytes[..],
                 }),
                 Ok(Err(error)) => serde_json::json!({"ok": false, "error": format!("{error:?}")}),
                 Err(_) => serde_json::json!({"ok": false, "error": "timed out"}),
@@ -390,6 +391,8 @@ const NETWORK_API_SHIM: &str = r#"
 
   function Response(result) {
     var body = result.body == null ? "" : String(result.body);
+    var bytes = result.bytes === undefined
+      ? new TextEncoder().encode(body) : new Uint8Array(result.bytes);
     this.ok = !!result.ok;
     this.status = result.ok ? (result.status || 200) : 0;
     this.statusText = result.ok ? "OK" : String(result.error || "error");
@@ -400,6 +403,10 @@ const NETWORK_API_SHIM: &str = r#"
       forEach: function () {}
     };
     this.text = function () { return Promise.resolve(body); };
+    this.arrayBuffer = function () { return Promise.resolve(bytes.slice().buffer); };
+    this.blob = function () {
+      return Promise.resolve(new Blob([bytes], { type: "application/octet-stream" }));
+    };
     this.json = function () {
       try { return Promise.resolve(JSON.parse(body)); }
       catch (error) { return Promise.reject(error); }
@@ -444,6 +451,7 @@ const NETWORK_API_SHIM: &str = r#"
       this.statusText = "";
       this.responseText = "";
       this.response = "";
+      this.responseType = "";
       this.onreadystatechange = null;
       this.onload = null;
       this.onerror = null;
@@ -481,7 +489,12 @@ const NETWORK_API_SHIM: &str = r#"
           self.status = result.status || 200;
           self.statusText = "OK";
           self.responseText = result.body == null ? "" : String(result.body);
-          self.response = self.responseText;
+          var bytes = result.bytes === undefined
+            ? new TextEncoder().encode(self.responseText) : new Uint8Array(result.bytes);
+          if (self.responseType === "arraybuffer") { self.response = bytes.buffer; }
+          else if (self.responseType === "blob") { self.response = new Blob([bytes]); }
+          else if (self.responseType === "json") { self.response = JSON.parse(self.responseText); }
+          else { self.response = self.responseText; }
           if (self.onreadystatechange) { self.onreadystatechange(); }
           if (self.onload) { self.onload(); }
         } else {
@@ -496,3 +509,4 @@ const NETWORK_API_SHIM: &str = r#"
   }
 })();
 "#;
+

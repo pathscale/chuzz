@@ -89,6 +89,8 @@ pub(super) struct Resources {
     pub textures: HashMap<u64, texture::Entry>,
     pub views: HashMap<u64, (u64, Arc<wgpu::TextureView>)>,
     pub samplers: HashMap<u64, Arc<wgpu::Sampler>>,
+    /// Query sets with their counts: wgpu 29 does not report a set's count.
+    pub queries: HashMap<u64, (Arc<wgpu::QuerySet>, u32)>,
     pub canvases: HashMap<u64, canvas::Configuration>,
     pub pipelines: pipeline::Objects,
     pub encoding: encoder::Objects,
@@ -101,6 +103,7 @@ impl Resources {
             || self.textures.contains_key(&handle)
             || self.views.contains_key(&handle)
             || self.samplers.contains_key(&handle)
+            || self.queries.contains_key(&handle)
             || self.pipelines.contains(handle)
             || self.encoding.contains(handle)
         {
@@ -110,6 +113,7 @@ impl Resources {
             + self.textures.len()
             + self.views.len()
             + self.samplers.len()
+            + self.queries.len()
             + self.pipelines.count()
             + self.encoding.count();
         if count >= RESOURCE_LIMIT {
@@ -138,10 +142,7 @@ impl Resources {
             .textures
             .iter()
             .filter_map(|(&handle, entry)| {
-                entry
-                    .canvas
-                    .is_some_and(|(id, _)| id == canvas)
-                    .then_some(handle)
+                entry.canvas.is_some_and(|(id, _)| id == canvas).then_some(handle)
             })
             .collect();
         for handle in handles {
@@ -153,7 +154,38 @@ impl Resources {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueryOptions {
+    label: String,
+    #[serde(rename = "type")]
+    kind: String,
+    count: u32,
+}
+
 impl DeviceConnection {
+    async fn create_query_set(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
+        let options: QueryOptions = decode(args)?;
+        if options.kind != "occlusion" {
+            return Err(GpuError::validation(format!(
+                "not implemented in chuzz: GPUQuerySet.type.{}", options.kind,
+            )));
+        }
+        if options.count == 0 || options.count > 4096 {
+            return Err(GpuError::validation("invalid GPUQuerySet count"));
+        }
+        self.resources().reserve(handle, 0)?;
+        let query = checked(&self.device, || {
+            self.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some(&options.label),
+                ty: wgpu::QueryType::Occlusion,
+                count: options.count,
+            })
+        }).await?;
+        self.resources().queries.insert(handle, (Arc::new(query), options.count));
+        Ok(Value::Null)
+    }
+
     pub(super) async fn execute_resource(&self, command: Command) -> Result<Value, GpuError> {
         let Command { op, handle, args } = command;
         match op.as_str() {
@@ -171,11 +203,18 @@ impl DeviceConnection {
             "createTexture" => self.create_texture(handle, args, None).await,
             "createView" => self.create_view(handle, args).await,
             "writeTexture" => self.write_texture(args).await,
+            "copyExternalImageToTexture" => self.copy_external_image(args).await,
             "destroyTexture" => {
                 let entry = self.resources().remove_texture(handle);
                 if let Some(entry) = entry {
                     entry.texture.destroy();
                 }
+                Ok(Value::Null)
+            }
+            "createQuerySet" => self.create_query_set(handle, args).await,
+            "destroyQuerySet" => {
+                // wgpu 29 query sets have no destroy; dropping the last Arc frees it.
+                self.resources().queries.remove(&handle);
                 Ok(Value::Null)
             }
             "createSampler" => self.create_sampler(handle, args).await,
@@ -190,3 +229,4 @@ impl DeviceConnection {
         }
     }
 }
+

@@ -13,6 +13,8 @@ pub(super) struct Configuration {
     pub usage: u32,
     pub alpha_mode: String,
     pub view_formats: Vec<String>,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(serde::Deserialize)]
@@ -85,12 +87,28 @@ impl Frame {
 impl DeviceConnection {
     fn publish_frame(&self, frame: Frame) {
         if let Some(owner) = self.owner.upgrade() {
+            let mut owner = lock(&owner);
+            match &frame.rgba {
+                Some(rgba) => {
+                    let image = Arc::new(RasterImageData::new(
+                        frame.width, frame.height, Arc::clone(rgba),
+                    ));
+                    owner.images.canvases.insert(frame.canvas, (frame.generation, image));
+                }
+                None => {
+                    owner.images.canvases.remove(&frame.canvas);
+                }
+            }
             // Keep at most the latest completed frame for each canvas.
-            lock(&owner).frames.insert(frame.canvas, frame);
+            owner.frames.insert(frame.canvas, frame);
         }
     }
 
-    pub(super) fn configure_canvas(&self, canvas: u64, args: Value) -> Result<Value, GpuError> {
+    pub(super) fn configure_canvas(
+        &self,
+        canvas: u64,
+        args: Value,
+    ) -> Result<Value, GpuError> {
         let configuration: Configuration = decode(args)?;
         if !matches!(configuration.format.as_str(), "rgba8unorm" | "bgra8unorm") {
             return Err(GpuError::validation(format!(
@@ -98,19 +116,22 @@ impl DeviceConnection {
                 configuration.format
             )));
         }
-        if !matches!(
-            configuration.alpha_mode.as_str(),
-            "opaque" | "premultiplied"
-        ) {
+        if !matches!(configuration.alpha_mode.as_str(), "opaque" | "premultiplied") {
             return Err(GpuError::validation("invalid GPUCanvasAlphaMode"));
         }
         if configuration.usage == 0 || configuration.usage & !31 != 0 {
             return Err(GpuError::validation("invalid GPUTextureUsage"));
         }
         for view in &configuration.view_formats {
-            if view != &configuration.format && view != &format!("{}-srgb", configuration.format) {
+            if view != &configuration.format
+                && view != &format!("{}-srgb", configuration.format)
+            {
                 return Err(GpuError::validation("invalid canvas viewFormats"));
             }
+        }
+        let bytes = u64::from(configuration.width) * u64::from(configuration.height) * 4;
+        if bytes > ALLOCATION_LIMIT {
+            return Err(GpuError::validation("WebGPU canvas allocation limit reached in chuzz"));
         }
         {
             let mut resources = self.resources();
@@ -120,17 +141,29 @@ impl DeviceConnection {
             resources.release_canvas(canvas);
             resources.canvases.insert(canvas, configuration.clone());
         }
+        // Install a raster with the drawing-buffer dimensions immediately.
+        // This supplies the replaced-element image path before the first submit.
+        let mut rgba = vec![0; bytes as usize];
+        if configuration.alpha_mode == "opaque" {
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel[3] = 255;
+            }
+        }
         self.publish_frame(Frame {
             canvas,
             generation: configuration.generation,
-            width: 0,
-            height: 0,
-            rgba: None,
+            width: configuration.width,
+            height: configuration.height,
+            rgba: (bytes != 0).then(|| Arc::new(rgba)),
         });
         Ok(Value::Null)
     }
 
-    pub(super) fn unconfigure_canvas(&self, canvas: u64, args: Value) -> Result<Value, GpuError> {
+    pub(super) fn unconfigure_canvas(
+        &self,
+        canvas: u64,
+        args: Value,
+    ) -> Result<Value, GpuError> {
         let generation: u64 = decode(args)?;
         self.resources().release_canvas(canvas);
         self.publish_frame(Frame {
@@ -156,6 +189,9 @@ impl DeviceConnection {
             .cloned()
             .filter(|configuration| configuration.generation == current.generation)
             .ok_or_else(|| GpuError::validation("GPUCanvasContext is not configured"))?;
+        if current.width != configuration.width || current.height != configuration.height {
+            return Err(GpuError::validation("canvas drawing buffer was resized"));
+        }
         self.create_texture_options(
             handle,
             texture::Options {
@@ -174,7 +210,11 @@ impl DeviceConnection {
         .await
     }
 
-    pub(super) async fn present_canvas(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
+    pub(super) async fn present_canvas(
+        &self,
+        handle: u64,
+        args: Value,
+    ) -> Result<Value, GpuError> {
         let present: Present = decode(args)?;
         let (entry, configuration) = {
             let mut resources = self.resources();
@@ -196,13 +236,11 @@ impl DeviceConnection {
         let row = width
             .checked_mul(4)
             .ok_or_else(|| GpuError::validation("canvas row overflow"))?;
-        let padded =
-            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let bytes = u64::from(padded) * u64::from(height);
         if bytes == 0 || bytes > ALLOCATION_LIMIT {
-            return Err(GpuError::validation(
-                "WebGPU canvas readback limit reached in chuzz",
-            ));
+            return Err(GpuError::validation("WebGPU canvas readback limit reached in chuzz"));
         }
 
         let buffer = checked(&self.device, || {
@@ -212,11 +250,11 @@ impl DeviceConnection {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            let mut encoder = self.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor {
                     label: Some("chuzz canvas readback"),
-                });
+                },
+            );
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -264,8 +302,8 @@ impl DeviceConnection {
                         pixel[..3].fill(0);
                     } else if alpha < 255 {
                         for channel in &mut pixel[..3] {
-                            *channel =
-                                ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+                            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha)
+                                .min(255) as u8;
                         }
                     }
                 }
@@ -282,3 +320,4 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
+
