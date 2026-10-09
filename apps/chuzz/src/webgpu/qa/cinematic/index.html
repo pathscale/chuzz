@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WEBGPU8 cinematic QA</title>
+  <style>
+    body { margin: 20px; background: #182335; color: white; font-family: sans-serif; }
+    button { padding: 8px 16px; }
+    canvas { display: block; width: 672px; height: 450px; margin-top: 16px; }
+    #result { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>WEBGPU8 cinematic QA</h1>
+  <button id="run" type="button">Run cinematic checks</button>
+  <p id="result" role="status">Ready</p>
+  <canvas id="stage" width="1344" height="900" aria-label="Cinematic GPU frame"></canvas>
+  <canvas id="published" width="1344" height="900" aria-label="Published cinematic frame"></canvas>
+  <script type="module">
+    const result = document.getElementById("result");
+    const stage = document.getElementById("stage");
+    const published = document.getElementById("published");
+    const width = 1344, height = 900;
+    const samples = [[336, 450], [1008, 450], [600, 800]];
+    const bias = [.01, .02, .03, 0];
+    const vertex = `
+      struct Vertex {
+        @builtin(position) position: vec4<f32>,
+        @location(0) uv: vec2<f32>
+      }
+      @vertex fn vertex(@builtin(vertex_index) index: u32) -> Vertex {
+        let coordinates = array<vec2<f32>, 3>(
+          vec2<f32>(0.0, 0.0), vec2<f32>(2.0, 0.0), vec2<f32>(0.0, 2.0));
+        var output: Vertex;
+        output.uv = coordinates[index];
+        output.position = vec4<f32>(
+          output.uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.2, 1.0);
+        return output;
+      }
+      fn encode(value: vec3<f32>) -> vec3<f32> {
+        let low = value * 12.92;
+        let high = 1.055 * pow(max(value, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+        return select(high, low, value <= vec3<f32>(0.0031308));
+      }
+    `;
+    function assert(value, message) {
+      if (!value) throw new Error(message);
+    }
+    function near(actual, expected, label) {
+      assert(actual.every((value, index) => Math.abs(value - expected[index]) <= 3),
+        label + ": got " + actual.join(",") + "; expected " + expected.join(","));
+    }
+    function encode(value) {
+      return value <= .0031308 ? value * 12.92 : 1.055 * Math.pow(value, 1 / 2.4) - .055;
+    }
+    function expected(tint) {
+      return [
+        tint.slice(0, 3).map((value, index) => Math.round(255 * encode(value + bias[index]))).concat(255),
+        [tint[2], tint[1], tint[0]]
+          .map((value, index) => Math.round(255 * encode(value * .75 + bias[index]))).concat(255),
+        [0, 0, 0, 255]
+      ];
+    }
+    function pixel(bytes, offset, bgra = false) {
+      const value = Array.from(bytes.slice(offset, offset + 4));
+      if (bgra) [value[0], value[2]] = [value[2], value[0]];
+      return value;
+    }
+    function canvasPixels() {
+      const context = published.getContext("2d");
+      assert(context, "Canvas 2D unavailable");
+      context.clearRect(0, 0, width, height);
+      context.drawImage(stage, 0, 0);
+      return context.getImageData(0, 0, width, height).data;
+    }
+    function matches(bytes, wanted) {
+      return samples.every(([x, y], index) =>
+        pixel(bytes, (y * width + x) * 4).every((value, channel) =>
+          Math.abs(value - wanted[index][channel]) <= 3));
+    }
+    async function checked(device, label, action) {
+      result.textContent = label;
+      device.pushErrorScope("out-of-memory");
+      device.pushErrorScope("validation");
+      let value, failure;
+      try { value = action(); }
+      catch (error) { failure = error; }
+      const validation = await device.popErrorScope();
+      const memory = await device.popErrorScope();
+      if (failure) throw failure;
+      assert(!validation, label + ": " + validation?.message);
+      assert(!memory, label + ": " + memory?.message);
+      return value;
+    }
+    function makeResources(device, format) {
+      const textures = [];
+      function texture(size, format, sampleCount = 1, mipLevelCount = 1) {
+        const value = device.createTexture({
+          size, format, sampleCount, mipLevelCount,
+          usage: sampleCount === 1
+            ? GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING |
+              GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST
+            : GPUTextureUsage.RENDER_ATTACHMENT
+        });
+        textures.push(value);
+        return value;
+      }
+      function pipeline(code, format, layout = "auto", depth = false) {
+        const module = device.createShaderModule({ code: vertex + code });
+        return device.createRenderPipeline({
+          layout,
+          vertex: { module, entryPoint: "vertex" },
+          fragment: { module, entryPoint: "fragment", targets: [{ format }] },
+          ...(depth ? {
+            depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+            multisample: { count: 4 }
+          } : {})
+        });
+      }
+      const uniformAlignment = device.limits.minUniformBufferOffsetAlignment;
+      const storageAlignment = device.limits.minStorageBufferOffsetAlignment;
+      const uniform = device.createBuffer({
+        size: uniformAlignment + 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+      });
+      const storage = device.createBuffer({
+        size: storageAlignment + 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+      });
+      const sceneLayout = device.createBindGroupLayout({
+        entries: [
+          {
+            binding: 0, visibility: GPUShaderStage.FRAGMENT,
+            buffer: { type: "uniform", hasDynamicOffset: true, minBindingSize: 32 }
+          },
+          {
+            binding: 1, visibility: GPUShaderStage.FRAGMENT,
+            buffer: { type: "read-only-storage", hasDynamicOffset: true, minBindingSize: 16 }
+          }
+        ]
+      });
+      const scenePipeline = pipeline(`
+        struct Parameters { tint: vec4<f32>, bias: vec4<f32> }
+        struct Factors { color: vec4<f32> }
+        @group(0) @binding(0) var<uniform> parameters: Parameters;
+        @group(0) @binding(1) var<storage, read> factors: Factors;
+        @fragment fn fragment(input: Vertex) -> @location(0) vec4<f32> {
+          let point = input.uv - vec2<f32>(0.25, 0.5);
+          let radius = length(point);
+          if radius < 0.3 {
+            let light = 0.25 + 0.75 * sqrt(max(0.0, 1.0 - radius * radius / 0.09));
+            return vec4<f32>(
+              parameters.tint.rgb * factors.color.rgb * light + parameters.bias.rgb, 1.0);
+          }
+          if input.uv.x > 0.68 && input.uv.x < 0.84 &&
+             input.uv.y > 0.4 && input.uv.y < 0.6 {
+            return vec4<f32>(
+              parameters.tint.bgr * factors.color.rgb * 0.75 + parameters.bias.rgb, 1.0);
+          }
+          if input.uv.x > 0.94 && input.uv.x < 0.99 &&
+             input.uv.y > 0.02 && input.uv.y < 0.08 {
+            return vec4<f32>(2.0, 2.0, 2.0, 1.0);
+          }
+          return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+      `, "rgba16float", device.createPipelineLayout({ bindGroupLayouts: [sceneLayout] }), true);
+      const sceneGroup = device.createBindGroup({
+        layout: sceneLayout,
+        entries: [
+          { binding: 0, resource: { buffer: uniform, offset: 0, size: 32 } },
+          { binding: 1, resource: { buffer: storage, offset: 0, size: 16 } }
+        ]
+      });
+      const sceneEncoder = device.createRenderBundleEncoder({
+        colorFormats: ["rgba16float"], depthStencilFormat: "depth24plus", sampleCount: 4
+      });
+      sceneEncoder.setPipeline(scenePipeline);
+      sceneEncoder.setBindGroup(0, sceneGroup,
+        new Uint32Array([0, uniformAlignment, storageAlignment, 0]), 1, 2);
+      sceneEncoder.draw(3);
+      const sceneBundle = sceneEncoder.finish();
+      const resolved = texture([width, height], "rgba16float");
+      const msaa = texture([width, height], "rgba16float", 4);
+      // At this size the old 16-byte fallback charges 77,414,400 bytes
+      // for depth24plus and rejects it before native texture creation.
+      const depth = texture([width, height], "depth24plus", 4);
+      const chain = texture([width, height], "rgba16float", 1, 4);
+      const bloom = texture([width >> 3, height >> 3], "rgba16float");
+      const sampler = device.createSampler({
+        minFilter: "linear", magFilter: "linear", mipmapFilter: "linear"
+      });
+      const sampling = `
+        @group(0) @binding(0) var imageSampler: sampler;
+        @group(0) @binding(1) var image: texture_2d<f32>;
+      `;
+      const downsample = pipeline(sampling + `
+        @fragment fn fragment(input: Vertex) -> @location(0) vec4<f32> {
+          return textureSampleLevel(image, imageSampler, input.uv, 0.0);
+        }
+      `, "rgba16float");
+      const chainViews = Array.from({ length: 4 }, (_, level) =>
+        chain.createView({ baseMipLevel: level, mipLevelCount: 1 }));
+      function sampledGroup(renderPipeline, view) {
+        return device.createBindGroup({
+          layout: renderPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: sampler },
+            { binding: 1, resource: view }
+          ]
+        });
+      }
+      const mipBundles = chainViews.slice(0, 3).map(view => {
+        const encoder = device.createRenderBundleEncoder({ colorFormats: ["rgba16float"] });
+        encoder.setPipeline(downsample);
+        encoder.setBindGroup(0, sampledGroup(downsample, view));
+        encoder.draw(3);
+        return encoder.finish();
+      });
+      const output = pipeline(sampling + `
+        @group(0) @binding(2) var bloom: texture_2d<f32>;
+        @fragment fn fragment(input: Vertex) -> @location(0) vec4<f32> {
+          let scene = textureSampleLevel(image, imageSampler, input.uv, 0.0).rgb;
+          let glow = max(textureSampleLevel(bloom, imageSampler, input.uv, 0.0).rgb -
+            vec3<f32>(1.0), vec3<f32>(0.0));
+          return vec4<f32>(encode(scene + glow * 0.22), 1.0);
+        }
+      `, format);
+      const outputGroup = device.createBindGroup({
+        layout: output.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: resolved.createView() },
+          { binding: 2, resource: bloom.createView() }
+        ]
+      });
+      const probe = texture([1, 1], "rgba8unorm");
+      const probePipeline = pipeline(sampling + `
+        @fragment fn fragment() -> @location(0) vec4<f32> {
+          let hdr = textureSampleLevel(image, imageSampler, vec2<f32>(0.965, 0.05), 0.0);
+          return vec4<f32>(hdr.rgb * 0.25, 1.0);
+        }
+      `, "rgba8unorm");
+      const probeGroup = sampledGroup(probePipeline, bloom.createView());
+      const context = stage.getContext("webgpu");
+      assert(context, "WebGPU canvas unavailable");
+      context.configure({
+        device, format, alphaMode: "opaque",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+      });
+      return {
+        textures, uniform, storage, uniformAlignment, storageAlignment,
+        resolved, msaaView: msaa.createView(), depthView: depth.createView(),
+        resolvedView: resolved.createView(), sceneBundle,
+        chain, chainViews, mipBundles, bloom, output, outputGroup,
+        probe, probeView: probe.createView(), probePipeline, probeGroup, context
+      };
+    }
+    function update(device, resources, tint) {
+      const backing = new ArrayBuffer(64);
+      const values = new Float32Array(backing, 8, 6);
+      values.set([9, ...tint, 9]);
+      device.queue.writeBuffer(resources.uniform, resources.uniformAlignment, values, 1, 4);
+      new Float32Array(backing, 40, 4).set(bias);
+      device.queue.writeBuffer(resources.uniform, resources.uniformAlignment + 16,
+        new DataView(backing, 36, 24), 4, 16);
+      const factors = new Float32Array(new ArrayBuffer(32), 8, 6);
+      factors.set([9, 1, 1, 1, 1, 9]);
+      device.queue.writeBuffer(resources.storage, resources.storageAlignment, factors, 1, 4);
+      // Neither subsequent mutations nor the retained bundle may change
+      // the snapshots admitted by writeBuffer.
+      new Uint8Array(backing).fill(237);
+      new Uint8Array(factors.buffer).fill(237);
+    }
+    function attachment(view, resolveTarget) {
+      return {
+        view, resolveTarget, clearValue: [0, 0, 0, 1],
+        loadOp: "clear", storeOp: "store"
+      };
+    }
+    function renderScene(device, resources) {
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [attachment(resources.msaaView, resources.resolvedView)],
+        depthStencilAttachment: {
+          view: resources.depthView, depthClearValue: 1,
+          depthLoadOp: "clear", depthStoreOp: "discard"
+        }
+      });
+      pass.executeBundles([resources.sceneBundle]);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+    }
+    function renderBloom(device, resources) {
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToTexture(
+        { texture: resources.resolved }, { texture: resources.chain }, [width, height]);
+      for (let level = 1; level < 4; level++) {
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [attachment(resources.chainViews[level])]
+        });
+        pass.executeBundles([resources.mipBundles[level - 1]]);
+        pass.end();
+      }
+      encoder.copyTextureToTexture(
+        { texture: resources.chain, mipLevel: 3 },
+        { texture: resources.bloom }, [width >> 3, height >> 3]);
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [attachment(resources.probeView)]
+      });
+      pass.setPipeline(resources.probePipeline);
+      pass.setBindGroup(0, resources.probeGroup);
+      pass.draw(3);
+      pass.end();
+      const read = device.createBuffer({
+        size: 256, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+      });
+      encoder.copyTextureToBuffer(
+        { texture: resources.probe }, { buffer: read, bytesPerRow: 256 }, [1, 1]);
+      device.queue.submit([encoder.finish()]);
+      return read;
+    }
+    async function mappedBytes(buffer) {
+      await buffer.mapAsync(GPUMapMode.READ);
+      const bytes = new Uint8Array(buffer.getMappedRange()).slice();
+      buffer.unmap();
+      buffer.destroy();
+      return bytes;
+    }
+    function renderOutput(device, resources) {
+      const current = resources.context.getCurrentTexture();
+      const view = current.createView();
+      // A separate submitted clear precedes the final draw in the same task.
+      // The readback and presentation must observe the final draw.
+      const clearEncoder = device.createCommandEncoder();
+      clearEncoder.beginRenderPass({ colorAttachments: [attachment(view)] }).end();
+      device.queue.submit([clearEncoder.finish()]);
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({ colorAttachments: [attachment(view)] });
+      pass.setPipeline(resources.output);
+      pass.setBindGroup(0, resources.outputGroup);
+      pass.draw(3);
+      pass.end();
+      const read = device.createBuffer({
+        size: samples.length * 256, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+      });
+      samples.forEach(([x, y], index) => {
+        encoder.copyTextureToBuffer(
+          { texture: current, origin: [x, y, 0] },
+          { buffer: read, offset: index * 256, bytesPerRow: 256 }, [1, 1]);
+      });
+      device.queue.submit([encoder.finish()]);
+      const live = canvasPixels();
+      return { read, live };
+    }
+    async function checkPresented(device, wanted, label) {
+      await device.queue.onSubmittedWorkDone();
+      const deadline = performance.now() + 5000;
+      do {
+        await new Promise(resolve => setTimeout(resolve, 16));
+        const bytes = canvasPixels();
+        if (matches(bytes, wanted)) return;
+      } while (performance.now() < deadline);
+      throw new Error(label + ": published canvas is cleared, stale, or dark");
+    }
+    document.getElementById("run").onclick = async () => {
+      document.getElementById("run").setAttribute("disabled", "");
+      let failed = false;
+      const fail = message => {
+        failed = true;
+        result.textContent = "FAIL: " + message;
+        console.error("WEBGPU8: " + message);
+      };
+      const timeout = setTimeout(() => fail("cinematic checks timed out"), 60000);
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        assert(adapter, "no WebGPU adapter");
+        const device = await adapter.requestDevice();
+        device.addEventListener("uncapturederror", event => fail(event.error.message));
+        device.lost.then(info => fail(info.message || "device lost"));
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        const resources = await checked(device, "full-size cinematic resources",
+          () => makeResources(device, format));
+        // This is a Chuzz budget check: correcting the depth estimate must
+        // preserve the existing 64 MiB per-resource limit.
+        device.pushErrorScope("out-of-memory");
+        const oversized = device.createTexture({
+          size: [4096, 2048], sampleCount: 4, format: "depth24plus",
+          usage: GPUTextureUsage.RENDER_ATTACHMENT
+        });
+        const memory = await device.popErrorScope();
+        oversized.destroy();
+        assert(memory instanceof GPUOutOfMemoryError, "64 MiB texture budget was bypassed");
+        for (const [index, tint] of [[.04, .16, .36, 1], [.36, .09, .04, 1]].entries()) {
+          const label = "frame " + (index + 1);
+          await checked(device, label + " dynamic uploads and MSAA scene", () => {
+            update(device, resources, tint);
+            renderScene(device, resources);
+          });
+          const probe = await checked(device, label + " filtered float16 mips and copies",
+            () => renderBloom(device, resources));
+          near(pixel(await mappedBytes(probe), 0), [128, 128, 128, 255],
+            label + " HDR bloom target");
+          const output = await checked(device, label + " output and live readback",
+            () => renderOutput(device, resources));
+          const wanted = expected(tint);
+          const raw = await mappedBytes(output.read);
+          samples.forEach(([x, y], sample) => {
+            near(pixel(raw, sample * 256, format === "bgra8unorm"), wanted[sample],
+              label + " GPU sample " + sample);
+            near(pixel(output.live, (y * width + x) * 4), wanted[sample],
+              label + " live Canvas 2D sample " + sample);
+          });
+          await checkPresented(device, wanted, label);
+        }
+        for (const texture of resources.textures) texture.destroy();
+        resources.uniform.destroy();
+        resources.storage.destroy();
+        await device.queue.onSubmittedWorkDone();
+        if (!failed) {
+          result.textContent = "READY: WEBGPU8 cinematic PASS";
+          console.log("READY: WEBGPU8 cinematic PASS");
+        }
+      } catch (error) {
+        fail(error.message);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+  </script>
+</body>
+</html>

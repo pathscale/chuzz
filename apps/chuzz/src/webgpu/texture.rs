@@ -205,7 +205,15 @@ fn allocation(options: &Options, format: wgpu::TextureFormat) -> Result<u64, Gpu
         ));
     }
     let (block_width, block_height) = format.block_dimensions();
-    let block_bytes = u64::from(format.block_copy_size(None).unwrap_or(16));
+    // Copy footprints are undefined for depth24plus and combined depth/stencil.
+    // Use wgpu's memory estimate for one block, then retain checked arithmetic
+    // for dimensions, layers, samples and mips. This is a budget estimate, not
+    // a measurement of the driver's allocation.
+    let block_bytes = format.theoretical_memory_footprint(wgpu::Extent3d {
+        width: block_width,
+        height: block_height,
+        depth_or_array_layers: 1,
+    });
     let mut total = 0_u64;
     for level in 0..options.mip_level_count {
         let width = (options.size[0] >> level).max(1).div_ceil(block_width);
