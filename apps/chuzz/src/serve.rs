@@ -1350,7 +1350,6 @@ fn settle_immediate(
 /// noticeably slowed by it, long enough that an idle host is not a spin.
 const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(8);
 
-
 /// How many missed turns one reply may hand back to the page.
 ///
 /// A request that took a long time owes the page the turns it spent, but the
@@ -1645,10 +1644,8 @@ pub fn serve(target: &str) -> Result<(), String> {
 fn serve_page(target: &str) -> Result<(), String> {
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
-    let (request_tx, request_rx) = mpsc::sync_channel::<(
-        ControlBridgeRequest,
-        Arc<Once<DebugResponse>>,
-    )>(64);
+    let (request_tx, request_rx) =
+        mpsc::sync_channel::<(ControlBridgeRequest, Arc<Once<DebugResponse>>)>(64);
     supervisor::start_worker(request_tx)?;
     let policy = HeadlessPolicy::from_env()?;
     let _egress_proxy = if policy.bot_child {

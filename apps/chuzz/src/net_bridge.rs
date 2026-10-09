@@ -496,4 +496,3 @@ const NETWORK_API_SHIM: &str = r#"
   }
 })();
 "#;
-

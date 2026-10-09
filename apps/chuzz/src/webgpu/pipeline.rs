@@ -58,7 +58,6 @@ pub(super) fn get<'a, T>(
         .ok_or_else(|| GpuError::validation(format!("invalid or destroyed {member}")))
 }
 
-
 fn view_dimension(name: &str) -> Result<wgpu::TextureViewDimension, GpuError> {
     match name {
         "1d" => Ok(wgpu::TextureViewDimension::D1),
@@ -134,7 +133,9 @@ impl LayoutEntry {
         .count()
             != 1
         {
-            return Err(GpuError::validation("a binding must have exactly one resource type"));
+            return Err(GpuError::validation(
+                "a binding must have exactly one resource type",
+            ));
         }
         let ty = if let Some(buffer) = &self.buffer {
             let ty = match buffer.kind.as_str() {
@@ -442,7 +443,9 @@ impl DeviceConnection {
     async fn create_shader(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let options: ShaderOptions = decode(args)?;
         if options.code.len() as u64 > ALLOCATION_LIMIT {
-            return Err(GpuError::validation("WebGPU shader source limit reached in chuzz"));
+            return Err(GpuError::validation(
+                "WebGPU shader source limit reached in chuzz",
+            ));
         }
         self.resources().reserve(handle, 0)?;
         let source: Arc<str> = Arc::from(options.code);
@@ -542,10 +545,12 @@ impl DeviceConnection {
                     .iter()
                     .map(LayoutEntry::native)
                     .collect::<Result<Vec<_>, _>>()?;
-                let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some(&options.label),
-                    entries: &entries,
-                });
+                let layout =
+                    self.device
+                        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                            label: Some(&options.label),
+                            entries: &entries,
+                        });
                 resources.pipelines.layouts.insert(handle, Arc::new(layout));
             }
             "createPipelineLayout" => {
@@ -562,28 +567,44 @@ impl DeviceConnection {
                             .transpose()
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some(&options.label),
-                    bind_group_layouts: &layouts,
-                    immediate_size: 0,
-                });
-                resources.pipelines.pipeline_layouts.insert(handle, Arc::new(layout));
+                let layout = self
+                    .device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some(&options.label),
+                        bind_group_layouts: &layouts,
+                        immediate_size: 0,
+                    });
+                resources
+                    .pipelines
+                    .pipeline_layouts
+                    .insert(handle, Arc::new(layout));
             }
             "createBindGroup" => {
                 let options: GroupOptions = decode(args)?;
-                let layout = get(&resources.pipelines.layouts, options.layout, "GPUBindGroupLayout")?;
+                let layout = get(
+                    &resources.pipelines.layouts,
+                    options.layout,
+                    "GPUBindGroupLayout",
+                )?;
                 let entries = options
                     .entries
                     .iter()
                     .map(|entry| {
                         let resource = match &entry.resource {
-                            Binding::Buffer { handle, offset, size } => {
+                            Binding::Buffer {
+                                handle,
+                                offset,
+                                size,
+                            } => {
                                 let buffer = get(&resources.buffers, *handle, "GPUBuffer")?;
-                                let size = size.unwrap_or_else(|| buffer.size.saturating_sub(*offset));
+                                let size =
+                                    size.unwrap_or_else(|| buffer.size.saturating_sub(*offset));
                                 if size == 0
                                     || offset.checked_add(size).is_none_or(|end| end > buffer.size)
                                 {
-                                    return Err(GpuError::validation("invalid GPUBufferBinding range"));
+                                    return Err(GpuError::validation(
+                                        "invalid GPUBufferBinding range",
+                                    ));
                                 }
                                 wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                                     buffer: &buffer.buffer,
@@ -591,14 +612,19 @@ impl DeviceConnection {
                                     size: NonZeroU64::new(size),
                                 })
                             }
-                            Binding::Sampler { handle } => wgpu::BindingResource::Sampler(
-                                get(&resources.samplers, *handle, "GPUSampler")?,
-                            ),
+                            Binding::Sampler { handle } => wgpu::BindingResource::Sampler(get(
+                                &resources.samplers,
+                                *handle,
+                                "GPUSampler",
+                            )?),
                             Binding::View { handle } => wgpu::BindingResource::TextureView(
                                 &get(&resources.views, *handle, "GPUTextureView")?.1,
                             ),
                         };
-                        Ok(wgpu::BindGroupEntry { binding: entry.binding, resource })
+                        Ok(wgpu::BindGroupEntry {
+                            binding: entry.binding,
+                            resource,
+                        })
                     })
                     .collect::<Result<Vec<_>, GpuError>>()?;
                 let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -610,12 +636,20 @@ impl DeviceConnection {
             }
             "createRenderPipeline" | "createRenderPipelineAsync" => {
                 let options: RenderOptions = decode(args)?;
-                let vertex = get(&resources.pipelines.shaders, options.vertex.module, "GPUShaderModule")?;
+                let vertex = get(
+                    &resources.pipelines.shaders,
+                    options.vertex.module,
+                    "GPUShaderModule",
+                )?;
                 let layout = options
                     .layout
                     .map(|handle| {
-                        get(&resources.pipelines.pipeline_layouts, handle, "GPUPipelineLayout")
-                            .map(Arc::as_ref)
+                        get(
+                            &resources.pipelines.pipeline_layouts,
+                            handle,
+                            "GPUPipelineLayout",
+                        )
+                        .map(Arc::as_ref)
                     })
                     .transpose()?;
                 let attributes = options
@@ -623,11 +657,15 @@ impl DeviceConnection {
                     .buffers
                     .iter()
                     .map(|buffer| {
-                        buffer.attributes.iter().map(|attribute| wgpu::VertexAttribute {
-                            format: attribute.format,
-                            offset: attribute.offset,
-                            shader_location: attribute.shader_location,
-                        }).collect::<Vec<_>>()
+                        buffer
+                            .attributes
+                            .iter()
+                            .map(|attribute| wgpu::VertexAttribute {
+                                format: attribute.format,
+                                offset: attribute.offset,
+                                shader_location: attribute.shader_location,
+                            })
+                            .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>();
                 let buffers = options
@@ -642,90 +680,133 @@ impl DeviceConnection {
                     })
                     .collect::<Vec<_>>();
                 let vertex_constants = constants(&options.vertex);
-                let fragment_constants = options.fragment.as_ref().map(constants).unwrap_or_default();
+                let fragment_constants =
+                    options.fragment.as_ref().map(constants).unwrap_or_default();
                 let targets = options
                     .fragment
                     .as_ref()
                     .map(|fragment| {
-                        fragment.targets.iter().map(|target| {
-                            target.as_ref().map(|target| {
-                                Ok(wgpu::ColorTargetState {
-                                    format: texture::format(&target.format)?,
-                                    blend: target.blend.as_ref().map(|blend| wgpu::BlendState {
-                                        color: blend.color.native(),
-                                        alpha: blend.alpha.native(),
-                                    }),
-                                    write_mask: wgpu::ColorWrites::from_bits(target.write_mask)
-                                        .ok_or_else(|| GpuError::validation("invalid GPUColorWrite"))?,
-                                })
-                            }).transpose()
-                        }).collect::<Result<Vec<_>, GpuError>>()
+                        fragment
+                            .targets
+                            .iter()
+                            .map(|target| {
+                                target
+                                    .as_ref()
+                                    .map(|target| {
+                                        Ok(wgpu::ColorTargetState {
+                                            format: texture::format(&target.format)?,
+                                            blend: target.blend.as_ref().map(|blend| {
+                                                wgpu::BlendState {
+                                                    color: blend.color.native(),
+                                                    alpha: blend.alpha.native(),
+                                                }
+                                            }),
+                                            write_mask: wgpu::ColorWrites::from_bits(
+                                                target.write_mask,
+                                            )
+                                            .ok_or_else(|| {
+                                                GpuError::validation("invalid GPUColorWrite")
+                                            })?,
+                                        })
+                                    })
+                                    .transpose()
+                            })
+                            .collect::<Result<Vec<_>, GpuError>>()
                     })
                     .transpose()?
                     .unwrap_or_default();
-                let fragment = options.fragment.as_ref().map(|fragment| -> Result<_, GpuError> {
-                    let shader = get(&resources.pipelines.shaders, fragment.module, "GPUShaderModule")?;
-                    Ok(wgpu::FragmentState {
-                        module: &shader.module,
-                        entry_point: fragment.entry_point.as_deref(),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &fragment_constants,
-                            ..Default::default()
-                        },
-                        targets: &targets,
+                let fragment = options
+                    .fragment
+                    .as_ref()
+                    .map(|fragment| -> Result<_, GpuError> {
+                        let shader = get(
+                            &resources.pipelines.shaders,
+                            fragment.module,
+                            "GPUShaderModule",
+                        )?;
+                        Ok(wgpu::FragmentState {
+                            module: &shader.module,
+                            entry_point: fragment.entry_point.as_deref(),
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: &fragment_constants,
+                                ..Default::default()
+                            },
+                            targets: &targets,
+                        })
                     })
-                }).transpose()?;
-                let native = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(&options.label),
-                    layout,
-                    vertex: wgpu::VertexState {
-                        module: &vertex.module,
-                        entry_point: options.vertex.entry_point.as_deref(),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &vertex_constants,
+                    .transpose()?;
+                let native = self
+                    .device
+                    .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some(&options.label),
+                        layout,
+                        vertex: wgpu::VertexState {
+                            module: &vertex.module,
+                            entry_point: options.vertex.entry_point.as_deref(),
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: &vertex_constants,
+                                ..Default::default()
+                            },
+                            buffers: &buffers,
+                        },
+                        primitive: wgpu::PrimitiveState {
+                            topology: options.primitive.topology,
+                            strip_index_format: options.primitive.strip_index_format,
+                            front_face: options.primitive.front_face,
+                            cull_mode: options.primitive.cull_mode,
+                            unclipped_depth: options.primitive.unclipped_depth,
                             ..Default::default()
                         },
-                        buffers: &buffers,
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        topology: options.primitive.topology,
-                        strip_index_format: options.primitive.strip_index_format,
-                        front_face: options.primitive.front_face,
-                        cull_mode: options.primitive.cull_mode,
-                        unclipped_depth: options.primitive.unclipped_depth,
-                        ..Default::default()
-                    },
-                    depth_stencil: options.depth_stencil.as_ref().map(Depth::native).transpose()?,
-                    multisample: wgpu::MultisampleState {
-                        count: options.multisample.count,
-                        mask: u64::from(options.multisample.mask),
-                        alpha_to_coverage_enabled: options.multisample.alpha_to_coverage_enabled,
-                    },
-                    fragment,
-                    multiview_mask: None,
-                    cache: None,
-                });
+                        depth_stencil: options
+                            .depth_stencil
+                            .as_ref()
+                            .map(Depth::native)
+                            .transpose()?,
+                        multisample: wgpu::MultisampleState {
+                            count: options.multisample.count,
+                            mask: u64::from(options.multisample.mask),
+                            alpha_to_coverage_enabled: options
+                                .multisample
+                                .alpha_to_coverage_enabled,
+                        },
+                        fragment,
+                        multiview_mask: None,
+                        cache: None,
+                    });
                 resources.pipelines.render.insert(handle, Arc::new(native));
             }
             "createComputePipeline" | "createComputePipelineAsync" => {
                 let options: ComputeOptions = decode(args)?;
-                let shader = get(&resources.pipelines.shaders, options.compute.module, "GPUShaderModule")?;
-                let layout = options.layout.map(|handle| {
-                    get(&resources.pipelines.pipeline_layouts, handle, "GPUPipelineLayout")
+                let shader = get(
+                    &resources.pipelines.shaders,
+                    options.compute.module,
+                    "GPUShaderModule",
+                )?;
+                let layout = options
+                    .layout
+                    .map(|handle| {
+                        get(
+                            &resources.pipelines.pipeline_layouts,
+                            handle,
+                            "GPUPipelineLayout",
+                        )
                         .map(Arc::as_ref)
-                }).transpose()?;
+                    })
+                    .transpose()?;
                 let constants = constants(&options.compute);
-                let native = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(&options.label),
-                    layout,
-                    module: &shader.module,
-                    entry_point: options.compute.entry_point.as_deref(),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &constants,
-                        ..Default::default()
-                    },
-                    cache: None,
-                });
+                let native =
+                    self.device
+                        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                            label: Some(&options.label),
+                            layout,
+                            module: &shader.module,
+                            entry_point: options.compute.entry_point.as_deref(),
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: &constants,
+                                ..Default::default()
+                            },
+                            cache: None,
+                        });
                 resources.pipelines.compute.insert(handle, Arc::new(native));
             }
             "getBindGroupLayout" => {
@@ -734,21 +815,36 @@ impl DeviceConnection {
                     return Err(GpuError::validation("invalid bind group layout index"));
                 }
                 let layout = match options.kind.as_str() {
-                    "render" => get(&resources.pipelines.render, options.pipeline, "GPURenderPipeline")?
-                        .get_bind_group_layout(options.index),
-                    "compute" => get(&resources.pipelines.compute, options.pipeline, "GPUComputePipeline")?
-                        .get_bind_group_layout(options.index),
+                    "render" => get(
+                        &resources.pipelines.render,
+                        options.pipeline,
+                        "GPURenderPipeline",
+                    )?
+                    .get_bind_group_layout(options.index),
+                    "compute" => get(
+                        &resources.pipelines.compute,
+                        options.pipeline,
+                        "GPUComputePipeline",
+                    )?
+                    .get_bind_group_layout(options.index),
                     _ => return Err(GpuError::validation("invalid GPU pipeline type")),
                 };
                 resources.pipelines.layouts.insert(handle, Arc::new(layout));
             }
-            _ => return Err(GpuError::validation(format!("not implemented in chuzz: {op}"))),
+            _ => {
+                return Err(GpuError::validation(format!(
+                    "not implemented in chuzz: {op}"
+                )));
+            }
         }
         Ok(Value::Null)
     }
 }
 
 fn constants(stage: &Stage) -> Vec<(&str, f64)> {
-    stage.constants.iter().map(|(name, value)| (name.as_str(), *value)).collect()
+    stage
+        .constants
+        .iter()
+        .map(|(name, value)| (name.as_str(), *value))
+        .collect()
 }
-

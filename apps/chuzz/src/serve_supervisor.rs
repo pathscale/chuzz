@@ -195,7 +195,9 @@ pub(super) fn start_worker(sender: mpsc::SyncSender<DocumentRequest>) -> Result<
                     reader.read_exact(&mut header)?;
                     let length = u32::from_be_bytes(header) as usize;
                     if length > MAX_FRAME_BYTES {
-                        return Err(io::Error::other("page worker request exceeded its byte limit"));
+                        return Err(io::Error::other(
+                            "page worker request exceeded its byte limit",
+                        ));
                     }
                     let mut bytes = vec![0_u8; length];
                     reader.read_exact(&mut bytes)?;
@@ -396,7 +398,11 @@ impl Supervisor {
             self.fail("the page did not answer the control request within 10s");
             return;
         }
-        if let Some(message) = self.session.as_ref().and_then(|session| session.expired(now)) {
+        if let Some(message) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.expired(now))
+        {
             self.fail(&message);
         }
     }
@@ -454,9 +460,9 @@ impl Supervisor {
                         pending.answer.fill(response);
                     }
                     Some(pending) => {
-                        pending
-                            .answer
-                            .fill(page_error("the page worker replied before navigation was ready"));
+                        pending.answer.fill(page_error(
+                            "the page worker replied before navigation was ready",
+                        ));
                         self.fail("the page worker replied before navigation was ready");
                     }
                     None => self.fail("the page worker sent an unsolicited reply"),
@@ -696,7 +702,9 @@ pub(super) fn serve(target: &str) -> Result<(), String> {
             (expired, next)
         };
         for answer in expired {
-            answer.fill(page_error("the control request expired while waiting for the page"));
+            answer.fill(page_error(
+                "the control request expired while waiting for the page",
+            ));
         }
         if let Some(next) = next {
             supervisor.accept(next);

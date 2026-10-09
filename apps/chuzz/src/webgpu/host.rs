@@ -73,9 +73,7 @@ impl Bridge {
 
         {
             let mut state = self.state();
-            if state.in_flight.len() >= REQUEST_LIMIT
-                || state.in_flight.contains_key(&id)
-            {
+            if state.in_flight.len() >= REQUEST_LIMIT || state.in_flight.contains_key(&id) {
                 state.ready.push((
                     id,
                     json!({
@@ -90,8 +88,7 @@ impl Bridge {
             state.in_flight.insert(
                 id,
                 Flight {
-                    deadline: Instant::now()
-                        + if startup { STARTUP_DEADLINE } else { DEADLINE },
+                    deadline: Instant::now() + if startup { STARTUP_DEADLINE } else { DEADLINE },
                     device: request.error_device(),
                     startup,
                 },
@@ -237,4 +234,3 @@ impl Bridge {
         });
     }
 }
-

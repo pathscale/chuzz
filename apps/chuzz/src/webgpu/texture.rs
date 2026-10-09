@@ -107,8 +107,15 @@ pub(super) fn format(name: &str) -> Result<wgpu::TextureFormat, GpuError> {
     // Reject native-only texture families even if wgpu can deserialize them.
     if matches!(
         name,
-        "r64uint" | "nv12" | "p010" | "r16unorm" | "r16snorm"
-            | "rg16unorm" | "rg16snorm" | "rgba16unorm" | "rgba16snorm"
+        "r64uint"
+            | "nv12"
+            | "p010"
+            | "r16unorm"
+            | "r16snorm"
+            | "rg16unorm"
+            | "rg16snorm"
+            | "rgba16unorm"
+            | "rgba16snorm"
     ) || name.contains("astc") && !name.ends_with("-unorm") && !name.ends_with("-unorm-srgb")
     {
         return Err(GpuError::validation(format!(
@@ -187,16 +194,15 @@ fn compare(name: &str) -> Result<wgpu::CompareFunction, GpuError> {
     }
 }
 
-fn allocation(
-    options: &Options,
-    format: wgpu::TextureFormat,
-) -> Result<u64, GpuError> {
+fn allocation(options: &Options, format: wgpu::TextureFormat) -> Result<u64, GpuError> {
     if options.size.contains(&0)
         || options.mip_level_count == 0
         || options.mip_level_count > 32
         || !matches!(options.sample_count, 1 | 4)
     {
-        return Err(GpuError::validation("invalid GPUTexture size, mips or samples"));
+        return Err(GpuError::validation(
+            "invalid GPUTexture size, mips or samples",
+        ));
     }
     let (block_width, block_height) = format.block_dimensions();
     let block_bytes = u64::from(format.block_copy_size(None).unwrap_or(16));
@@ -229,7 +235,8 @@ impl DeviceConnection {
         args: Value,
         canvas: Option<(u64, u64)>,
     ) -> Result<Value, GpuError> {
-        self.create_texture_options(handle, decode(args)?, canvas).await
+        self.create_texture_options(handle, decode(args)?, canvas)
+            .await
     }
 
     pub(super) async fn create_texture_options(
@@ -280,11 +287,7 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 
-    pub(super) async fn create_view(
-        &self,
-        handle: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn create_view(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let view: View = decode(args)?;
         let texture = {
             let resources = self.resources();
@@ -301,7 +304,11 @@ impl DeviceConnection {
         let descriptor = wgpu::TextureViewDescriptor {
             label: Some(&options.label),
             format: options.format.as_deref().map(format).transpose()?,
-            dimension: options.dimension.as_deref().map(view_dimension).transpose()?,
+            dimension: options
+                .dimension
+                .as_deref()
+                .map(view_dimension)
+                .transpose()?,
             aspect: aspect(&options.aspect)?,
             base_mip_level: options.base_mip_level,
             mip_level_count: options.mip_level_count,
@@ -319,7 +326,9 @@ impl DeviceConnection {
     pub(super) async fn write_texture(&self, args: Value) -> Result<Value, GpuError> {
         let write: Write = decode(args)?;
         if write.data.len() as u64 > ALLOCATION_LIMIT {
-            return Err(GpuError::validation("WebGPU transfer limit reached in chuzz"));
+            return Err(GpuError::validation(
+                "WebGPU transfer limit reached in chuzz",
+            ));
         }
         let texture = {
             let resources = self.resources();
@@ -331,9 +340,7 @@ impl DeviceConnection {
                     .texture,
             )
         };
-        if !texture.usage().contains(wgpu::TextureUsages::COPY_DST)
-            || texture.sample_count() != 1
-        {
+        if !texture.usage().contains(wgpu::TextureUsages::COPY_DST) || texture.sample_count() != 1 {
             return Err(GpuError::validation(
                 "GPUQueue.writeTexture requires a single-sample COPY_DST texture",
             ));
@@ -369,11 +376,7 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 
-    pub(super) async fn create_sampler(
-        &self,
-        handle: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn create_sampler(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let options: SamplerOptions = decode(args)?;
         self.resources().reserve(handle, 0)?;
         let descriptor = wgpu::SamplerDescriptor {
@@ -395,4 +398,3 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
-

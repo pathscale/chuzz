@@ -90,11 +90,7 @@ impl DeviceConnection {
         }
     }
 
-    pub(super) fn configure_canvas(
-        &self,
-        canvas: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) fn configure_canvas(&self, canvas: u64, args: Value) -> Result<Value, GpuError> {
         let configuration: Configuration = decode(args)?;
         if !matches!(configuration.format.as_str(), "rgba8unorm" | "bgra8unorm") {
             return Err(GpuError::validation(format!(
@@ -102,16 +98,17 @@ impl DeviceConnection {
                 configuration.format
             )));
         }
-        if !matches!(configuration.alpha_mode.as_str(), "opaque" | "premultiplied") {
+        if !matches!(
+            configuration.alpha_mode.as_str(),
+            "opaque" | "premultiplied"
+        ) {
             return Err(GpuError::validation("invalid GPUCanvasAlphaMode"));
         }
         if configuration.usage == 0 || configuration.usage & !31 != 0 {
             return Err(GpuError::validation("invalid GPUTextureUsage"));
         }
         for view in &configuration.view_formats {
-            if view != &configuration.format
-                && view != &format!("{}-srgb", configuration.format)
-            {
+            if view != &configuration.format && view != &format!("{}-srgb", configuration.format) {
                 return Err(GpuError::validation("invalid canvas viewFormats"));
             }
         }
@@ -133,11 +130,7 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 
-    pub(super) fn unconfigure_canvas(
-        &self,
-        canvas: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) fn unconfigure_canvas(&self, canvas: u64, args: Value) -> Result<Value, GpuError> {
         let generation: u64 = decode(args)?;
         self.resources().release_canvas(canvas);
         self.publish_frame(Frame {
@@ -181,11 +174,7 @@ impl DeviceConnection {
         .await
     }
 
-    pub(super) async fn present_canvas(
-        &self,
-        handle: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn present_canvas(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let present: Present = decode(args)?;
         let (entry, configuration) = {
             let mut resources = self.resources();
@@ -207,11 +196,13 @@ impl DeviceConnection {
         let row = width
             .checked_mul(4)
             .ok_or_else(|| GpuError::validation("canvas row overflow"))?;
-        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let bytes = u64::from(padded) * u64::from(height);
         if bytes == 0 || bytes > ALLOCATION_LIMIT {
-            return Err(GpuError::validation("WebGPU canvas readback limit reached in chuzz"));
+            return Err(GpuError::validation(
+                "WebGPU canvas readback limit reached in chuzz",
+            ));
         }
 
         let buffer = checked(&self.device, || {
@@ -221,11 +212,11 @@ impl DeviceConnection {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-            let mut encoder = self.device.create_command_encoder(
-                &wgpu::CommandEncoderDescriptor {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("chuzz canvas readback"),
-                },
-            );
+                });
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -273,8 +264,8 @@ impl DeviceConnection {
                         pixel[..3].fill(0);
                     } else if alpha < 255 {
                         for channel in &mut pixel[..3] {
-                            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha)
-                                .min(255) as u8;
+                            *channel =
+                                ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
                         }
                     }
                 }
@@ -291,4 +282,3 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
-

@@ -102,11 +102,7 @@ pub(super) async fn map_read(
 }
 
 impl DeviceConnection {
-    pub(super) async fn create_buffer(
-        &self,
-        handle: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn create_buffer(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let options: Options = decode(args)?;
         if options.usage == 0 || options.usage & !1023 != 0 {
             return Err(GpuError::validation("invalid GPUBufferUsage"));
@@ -141,11 +137,7 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 
-    pub(super) async fn write_buffer(
-        &self,
-        handle: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn write_buffer(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let write: Write = decode(args)?;
         let buffer = {
             let resources = self.resources();
@@ -165,7 +157,9 @@ impl DeviceConnection {
                 ));
             }
             if write.data.len() as u64 > ALLOCATION_LIMIT {
-                return Err(GpuError::validation("WebGPU transfer limit reached in chuzz"));
+                return Err(GpuError::validation(
+                    "WebGPU transfer limit reached in chuzz",
+                ));
             }
             Arc::clone(&entry.buffer)
         };
@@ -181,11 +175,7 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 
-    pub(super) async fn map_buffer(
-        &self,
-        handle: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn map_buffer(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let mapping: Mapping = decode(args)?;
         let (buffer, mapped) = {
             let resources = self.resources();
@@ -215,11 +205,7 @@ impl DeviceConnection {
         Ok(json!(bytes))
     }
 
-    pub(super) async fn unmap_buffer(
-        &self,
-        handle: u64,
-        args: Value,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn unmap_buffer(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let unmap: Unmap = decode(args)?;
         let (buffer, writable, mapped) = {
             let resources = self.resources();
@@ -252,7 +238,9 @@ impl DeviceConnection {
                 }
                 transferred = transferred.saturating_add(write.data.len() as u64);
                 if transferred > ALLOCATION_LIMIT {
-                    return Err(GpuError::validation("WebGPU transfer limit reached in chuzz"));
+                    return Err(GpuError::validation(
+                        "WebGPU transfer limit reached in chuzz",
+                    ));
                 }
                 ranges.push(current);
             }
@@ -282,4 +270,3 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
-

@@ -138,7 +138,10 @@ impl Resources {
             .textures
             .iter()
             .filter_map(|(&handle, entry)| {
-                entry.canvas.is_some_and(|(id, _)| id == canvas).then_some(handle)
+                entry
+                    .canvas
+                    .is_some_and(|(id, _)| id == canvas)
+                    .then_some(handle)
             })
             .collect();
         for handle in handles {
@@ -187,4 +190,3 @@ impl DeviceConnection {
         }
     }
 }
-
