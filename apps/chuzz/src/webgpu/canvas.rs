@@ -1,3 +1,4 @@
+use blitz_dom::Document as _;
 use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
 
 use super::buffer::map_read;
@@ -57,7 +58,9 @@ impl Frame {
         let Some(id) = document.inner().query_selector(&selector).ok().flatten() else {
             return false;
         };
-        let Some(node) = document.inner_mut().get_node_mut(id) else {
+        // The guard must outlive the node borrow taken from it.
+        let mut doc = document.inner_mut();
+        let Some(node) = doc.get_node_mut(id) else {
             return false;
         };
         let Some(element) = node.element_data_mut() else {
