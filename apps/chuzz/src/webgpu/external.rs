@@ -12,7 +12,7 @@ pub(super) struct Images {
     bitmaps: HashMap<u64, Arc<RasterImageData>>,
     snapshots: HashMap<u64, Arc<RasterImageData>>,
     pub canvases: HashMap<u64, (u64, Arc<RasterImageData>)>,
-    paint: HashMap<u64, Arc<RasterImageData>>,
+    pub paint: HashMap<u64, Arc<RasterImageData>>,
 }
 
 #[derive(serde::Deserialize)]

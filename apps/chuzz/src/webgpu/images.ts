@@ -50,11 +50,9 @@
   function canvasPixels(canvas) {
     var state = canvasContexts.get(canvas);
     if (!state) { return null; }
-    if (state.width !== canvas.width || state.height !== canvas.height) {
-      state.width = canvas.width;
-      state.height = canvas.height;
-      state.data = new Uint8ClampedArray(length(state.width, state.height));
-    }
+    state.width = canvas.width;
+    state.height = canvas.height;
+    state.data = state.context.__pixels();
     return state;
   }
 
@@ -294,19 +292,13 @@
     };
   }
 
-  function paintCanvas(canvas) {
-    var state = canvasPixels(canvas);
-    if (!state || !state.width || !state.height) { return; }
-    post("paintImage", 0, { node: marker(canvas), source: raw(state.width, state.height, state.data) });
-  }
   globalThis.__chuzzGpuResize2D = function (canvas) {
     var state = canvasContexts.get(canvas);
     if (!state) { return; }
-    state.width = -1;
-    canvasPixels(canvas);
-    state.context.fillStyle = "#000000";
-    state.context.globalAlpha = 1;
-    paintCanvas(canvas);
+    state.context.__resize();
+    state.width = canvas.width;
+    state.height = canvas.height;
+    state.data = null;
   };
   function pixelsOf(source) {
     var bitmap = bitmaps.get(source);
@@ -327,146 +319,10 @@
     if (typeof result[0] === "string") { throw new DOMException(String(result[1]), "InvalidStateError"); }
     return { width: result[0], height: result[1], data: result[2] };
   }
-  function color(value) {
-    value = String(value).trim().toLowerCase();
-    var names = { black: "#000000", white: "#ffffff", red: "#ff0000", green: "#008000",
-      blue: "#0000ff", transparent: "rgba(0,0,0,0)" };
-    value = names[value] || value;
-    if (/^#[0-9a-f]{3,4}$/.test(value)) {
-      value = "#" + value.slice(1).split("").map(function (part) { return part + part; }).join("");
-    }
-    if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/.test(value)) {
-      return [parseInt(value.slice(1, 3), 16), parseInt(value.slice(3, 5), 16),
-        parseInt(value.slice(5, 7), 16), value.length === 9 ? parseInt(value.slice(7, 9), 16) : 255];
-    }
-    var match = /^rgba?\(([^)]+)\)$/.exec(value);
-    if (match) {
-      var parts = match[1].split(",").map(Number);
-      if (parts.length === 3 || parts.length === 4) {
-        return [parts[0], parts[1], parts[2], parts.length === 4 ? parts[3] * 255 : 255];
-      }
-    }
-    return missing("CanvasRenderingContext2D.fillStyle." + value);
-  }
   function make2D(canvas) {
-    var context = { canvas: canvas, fillStyle: "#000000", globalAlpha: 1,
-      globalCompositeOperation: "source-over", imageSmoothingEnabled: true };
-    var state = { context: context, width: canvas.width, height: canvas.height,
-      data: new Uint8ClampedArray(length(canvas.width, canvas.height)) };
-    canvasContexts.set(canvas, state);
-    marker(canvas);
-    function write(x, y, rgba, replace) {
-      var current = canvasPixels(canvas);
-      if (x < 0 || y < 0 || x >= current.width || y >= current.height) { return; }
-      var offset = (y * current.width + x) * 4;
-      if (replace) { current.data.set(rgba, offset); return; }
-      if (context.globalCompositeOperation !== "source-over") {
-        missing("CanvasRenderingContext2D.globalCompositeOperation." + context.globalCompositeOperation);
-      }
-      var alpha = rgba[3] / 255 * Math.max(0, Math.min(1, context.globalAlpha));
-      var previous = current.data[offset + 3] / 255;
-      var result = alpha + previous * (1 - alpha);
-      for (var channel = 0; channel < 3; channel++) {
-        current.data[offset + channel] = result === 0 ? 0
-          : (rgba[channel] * alpha + current.data[offset + channel] * previous * (1 - alpha)) / result;
-      }
-      current.data[offset + 3] = result * 255;
-    }
-    function rectangle(x, y, width, height, rgba, replace) {
-      if (![x, y, width, height].every(Number.isFinite)) { return; }
-      var x0 = Math.floor(Math.min(x, x + width));
-      var y0 = Math.floor(Math.min(y, y + height));
-      var x1 = Math.ceil(Math.max(x, x + width));
-      var y1 = Math.ceil(Math.max(y, y + height));
-      var current = canvasPixels(canvas);
-      for (var row = Math.max(0, y0); row < Math.min(current.height, y1); row++) {
-        for (var column = Math.max(0, x0); column < Math.min(current.width, x1); column++) {
-          write(column, row, rgba, replace);
-        }
-      }
-      paintCanvas(canvas);
-    }
-    context.fillRect = function (x, y, width, height) {
-      rectangle(x, y, width, height, color(context.fillStyle), false);
-    };
-    context.clearRect = function (x, y, width, height) {
-      rectangle(x, y, width, height, [0, 0, 0, 0], true);
-    };
-    context.createImageData = function (width, height) {
-      if (typeof width === "object") { height = width.height; width = width.width; }
-      return new ImageData(width, height);
-    };
-    context.getImageData = function (x, y, width, height) {
-      width = integer(Math.abs(width), "getImageData.width");
-      height = integer(Math.abs(height), "getImageData.height");
-      var image = new ImageData(width, height);
-      var current = canvasPixels(canvas);
-      x = Math.floor(x); y = Math.floor(y);
-      for (var row = 0; row < height; row++) {
-        for (var column = 0; column < width; column++) {
-          if (x + column < 0 || y + row < 0 || x + column >= current.width || y + row >= current.height) {
-            continue;
-          }
-          var from = ((y + row) * current.width + x + column) * 4;
-          image.data.set(current.data.subarray(from, from + 4), (row * width + column) * 4);
-        }
-      }
-      return image;
-    };
-    context.putImageData = function (image, x, y, dirtyX, dirtyY, dirtyWidth, dirtyHeight) {
-      dirtyX = dirtyX === undefined ? 0 : Math.floor(dirtyX);
-      dirtyY = dirtyY === undefined ? 0 : Math.floor(dirtyY);
-      dirtyWidth = dirtyWidth === undefined ? image.width : dirtyWidth;
-      dirtyHeight = dirtyHeight === undefined ? image.height : dirtyHeight;
-      var x0 = Math.max(0, Math.min(dirtyX, dirtyX + dirtyWidth));
-      var y0 = Math.max(0, Math.min(dirtyY, dirtyY + dirtyHeight));
-      var x1 = Math.min(image.width, Math.max(dirtyX, dirtyX + dirtyWidth));
-      var y1 = Math.min(image.height, Math.max(dirtyY, dirtyY + dirtyHeight));
-      x = Math.floor(x); y = Math.floor(y);
-      for (var row = y0; row < y1; row++) {
-        for (var column = x0; column < x1; column++) {
-          var offset = (row * image.width + column) * 4;
-          write(x + column, y + row, image.data.subarray(offset, offset + 4), true);
-        }
-      }
-      paintCanvas(canvas);
-    };
-    context.drawImage = function (source) {
-      var image = pixelsOf(source);
-      var args = Array.prototype.slice.call(arguments, 1).map(Number);
-      var sx = 0, sy = 0, sw = image.width, sh = image.height;
-      var dx, dy, dw, dh;
-      if (args.length === 2 || args.length === 4) {
-        dx = args[0]; dy = args[1]; dw = args.length === 4 ? args[2] : sw;
-        dh = args.length === 4 ? args[3] : sh;
-      } else if (args.length === 8) {
-        sx = args[0]; sy = args[1]; sw = args[2]; sh = args[3];
-        dx = args[4]; dy = args[5]; dw = args[6]; dh = args[7];
-      } else { throw new TypeError("invalid drawImage arguments"); }
-      if (!args.every(Number.isFinite) || !sw || !sh || !dw || !dh) { return; }
-      if (sw < 0) { sx += sw; sw = -sw; }
-      if (sh < 0) { sy += sh; sh = -sh; }
-      if (dw < 0) { dx += dw; dw = -dw; }
-      if (dh < 0) { dy += dh; dh = -dh; }
-      var data = image.data.slice();
-      var current = canvasPixels(canvas);
-      for (var row = Math.max(0, Math.floor(dy)); row < Math.min(current.height, Math.ceil(dy + dh)); row++) {
-        for (var column = Math.max(0, Math.floor(dx)); column < Math.min(current.width, Math.ceil(dx + dw)); column++) {
-          var fromX = Math.floor(sx + (column - dx) * sw / dw);
-          var fromY = Math.floor(sy + (row - dy) * sh / dh);
-          if (fromX < 0 || fromY < 0 || fromX >= image.width || fromY >= image.height) { continue; }
-          var offset = (fromY * image.width + fromX) * 4;
-          write(column, row, data.subarray(offset, offset + 4), false);
-        }
-      }
-      paintCanvas(canvas);
-    };
-    context.getContextAttributes = function () { return { alpha: true, colorSpace: "srgb" }; };
-    ["beginPath", "closePath", "moveTo", "lineTo", "arc", "ellipse", "rect", "fill",
-     "stroke", "fillText", "strokeText", "measureText", "createLinearGradient",
-     "createRadialGradient", "createPattern", "save", "restore", "scale", "rotate",
-     "translate", "transform", "setTransform", "resetTransform", "clip"].forEach(function (name) {
-      context[name] = function () { return missing("CanvasRenderingContext2D." + name); };
+    var context = globalThis.__chuzzMake2D(canvas, marker(canvas), pixelsOf);
+    canvasContexts.set(canvas, {
+      context: context, width: canvas.width, height: canvas.height, data: null
     });
     return context;
   }

@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 mod binary;
 mod buffer;
 mod canvas;
+mod canvas2d;
 mod encoder;
 mod external;
 mod host;
@@ -24,8 +25,20 @@ mod texture;
 
 use resources::{Command, GpuError, Resources};
 
-pub(crate) const WEBGPU_SHIM: &str =
-    concat!(include_str!("webgpu.ts"), "\n", include_str!("webgpu/images.ts"));
+pub(crate) const WEBGPU_SHIM: &str = concat!(
+    include_str!("webgpu.ts"),
+    "\n",
+    include_str!("webgpu/canvas2d.ts"),
+    "\n",
+    include_str!("webgpu/images.ts")
+);
+
+pub(crate) fn script_document(
+    html: &str,
+    config: blitz_dom::DocumentConfig,
+) -> blitz_script::ScriptDocument {
+    canvas2d::from_html(html, config)
+}
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const OBJECT_LIMIT: usize = 64;
@@ -362,6 +375,9 @@ impl Bridge {
     }
 
     pub(crate) fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
+        // Scripts record commands throughout the task. Materialise and paint
+        // each changed 2D canvas once, before taking the document's image batch.
+        document.eval("globalThis.__chuzzFlush2D();");
         let images_changed = self.prepare_images(document);
         // Deadlines are host state, not page timers. No driver work runs on
         // the document thread, including nominally nonblocking device.poll.

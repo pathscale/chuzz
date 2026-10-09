@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas 2D native rendering</title>
+  <style>
+    body { margin: 24px; background: #151923; color: white; font: 16px sans-serif; }
+    canvas { width: 512px; height: 256px; background: #fff; }
+    #result { display: block; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Canvas 2D native rendering</h1>
+  <canvas id="canvas" width="512" height="256"></canvas>
+  <output id="result" aria-live="polite">Canvas 2D running</output>
+  <script>
+    (function () {
+      var canvas = document.getElementById("canvas");
+      var output = document.getElementById("result");
+      var context = canvas.getContext("2d");
+      function assert(value, message) { if (!value) { throw new Error(message); } }
+      function pixel(x, y) { return context.getImageData(x, y, 1, 1).data; }
+      try {
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, 512, 256);
+        context.fillStyle = "#ff0000";
+        context.beginPath();
+        context.moveTo(8, 8); context.lineTo(80, 8); context.lineTo(8, 80);
+        context.closePath(); context.fill();
+        assert(pixel(16, 16)[0] > 240 && pixel(16, 16)[1] < 10, "triangle fill");
+        assert(pixel(70, 70)[1] > 240, "triangle bounds");
+
+        context.beginPath(); context.rect(96, 8, 72, 72); context.rect(112, 24, 40, 40);
+        context.fillStyle = "#0000ff"; context.fill("evenodd");
+        assert(pixel(100, 12)[2] > 240 && pixel(100, 12)[0] < 10, "evenodd outside");
+        assert(pixel(128, 40)[0] > 240, "evenodd hole");
+
+        context.save(); context.beginPath(); context.rect(184, 8, 32, 32); context.clip();
+        context.fillStyle = "#00ff00"; context.fillRect(176, 0, 64, 64);
+        context.restore();
+        assert(pixel(190, 16)[1] > 240 && pixel(190, 16)[0] < 10, "clip inside");
+        assert(pixel(228, 16)[0] > 240, "clip outside");
+
+        context.save(); context.translate(256, 40); context.rotate(Math.PI / 2); context.scale(2, 1);
+        context.fillStyle = "#000"; context.fillRect(-8, -8, 16, 16); context.restore();
+        assert(pixel(256, 40)[0] < 10, "transform");
+        context.resetTransform();
+
+        context.lineWidth = 8; context.lineCap = "round"; context.lineJoin = "round";
+        context.setLineDash([12, 8]); context.strokeStyle = "#222";
+        context.beginPath(); context.moveTo(304, 20); context.lineTo(400, 20); context.stroke();
+        context.setLineDash([]);
+        context.beginPath(); context.arc(440, 40, 24, 0, Math.PI * 2); context.stroke();
+        context.beginPath(); context.ellipse(480, 96, 20, 12, .4, 0, Math.PI * 2); context.fill();
+
+        var gradient = context.createLinearGradient(8, 96, 80, 96);
+        gradient.addColorStop(0, "#ff0000"); gradient.addColorStop(1, "#0000ff");
+        context.fillStyle = gradient; context.fillRect(8, 96, 72, 40);
+        assert(pixel(12, 110)[0] > pixel(12, 110)[2], "linear start");
+        assert(pixel(76, 110)[2] > pixel(76, 110)[0], "linear end");
+
+        var radial = context.createRadialGradient(132, 116, 0, 132, 116, 24);
+        radial.addColorStop(0, "#000"); radial.addColorStop(1, "rgba(0,0,0,0)");
+        context.fillStyle = radial; context.fillRect(108, 92, 48, 48);
+        assert(pixel(132, 116)[0] < 40 && pixel(110, 94)[0] > 200, "radial gradient");
+
+        context.fillStyle = "#000"; context.fillRect(184, 96, 40, 40);
+        context.globalCompositeOperation = "destination-out"; context.globalAlpha = .5;
+        context.fillRect(184, 96, 40, 40);
+        assert(pixel(200, 110)[3] >= 120 && pixel(200, 110)[3] <= 136, "destination-out");
+        context.globalAlpha = 1; context.globalCompositeOperation = "source-over";
+
+        context.fillStyle = "#808080"; context.fillRect(240, 96, 32, 32);
+        context.globalCompositeOperation = "multiply"; context.fillRect(240, 96, 32, 32);
+        assert(pixel(250, 106)[0] >= 58 && pixel(250, 106)[0] <= 70, "multiply");
+        context.globalCompositeOperation = "lighter"; context.fillStyle = "#202020";
+        context.fillRect(240, 96, 32, 32);
+        assert(pixel(250, 106)[0] > 85, "lighter");
+        context.globalCompositeOperation = "source-over";
+
+        var tile = document.createElement("canvas"); tile.width = 2; tile.height = 2;
+        var tileContext = tile.getContext("2d"), image = tileContext.createImageData(2, 2);
+        image.data.set([255, 0, 255, 255, 0, 255, 255, 255, 0, 255, 255, 255, 255, 0, 255, 255]);
+        tileContext.putImageData(image, 0, 0);
+        context.imageSmoothingEnabled = false;
+        context.fillStyle = context.createPattern(tile, "repeat"); context.fillRect(288, 96, 32, 32);
+        assert(pixel(288, 96)[0] > 240 && pixel(288, 96)[1] < 10, "pattern");
+        context.drawImage(tile, 328, 96, 32, 32);
+        assert(pixel(332, 100)[0] > 240 && pixel(332, 100)[1] < 10, "drawImage");
+        context.clearRect(368, 96, 32, 32);
+        assert(pixel(380, 110)[3] === 0, "clearRect");
+
+        context.fillStyle = "#14344c"; context.strokeStyle = "#2d7cb8"; context.lineWidth = 3;
+        context.beginPath(); context.roundRect(8, 152, 104, 56, [10, 20]); context.fill(); context.stroke();
+        context.beginPath(); context.moveTo(132, 208);
+        context.quadraticCurveTo(150, 128, 174, 208);
+        context.bezierCurveTo(184, 240, 216, 128, 236, 208); context.stroke();
+        context.beginPath(); context.moveTo(256, 208); context.arcTo(256, 152, 312, 152, 20); context.stroke();
+
+        context.font = "900 32px monospace";
+        var metrics = context.measureText("AZ09");
+        assert(metrics.width > 40 && metrics.actualBoundingBoxAscent > 10, "document font metrics");
+        context.fillStyle = "#000"; context.textAlign = "center"; context.textBaseline = "middle";
+        context.fillText("AZ09", 400, 184);
+        context.strokeStyle = "#000"; context.lineWidth = 1;
+        context.strokeText("SHIP", 400, 230);
+        var lettering = context.getImageData(340, 164, 120, 40).data;
+        var dark = 0;
+        for (var i = 0; i < lettering.length; i += 4) {
+          if (lettering[i] < 80 && lettering[i + 3] > 128) { dark++; }
+        }
+        assert(dark > 100, "text rasterisation");
+
+        var readback = context.getImageData(-1, -1, 2, 2);
+        assert(readback.data[3] === 0 && readback.data[15] === 255, "outside readback");
+        var resetCanvas = document.createElement("canvas");
+        resetCanvas.width = 8; resetCanvas.height = 8;
+        var resetContext = resetCanvas.getContext("2d");
+        resetContext.font = "20px monospace"; resetContext.fillStyle = "#ff0000";
+        resetContext.fillRect(0, 0, 8, 8); resetCanvas.width = 8;
+        assert(resetContext.font === "10px sans-serif", "same-size resize state");
+        assert(resetContext.getImageData(0, 0, 1, 1).data[3] === 0, "same-size resize pixels");
+
+        output.textContent = "Canvas 2D passed";
+        output.setAttribute("data-result", "passed");
+      } catch (error) {
+        output.textContent = "Canvas 2D failed: " + String(error);
+        output.setAttribute("data-result", "failed");
+        throw error;
+      }
+    })();
+  </script>
+</body>
+</html>
+

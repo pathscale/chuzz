@@ -699,7 +699,7 @@ impl Browser {
                         // Parsing the same bytes again is the only way to be
                         // certain the document is exactly what the page said.
                         let mut page =
-                            blitz_script::ScriptDocument::from_html(&html, make_config())
+                            crate::webgpu::script_document(&html, make_config())
                                 .with_fetcher(crate::script_fetch::PageScripts::new(
                                     scripts,
                                     Arc::clone(&net),
@@ -726,7 +726,7 @@ impl Browser {
                     scripts,
                     wasm: None,
                 } => {
-                    let mut page = blitz_script::ScriptDocument::from_html(&html, make_config())
+                    let mut page = crate::webgpu::script_document(&html, make_config())
                         .with_fetcher(crate::script_fetch::PageScripts::new(
                             scripts,
                             Arc::clone(&net),

@@ -1884,7 +1884,7 @@ pub async fn load_for_capture(
 
     #[cfg(feature = "javascript")]
     {
-        let document = blitz_script::ScriptDocument::from_html(&html, config);
+        let document = crate::webgpu::script_document(&html, config);
         let mut scripts: HashMap<Url, String> = HashMap::new();
         for url in document.external_script_urls() {
             if scripts.contains_key(&url) {
