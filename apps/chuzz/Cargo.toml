@@ -71,6 +71,11 @@ javascript = [
   "dep:ps-rust_h264",
   "dep:symphonia",
   "dep:cpal",
+  "dep:anyrender",
+  "dep:anyrender_vello_cpu",
+  "dep:peniko",
+  "dep:parley",
+  "dep:skrifa",
 ]
 # Opt in for rendered QA as well as GUI builds. A minimal headless embedder
 # can still omit font discovery and provide its own faces.
@@ -150,6 +155,11 @@ brotli.workspace = true
 image = { workspace = true, default-features = false }
 anyrender = { workspace = true, optional = true }
 anyrender_vello_cpu = { workspace = true, optional = true }
+# These are already in Blitz's renderer and text graph. Naming their public
+# types lets the canvas use the same painter, font collection and outlines.
+peniko = { version = "^0.6", optional = true }
+parley = { version = "^0.10", default-features = false, features = ["std"], optional = true }
+skrifa = { version = "^0.42", default-features = false, features = ["std"], optional = true }
 blitz-paint = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 flate2.workspace = true
