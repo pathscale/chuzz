@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WEBGPU7 colour and alpha QA</title>
+  <style>
+    body { margin: 24px; background: #182335; color: white; font-family: sans-serif; }
+    button { padding: 8px 16px; }
+    .frames { display: flex; flex-wrap: wrap; gap: 24px; }
+    .stage { position: relative; width: 256px; height: 256px; background: #182335; }
+    .star { position: absolute; width: 6px; height: 6px; background: white; border-radius: 50%; }
+    .one { left: 20px; top: 24px; }
+    .two { left: 232px; top: 218px; }
+    .three { left: 24px; top: 224px; }
+    .stage canvas { position: absolute; left: 0; top: 0; width: 256px; height: 256px; }
+    #matrix { width: 384px; height: 128px; image-rendering: pixelated; }
+    #result { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>WEBGPU7 colour and alpha QA</h1>
+  <button id="run" type="button">Run colour and alpha checks</button>
+  <p id="result" role="status">Ready</p>
+  <p>Six cube faces, with base level above and mip level below.</p>
+  <canvas id="matrix" width="192" height="64" aria-label="Cube colour samples"></canvas>
+  <div class="frames">
+    <div>
+      <p>Premultiplied WebGPU canvas</p>
+      <div class="stage">
+        <span class="star one"></span><span class="star two"></span><span class="star three"></span>
+        <canvas id="planet" width="256" height="256" aria-label="Lit planet with transparent surroundings"></canvas>
+      </div>
+    </div>
+    <div>
+      <p>Live canvas copied to Canvas 2D</p>
+      <div class="stage">
+        <span class="star one"></span><span class="star two"></span><span class="star three"></span>
+        <canvas id="live" width="256" height="256" aria-label="Live transparent canvas copy"></canvas>
+      </div>
+    </div>
+    <div>
+      <p>Presented canvas copied to Canvas 2D</p>
+      <div class="stage">
+        <span class="star one"></span><span class="star two"></span><span class="star three"></span>
+        <canvas id="presented" width="256" height="256" aria-label="Presented transparent canvas copy"></canvas>
+      </div>
+    </div>
+    <div>
+      <p>Opaque WebGPU canvas</p>
+      <div class="stage">
+        <span class="star one"></span><span class="star two"></span><span class="star three"></span>
+        <canvas id="opaque" width="256" height="256" aria-label="Opaque planet canvas"></canvas>
+      </div>
+    </div>
+    <div>
+      <p>Live opaque canvas copied to Canvas 2D</p>
+      <div class="stage">
+        <span class="star one"></span><span class="star two"></span><span class="star three"></span>
+        <canvas id="opaque-copy" width="256" height="256" aria-label="Live opaque canvas copy"></canvas>
+      </div>
+    </div>
+  </div>
+  <script type="module">
+    const result = document.getElementById("result");
+    const button = document.getElementById("run");
+    const tint = [.5, 1, .25, 1];
+    const bias = [.05, .02, .1, 0];
+    const faces = Array.from({ length: 6 }, (_, face) => [
+      180 + face * 8, 100 + face * 12, 60 + face * 10, 255
+    ]);
+    const mips = Array.from({ length: 6 }, (_, face) => [
+      60 + face * 9, 200 - face * 11, 120 + face * 7, 255
+    ]);
+    const vertexCode = `
+      struct Vertex {
+        @builtin(position) position: vec4<f32>,
+        @location(0) uv: vec2<f32>
+      }
+      @vertex fn vertex(@builtin(vertex_index) index: u32) -> Vertex {
+        let coordinates = array<vec2<f32>, 3>(
+          vec2<f32>(0.0, 0.0), vec2<f32>(2.0, 0.0), vec2<f32>(0.0, 2.0));
+        var output: Vertex;
+        output.uv = coordinates[index];
+        output.position = vec4<f32>(
+          output.uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.2, 1.0);
+        return output;
+      }
+      fn encode(value: vec3<f32>) -> vec3<f32> {
+        let low = value * 12.92;
+        let high = 1.055 * pow(max(value, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+        return select(high, low, value <= vec3<f32>(0.0031308));
+      }
+    `;
+    function assert(value, message) {
+      if (!value) throw new Error(message);
+    }
+    function near(actual, expected, label, tolerance = 2) {
+      assert(actual.every((value, index) => Math.abs(value - expected[index]) <= tolerance),
+        label + ": got " + actual.join(",") + "; expected " + expected.join(","));
+    }
+    function decode(value) {
+      return value <= .04045 ? value / 12.92 : Math.pow((value + .055) / 1.055, 2.4);
+    }
+    function encode(value) {
+      return value <= .0031308 ? value * 12.92 : 1.055 * Math.pow(value, 1 / 2.4) - .055;
+    }
+    function pixel(bytes, row, x, y, bgra = false) {
+      const offset = y * row + x * 4;
+      const value = Array.from(bytes.slice(offset, offset + 4));
+      if (bgra) [value[0], value[2]] = [value[2], value[0]];
+      return value;
+    }
+    function copy2D(source, destination = document.createElement("canvas")) {
+      destination.width = source.width;
+      destination.height = source.height;
+      const context = destination.getContext("2d");
+      assert(context, "Canvas 2D unavailable");
+      context.drawImage(source, 0, 0);
+      return context.getImageData(0, 0, source.width, source.height).data;
+    }
+    function configure(device, canvas, format, alphaMode, srgbView = false) {
+      const context = canvas.getContext("webgpu");
+      assert(context, "WebGPU canvas unavailable");
+      context.configure({
+        device, format, alphaMode,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        viewFormats: srgbView ? [format + "-srgb"] : []
+      });
+      const configuration = context.getConfiguration();
+      assert(configuration.alphaMode === alphaMode, "canvas alphaMode changed");
+      return context;
+    }
+    function cube(device, srgb) {
+      const texture = device.createTexture({
+        size: [3, 3, 6], mipLevelCount: 2,
+        format: srgb ? "rgba8unorm-srgb" : "rgba8unorm",
+        usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING
+      });
+      // The view offset, layout offset, padded rows and padded layers are distinct.
+      const bytes = new Uint8Array(9 + 8 + 6 * 64 + 7);
+      bytes.fill(237);
+      for (let face = 0; face < 6; face++) {
+        for (let y = 0; y < 3; y++) {
+          for (let x = 0; x < 3; x++) {
+            bytes.set(faces[face], 9 + 8 + face * 64 + y * 16 + x * 4);
+          }
+        }
+      }
+      device.queue.writeTexture(
+        { texture },
+        new DataView(bytes.buffer, 9, 8 + 6 * 64),
+        { offset: 8, bytesPerRow: 16, rowsPerImage: 4 },
+        [3, 3, 6]
+      );
+      bytes.fill(0);
+      for (let face = 0; face < 6; face++) {
+        const data = new Uint8Array(16);
+        data.set(mips[face], 8);
+        device.queue.writeTexture(
+          { texture, mipLevel: 1, origin: [0, 0, face] },
+          data.subarray(4, 12), { offset: 4 }, [1, 1]
+        );
+        data.fill(0);
+      }
+      return texture;
+    }
+    function uniforms(device) {
+      const offset = device.limits.minUniformBufferOffsetAlignment;
+      const buffer = device.createBuffer({
+        size: offset + 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+      });
+      const values = new Float32Array(new ArrayBuffer(32), 8, 6);
+      values.set([9, ...tint, 9]);
+      device.queue.writeBuffer(buffer, offset, values, 1, 4);
+      values.fill(0);
+      const backing = new ArrayBuffer(40);
+      new Float32Array(backing, 12, 4).set(bias);
+      device.queue.writeBuffer(buffer, offset + 16, new DataView(backing, 8, 24), 4, 16);
+      new Uint8Array(backing).fill(0);
+      return { buffer, offset, size: 32 };
+    }
+    function pipeline(device, code, format, depth = false) {
+      const module = device.createShaderModule({ code: vertexCode + code });
+      return device.createRenderPipeline({
+        layout: "auto",
+        vertex: { module, entryPoint: "vertex" },
+        fragment: { module, entryPoint: "fragment", targets: [{ format }] },
+        ...(depth ? {
+          depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+          multisample: { count: 4 }
+        } : {})
+      });
+    }
+    function cubeGroup(device, renderPipeline, texture, uniform) {
+      return device.createBindGroup({
+        layout: renderPipeline.getBindGroupLayout(0),
+        entries: [
+          {
+            binding: 0,
+            resource: device.createSampler({
+              addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
+              addressModeW: "clamp-to-edge", minFilter: "nearest", magFilter: "nearest",
+              mipmapFilter: "nearest", lodMinClamp: 0, lodMaxClamp: 1
+            })
+          },
+          {
+            binding: 1,
+            resource: texture.createView({
+              dimension: "cube", baseArrayLayer: 0, arrayLayerCount: 6,
+              baseMipLevel: 0, mipLevelCount: 2
+            })
+          },
+          { binding: 2, resource: uniform }
+        ]
+      });
+    }
+    const cubeBindings = `
+      struct Parameters { tint: vec4<f32>, bias: vec4<f32> }
+      @group(0) @binding(0) var imageSampler: sampler;
+      @group(0) @binding(1) var image: texture_cube<f32>;
+      @group(0) @binding(2) var<uniform> parameters: Parameters;
+    `;
+    async function readCanvas(device, canvas, current, destination) {
+      const row = Math.ceil(canvas.width * 4 / 256) * 256;
+      const buffer = device.createBuffer({
+        size: row * canvas.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+      });
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer(
+        { texture: current }, { buffer, bytesPerRow: row, rowsPerImage: canvas.height },
+        [canvas.width, canvas.height]
+      );
+      device.queue.submit([encoder.finish()]);
+      // Read while the canvas current texture is still live, before yielding.
+      const live = copy2D(canvas, destination);
+      await buffer.mapAsync(GPUMapMode.READ);
+      const bytes = new Uint8Array(buffer.getMappedRange()).slice();
+      buffer.unmap();
+      buffer.destroy();
+      await device.queue.onSubmittedWorkDone();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return { bytes, row, live };
+    }
+    async function colourCase(device, format, srgbCube, srgbView) {
+      const label = format + " cube=" + (srgbCube ? "srgb" : "linear") +
+        " view=" + (srgbView ? "srgb" : "unorm");
+      result.textContent = "Running: " + label;
+      const canvas = document.getElementById("matrix");
+      const context = configure(device, canvas, format, "opaque", srgbView);
+      const image = cube(device, srgbCube);
+      const uniform = uniforms(device);
+      const scene = pipeline(device, cubeBindings + `
+        @fragment fn fragment(input: Vertex) -> @location(0) vec4<f32> {
+          let directions = array<vec3<f32>, 6>(
+            vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(-1.0, 0.0, 0.0),
+            vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, -1.0, 0.0),
+            vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0, 0.0, -1.0));
+          let face = min(u32(input.uv.x * 6.0), 5u);
+          let level = select(0.0, 0.75, input.uv.y >= 0.5);
+          let color = textureSampleLevel(image, imageSampler, directions[face], level);
+          return vec4<f32>(color.rgb * parameters.tint.rgb + parameters.bias.rgb, 1.0);
+        }
+      `, "rgba16float", true);
+      const behind = pipeline(device, `
+        @fragment fn fragment() -> @location(0) vec4<f32> {
+          return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+      `, "rgba16float", true);
+      const resolved = device.createTexture({
+        size: [192, 64], format: "rgba16float",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+      });
+      const msaa = device.createTexture({
+        size: [192, 64], format: "rgba16float", sampleCount: 4,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+      });
+      const depth = device.createTexture({
+        size: [192, 64], format: "depth24plus", sampleCount: 4,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+      });
+      const outputFormat = srgbView ? format + "-srgb" : format;
+      const output = pipeline(device, `
+        @group(0) @binding(0) var image: texture_2d<f32>;
+        @fragment fn fragment(input: Vertex) -> @location(0) vec4<f32> {
+          let color = textureLoad(image, vec2<i32>(input.position.xy), 0);
+          return vec4<f32>(${srgbCube && !srgbView ? "encode(color.rgb)" : "color.rgb"}, 1.0);
+        }
+      `, outputFormat);
+      const outputGroup = device.createBindGroup({
+        layout: output.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: resolved.createView() }]
+      });
+      const current = context.getCurrentTexture();
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: msaa.createView(), resolveTarget: resolved.createView(),
+          clearValue: [0, 0, 0, 1], loadOp: "clear", storeOp: "discard"
+        }],
+        depthStencilAttachment: {
+          view: depth.createView(), depthClearValue: 1,
+          depthLoadOp: "clear", depthStoreOp: "discard"
+        }
+      });
+      pass.setPipeline(scene);
+      pass.setBindGroup(0, cubeGroup(device, scene, image, uniform));
+      pass.draw(3);
+      // Equal depth fails "less". A missing depth state would erase the samples.
+      pass.setPipeline(behind);
+      pass.draw(3);
+      pass.end();
+      const finalPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: current.createView({ format: outputFormat }),
+          clearValue: [0, 0, 0, 0], loadOp: "clear", storeOp: "store"
+        }]
+      });
+      finalPass.setPipeline(output);
+      finalPass.setBindGroup(0, outputGroup);
+      finalPass.draw(3);
+      finalPass.end();
+      device.queue.submit([encoder.finish()]);
+      const read = await readCanvas(device, canvas, current);
+      const presented = copy2D(canvas);
+      for (let level = 0; level < 2; level++) {
+        for (let face = 0; face < 6; face++) {
+          const source = (level ? mips : faces)[face];
+          const expected = source.slice(0, 3).map((value, channel) => {
+            let linear = value / 255;
+            if (srgbCube) linear = decode(linear);
+            linear = linear * tint[channel] + bias[channel];
+            return Math.round(255 * (srgbCube || srgbView ? encode(linear) : linear));
+          });
+          expected.push(255);
+          const x = face * 32 + 16;
+          const y = level * 32 + 16;
+          const sample = label + " face=" + face + " mip=" + level;
+          near(pixel(read.bytes, read.row, x, y, format === "bgra8unorm"), expected, sample);
+          near(pixel(read.live, 192 * 4, x, y), expected, sample + " live Canvas 2D");
+          near(pixel(presented, 192 * 4, x, y), expected, sample + " presented Canvas 2D");
+        }
+      }
+      for (const resource of [image, uniform.buffer, resolved, msaa, depth]) resource.destroy();
+    }
+    async function planetCase(device, format, alphaMode) {
+      const transparent = alphaMode === "premultiplied";
+      const canvas = document.getElementById(transparent ? "planet" : "opaque");
+      const destination = document.getElementById(transparent ? "live" : "opaque-copy");
+      const context = configure(device, canvas, format, alphaMode);
+      const image = cube(device, true);
+      const uniform = uniforms(device);
+      const renderPipeline = pipeline(device, cubeBindings + `
+        @fragment fn fragment(input: Vertex) -> @location(0) vec4<f32> {
+          if input.uv.x > 0.85 && input.uv.y < 0.15 {
+            return vec4<f32>(0.5, 0.25, 0.125, 0.5);
+          }
+          let point = input.uv * 2.0 - 1.0;
+          let radius = length(point);
+          if radius > 0.73 { discard; }
+          let normal = normalize(vec3<f32>(
+            point / 0.73, sqrt(max(0.0, 1.0 - radius * radius / (0.73 * 0.73)))));
+          let surface = textureSampleLevel(image, imageSampler, normal, 0.0).rgb;
+          let light = 0.12 + 0.88 * max(dot(normal, normalize(vec3<f32>(-0.4, -0.3, 0.85))), 0.0);
+          let color = encode((surface * parameters.tint.rgb + parameters.bias.rgb) * light);
+          let alpha = 1.0 - smoothstep(0.69, 0.73, radius);
+          return vec4<f32>(color * alpha, alpha);
+        }
+      `, format);
+      const current = context.getCurrentTexture();
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: current.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear", storeOp: "store"
+        }]
+      });
+      pass.setPipeline(renderPipeline);
+      pass.setBindGroup(0, cubeGroup(device, renderPipeline, image, uniform));
+      pass.draw(3);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      const read = await readCanvas(device, canvas, current, destination);
+      const published = copy2D(canvas,
+        transparent ? document.getElementById("presented") : document.createElement("canvas"));
+      const label = format + " " + alphaMode;
+      near(pixel(read.bytes, read.row, 20, 24, format === "bgra8unorm"), [0, 0, 0, 0],
+        label + " raw clear");
+      near(pixel(read.bytes, read.row, 240, 16, format === "bgra8unorm"), [128, 64, 32, 128],
+        label + " raw alpha patch");
+      const corner = [0, 0, 0, transparent ? 0 : 255];
+      const patch = transparent ? [255, 128, 64, 128] : [128, 64, 32, 255];
+      for (const [name, bytes] of [["live", read.live], ["presented", published]]) {
+        near(pixel(bytes, 256 * 4, 20, 24), corner, label + " " + name + " clear");
+        near(pixel(bytes, 256 * 4, 240, 16), patch, label + " " + name + " alpha patch");
+        const centre = pixel(bytes, 256 * 4, 128, 128);
+        assert(centre[0] > 80 && centre[1] > 80 && centre[2] > 50 && centre[3] === 255,
+          label + " " + name + " planet centre is dark: " + centre.join(","));
+      }
+      image.destroy();
+      uniform.buffer.destroy();
+    }
+    button.onclick = async () => {
+      button.setAttribute("disabled", "");
+      result.textContent = "Running";
+      let failed = false;
+      const fail = message => {
+        failed = true;
+        result.textContent = "FAIL: " + message;
+        console.error("WEBGPU7: " + message);
+      };
+      const timeout = setTimeout(() => fail("colour and alpha checks timed out"), 60000);
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        assert(adapter, "no WebGPU adapter");
+        const device = await adapter.requestDevice();
+        device.addEventListener("uncapturederror", event => fail(event.error.message));
+        device.lost.then(info => fail(info.message || "device lost"));
+        device.pushErrorScope("validation");
+        for (const format of ["rgba8unorm", "bgra8unorm"]) {
+          for (const srgbCube of [false, true]) {
+            for (const srgbView of [false, true]) {
+              await colourCase(device, format, srgbCube, srgbView);
+            }
+          }
+          await planetCase(device, format, "premultiplied");
+          await planetCase(device, format, "opaque");
+        }
+        const error = await device.popErrorScope();
+        assert(!error, error ? error.message : "");
+        if (!failed) {
+          result.textContent = "READY: WEBGPU7 colour and alpha PASS";
+          console.log("READY: WEBGPU7 colour and alpha PASS");
+        }
+      } catch (error) {
+        fail(error.message);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+  </script>
+</body>
+</html>

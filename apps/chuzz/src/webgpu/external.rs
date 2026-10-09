@@ -460,6 +460,10 @@ impl DeviceConnection {
                             ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
                         };
                     }
+                } else {
+                    // Texture sources are live WebGPU canvases. The other
+                    // supported alpha mode is opaque, matching present_canvas.
+                    pixel[3] = 255;
                 }
                 rgba.extend_from_slice(&pixel);
             }
