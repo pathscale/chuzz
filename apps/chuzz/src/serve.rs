@@ -52,7 +52,7 @@ use blitz_control_protocol::condense;
 use blitz_control_protocol::document::{DocumentCapture, inspect_document, snapshot_document};
 use blitz_control_protocol::in_process::DocumentControl;
 use blitz_control_protocol::latest::{Latest, Once};
-use blitz_control_protocol::server::{AgentControlServer, ControlBridgeRequest, Host};
+use blitz_control_protocol::server::ControlBridgeRequest;
 use blitz_control_protocol::{
     AgentAction, AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
     WindowComposition,
@@ -62,6 +62,9 @@ use blitz_dom::NodeId;
 use blitz_script::ScriptDocument;
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
+
+#[path = "serve_supervisor.rs"]
+mod supervisor;
 
 fn trace(message: &str) {
     eprintln!("chuzz-headless: {message}");
@@ -1295,26 +1298,46 @@ fn settle_immediate(
     let started = std::time::Instant::now();
     let mut iterations = 0_u32;
     loop {
-        if !document.poll(None) {
-            break;
-        }
-        iterations = iterations.saturating_add(1);
         if started.elapsed() >= deadline {
-            document.inner_mut().resolve(clock.elapsed().as_secs_f64());
             return Err(SettleFailure {
                 painted: document.inner().paint_damage().generation != before,
                 error: DebugError {
-                    code: "documentNotQuiescent".into(),
+                    code: "pageUnresponsive".into(),
                     message: format!(
-                        "the document still had immediate work after {iterations} settle \
-                         iterations and {}ms",
+                        "the document did not settle after {iterations} iterations and {}ms",
                         deadline.as_millis()
                     ),
                 },
             });
         }
+        let progressed = {
+            let _turn = supervisor::operation(supervisor::Operation::Poll);
+            document.poll(None)
+        };
+        iterations = iterations.saturating_add(1);
+        if started.elapsed() >= deadline {
+            continue;
+        }
+        if !progressed {
+            break;
+        }
     }
-    document.inner_mut().resolve(clock.elapsed().as_secs_f64());
+    {
+        let _resolve = supervisor::operation(supervisor::Operation::Resolve);
+        document.inner_mut().resolve(clock.elapsed().as_secs_f64());
+    }
+    if started.elapsed() >= deadline {
+        return Err(SettleFailure {
+            painted: document.inner().paint_damage().generation != before,
+            error: DebugError {
+                code: "pageUnresponsive".into(),
+                message: format!(
+                    "the document exceeded its {}ms settle deadline while resolving layout",
+                    deadline.as_millis()
+                ),
+            },
+        });
+    }
     Ok(document.inner().paint_damage().generation != before)
 }
 
@@ -1324,9 +1347,6 @@ fn settle_immediate(
 /// noticeably slowed by it, long enough that an idle host is not a spin.
 const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(8);
 
-/// A bound on one idle turn, so a page that always has work still leaves the
-/// loop able to answer. The next tick picks up where this one stopped.
-const MAX_IDLE_TURNS: u32 = 512;
 
 /// How many missed turns one reply may hand back to the page.
 ///
@@ -1349,17 +1369,19 @@ const MAX_CATCHUP_TURNS: u32 = 64;
 /// Returns whether the page painted.
 fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> bool {
     let before = document.inner().paint_damage().generation;
-    let mut turns = 0_u32;
-    while document.poll(None) {
-        turns = turns.saturating_add(1);
-        if turns >= MAX_IDLE_TURNS {
-            break;
-        }
+    // Return to the request receiver between document tasks. A poll that
+    // itself never returns is terminated by the supervisor's Poll deadline.
+    let progressed = {
+        let _turn = supervisor::operation(supervisor::Operation::Poll);
+        document.poll(None)
+    };
+    {
+        let _resolve = supervisor::operation(supervisor::Operation::Resolve);
+        document.inner_mut().resolve(clock.elapsed().as_secs_f64());
     }
-    document.inner_mut().resolve(clock.elapsed().as_secs_f64());
     let painted = document.inner().paint_damage().generation != before;
-    if turns > 0 || painted {
-        verbose(&format!("tick turns={turns} painted={painted}"));
+    if progressed || painted {
+        verbose(&format!("tick progressed={progressed} painted={painted}"));
     }
     painted
 }
@@ -1375,14 +1397,13 @@ fn settle_response(
             *painted = did_paint;
             DebugResponse::Ack
         }
-        Err(failure) => {
+        Err(mut failure) => {
             *painted = failure.painted;
-            // The action has already been applied. A busy page is not a failed
-            // click, and reporting it as one invites callers to repeat writes.
-            // Leave the remaining work to the idle loop; ps-qa waits for the
-            // declared outcome within its own deadline.
+            failure.error.message.push_str(
+                "; the action was applied before settling failed, so do not retry it automatically",
+            );
             verbose(&failure.error.message);
-            DebugResponse::Ack
+            DebugResponse::Error(failure.error)
         }
     }
 }
@@ -1501,6 +1522,7 @@ struct StoredState {
 /// through the shim's internals, so this keeps working the day storage stops
 /// being a closure over an object.
 fn snapshot_storage(document: &mut ScriptDocument, origin: &str) -> StoredState {
+    let _storage = supervisor::operation(supervisor::Operation::Storage);
     fn dump(document: &mut ScriptDocument, store: &str) -> String {
         let script = format!(
             "(function () {{
@@ -1574,6 +1596,7 @@ fn commit_render(events: &Latest<DebugEvent>, revision: &mut u64) {
     events.set_now(DebugEvent::PaintCommitted {
         revision: *revision,
     });
+    supervisor::painted();
 }
 
 fn follow_navigation(
@@ -1585,6 +1608,7 @@ fn follow_navigation(
     render_events: &Latest<DebugEvent>,
     render_revision: &mut u64,
 ) -> Result<(), String> {
+    let _navigation = supervisor::operation(supervisor::Operation::Load);
     let carried = if policy.bot_child {
         None
     } else {
@@ -1594,12 +1618,35 @@ fn follow_navigation(
     let arriving = next.inner().url().origin().ascii_serialization();
     *document = *next;
     *origin = arriving;
+    supervisor::ready(document.inner().url());
     commit_render(render_events, render_revision);
     Ok(())
 }
 
 /// Load `target` and serve it over the inspection socket until killed.
 pub fn serve(target: &str) -> Result<(), String> {
+    if supervisor::is_worker() {
+        let result = serve_page(target);
+        let message = result
+            .as_ref()
+            .err()
+            .map(String::as_str)
+            .unwrap_or("the page document loop finished");
+        supervisor::failed(message);
+        result
+    } else {
+        supervisor::serve(target)
+    }
+}
+
+fn serve_page(target: &str) -> Result<(), String> {
+    // Start the private reader before loading, so losing the supervisor also
+    // stops a worker wedged during bootstrap.
+    let (request_tx, request_rx) = mpsc::sync_channel::<(
+        ControlBridgeRequest,
+        Arc<Once<DebugResponse>>,
+    )>(64);
+    supervisor::start_worker(request_tx)?;
     let policy = HeadlessPolicy::from_env()?;
     let _egress_proxy = if policy.bot_child {
         Some(EgressProxy::start(policy.clone())?)
@@ -1622,7 +1669,7 @@ pub fn serve(target: &str) -> Result<(), String> {
     policy.validate_target(&target)?;
     let (width, height) = policy.view_dimensions()?;
     let settle_deadline =
-        std::time::Duration::from_millis(u64::from(dimension("QA_HOST_SETTLE_MS", 100)?));
+        std::time::Duration::from_millis(u64::from(dimension("QA_HOST_SETTLE_MS", 100)?.min(1000)));
 
     // Keep the process worker pool and socket reactor alive for the whole run.
     let _runtime = nagoya::runtime::background();
@@ -1658,10 +1705,19 @@ pub fn serve(target: &str) -> Result<(), String> {
         }
         Target::Page(url) => url.clone(),
     };
+    // A recovered local page needs a fresh server origin. Carry its route,
+    // rather than trying to reconnect to the killed worker's old port.
+    let url = match supervisor::launch_route() {
+        Some(route) => url
+            .join(&route)
+            .map_err(|error| format!("could not resolve the worker launch route: {error}"))?,
+        None => url,
+    };
 
     let cookies = if policy.bot_child {
         Arc::new(crate::cookie_store::BrowserCookieStore::default())
     } else {
+        let _storage = supervisor::operation(supervisor::Operation::Storage);
         Arc::new(
             nagoya::block_on(crate::cookie_store::BrowserCookieStore::open(
                 crate::cookie_store::profile_directory().join("cookies"),
@@ -1683,6 +1739,9 @@ pub fn serve(target: &str) -> Result<(), String> {
     let animation_clock = std::time::Instant::now();
 
     let load = |url: Url, carried: Option<&StoredState>| -> Result<Box<ScriptDocument>, String> {
+        // Includes HTML and external-script fetches, script execution, loader
+        // pumping, shim evaluation and the initial viewport settle.
+        let _load = supervisor::operation(supervisor::Operation::Load);
         policy.validate_url(&url)?;
         trace(&format!("loading {}", display_url(&url, policy.bot_child)));
         let prelude = if policy.bot_child {
@@ -1732,10 +1791,7 @@ pub fn serve(target: &str) -> Result<(), String> {
         // what the viewport change queued, rather than sleeping for a fixed
         // interval before announcing the socket.
         if let Err(failure) = settle_immediate(&mut document, &animation_clock, settle_deadline) {
-            trace(&format!(
-                "the page reached the settle deadline: {}",
-                failure.error.message
-            ));
+            return Err(failure.error.message);
         }
         Ok(document)
     };
@@ -1746,70 +1802,8 @@ pub fn serve(target: &str) -> Result<(), String> {
     let mut origin = document.inner().url().origin().ascii_serialization();
     trace("document ready");
 
-    /*
-     * The bridge hands a request to this thread and waits for the answer.
-     *
-     * A `SyncSender` with a zero-capacity channel would rendezvous, but the
-     * server thread must not block indefinitely if this loop has gone away, so
-     * the reply travels in a per-request `Once` both sides hold: this loop
-     * fills it, the socket task awaits it.
-     */
-    let max_pending_requests = if policy.bot_child {
-        BOT_CHILD_MAX_PENDING_REQUESTS
-    } else {
-        64
-    };
-    let (request_tx, request_rx) = mpsc::sync_channel::<(
-        ControlBridgeRequest,
-        Arc<Once<DebugResponse>>,
-    )>(max_pending_requests);
-
-    let bridge: blitz_control_protocol::server::ControlBridge = Arc::new(move |request| {
-        let answer = Once::new();
-        match request_tx.try_send((request, Arc::clone(&answer))) {
-            Ok(()) => {}
-            Err(mpsc::TrySendError::Full(_)) => {
-                verbose("request refused: queue full");
-                answer.fill(DebugResponse::Error(DebugError {
-                    code: "documentBusy".into(),
-                    message: format!(
-                        "the document already has {max_pending_requests} pending inspection \
-                         requests"
-                    ),
-                }));
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                verbose("request refused: document gone");
-                answer.fill(DebugResponse::Error(DebugError {
-                    code: "documentUnavailable".into(),
-                    message: "the document is no longer serving".into(),
-                }));
-            }
-        }
-        answer
-    });
-
+    supervisor::ready(document.inner().url());
     let render_events = Latest::new();
-    let render_event_receiver = Arc::clone(&render_events);
-    // The production child exposes semantic controls only. QA can also use
-    // diagnostics because its host is built with the capture feature.
-    let host = Host {
-        name: "chuzz-headless".to_owned(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-        diagnostics: !policy.bot_child,
-    };
-    let server = AgentControlServer::start_with_events(bridge, host, render_event_receiver)
-        .map_err(|error| format!("could not host the control socket: {error}"))?;
-    trace(&format!(
-        "inspection socket listening: {}",
-        server.descriptor_path().display()
-    ));
-    // The descriptor path on stdout, so a caller can attach without guessing
-    // it. `ps-qa --app` takes a descriptor, and a sweep that has to search a
-    // directory races every other instance on the machine.
-    println!("{}", server.descriptor_path().display());
-    use std::io::Write as _;
-    let _ = std::io::stdout().flush();
 
     let mut revision = 0_u64;
     let mut render_revision = 0_u64;
@@ -1819,18 +1813,36 @@ pub fn serve(target: &str) -> Result<(), String> {
     // When the page was last allowed to run. A request resets nothing on its
     // own, so this is what keeps the guarantee below true under load.
     let mut last_tick = std::time::Instant::now();
+    let mut queued_request = None;
     loop {
         if policy.bot_child && document.inner().tree().iter().count() > BOT_CHILD_MAX_PAGE_NODES {
             trace("the page exceeded the bot browser node limit");
             break;
         }
-        let (request, reply) = match request_rx.recv_timeout(IDLE_TICK) {
+        let received = match queued_request.take() {
+            Some(pair) => Ok(pair),
+            None => request_rx.recv_timeout(IDLE_TICK),
+        };
+        let (request, reply) = match received {
             Ok(pair) => pair,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if tick_document(&mut document, &animation_clock) {
                     commit_render(&render_events, &mut render_revision);
                 }
                 last_tick = std::time::Instant::now();
+                if let Some(destination) = navigation.take()
+                    && let Err(error) = follow_navigation(
+                        destination,
+                        &mut document,
+                        &mut origin,
+                        &policy,
+                        &load,
+                        &render_events,
+                        &mut render_revision,
+                    )
+                {
+                    trace(&format!("the navigation failed, staying put: {error}"));
+                }
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1849,6 +1861,7 @@ pub fn serve(target: &str) -> Result<(), String> {
             ControlBridgeRequest::Agent(AgentControlRequest::Act(_)) => "request act",
             _ => "request other",
         });
+        let request_turn = supervisor::operation(supervisor::Operation::Request);
         let mut painted = false;
         let mut response = match request {
             ControlBridgeRequest::Agent(request) => match request {
@@ -1863,6 +1876,7 @@ pub fn serve(target: &str) -> Result<(), String> {
                     sanitize_inspection(&policy, &document, response)
                 }
                 AgentControlRequest::Act(action) => {
+                    let _action = supervisor::operation(supervisor::Operation::Action);
                     match authorize_action(&policy, &document, &action) {
                         Ok(()) => match control.act(&mut *document, action) {
                             Ok(()) => settle_response(
@@ -1969,6 +1983,7 @@ pub fn serve(target: &str) -> Result<(), String> {
         }
         // A caller that stopped waiting leaves the `Once` behind unread; that
         // is not a reason to stop serving everyone else.
+        drop(request_turn);
         reply.fill(response);
         // The page runs on a schedule, not only when the socket goes quiet.
         //
@@ -2002,19 +2017,29 @@ pub fn serve(target: &str) -> Result<(), String> {
         // After the reply, never before it. Ticking first resolves layout
         // underneath the request that is about to be answered, and an inspect
         // then reports a tree whose every box is 0x0.
+        let catchup_started = std::time::Instant::now();
         let mut owed = 0_u32;
-        while last_tick.elapsed() >= IDLE_TICK && owed < MAX_CATCHUP_TURNS {
+        while last_tick.elapsed() >= IDLE_TICK
+            && owed < MAX_CATCHUP_TURNS
+            && catchup_started.elapsed() < IDLE_TICK
+        {
+            match request_rx.try_recv() {
+                Ok(pair) => {
+                    queued_request = Some(pair);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
             if tick_document(&mut document, &animation_clock) {
                 commit_render(&render_events, &mut render_revision);
             }
             last_tick += IDLE_TICK;
             owed += 1;
         }
-        // A request that took longer than the cap allows leaves `last_tick` in
-        // the past, which would make the next reply owe those turns again for
-        // ever. The debt is forgiven at the cap: the page is behind, and the
-        // honest thing is to carry on from now.
-        if owed >= MAX_CATCHUP_TURNS {
+        // Forgive debt at either cap. A single slow poll is also bounded by
+        // the supervisor, independently of whether this loop returns.
+        if owed >= MAX_CATCHUP_TURNS || catchup_started.elapsed() >= IDLE_TICK {
             last_tick = std::time::Instant::now();
         }
 
@@ -2031,7 +2056,9 @@ pub fn serve(target: &str) -> Result<(), String> {
          * a page that is not the one under test, and the reason would be four
          * checks back in the log.
          */
-        if let Some(destination) = navigation.take() {
+        if queued_request.is_none()
+            && let Some(destination) = navigation.take()
+        {
             trace(&format!(
                 "following a link to {}",
                 display_url(&destination, policy.bot_child)
@@ -2052,6 +2079,7 @@ pub fn serve(target: &str) -> Result<(), String> {
     }
 
     trace("inspection host finished");
+    let _flush = supervisor::operation(supervisor::Operation::Storage);
     nagoya::block_on(net_provider.cookie_store().flush())
         .map_err(|error| format!("could not flush browser cookies: {error}"))?;
     Ok(())
