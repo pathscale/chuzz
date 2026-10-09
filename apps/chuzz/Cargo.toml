@@ -16,22 +16,18 @@ publish = true
 
 [[bin]]
 name = "chuzz-gui"
-path = "src/tauri_main.rs"
-# The window, and the only thing that needs Tauri. Off this feature `tauri`
-# leaves the graph, and with it `muda` -> `gtk` -> `glib-sys` and
-# `tauri-runtime` -> `webkit2gtk`. Neither is reachable from a binary that
-# never opens a window, and on Linux their absence is the difference between
-# building and needing GTK development headers.
+path = "src/gui_main.rs"
+# The native window belongs to izumo. A headless build omits the shell.
 required-features = ["gui"]
 
 # The same browser with no window, serving one page over the inspection socket
-# for `ps-qa` to drive. See `src/serve.rs` for why it is a mode of this binary's
+# for `ps-qa` to drive. See `src/serve.rs` for why this is a mode of the binary's
 # package rather than a second host in another repo.
 #
 # `capture` for the CPU rasteriser, because a visual assertion is a screenshot
 # request over the socket; `javascript` because a page whose scripts never ran
 # is not the page anyone is asking about. Both are defaults, so this is a
-# statement of what the binary needs rather than a build to remember to ask for.
+# statement of what the binary needs rather than a build to remember to ask.
 [[bin]]
 name = "chuzz-headless"
 path = "src/headless_main.rs"
@@ -50,20 +46,16 @@ default = [
   "webp",
   "avif",
 ]
-# The window and its Tauri surface: `browser`, `frontend` and the `chuzz-gui`
+# The window and its izumo surface: `browser`, `frontend` and the `chuzz-gui`
 # binary. A headless build turns this off and keeps the engine, the loader, the
 # rasteriser and the inspection socket, which is everything ps-qa drives.
 gui = [
-  "dep:tauri",
   "dep:izumo",
-  "dep:tauri-build",
   "izumo/runtime",
   # The window paints glyphs, so it wants real faces. On Linux this reaches
   # parley's enumeration and therefore fontconfig, which is why it is here and
   # not in the base dependencies. Rendered QA opts in through the same feature.
   "system-fonts",
-  "dep:dioxus-native",
-  "dioxus-native/system-fonts",
 ]
 # Let a WebAssembly guest build a page, through `--wasm` in the window and
 # `--capture-wasm` headlessly. On by default because it is a way of opening a
@@ -87,8 +79,12 @@ webp = ["image/webp"]
 # needs the CPU rasteriser, and that reasoning cost more than it saved: a plain
 # `cargo build` produced a binary where `--capture` was silently not a flag,
 # which reads as the flag being broken rather than absent. Every build script
-# that wanted it had to remember to ask, and `build-app.sh` — the one the
-# release workflow runs — did not, so the shipped app could not capture at all.
+# that wanted it had to remember to ask, and `build-app.sh` (the one the
+# release workflow runs) did not, so the shipped app could not capture at all.
+#
+# This is a standalone feature set: `--no-default-features --features
+# capture` selects the CPU rasteriser and PNG encoder without requiring the
+# window's Vello renderer.
 #
 # The cost is the rasteriser, blitz-paint and the PNG encoder in every build.
 # None of it is reachable from the window, so it is size, not behaviour.
@@ -96,11 +92,6 @@ webp = ["image/webp"]
 # `--capture-wasm` is the sibling entry point and rides the same flag, so this
 # pulls in `wasm` for the guest binding on top of the rasteriser and the PNG
 # encoder.
-#
-# This is not a standalone feature set: `--no-default-features --features
-# capture` does not build, because dioxus-native rejects a build with no
-# renderer and `capture` names none. Add `vello` if you want a capture-only
-# binary.
 capture = [
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
@@ -109,8 +100,7 @@ capture = [
   "wasm",
 ]
 avif = ["image/avif"]
-vello = ["dioxus-native?/vello"]
-vello-hybrid = ["dioxus-native?/vello-hybrid"]
+vello = ["izumo?/runtime"]
 # `incremental` was a feature flag upstream; PR #599 made it a runtime setting on
 # DocumentConfig, so the forwarding feature no longer has anything to forward to.
 scrollbars = ["blitz-dom/scrollbars"]
@@ -146,74 +136,21 @@ anyrender_vello_cpu = { workspace = true, optional = true }
 blitz-paint = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 flate2.workspace = true
-# Nothing in this crate imports `dioxus_native`. It is here for the window's
-# renderer selection, so it is optional and `gui` turns it on. While it was
-# unconditional it rejected a build that named no renderer, which is why the
-# headless feature set carried `vello`, and `vello` is wgpu, winit and AppKit in
-# a browser that opens no window.
-dioxus-native = { workspace = true, optional = true, features = [
-  "accessibility",
-  "clipboard",
-  "net",
-  "prelude",
-  "svg",
-] }
 nagoya.workspace = true
-# Tokio remains the I/O boundary for Tauri, HTTP, TCP and WebSocket. Portable
-# timers use Nagoya, so this list names only the runtime/synchronisation surface
-# those concrete I/O types require.
-# Every tokio API this crate calls, declared here rather than borrowed from
-# whatever else in the graph happens to enable it. `rt-multi-thread` is
-# `new_multi_thread` and `block_in_place` (serve.rs, script_fetch.rs), `net` and
-# `io-util` the page server's sockets. The headless build has no Tauri to switch
-# them on, and it stopped compiling once chuzz-control no longer pulled tokio in.
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync"] }
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri = { workspace = true, optional = true }
 rustls.workspace = true
+rustls-platform-verifier.workspace = true
 cursor-icon.workspace = true
 cookie_store.workspace = true
 psl.workspace = true
 blitz-control-protocol = { workspace = true, features = ["engine", "server", "capture"] }
 izumo = { workspace = true, optional = true }
-tokio-tungstenite.workspace = true
-futures-util.workspace = true
+nago-wss.workspace = true
 worktable.workspace = true
 
-# The Edit menu hands its keystrokes to winit's view as key events; see
-# `menu_keys` in tauri_main.rs. Already in the tree through winit.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "^0.6"
-objc2-app-kit = { version = "^0.3", default-features = false, features = [
-  "std",
-  "NSApplication",
-  "NSEvent",
-  "NSGraphicsContext",
-  "NSResponder",
-  "NSWindow",
-] }
-objc2-foundation = { version = "^0.3", default-features = false, features = [
-  "std",
-  "NSGeometry",
-  "NSString",
-] }
-
 [dev-dependencies]
-# `flavor = "multi_thread"` in the script-fetch test: the blocking fetch takes
-# the `block_in_place` path, which only the multi-threaded runtime has, and
-# that is the path the capture actually uses.
-# `net` and `io-util` are the inspection test's: it connects to the host's Unix
-# socket and speaks the same framed transport `ps-qa` does.
-tokio = { workspace = true, features = [
-  "io-util",
-  "macros",
-  "net",
-  "rt",
-  "rt-multi-thread",
-  "sync",
-] }
 # Assembles `fixtures/panel.wat` into a module in-process, so the capture test
 # owns its guest instead of borrowing blitz-wasm's demo, and so it needs no
 # wasm32 target and no nested cargo build. See the header of that file.
@@ -221,7 +158,3 @@ wat = "1"
 
 [build-dependencies]
 brotli.workspace = true
-# Only the window needs a Tauri context. Optional so a headless build does not
-# compile `tauri-build` and its two transitives for a binary whose `build.rs`
-# never calls it: the same fault as the runtime dependency, one plane down.
-tauri-build = { version = "2", features = [], optional = true }

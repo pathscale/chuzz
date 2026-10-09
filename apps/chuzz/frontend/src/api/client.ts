@@ -17,7 +17,7 @@ import type {
  * arrives as an event**. A command's return value updates the caller
  * optimistically and the event is what keeps the rest of the window honest.
  *
- * Two implementations satisfy this: `./tauri` talks to Rust, `./mock` is an
+ * Two implementations satisfy this: `./izumo` talks to Rust, `./mock` is an
  * in-memory stand-in that lets the interface run under `rsbuild dev` with no
  * browser engine behind it. Nothing above this file knows which one it has.
  */
@@ -107,3 +107,4 @@ export interface BrowserEvents {
 }
 
 export type BrowserEvent = keyof BrowserEvents;
+

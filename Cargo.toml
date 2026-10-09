@@ -32,15 +32,14 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same range gets the same crate rather than a second copy. To build against
 # a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
 # exercises what a release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.4" }
-blitz-html = { package = "ps-blitz-html", version = "^0.4" }
-blitz-net = { package = "ps-blitz-net", version = "^0.4" }
-blitz-script = { package = "ps-blitz-script", version = "^0.4" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.4" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.5" }
+blitz-html = { package = "ps-blitz-html", version = "^0.5" }
+blitz-net = { package = "ps-blitz-net", version = "^0.5" }
+blitz-script = { package = "ps-blitz-script", version = "^0.5" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.5" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.4" }
-dioxus-native = { package = "ps-dioxus-native", version = "^0.7", default-features = false }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.5" }
 # The MCP framing the control server speaks, same source and feature as
 # izumo uses for its agent-control surface.
 # The one control surface: wire vocabulary, the document core, and both
@@ -81,7 +80,7 @@ anyrender = { package = "ps-anyrender", version = "^0.13" }
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17", features = ["filters"] }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.4" }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.5" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -92,17 +91,10 @@ wasmi = "1.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# The WebSocket client the engine did not have.
-#
-# `rustls-tls-native-roots` for the same reason blitz-net uses rustls: every
-# endpoint-libs backend in the fleet is TLS 1.3 only, and the platform's own
-# TLS on macOS is not. Native roots rather than a compiled-in bundle, so the
-# trust anchors are the machine's.
-tokio-tungstenite = { version = "0.30", default-features = false, features = [
-  "connect",
-  "handshake",
-  "rustls-tls-native-roots",
-] }
+# The WebSocket client runs on nagoya. Supply the TLS configuration explicitly
+# so it uses the process crypto provider and the machine's trust policy.
+nago-wss = { version = "^0.3", default-features = false, features = ["tls", "simd-utf8"] }
+rustls-platform-verifier = "^0.6.2"
 # Named directly only so the binary can install a crypto provider by name. See
 # `install_crypto_provider`: rustls otherwise picks one from crate features and
 # panics at the first handshake when the resolution enables neither provider or
@@ -114,9 +106,7 @@ rustls = { version = "0.23", default-features = false, features = [
 cursor-icon = "^1"
 cookie_store = "^0.22.1"
 psl = "^2"
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-nagoya = "^0.1"
-tokio = "1"
+nagoya = { version = "^0.1", features = ["reactor"] }
 url = "2.5"
 worktable = "^1.11.0"
 tauri = { version = "^2", default-features = false }
@@ -136,7 +126,7 @@ tauri = { version = "^2", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-izumo = { version = "^0.4", default-features = false, features = [
+izumo = { version = "^0.5", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }
@@ -149,7 +139,7 @@ codegen-units = 1
 # A crash report is only as useful as what can be resolved from it: az-gui ships
 # stripped, and its stack came back as 73 identical `__mh_execute_header`
 # entries, which says nothing at all. `line-tables-only` is the cheap half of
-# debug info — file and line for every frame, no variable info — so `atos`
+# debug info: file and line for every frame, no variable info, so `atos`
 # resolves a report without the size and link time of full `debug = 2`.
 debug = "line-tables-only"
 strip = "none"
@@ -163,3 +153,4 @@ strip = "none"
 # The fork is published as `ps-usvg` now and ps-blitz depends on it by version,
 # so the requirement travels with the dependency instead of being restated by
 # every consumer.
+

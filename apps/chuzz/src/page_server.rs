@@ -27,9 +27,10 @@
 //! process is.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use nagoya::net::{TcpListener, TcpStream};
+use nagoya::reactor::{Addr, Reactor};
 
 /// The most a request head may be before it is refused.
 ///
@@ -45,21 +46,22 @@ pub async fn start(root: &Path) -> Result<String, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("could not resolve {}: {error}", root.display()))?;
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
+    let reactor = reactor()?;
+    let handle = reactor.handle();
+    let listener = TcpListener::bind(Addr::localhost(0), &handle)
         .map_err(|error| format!("could not bind a loopback port: {error}"))?;
     let port = listener
         .local_addr()
         .map_err(|error| format!("could not read the bound port: {error}"))?
         .port();
 
-    tokio::spawn(async move {
+    let _ = nagoya::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
             let root = root.clone();
-            tokio::spawn(async move {
+            let _ = nagoya::spawn(async move {
                 if let Err(error) = answer(stream, &root).await {
                     eprintln!("chuzz-headless: page server: {error}");
                 }
@@ -68,6 +70,18 @@ pub async fn start(root: &Path) -> Result<String, String> {
     });
 
     Ok(format!("http://127.0.0.1:{port}/"))
+}
+
+fn reactor() -> Result<&'static Reactor, String> {
+    static REACTOR: OnceLock<Result<Reactor, String>> = OnceLock::new();
+
+    match REACTOR.get_or_init(|| {
+        Reactor::start()
+            .map_err(|error| format!("could not start the page server reactor: {error}"))
+    }) {
+        Ok(reactor) => Ok(reactor),
+        Err(error) => Err(error.clone()),
+    }
 }
 
 async fn answer(mut stream: TcpStream, root: &Path) -> Result<(), String> {
@@ -246,7 +260,7 @@ async fn respond(
     };
     // `Connection: close` rather than keep-alive: one exchange per connection
     // is all a page load needs from a server that exists for the length of one
-    // process, and it means no idle sockets to time out.
+    // process, and returning from `answer` drops the stream after the exchange.
     let head = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
          Cache-Control: no-store\r\nConnection: close\r\n\r\n",
@@ -262,10 +276,7 @@ async fn respond(
             .await
             .map_err(|error| format!("writing the response body: {error}"))?;
     }
-    stream
-        .shutdown()
-        .await
-        .map_err(|error| format!("closing the response: {error}"))
+    Ok(())
 }
 
 #[cfg(test)]

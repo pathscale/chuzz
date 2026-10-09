@@ -1624,27 +1624,17 @@ pub fn serve(target: &str) -> Result<(), String> {
     let settle_deadline =
         std::time::Duration::from_millis(u64::from(dimension("QA_HOST_SETTLE_MS", 100)?));
 
-    // Multi-threaded, and entered for the whole run.
-    //
-    // The page keeps fetching after it is first laid out: images, fonts and
-    // anything a script asks for arrive on the document's channel and are
-    // applied by the next `resolve`. Blitz's net provider issues those with
-    // `tokio::spawn`, which panics outright with no reactor entered, so the
-    // dispatch loop below has to run inside the runtime rather than after it.
-    // The blocking script fetch also takes `block_in_place`, which only the
-    // multi-threaded runtime has.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("could not start a tokio runtime: {error}"))?;
-    let _runtime_guard = runtime.enter();
+    // Keep the process worker pool and socket reactor alive for the whole run.
+    let _runtime = nagoya::runtime::background();
+    let _reactor = nagoya::reactor::Reactor::start()
+        .map_err(|error| format!("could not start the network reactor: {error}"))?;
 
     // A directory becomes a site before it becomes a document: its markup names
     // `/static/...` absolutely and its router owns paths that were never built
     // as files, neither of which a `file://` base can answer.
     let url = match &target {
         Target::Directory(root) => {
-            let origin = runtime.block_on(crate::page_server::start(root))?;
+            let origin = nagoya::block_on(crate::page_server::start(root))?;
             trace(&format!("serving {} at {origin}", root.display()));
             // A route can be opened directly rather than navigated to.
             //
@@ -1661,7 +1651,7 @@ pub fn serve(target: &str) -> Result<(), String> {
             Url::parse(&target).map_err(|error| format!("{target} is not a URL: {error}"))?
         }
         Target::File { root, page } => {
-            let origin = runtime.block_on(crate::page_server::start(root))?;
+            let origin = nagoya::block_on(crate::page_server::start(root))?;
             trace(&format!("serving {} at {origin}", root.display()));
             Url::parse(&format!("{origin}{page}"))
                 .map_err(|error| format!("{origin}{page} is not a URL: {error}"))?
@@ -1673,11 +1663,10 @@ pub fn serve(target: &str) -> Result<(), String> {
         Arc::new(crate::cookie_store::BrowserCookieStore::default())
     } else {
         Arc::new(
-            runtime
-                .block_on(crate::cookie_store::BrowserCookieStore::open(
-                    crate::cookie_store::profile_directory().join("cookies"),
-                ))
-                .map_err(|error| format!("could not open browser cookies: {error}"))?,
+            nagoya::block_on(crate::cookie_store::BrowserCookieStore::open(
+                crate::cookie_store::profile_directory().join("cookies"),
+            ))
+            .map_err(|error| format!("could not open browser cookies: {error}"))?,
         )
     };
     let net_provider = Arc::new(
@@ -1701,25 +1690,24 @@ pub fn serve(target: &str) -> Result<(), String> {
         } else {
             restore_script(carried, &url)
         };
-        let loaded = runtime
-            .block_on(crate::document_loader::load_for_capture(
-                blitz_traits::net::Request::get(url.clone()),
-                Arc::clone(&net_provider),
-                &prelude,
-            ))
-            .map_err(|error| {
-                if policy.bot_child {
-                    format!(
-                        "could not load {}: network request failed",
-                        display_url(&url, policy.bot_child)
-                    )
-                } else {
-                    format!(
-                        "could not load {}: {error}",
-                        display_url(&url, policy.bot_child)
-                    )
-                }
-            })?;
+        let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
+            blitz_traits::net::Request::get(url.clone()),
+            Arc::clone(&net_provider),
+            &prelude,
+        ))
+        .map_err(|error| {
+            if policy.bot_child {
+                format!(
+                    "could not load {}: network request failed",
+                    display_url(&url, policy.bot_child)
+                )
+            } else {
+                format!(
+                    "could not load {}: {error}",
+                    display_url(&url, policy.bot_child)
+                )
+            }
+        })?;
         let mut document = loaded
             .into_script()
             .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?;
@@ -1871,12 +1859,12 @@ pub fn serve(target: &str) -> Result<(), String> {
                     } else {
                         max_depth
                     };
-                    let response = inspect_document(&mut document, root, depth, revision);
+                    let response = inspect_document(&mut *document, root, depth, revision);
                     sanitize_inspection(&policy, &document, response)
                 }
                 AgentControlRequest::Act(action) => {
                     match authorize_action(&policy, &document, &action) {
-                        Ok(()) => match control.act(&mut document, action) {
+                        Ok(()) => match control.act(&mut *document, action) {
                             Ok(()) => settle_response(
                                 &mut document,
                                 &animation_clock,
@@ -1919,7 +1907,7 @@ pub fn serve(target: &str) -> Result<(), String> {
                 AgentControlRequest::Condense { level, options } => {
                     condense_response(&policy, level, options, || {
                         revision += 1;
-                        inspect_document(&mut document, None, 0, revision)
+                        inspect_document(&mut *document, None, 0, revision)
                     })
                 }
                 // The remaining request types are not implemented by this host.
@@ -1937,7 +1925,7 @@ pub fn serve(target: &str) -> Result<(), String> {
                         message: "capture scale must be finite and between 0.25 and 8".into(),
                     })
                 } else {
-                    match capture.capture(&mut document, request) {
+                    match capture.capture(&mut *document, request) {
                         Ok(captured) => DebugResponse::Captured(captured),
                         Err(error) => DebugResponse::Error(error),
                     }
@@ -1947,7 +1935,7 @@ pub fn serve(target: &str) -> Result<(), String> {
                 if !policy.bot_child =>
             {
                 revision += 1;
-                match snapshot_document(&mut document, request, revision) {
+                match snapshot_document(&mut *document, request, revision) {
                     Ok(snapshot) => DebugResponse::Snapshot(snapshot),
                     Err(error) => DebugResponse::Error(error),
                 }
@@ -2064,8 +2052,7 @@ pub fn serve(target: &str) -> Result<(), String> {
     }
 
     trace("inspection host finished");
-    runtime
-        .block_on(net_provider.cookie_store().flush())
+    nagoya::block_on(net_provider.cookie_store().flush())
         .map_err(|error| format!("could not flush browser cookies: {error}"))?;
     Ok(())
 }

@@ -8,9 +8,7 @@ use blitz_html::HtmlProvider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::{Request, Url};
 use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
-use izumo::BlitzRuntime;
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::decode::decode_body;
 use crate::document_loader::{NetProvider, install_web_api_shim};
@@ -37,7 +35,7 @@ fn error_html(error: &str) -> String {
     )
 }
 
-pub type ChuzzAppHandle = AppHandle<BlitzRuntime>;
+pub type ChuzzAppHandle = izumo::AppHandle;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -303,7 +301,7 @@ struct BrowserInner {
 /// A direct macOS redraw from every resource-completion worker also waits for
 /// that UI thread, so a page with many images can occupy the runtime pool with
 /// workers waiting for the same thread that is waiting for the module fetch.
-/// Coalescing redraws onto Tauri's main queue breaks that cycle.
+/// Coalescing redraws onto izumo's document-thread queue breaks that cycle.
 struct QueuedRedrawShell {
     inner: Arc<dyn ShellProvider>,
     app: ChuzzAppHandle,
@@ -545,8 +543,8 @@ impl Browser {
     }
 
     fn wake_document(&self) {
-        if let Some(window) = self.app().and_then(|app| app.get_webview_window("main")) {
-            let _ = window.eval("void 0");
+        if let Some(app) = self.app() {
+            app.script_queue().enqueue_task(|| {});
         }
     }
 
@@ -583,7 +581,7 @@ impl Browser {
         }
 
         let browser = self.clone();
-        tauri::async_runtime::spawn(async move {
+        nagoya::spawn(async move {
             let bundle = fetch_page(&browser, tab_id, generation, request, revalidate).await;
             browser.0.completed.lock().unwrap().push_back(bundle);
             browser.wake_document();
@@ -1210,18 +1208,187 @@ async fn fetch_page(
     }
 }
 
-#[tauri::command]
-pub fn list_tabs(browser: State<'_, Browser>) -> Vec<FrontendTab> {
+#[derive(Deserialize)]
+struct NoArgs {}
+
+#[derive(Deserialize)]
+struct TabArgs {
+    id: u64,
+}
+
+#[derive(Deserialize)]
+struct OpenTabArgs {
+    url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NavigateArgs {
+    id: u64,
+    input: String,
+}
+
+#[derive(Deserialize)]
+struct PanelCollapsedArgs {
+    collapsed: bool,
+}
+
+#[derive(Deserialize)]
+struct SectionArgs {
+    section: String,
+}
+
+#[derive(Deserialize)]
+struct DebugLogArgs {
+    since: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct UserAgentSpoofingArgs {
+    spoofing: bool,
+}
+
+#[derive(Deserialize)]
+struct DiagnosticsArgs {
+    inspection: bool,
+    profiling: bool,
+}
+
+fn command_handler<A, R>(
+    browser: &Arc<Browser>,
+    handler: impl Fn(Arc<Browser>, A) -> Result<R, String> + Send + Sync + 'static,
+) -> izumo::CommandHandler
+where
+    A: DeserializeOwned,
+    R: Serialize,
+{
+    let browser = Arc::clone(browser);
+    Arc::new(move |args| {
+        let args = serde_json::from_value(args)
+            .map_err(|error| format!("invalid command arguments: {error}"))?;
+        let reply = handler(Arc::clone(&browser), args)?;
+        serde_json::to_value(reply)
+            .map_err(|error| format!("could not serialize command reply: {error}"))
+    })
+}
+
+/// JSON handlers for the chrome's existing command names.
+///
+/// Register these on the izumo builder using the same Arc passed to manage.
+pub fn commands(browser: Arc<Browser>) -> [(&'static str, izumo::CommandHandler); 18] {
+    [
+        (
+            "list_tabs",
+            command_handler(&browser, |browser, _: NoArgs| Ok(list_tabs(browser))),
+        ),
+        (
+            "active_tab_id",
+            command_handler(&browser, |browser, _: NoArgs| Ok(active_tab_id(browser))),
+        ),
+        (
+            "select_tab",
+            command_handler(&browser, |browser, args: TabArgs| {
+                select_tab(browser, args.id)
+            }),
+        ),
+        (
+            "open_tab",
+            command_handler(&browser, |browser, args: OpenTabArgs| {
+                open_tab(browser, args.url)
+            }),
+        ),
+        (
+            "close_tab",
+            command_handler(&browser, |browser, args: TabArgs| {
+                close_tab(browser, args.id);
+                Ok(())
+            }),
+        ),
+        (
+            "navigate",
+            command_handler(&browser, |browser, args: NavigateArgs| {
+                Ok(navigate(browser, args.id, args.input))
+            }),
+        ),
+        (
+            "go_back",
+            command_handler(&browser, |browser, args: TabArgs| {
+                go_back(browser, args.id);
+                Ok(())
+            }),
+        ),
+        (
+            "go_forward",
+            command_handler(&browser, |browser, args: TabArgs| {
+                go_forward(browser, args.id);
+                Ok(())
+            }),
+        ),
+        (
+            "reload",
+            command_handler(&browser, |browser, args: TabArgs| {
+                reload(browser, args.id);
+                Ok(())
+            }),
+        ),
+        (
+            "panel_state",
+            command_handler(&browser, |browser, _: NoArgs| Ok(panel_state(browser))),
+        ),
+        (
+            "set_panel_collapsed",
+            command_handler(&browser, |browser, args: PanelCollapsedArgs| {
+                set_panel_collapsed(browser, args.collapsed);
+                Ok(())
+            }),
+        ),
+        (
+            "toggle_section",
+            command_handler(&browser, |browser, args: SectionArgs| {
+                toggle_section(browser, args.section)
+            }),
+        ),
+        (
+            "debug_log",
+            command_handler(&browser, |browser, args: DebugLogArgs| {
+                Ok(debug_log(browser, args.since))
+            }),
+        ),
+        (
+            "status",
+            command_handler(&browser, |browser, _: NoArgs| Ok(status(browser))),
+        ),
+        (
+            "user_agent",
+            command_handler(&browser, |browser, _: NoArgs| Ok(user_agent(browser))),
+        ),
+        (
+            "set_user_agent_spoofing",
+            command_handler(&browser, |browser, args: UserAgentSpoofingArgs| {
+                Ok(set_user_agent_spoofing(browser, args.spoofing))
+            }),
+        ),
+        (
+            "diagnostics",
+            command_handler(&browser, |_, _: NoArgs| Ok(diagnostics())),
+        ),
+        (
+            "set_diagnostics",
+            command_handler(&browser, |_, args: DiagnosticsArgs| {
+                set_diagnostics(args.inspection, args.profiling)
+            }),
+        ),
+    ]
+}
+
+pub fn list_tabs(browser: Arc<Browser>) -> Vec<FrontendTab> {
     browser.snapshots().0
 }
 
-#[tauri::command]
-pub fn active_tab_id(browser: State<'_, Browser>) -> u64 {
+pub fn active_tab_id(browser: Arc<Browser>) -> u64 {
     browser.snapshots().1
 }
 
-#[tauri::command]
-pub fn select_tab(browser: State<'_, Browser>, id: u64) -> Result<(), String> {
+pub fn select_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> {
     let mut state = browser.0.state.lock().unwrap();
     if !state.tabs.iter().any(|tab| tab.id == id) {
         return Err(format!("unknown tab {id}"));
@@ -1232,8 +1399,7 @@ pub fn select_tab(browser: State<'_, Browser>, id: u64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn open_tab(browser: State<'_, Browser>, url: Option<String>) -> Result<FrontendTab, String> {
+pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTab, String> {
     let request = match url {
         Some(url) => request_from_input(&url).ok_or_else(|| format!("invalid URL {url}"))?,
         None => Request::get(Url::parse(NEW_TAB_URL).unwrap()),
@@ -1267,8 +1433,7 @@ pub fn open_tab(browser: State<'_, Browser>, url: Option<String>) -> Result<Fron
         .snapshot())
 }
 
-#[tauri::command]
-pub fn close_tab(browser: State<'_, Browser>, id: u64) {
+pub fn close_tab(browser: Arc<Browser>, id: u64) {
     let mut state = browser.0.state.lock().unwrap();
     if state.tabs.len() == 1 {
         return;
@@ -1284,13 +1449,11 @@ pub fn close_tab(browser: State<'_, Browser>, id: u64) {
     browser.emit_state();
 }
 
-#[tauri::command]
-pub fn navigate(browser: State<'_, Browser>, id: u64, input: String) -> bool {
+pub fn navigate(browser: Arc<Browser>, id: u64, input: String) -> bool {
     request_from_input(&input).is_some_and(|request| browser.navigate_request(id, request))
 }
 
-#[tauri::command]
-pub fn go_back(browser: State<'_, Browser>, id: u64) {
+pub fn go_back(browser: Arc<Browser>, id: u64) {
     let moved = {
         let mut state = browser.0.state.lock().unwrap();
         state
@@ -1312,8 +1475,7 @@ pub fn go_back(browser: State<'_, Browser>, id: u64) {
     }
 }
 
-#[tauri::command]
-pub fn go_forward(browser: State<'_, Browser>, id: u64) {
+pub fn go_forward(browser: Arc<Browser>, id: u64) {
     let moved = {
         let mut state = browser.0.state.lock().unwrap();
         state
@@ -1335,24 +1497,20 @@ pub fn go_forward(browser: State<'_, Browser>, id: u64) {
     }
 }
 
-#[tauri::command]
-pub fn reload(browser: State<'_, Browser>, id: u64) {
+pub fn reload(browser: Arc<Browser>, id: u64) {
     browser.schedule_current(id, true);
 }
 
-#[tauri::command]
-pub fn panel_state(browser: State<'_, Browser>) -> PanelState {
+pub fn panel_state(browser: Arc<Browser>) -> PanelState {
     browser.snapshots().2
 }
 
-#[tauri::command]
-pub fn set_panel_collapsed(browser: State<'_, Browser>, collapsed: bool) {
+pub fn set_panel_collapsed(browser: Arc<Browser>, collapsed: bool) {
     browser.0.state.lock().unwrap().panel.collapsed = collapsed;
     browser.emit_state();
 }
 
-#[tauri::command]
-pub fn toggle_section(browser: State<'_, Browser>, section: String) -> Result<(), String> {
+pub fn toggle_section(browser: Arc<Browser>, section: String) -> Result<(), String> {
     let mut state = browser.0.state.lock().unwrap();
     let value = match section.as_str() {
         "page" => &mut state.panel.sections.page,
@@ -1373,13 +1531,11 @@ pub fn toggle_section(browser: State<'_, Browser>, section: String) -> Result<()
 /// A pull as well as the `debug-entry` push, so a window that opens the panel
 /// after a page has already loaded still sees what happened, and so a dropped
 /// event cannot leave the panel permanently behind.
-#[tauri::command]
-pub fn debug_log(browser: State<'_, Browser>, since: Option<u64>) -> Vec<DebugEntry> {
+pub fn debug_log(browser: Arc<Browser>, since: Option<u64>) -> Vec<DebugEntry> {
     browser.0.log.lock().unwrap().since(since)
 }
 
-#[tauri::command]
-pub fn status(browser: State<'_, Browser>) -> StatusReadout {
+pub fn status(browser: Arc<Browser>) -> StatusReadout {
     browser.snapshots().3
 }
 
@@ -1440,8 +1596,7 @@ fn user_agent_state(browser: &Browser) -> UserAgentState {
     }
 }
 
-#[tauri::command]
-pub fn user_agent(browser: State<'_, Browser>) -> UserAgentState {
+pub fn user_agent(browser: Arc<Browser>) -> UserAgentState {
     user_agent_state(&browser)
 }
 
@@ -1451,8 +1606,7 @@ pub fn user_agent(browser: State<'_, Browser>) -> UserAgentState {
 /// replaces that provider while retaining the profile cookie jar. The current
 /// document keeps the provider it was created with; reloading makes the
 /// visible page and every subresource agree on the new identity.
-#[tauri::command]
-pub fn set_user_agent_spoofing(browser: State<'_, Browser>, spoofing: bool) -> UserAgentState {
+pub fn set_user_agent_spoofing(browser: Arc<Browser>, spoofing: bool) -> UserAgentState {
     if crate::identity::environment_override_is_set() {
         return user_agent_state(&browser);
     }
@@ -1551,7 +1705,6 @@ fn store_diagnostics(value: StoredDiagnostics) {
     }
 }
 
-#[tauri::command]
 pub fn diagnostics() -> DiagnosticsState {
     diagnostics_now()
 }
@@ -1561,7 +1714,6 @@ pub fn diagnostics() -> DiagnosticsState {
 /// Both are live switches: enabling inspection binds the control socket and
 /// disabling it unbinds and removes the descriptor, so turning this off in
 /// Settings actually closes the door rather than hiding the button for it.
-#[tauri::command]
 pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsState, String> {
     if diagnostics_locked() {
         // Report the truth instead of failing: the switch is simply not the

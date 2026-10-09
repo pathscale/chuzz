@@ -1,18 +1,17 @@
 import type { BrowserApi } from "./client";
+import { createIzumoApi } from "./izumo";
 import { createMockApi } from "./mock";
-import { createTauriApi } from "./tauri";
 
 export type { BrowserApi, BrowserEvent, BrowserEvents, Unlisten } from "./client";
 
 /**
- * Whether a Tauri shell is hosting this document.
+ * Whether izumo is hosting this document.
  *
- * `__TAURI_INTERNALS__` is what the API package itself looks for, so this asks
- * the same question `invoke` will ask rather than sniffing a user agent that
- * Boa and WebKit answer differently.
+ * izumo injects `__IZUMO__` before the chrome scripts execute, so the global
+ * directly identifies the shell without relying on a user agent.
  */
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+function isIzumo(): boolean {
+  return typeof window !== "undefined" && "__IZUMO__" in window;
 }
 
 /**
@@ -24,4 +23,5 @@ function isTauri(): boolean {
  * quoting mock prices. A method that cannot reach Rust should fail loudly here,
  * not succeed against a stand-in.
  */
-export const api: BrowserApi = isTauri() ? createTauriApi() : createMockApi();
+export const api: BrowserApi = isIzumo() ? createIzumoApi() : createMockApi();
+

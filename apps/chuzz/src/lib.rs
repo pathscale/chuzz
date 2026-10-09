@@ -36,7 +36,7 @@ pub fn install_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
-// The window and its Tauri command surface. Behind `gui` because `tauri` is,
+// The window and its izumo command surface. Behind `gui` because `izumo` is,
 // and because a headless build has no window to drive.
 #[cfg(feature = "gui")]
 pub mod browser;

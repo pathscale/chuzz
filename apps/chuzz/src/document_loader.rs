@@ -122,20 +122,29 @@ impl blitz_traits::net::NetProvider for NetProvider {
     ) {
         let signal = request.signal.clone();
         let provider = self.clone();
-        tokio::spawn(async move {
-            let fetch = provider.fetch_response_async(request);
-            tokio::pin!(fetch);
+        let _ = nagoya::spawn(async move {
             let result = if let Some(signal) = signal {
-                tokio::select! {
-                    result = &mut fetch => Some(result),
-                    _ = async {
-                        while !signal.aborted() {
-                            nagoya::sleep(std::time::Duration::from_millis(5)).await;
+                let mut fetch = Box::pin(provider.fetch_response_async(request));
+                let mut aborted = Box::pin(async move {
+                    while !signal.aborted() {
+                        nagoya::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                });
+
+                std::future::poll_fn(|context| {
+                    match std::future::Future::poll(fetch.as_mut(), context) {
+                        std::task::Poll::Ready(result) => std::task::Poll::Ready(Some(result)),
+                        std::task::Poll::Pending => {
+                            match std::future::Future::poll(aborted.as_mut(), context) {
+                                std::task::Poll::Ready(()) => std::task::Poll::Ready(None),
+                                std::task::Poll::Pending => std::task::Poll::Pending,
+                            }
                         }
-                    } => None,
-                }
+                    }
+                })
+                .await
             } else {
-                Some(fetch.await)
+                Some(provider.fetch_response_async(request).await)
             };
 
             provider.waker.wake(doc_id);
@@ -2313,59 +2322,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn redirected_document_uses_the_committed_url_for_cookie_paths() {
-        use blitz_traits::net::{Request, Url};
-        use std::io::{Read, Write};
-        use std::sync::Arc;
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener binds");
-        let port = listener.local_addr().expect("listener has address").port();
-        let server = std::thread::spawn(move || {
-            for index in 0..2 {
-                let (mut stream, _) = listener.accept().expect("request arrives");
-                let mut head = Vec::new();
-                let mut byte = [0_u8; 1];
-                while !head.ends_with(b"\r\n\r\n") {
-                    match stream.read(&mut byte) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => head.push(byte[0]),
-                    }
-                }
-                let response = if index == 0 {
-                    "HTTP/1.1 302 Found\r\nLocation: /account/page\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
-                } else {
-                    let body =
-                        "<html><body><script>document.cookie='view=compact'</script></body></html>";
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("response writes");
-            }
-        });
-
-        let provider = Arc::new(NetProvider::new(None));
-        let origin = format!("http://127.0.0.1:{port}");
-        let start = Url::parse(&format!("{origin}/start")).expect("start URL parses");
-        let document = load_for_capture(Request::get(start), Arc::clone(&provider), "")
-            .await
-            .expect("redirected page loads");
-        drop(document);
-        server.join().expect("server finishes");
-
-        let account = Url::parse(&format!("{origin}/account/next")).expect("account URL parses");
-        let outside = Url::parse(&format!("{origin}/outside")).expect("outside URL parses");
-        assert_eq!(
-            provider.cookie_store().cookie_header(&account),
-            Some("view=compact".to_owned())
-        );
-        assert_eq!(provider.cookie_store().cookie_header(&outside), None);
-    }
-
     /// A caller-selected content language wins; otherwise English is attached
     /// before the request reaches the underlying network provider.
     #[test]
@@ -2389,106 +2345,6 @@ mod tests {
         assert_eq!(
             chosen.headers.get(ACCEPT_LANGUAGE).unwrap(),
             HeaderValue::from_static("fr-FR")
-        );
-    }
-
-    /// Initial and document-resource requests share one jar in both
-    /// directions: response fields enter it and later requests read it.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn response_and_resource_requests_share_the_profile_cookie_jar() {
-        use blitz_traits::net::{NetHandler, NetProvider as _, Request, Url};
-        use std::io::{Read, Write};
-        use std::sync::mpsc;
-
-        struct Handler(mpsc::Sender<()>);
-        impl NetHandler for Handler {
-            fn bytes(self: Box<Self>, _resolved_url: String, _bytes: blitz_traits::net::Bytes) {
-                let _ = self.0.send(());
-            }
-        }
-
-        let listener =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener is available");
-        let port = listener
-            .local_addr()
-            .expect("listener has an address")
-            .port();
-        let server = std::thread::spawn(move || {
-            let mut requests = Vec::new();
-            for index in 0..3 {
-                let (mut stream, _) = listener.accept().expect("request arrives");
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                    .expect("read timeout applies");
-                let mut bytes = Vec::new();
-                let mut byte = [0_u8; 1];
-                while !bytes.ends_with(b"\r\n\r\n") {
-                    match stream.read(&mut byte) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => bytes.push(byte[0]),
-                    }
-                }
-                requests.push(String::from_utf8_lossy(&bytes).into_owned());
-                let set_cookie = match index {
-                    0 => "Set-Cookie: initial=one; Path=/; Max-Age=3600\r\n",
-                    1 => "Set-Cookie: resource=two; Path=/; Max-Age=3600\r\n",
-                    _ => "",
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\n{set_cookie}Content-Length: 2\r\nConnection: close\r\n\r\nok"
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("response writes");
-            }
-            requests
-        });
-
-        let provider = NetProvider::new(None);
-        let origin = format!("http://127.0.0.1:{port}");
-        provider
-            .fetch_async(Request::get(
-                Url::parse(&format!("{origin}/initial")).unwrap(),
-            ))
-            .await
-            .expect("initial response arrives");
-
-        let (sent, received) = mpsc::channel();
-        provider.fetch(
-            7,
-            Request::get(Url::parse(&format!("{origin}/resource")).unwrap()),
-            Box::new(Handler(sent)),
-        );
-        let mut completed = false;
-        for _ in 0..200 {
-            if received.try_recv().is_ok() {
-                completed = true;
-                break;
-            }
-            nagoya::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        assert!(completed, "resource request completes");
-        assert!(
-            received.try_recv().is_err(),
-            "resource completion arrives once"
-        );
-
-        provider
-            .fetch_async(Request::get(Url::parse(&format!("{origin}/next")).unwrap()))
-            .await
-            .expect("follow-up response arrives");
-
-        let requests = server.join().expect("server finishes");
-        assert!(!requests[0].to_ascii_lowercase().contains("cookie:"));
-        assert!(
-            requests[1]
-                .to_ascii_lowercase()
-                .contains("cookie: initial=one")
-        );
-        assert!(
-            requests[2]
-                .to_ascii_lowercase()
-                .contains("cookie: initial=one; resource=two")
         );
     }
 

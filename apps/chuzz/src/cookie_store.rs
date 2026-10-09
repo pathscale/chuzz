@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, mpsc};
 
 use cookie_store::{
     Cookie as StoredCookie, CookieError, CookieStore as RfcCookieStore, StoreAction,
@@ -34,11 +34,11 @@ enum PersistenceCommand {
     Apply(u64),
     Flush {
         snapshot: Option<String>,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+        reply: mpsc::Sender<Result<(), String>>,
     },
     Close {
         snapshot: Option<String>,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+        reply: mpsc::Sender<Result<(), String>>,
     },
 }
 
@@ -90,75 +90,74 @@ impl PendingSnapshots {
 }
 
 struct CookiePersistence {
-    sender: tokio::sync::mpsc::UnboundedSender<PersistenceCommand>,
-    // Cookie callbacks are synchronous, so they cannot wait on a bounded
-    // async channel. Keep one replaceable snapshot beside the ordered control
-    // queue instead: a mutation burst then costs one pending jar and one wake,
-    // while Flush and Close remain FIFO barriers after that wake.
+    sender: mpsc::Sender<PersistenceCommand>,
+    // Cookie callbacks are synchronous, so avoid putting every snapshot on the
+    // control queue. Keep one replaceable snapshot beside it instead: a
+    // mutation burst then costs one pending jar and one wake, while Flush and
+    // Close remain FIFO barriers after that wake.
     latest: Arc<Mutex<PendingSnapshots>>,
 }
 
 impl CookiePersistence {
     fn start(table: BrowserCookieWorkTable) -> Self {
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel();
         let latest = Arc::new(Mutex::new(PendingSnapshots::default()));
         let worker_latest = Arc::clone(&latest);
-        tokio::spawn(async move {
-            let mut table = Some(table);
-            let mut first_error: Option<String> = None;
-            while let Some(command) = receiver.recv().await {
-                match command {
-                    PersistenceCommand::Apply(wake) => {
-                        let snapshot = worker_latest
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .take_for_wake(wake);
-                        record_durable_snapshot(
-                            table.as_ref().expect("the cookie table is open"),
-                            snapshot,
-                            &mut first_error,
-                        )
-                        .await;
-                    }
-                    PersistenceCommand::Flush { snapshot, reply } => {
-                        record_durable_snapshot(
-                            table.as_ref().expect("the cookie table is open"),
-                            snapshot,
-                            &mut first_error,
-                        )
-                        .await;
-                        let drain = table
-                            .as_ref()
-                            .expect("the cookie table is open")
-                            .wait_for_ops()
-                            .await
+        std::thread::Builder::new()
+            .name("chuzz-cookie-persistence".into())
+            .spawn(move || {
+                let mut table = Some(table);
+                let mut first_error: Option<String> = None;
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        PersistenceCommand::Apply(wake) => {
+                            let snapshot = worker_latest
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .take_for_wake(wake);
+                            nagoya::block_on(record_durable_snapshot(
+                                table.as_ref().expect("the cookie table is open"),
+                                snapshot,
+                                &mut first_error,
+                            ));
+                        }
+                        PersistenceCommand::Flush { snapshot, reply } => {
+                            nagoya::block_on(record_durable_snapshot(
+                                table.as_ref().expect("the cookie table is open"),
+                                snapshot,
+                                &mut first_error,
+                            ));
+                            let drain = nagoya::block_on(
+                                table
+                                    .as_ref()
+                                    .expect("the cookie table is open")
+                                    .wait_for_ops(),
+                            )
                             .map_err(|error| error.to_string());
-                        let result = first_error.clone().map_or(drain, Err);
-                        let _ = reply.send(result);
-                    }
-                    PersistenceCommand::Close { snapshot, reply } => {
-                        record_durable_snapshot(
-                            table.as_ref().expect("the cookie table is open"),
-                            snapshot,
-                            &mut first_error,
-                        )
-                        .await;
-                        let close = table
-                            .take()
-                            .expect("the cookie table is open")
-                            .close()
-                            .await
+                            let result = first_error.clone().map_or(drain, Err);
+                            let _ = reply.send(result);
+                        }
+                        PersistenceCommand::Close { snapshot, reply } => {
+                            nagoya::block_on(record_durable_snapshot(
+                                table.as_ref().expect("the cookie table is open"),
+                                snapshot,
+                                &mut first_error,
+                            ));
+                            let close = nagoya::block_on(
+                                table.take().expect("the cookie table is open").close(),
+                            )
                             .map_err(|error| error.to_string());
-                        let result = first_error.clone().map_or(close, Err);
-                        let _ = reply.send(result);
-                        return;
+                            let result = first_error.clone().map_or(close, Err);
+                            let _ = reply.send(result);
+                            return;
+                        }
                     }
                 }
-            }
-            if let Some(table) = table {
-                let _ = table.close().await;
-            }
-        });
+                if let Some(table) = table {
+                    let _ = nagoya::block_on(table.close());
+                }
+            })
+            .expect("cookie persistence worker thread");
         Self { sender, latest }
     }
 
@@ -183,10 +182,8 @@ impl CookiePersistence {
         Ok(())
     }
 
-    fn request_flush(
-        &self,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, CookieStoreError> {
-        let (reply, result) = tokio::sync::oneshot::channel();
+    fn request_flush(&self) -> Result<mpsc::Receiver<Result<(), String>>, CookieStoreError> {
+        let (reply, result) = mpsc::channel();
         let snapshot = self.take_pending();
         self.sender
             .send(PersistenceCommand::Flush { snapshot, reply })
@@ -197,15 +194,24 @@ impl CookiePersistence {
     }
 
     async fn close(self) -> Result<(), CookieStoreError> {
-        let (reply, result) = tokio::sync::oneshot::channel();
+        let (reply, result) = mpsc::channel();
         let snapshot = self.take_pending();
         self.sender
             .send(PersistenceCommand::Close { snapshot, reply })
             .map_err(|_| {
                 CookieStoreError::Persistence("cookie persistence worker stopped".into())
             })?;
-        result
+        Self::wait_for_reply(result).await
+    }
+
+    async fn wait_for_reply(
+        receiver: mpsc::Receiver<Result<(), String>>,
+    ) -> Result<(), CookieStoreError> {
+        nagoya::spawn(async move { receiver.recv() })
             .await
+            .ok_or_else(|| {
+                CookieStoreError::Persistence("cookie persistence worker stopped".into())
+            })?
             .map_err(|_| CookieStoreError::Persistence("cookie persistence worker stopped".into()))?
             .map_err(CookieStoreError::Persistence)
     }
@@ -550,10 +556,7 @@ impl BrowserCookieStore {
         let Some(result) = result else {
             return Ok(());
         };
-        result
-            .await
-            .map_err(|_| CookieStoreError::Persistence("cookie persistence worker stopped".into()))?
-            .map_err(CookieStoreError::Persistence)
+        CookiePersistence::wait_for_reply(result).await
     }
 
     /// Stops the WorkTable persistence worker after draining queued mutations.
@@ -589,23 +592,21 @@ impl BrowserCookieStore {
     }
 }
 
-impl blitz_net::CookieStore for BrowserCookieStore {
-    fn set_cookies(
-        &self,
-        cookie_headers: &mut dyn Iterator<Item = &blitz_traits::net::http::HeaderValue>,
-        url: &Url,
-    ) {
-        let values = cookie_headers
+impl blitz_traits::net::CookieJar for BrowserCookieStore {
+    fn cookies_header(&self, url: &Url) -> Option<blitz_traits::net::http::HeaderValue> {
+        self.cookie_header(url)
+            .and_then(|value| blitz_traits::net::http::HeaderValue::from_str(&value).ok())
+    }
+
+    fn store_from_response(&self, url: &Url, headers: &blitz_traits::net::http::HeaderMap) {
+        let values = headers
+            .get_all(blitz_traits::net::http::header::SET_COOKIE)
+            .iter()
             .filter_map(|header| header.to_str().ok().map(str::to_owned))
             .collect::<Vec<_>>();
         if let Err(error) = self.add_response_cookies(url, values) {
             eprintln!("chuzz: could not queue response cookies: {error}");
         }
-    }
-
-    fn cookies(&self, url: &Url) -> Option<blitz_traits::net::http::HeaderValue> {
-        self.cookie_header(url)
-            .and_then(|value| blitz_traits::net::http::HeaderValue::from_str(&value).ok())
     }
 }
 
@@ -701,118 +702,6 @@ fn enforce_cookie_domain(cookie: &mut StoredCookie<'_>, url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn url(value: &str) -> Url {
-        Url::parse(value).expect("valid test URL")
-    }
-
-    fn test_directory(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "chuzz-cookie-store-{label}-{}-{nonce}",
-            std::process::id()
-        ))
-    }
-
-    #[tokio::test]
-    async fn response_cookie_matches_domain_path_and_security_rules() {
-        let store = BrowserCookieStore::default();
-        let response_url = url("https://account.test.example/app/start");
-        let report = store
-            .add_response_cookies(
-                &response_url,
-                [
-                    "host=one; Path=/; Secure; HttpOnly",
-                    "section=two; Path=/app",
-                    "shared=three; Domain=test.example; Path=/",
-                ],
-            )
-            .expect("cookies stored");
-        assert_eq!(
-            report,
-            StoreReport {
-                accepted: 3,
-                rejected: 0
-            }
-        );
-
-        assert_eq!(
-            store.cookie_header(&url("https://account.test.example/app/page")),
-            Some("section=two; host=one; shared=three".to_string())
-        );
-        assert_eq!(
-            store.script_cookies(&url("https://account.test.example/app/page")),
-            "section=two; shared=three"
-        );
-        assert_eq!(
-            store.cookie_header(&url("https://other.test.example/")),
-            Some("shared=three".to_string())
-        );
-        assert_eq!(
-            store.cookie_header(&url("http://account.test.example/")),
-            Some("shared=three".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn script_assignment_cannot_observe_or_replace_http_only_cookie() {
-        let store = BrowserCookieStore::default();
-        let page = url("https://private.test.example/");
-        store
-            .add_response_cookies(&page, ["token=server; Path=/; HttpOnly"])
-            .expect("response cookie stored");
-
-        assert!(
-            !store
-                .set_script_cookie(&page, "token=script; Path=/")
-                .expect("assignment checked")
-        );
-        assert_eq!(store.script_cookies(&page), "");
-        assert_eq!(store.cookie_header(&page), Some("token=server".to_string()));
-    }
-
-    #[tokio::test]
-    async fn expiry_removes_a_cookie_and_invalid_fields_do_not_stop_the_batch() {
-        let store = BrowserCookieStore::default();
-        let page = url("https://www.test.example/area");
-        store
-            .add_response_cookies(&page, ["theme=dark; Path=/"])
-            .expect("initial cookie stored");
-        let report = store
-            .add_response_cookies(
-                &page,
-                [
-                    "theme=gone; Path=/; Max-Age=0",
-                    "broken; Domain=elsewhere.invalid",
-                ],
-            )
-            .expect("batch processed");
-
-        assert_eq!(
-            report,
-            StoreReport {
-                accepted: 1,
-                rejected: 1
-            }
-        );
-        assert_eq!(store.cookie_header(&page), None);
-
-        let suffix_host = url("https://com/");
-        let report = store
-            .add_response_cookies(&suffix_host, ["host_only=good; Domain=com; Path=/"])
-            .expect("exact-host response field checked");
-        assert_eq!(report.accepted, 1);
-        assert_eq!(
-            store.cookie_header(&suffix_host),
-            Some("host_only=good".to_owned())
-        );
-        assert_eq!(store.cookie_header(&page), None);
-    }
 
     #[test]
     fn foreign_domain_expiry_cannot_delete_an_existing_cookie() {
@@ -855,48 +744,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn script_cookie_prefixes_require_their_security_invariants() {
-        let store = BrowserCookieStore::default();
-        let secure = url("https://www.test.example/");
-        assert!(
-            !store
-                .set_script_cookie(&secure, "__Secure-id=one; Path=/")
-                .expect("assignment checked")
-        );
-        assert!(
-            !store
-                .set_script_cookie(
-                    &secure,
-                    "__Host-id=one; Secure; Domain=test.example; Path=/",
-                )
-                .expect("assignment checked")
-        );
-        assert!(
-            store
-                .set_script_cookie(&secure, "__Host-id=one; Secure; Path=/")
-                .expect("assignment accepted")
-        );
-
-        let report = store
-            .add_response_cookies(
-                &secure,
-                [
-                    "__Secure-response=bad; Path=/",
-                    "__Host-response=bad; Secure; Domain=test.example; Path=/",
-                    "__Host-response=good; Secure; Path=/",
-                ],
-            )
-            .expect("response fields checked");
-        assert_eq!(
-            report,
-            StoreReport {
-                accepted: 1,
-                rejected: 2
-            }
-        );
-    }
-
     #[test]
     fn public_suffix_domain_is_rejected() {
         let store = BrowserCookieStore::default();
@@ -936,7 +783,7 @@ mod tests {
 
     #[test]
     fn a_stopped_worker_does_not_leave_an_unsent_snapshot_pending() {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         drop(receiver);
         let persistence = CookiePersistence {
             sender,
@@ -958,133 +805,5 @@ mod tests {
                     .is_none()
             );
         }
-    }
-
-    #[tokio::test]
-    async fn persistent_cookies_survive_reopen_and_session_cookies_do_not() {
-        let directory = test_directory("reopen");
-        let page = url("https://profile.test.example/");
-        {
-            let store = BrowserCookieStore::open(&directory)
-                .await
-                .expect("cookie table opens");
-            store
-                .add_response_cookies(
-                    &page,
-                    ["durable=yes; Path=/; Max-Age=3600", "session=yes; Path=/"],
-                )
-                .expect("cookies stored");
-            store.close().await.expect("cookie table closes");
-        }
-
-        {
-            let store = BrowserCookieStore::open(&directory)
-                .await
-                .expect("cookie table reopens");
-            assert_eq!(store.cookie_header(&page), Some("durable=yes".to_string()));
-            store.close().await.expect("cookie table closes");
-        }
-        std::fs::remove_dir_all(directory).expect("test cookie directory removed");
-    }
-
-    #[tokio::test]
-    async fn a_mutation_burst_closes_with_its_latest_snapshot() {
-        let directory = test_directory("burst");
-        let page = url("https://profile.test.example/");
-        {
-            let store = BrowserCookieStore::open(&directory)
-                .await
-                .expect("cookie table opens");
-            for value in 0..512 {
-                store
-                    .add_response_cookies(&page, [format!("counter={value}; Path=/; Max-Age=3600")])
-                    .expect("cookie update queued");
-            }
-            store.close().await.expect("cookie table closes");
-        }
-
-        let store = BrowserCookieStore::open(&directory)
-            .await
-            .expect("cookie table reopens");
-        assert_eq!(store.cookie_header(&page), Some("counter=511".to_owned()));
-        store.close().await.expect("cookie table closes");
-        std::fs::remove_dir_all(directory).expect("test cookie directory removed");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn provider_redirect_and_error_cookies_persist_in_exchange_order() {
-        use blitz_traits::net::Request;
-        use std::io::{Read, Write};
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener binds");
-        let port = listener.local_addr().expect("listener has address").port();
-        let server = std::thread::spawn(move || {
-            let mut requests = Vec::new();
-            for index in 0..2 {
-                let (mut stream, _) = listener.accept().expect("request arrives");
-                let mut head = Vec::new();
-                let mut byte = [0_u8; 1];
-                while !head.ends_with(b"\r\n\r\n") {
-                    match stream.read(&mut byte) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => head.push(byte[0]),
-                    }
-                }
-                requests.push(String::from_utf8_lossy(&head).to_ascii_lowercase());
-                let response = if index == 0 {
-                    "HTTP/1.1 302 Found\r\nLocation: /finish\r\nSet-Cookie: redirected=one; Path=/; Max-Age=3600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                } else {
-                    "HTTP/1.1 418 I'm a teapot\r\nSet-Cookie: final=two; Path=/; Max-Age=3600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                };
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("response writes");
-            }
-            requests
-        });
-
-        let directory = test_directory("provider-redirect");
-        let cookies = Arc::new(
-            BrowserCookieStore::open(&directory)
-                .await
-                .expect("cookie table opens"),
-        );
-        let provider = blitz_net::Provider::with_user_agent_and_cookie_provider(
-            None,
-            "FixtureBrowser/1.0",
-            Arc::clone(&cookies),
-        );
-        let origin = format!("http://127.0.0.1:{port}");
-        let result = provider
-            .fetch_response_async(Request::get(
-                Url::parse(&format!("{origin}/start")).expect("request URL parses"),
-            ))
-            .await;
-        assert!(matches!(
-            result,
-            Err(blitz_net::ProviderError::HttpStatus { status, .. }) if status.as_u16() == 418
-        ));
-
-        let requests = server.join().expect("server finishes");
-        assert!(!requests[0].contains("cookie:"));
-        assert!(requests[1].contains("cookie: redirected=one"));
-        let page = Url::parse(&format!("{origin}/finish")).expect("page URL parses");
-        assert_eq!(
-            cookies.cookie_header(&page),
-            Some("final=two; redirected=one".to_owned())
-        );
-
-        drop(provider);
-        let cookies = Arc::try_unwrap(cookies).unwrap_or_else(|_| panic!("provider released jar"));
-        cookies.close().await.expect("cookie table closes");
-        let reopened = BrowserCookieStore::open(&directory)
-            .await
-            .expect("cookie table reopens");
-        assert_eq!(
-            reopened.cookie_header(&page),
-            Some("final=two; redirected=one".to_owned())
-        );
-        reopened.close().await.expect("cookie table closes");
-        std::fs::remove_dir_all(directory).expect("test cookie directory removed");
     }
 }

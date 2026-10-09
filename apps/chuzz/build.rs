@@ -157,22 +157,9 @@ fn build_frontend() {
     }
 }
 
-/// Drop framework load commands that nothing in this binary references.
-///
-/// This workspace takes `tauri` with `default-features = false`, so there is no
-/// `wry` and no webview here at all. That is not enough. On macOS `tauri` and
-/// `tauri-runtime` depend on `objc2-web-kit` unconditionally, because
-/// `tauri-runtime`'s public API names WKWebView types, and that crate carries
-/// `#[link(name = "WebKit", kind = "framework")]`. The directive travels in
-/// rlib metadata rather than on the rustc command line, so it does not show up
-/// in `cargo build -v` and it does not follow feature selection.
-///
-/// The result was a shipped binary declaring a dependency on a framework it
-/// never calls, which dyld then loaded at every launch: `otool -L` on
-/// `target/release/chuzz-gui` listed WebKit before this.
-///
-/// `-dead_strip_dylibs` drops load commands nothing references, so the decision
-/// is made per link by the linker rather than guessed here.
+/// Keep unused framework load commands out of macOS binaries while izumo's
+/// dependency graph is being cleared of WebKit. Remove this after `otool -L`
+/// confirms the GUI binary has no WebKit load command.
 fn strip_unused_frameworks() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -193,10 +180,4 @@ fn main() {
     // fleet's QA red.
     #[cfg(feature = "gui")]
     build_frontend();
-    // Generates the Tauri context, which only the `chuzz-gui` binary consumes.
-    // A headless build has no `tauri` in its graph for the context to describe,
-    // and running this anyway is what made `cargo build --bin chuzz-headless`
-    // need a Tauri toolchain on a machine with no window system.
-    #[cfg(feature = "gui")]
-    tauri_build::build();
 }

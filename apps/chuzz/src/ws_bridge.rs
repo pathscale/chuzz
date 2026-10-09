@@ -14,7 +14,7 @@
 //!
 //! The transport is the same one `net_bridge` uses, for the same reason:
 //! `blitz-script` has no way to register a host function, so JavaScript posts
-//! a command on `window.ipc.postMessage`, work happens on the tokio runtime,
+//! a command on `window.ipc.postMessage`, work happens on nagoya workers,
 //! and events come back through a mailbox that a poll hook drains and hands to
 //! the page by `eval`. `net_bridge` owns the IPC handler, because setting one
 //! replaces it rather than adding to it, so it delegates here first and keeps
@@ -23,19 +23,123 @@
 //! Unlike a fetch, a socket outlives its command: the send direction needs the
 //! connection to stay addressable, which is what `senders` is.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::future::poll_fn;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Poll, Waker};
 
-use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
+use nago_wss::client::{ClientOptions, Connected};
+use nago_wss::conn::{Connection, Error};
+use nago_wss::proto::message::{CloseFrame, Limits, Message};
+use nago_wss::stream::{ByteStream, Errno, StreamExt};
+use nagoya::net::TcpStream;
+use nagoya::reactor::Reactor;
+use rustls_platform_verifier::BuilderVerifierExt;
 
 // The default 16 MiB frame cap disconnects pages that send a self-contained
 // image-rich JSON result in one frame. Keep a bounded cap, with room for the
 // 38 MiB OpenCaptchaWorld image-matching response and similarly sized pages.
 const MAX_MESSAGE_BYTES: usize = 128 << 20;
 const MAX_FRAME_BYTES: usize = 64 << 20;
+
+// Every document bridge shares this driver. The static owns the reactor,
+// because dropping it while connections still hold handles stops their I/O.
+static REACTOR: OnceLock<Result<Reactor, String>> = OnceLock::new();
+
+#[derive(Default)]
+struct OutboxState {
+    messages: VecDeque<Message>,
+    reader: Option<Waker>,
+}
+
+#[derive(Default)]
+struct Outbox {
+    state: Mutex<OutboxState>,
+    interruptible: AtomicBool,
+}
+
+impl Outbox {
+    fn push(&self, message: Message) {
+        let reader = match self.state.lock() {
+            Ok(mut state) => {
+                state.messages.push_back(message);
+                state.reader.take()
+            }
+            Err(_) => return,
+        };
+        if let Some(reader) = reader {
+            reader.wake();
+        }
+    }
+
+    fn pop(&self) -> Option<Message> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.messages.pop_front())
+    }
+}
+
+/// Interrupt only a TCP read, before it consumes any bytes.
+///
+/// Dropping a pending WebSocket read is unsafe for TLS: that read may be
+/// flushing a key update, with ciphertext held inside the write future.
+/// Returning EINTR at the underlying TCP read instead lets both protocol
+/// layers finish their futures and retain their state before servicing sends.
+/// Handshake reads remain uninterrupted until the upgrade has completed.
+struct CommandStream {
+    stream: TcpStream,
+    outbox: Arc<Outbox>,
+}
+
+impl ByteStream for CommandStream {
+    async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Errno> {
+        poll_fn(|context| {
+            if self.outbox.interruptible.load(Ordering::Acquire) {
+                let mut state = match self.outbox.state.lock() {
+                    Ok(state) => state,
+                    Err(_) => return Poll::Ready(Err(Errno(5))),
+                };
+                if !state.messages.is_empty() {
+                    return Poll::Ready(Err(Errno::INTERRUPTED));
+                }
+                // Checking the queue and registering share one lock, so a
+                // command cannot arrive between them and lose its wake.
+                state.reader = Some(context.waker().clone());
+            }
+            self.stream.poll_read(context, buffer)
+        })
+        .await
+    }
+
+    async fn write_all(&mut self, buffer: &[u8]) -> Result<(), Errno> {
+        self.stream.write_all(buffer).await
+    }
+}
+
+enum Transport {
+    Plain(CommandStream),
+    Secure(nago_wss::tls::TlsStream<CommandStream>),
+}
+
+impl ByteStream for Transport {
+    async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Errno> {
+        match self {
+            Self::Plain(stream) => stream.read(buffer).await,
+            Self::Secure(stream) => stream.read(buffer).await,
+        }
+    }
+
+    async fn write_all(&mut self, buffer: &[u8]) -> Result<(), Errno> {
+        match self {
+            Self::Plain(stream) => stream.write_all(buffer).await,
+            Self::Secure(stream) => stream.write_all(buffer).await,
+        }
+    }
+}
+
+impl StreamExt for Transport {}
 
 /// One thing that happened to one socket, waiting for the document thread.
 struct Event {
@@ -64,7 +168,7 @@ struct Command {
 #[derive(Clone, Default)]
 pub struct Bridge {
     events: Arc<Mutex<Vec<Event>>>,
-    senders: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>>,
+    senders: Arc<Mutex<HashMap<u64, Arc<Outbox>>>>,
 }
 
 impl Bridge {
@@ -88,6 +192,14 @@ impl Bridge {
         }
     }
 
+    fn failed(&self, id: u64, reason: &str, error: impl std::fmt::Display) {
+        self.post(
+            id,
+            serde_json::json!({"type": "error", "message": format!("{error}")}),
+        );
+        self.post(id, closed(1006, reason));
+    }
+
     /// Take one IPC message if it is a socket command. Returns whether it was.
     pub fn handle(&self, message: &str) -> bool {
         let Ok(command) = serde_json::from_str::<Command>(message) else {
@@ -107,136 +219,130 @@ impl Bridge {
     fn connect(&self, command: Command) {
         let id = command.id;
         let Some(url) = command.url else {
-            self.post(
-                id,
-                serde_json::json!({"type": "error", "message": "no url"}),
-            );
+            self.failed(id, "handshake", "no url");
             return;
         };
 
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            self.post(
-                id,
-                serde_json::json!({"type": "error", "message": "no runtime"}),
-            );
-            return;
-        };
-
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        if let Ok(mut open) = self.senders.lock() {
-            open.insert(id, tx);
+        let outbox = Arc::new(Outbox::default());
+        match self.senders.lock() {
+            Ok(mut open) => {
+                open.insert(id, Arc::clone(&outbox));
+            }
+            Err(_) => {
+                self.failed(id, "connect", "socket registry poisoned");
+                return;
+            }
         }
 
         let bridge = self.clone();
-        handle.spawn(async move {
-            let request = match build_request(&url, &command.protocols) {
-                Ok(request) => request,
-                Err(why) => {
-                    bridge.post(id, serde_json::json!({"type": "error", "message": why}));
-                    bridge.post(id, closed(1006, "handshake"));
+        nagoya::spawn(async move {
+            let connected = match open_socket(&url, &command.protocols, Arc::clone(&outbox)).await {
+                Ok(connected) => connected,
+                Err(error) => {
+                    // The page is told the same thing a browser tells it: the
+                    // connection failed. The detail goes in the error event
+                    // rather than being swallowed, because "it did not
+                    // connect" is the least useful sentence in networking.
+                    bridge.failed(id, "connect", error);
                     bridge.forget(id);
                     return;
                 }
             };
 
-            let config = WebSocketConfig::default()
-                .max_message_size(Some(MAX_MESSAGE_BYTES))
-                .max_frame_size(Some(MAX_FRAME_BYTES));
-            let (stream, response) =
-                match tokio_tungstenite::connect_async_with_config(request, Some(config), false)
-                    .await
-                {
-                    Ok(pair) => pair,
-                    Err(error) => {
-                        // The page is told the same thing a browser tells it: the
-                        // connection failed. The detail goes in the error event
-                        // rather than being swallowed, because "it did not
-                        // connect" is the least useful sentence in networking.
-                        bridge.post(
-                            id,
-                            serde_json::json!({"type": "error", "message": format!("{error}")}),
-                        );
-                        bridge.post(id, closed(1006, "connect"));
-                        bridge.forget(id);
-                        return;
-                    }
-                };
-
             // The subprotocol the server actually chose, which is not always
             // the first one offered and is what the page reads back off
             // `socket.protocol`.
-            let negotiated = response
-                .headers()
-                .get("sec-websocket-protocol")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-                .to_owned();
             bridge.post(
                 id,
-                serde_json::json!({"type": "open", "protocol": negotiated}),
+                serde_json::json!({
+                    "type": "open",
+                    "protocol": connected.protocol.unwrap_or_default(),
+                }),
             );
-
-            let (mut sink, mut source) = stream.split();
-            loop {
-                tokio::select! {
-                    outgoing = rx.recv() => match outgoing {
-                        Some(message) => {
-                            let closing = matches!(message, Message::Close(_));
-                            if sink.send(message).await.is_err() {
-                                bridge.post(id, closed(1006, "send"));
-                                break;
-                            }
-                            if closing {
-                                bridge.post(id, closed(1000, ""));
-                                break;
-                            }
-                        }
-                        // Every sender dropped, so nothing can ask for more.
-                        None => break,
-                    },
-                    incoming = source.next() => match incoming {
-                        Some(Ok(Message::Text(text))) => bridge.post(
-                            id,
-                            serde_json::json!({"type": "message", "data": text.as_str()}),
-                        ),
-                        // Binary arrives as text here on purpose. The pages
-                        // this exists for speak JSON; handing them a string
-                        // keeps `onmessage` usable, and `binaryType` is a
-                        // promise this does not yet keep.
-                        Some(Ok(Message::Binary(bytes))) => bridge.post(
-                            id,
-                            serde_json::json!({
-                                "type": "message",
-                                "data": String::from_utf8_lossy(&bytes),
-                            }),
-                        ),
-                        Some(Ok(Message::Close(frame))) => {
-                            let (code, reason) = match frame {
-                                Some(frame) => (u16::from(frame.code), frame.reason.to_string()),
-                                None => (1005, String::new()),
-                            };
-                            bridge.post(id, closed(code, &reason));
-                            break;
-                        }
-                        // Ping and pong are answered by the library.
-                        Some(Ok(_)) => {}
-                        Some(Err(error)) => {
-                            bridge.post(
-                                id,
-                                serde_json::json!({"type": "error", "message": format!("{error}")}),
-                            );
-                            bridge.post(id, closed(1006, "stream"));
-                            break;
-                        }
-                        None => {
-                            bridge.post(id, closed(1006, "eof"));
-                            break;
-                        }
-                    },
-                }
-            }
+            outbox.interruptible.store(true, Ordering::Release);
+            bridge
+                .run_connection(id, connected.connection, &outbox)
+                .await;
             bridge.forget(id);
         });
+    }
+
+    async fn run_connection(
+        &self,
+        id: u64,
+        mut connection: Connection<Transport>,
+        outbox: &Outbox,
+    ) {
+        loop {
+            if let Some(message) = outbox.pop() {
+                let closing = match &message {
+                    Message::Close(Some(frame)) => Some(u16::from(frame.code)),
+                    Message::Close(None) => Some(1005),
+                    _ => None,
+                };
+                if let Err(error) = connection.write(message).await {
+                    self.failed(id, "send", error);
+                    break;
+                }
+                if let Some(code) = closing {
+                    self.post(id, closed(code, ""));
+                    break;
+                }
+                continue;
+            }
+
+            match connection.read().await {
+                Ok(Some(Message::Text(bytes))) => self.post(
+                    id,
+                    serde_json::json!({
+                        "type": "message",
+                        "data": String::from_utf8_lossy(&bytes),
+                    }),
+                ),
+                // Binary arrives as text here on purpose. The pages
+                // this exists for speak JSON; handing them a string
+                // keeps `onmessage` usable, and `binaryType` is a
+                // promise this does not yet keep.
+                Ok(Some(Message::Binary(bytes))) => self.post(
+                    id,
+                    serde_json::json!({
+                        "type": "message",
+                        "data": String::from_utf8_lossy(&bytes),
+                    }),
+                ),
+                Ok(Some(Message::Close(frame))) => {
+                    let (code, reason) = match &frame {
+                        Some(frame) => (
+                            u16::from(frame.code),
+                            String::from_utf8_lossy(&frame.reason).into_owned(),
+                        ),
+                        None => (1005, String::new()),
+                    };
+                    // nago-wss exposes control frames to its caller.
+                    let _ = connection.close(frame).await;
+                    self.post(id, closed(code, &reason));
+                    break;
+                }
+                Ok(Some(Message::Ping(payload))) => {
+                    if let Err(error) = connection.pong(payload).await {
+                        self.failed(id, "pong", error);
+                        break;
+                    }
+                }
+                Ok(Some(Message::Pong(_))) => {}
+                // An outbound command woke the TCP read. No TLS write or
+                // partially assembled WebSocket message was discarded.
+                Err(Error::Io(error)) if error.interrupted() => continue,
+                Err(error) => {
+                    self.failed(id, "stream", error);
+                    break;
+                }
+                Ok(None) => {
+                    self.post(id, closed(1006, "eof"));
+                    break;
+                }
+            }
+        }
     }
 
     fn send(&self, command: Command) {
@@ -250,7 +356,7 @@ impl Bridge {
         // That is what a browser does: `send` after close is a no-op, and the
         // close event has already told the page.
         if let Some(sender) = sender {
-            let _ = sender.send(Message::text(data));
+            sender.push(Message::Text(data.into_bytes().into()));
         }
     }
 
@@ -261,11 +367,18 @@ impl Bridge {
             .ok()
             .and_then(|open| open.get(&command.id).cloned());
         if let Some(sender) = sender {
-            let frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            let frame = CloseFrame {
                 code: command.code.unwrap_or(1000).into(),
                 reason: Default::default(),
             };
-            let _ = sender.send(Message::Close(Some(frame)));
+            if !frame.code.is_sendable() {
+                self.post(
+                    command.id,
+                    serde_json::json!({"type": "error", "message": "bad close code"}),
+                );
+                return;
+            }
+            sender.push(Message::Close(Some(frame)));
         }
     }
 
@@ -295,26 +408,146 @@ fn closed(code: u16, reason: &str) -> serde_json::Value {
     serde_json::json!({"type": "close", "code": code, "reason": reason})
 }
 
-/// A handshake request carrying the subprotocols the page asked for.
+/// A handshake carrying the subprotocols the page asked for.
 ///
 /// This is the whole reason the fleet needs a real socket rather than a
 /// reachable one: honey.id's auth rides here, as `["0login", "1<token>"]`, so
 /// a client that drops the header authenticates as nobody.
-fn build_request(
+async fn open_socket(
     url: &str,
     protocols: &[String],
-) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, String> {
-    let mut request = url
-        .into_client_request()
-        .map_err(|error| format!("{error}"))?;
-    if !protocols.is_empty() {
-        let value = protocols.join(", ");
-        let header = value.parse().map_err(|_| "bad subprotocol".to_owned())?;
-        request
-            .headers_mut()
-            .insert("sec-websocket-protocol", header);
+    outbox: Arc<Outbox>,
+) -> Result<Connected<Transport>, String> {
+    let url = url::Url::parse(url).map_err(|error| error.to_string())?;
+    let secure = match url.scheme() {
+        "ws" => false,
+        "wss" => true,
+        _ => return Err("scheme is not ws or wss".to_owned()),
+    };
+    if url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return Err("WebSocket URL cannot contain credentials or a fragment".to_owned());
     }
-    Ok(request)
+    let host = match url.host() {
+        Some(url::Host::Domain(host)) => host.to_owned(),
+        Some(url::Host::Ipv4(host)) => host.to_string(),
+        Some(url::Host::Ipv6(host)) => host.to_string(),
+        None => return Err("missing host".to_owned()),
+    };
+    for (index, protocol) in protocols.iter().enumerate() {
+        let token = !protocol.is_empty()
+            && protocol.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+            });
+        if !token || protocols[..index].contains(protocol) {
+            return Err("bad subprotocol".to_owned());
+        }
+    }
+    let offered: Vec<&str> = protocols.iter().map(String::as_str).collect();
+
+    crate::install_crypto_provider();
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .ok_or_else(|| "no crypto provider".to_owned())?;
+    let mut entropy = [0u8; 16];
+    provider
+        .secure_random
+        .fill(&mut entropy)
+        .map_err(|_| "WebSocket handshake entropy unavailable".to_owned())?;
+    let tls = if secure {
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|error| error.to_string())?
+            .with_platform_verifier()
+            .map_err(|error| error.to_string())?
+            .with_no_client_auth();
+        Some(Arc::new(config))
+    } else {
+        None
+    };
+    let options = ClientOptions {
+        protocols: &offered,
+        entropy,
+        limits: Limits {
+            max_frame: MAX_FRAME_BYTES as u64,
+            max_message: MAX_MESSAGE_BYTES,
+        },
+        tls,
+        ..Default::default()
+    };
+
+    let reactor = REACTOR
+        .get_or_init(|| Reactor::start().map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(Clone::clone)?;
+    let handle = reactor.handle();
+    let port = url.port().unwrap_or(if secure { 443 } else { 80 });
+    // This function runs on a nagoya worker. getaddrinfo must never run
+    // on the reactor thread or the document thread.
+    let addresses = nagoya::resolve::resolve(&host, port).map_err(|error| format!("{error:?}"))?;
+    let stream = nagoya::resolve::connect_any(&addresses, &handle)
+        .await
+        .map_err(|error| error.to_string())?;
+    let stream = CommandStream { stream, outbox };
+
+    // The URL-level client owns its TcpStream, so use nago-wss's upgrade
+    // entry point to put the command wake boundary below TLS.
+    let stream = if secure {
+        let config = options
+            .tls
+            .clone()
+            .ok_or_else(|| "missing TLS configuration".to_owned())?;
+        let name = nago_wss::tls::rustls_pki_types::ServerName::try_from(host)
+            .map_err(|error| error.to_string())?;
+        let session =
+            rustls::ClientConnection::new(config, name).map_err(|error| error.to_string())?;
+        let mut stream = nago_wss::tls::TlsStream::client(stream, session);
+        stream
+            .handshake()
+            .await
+            .map_err(|error| error.to_string())?;
+        Transport::Secure(stream)
+    } else {
+        Transport::Plain(stream)
+    };
+    let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    let host_header = &url[url::Position::BeforeHost..url::Position::AfterPort];
+    let (connection, protocol) = nago_wss::upgrade::connect(
+        stream,
+        path,
+        host_header,
+        options.protocols,
+        options.headers,
+        options.entropy,
+        options.limits,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if let Some(selected) = &protocol
+        && !protocols.contains(selected)
+    {
+        return Err("server selected an unoffered subprotocol".to_owned());
+    }
+    Ok(Connected {
+        connection,
+        protocol,
+    })
 }
 
 /// The JavaScript half: a `WebSocket` that talks to the bridge.
