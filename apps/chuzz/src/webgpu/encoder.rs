@@ -411,7 +411,7 @@ fn replay(
                     })
                 }).transpose()
             }).collect::<Result<Vec<_>, GpuError>>()?;
-            let depth = depth_stencil_attachment.as_ref().map(|attachment| {
+            let depth = depth_stencil_attachment.as_ref().map(|attachment| -> Result<_, GpuError> {
                 Ok(wgpu::RenderPassDepthStencilAttachment {
                     view: &get(&resources.views, attachment.view, "GPUTextureView")?.1,
                     depth_ops: attachment_ops(

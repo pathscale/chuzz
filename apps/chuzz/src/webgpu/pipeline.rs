@@ -58,9 +58,6 @@ pub(super) fn get<'a, T>(
         .ok_or_else(|| GpuError::validation(format!("invalid or destroyed {member}")))
 }
 
-fn choice<T: serde::de::DeserializeOwned>(name: &str) -> Result<T, GpuError> {
-    decode(Value::String(name.to_owned()))
-}
 
 fn view_dimension(name: &str) -> Result<wgpu::TextureViewDimension, GpuError> {
     match name {
@@ -666,7 +663,7 @@ impl DeviceConnection {
                     })
                     .transpose()?
                     .unwrap_or_default();
-                let fragment = options.fragment.as_ref().map(|fragment| {
+                let fragment = options.fragment.as_ref().map(|fragment| -> Result<_, GpuError> {
                     let shader = get(&resources.pipelines.shaders, fragment.module, "GPUShaderModule")?;
                     Ok(wgpu::FragmentState {
                         module: &shader.module,
