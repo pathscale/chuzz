@@ -1827,6 +1827,7 @@ pub(crate) fn install_web_api_shim(
         "if (globalThis.navigator) navigator.userAgent = {user_agent};"
     ));
     crate::video::install(document, Arc::new(net_provider.clone()));
+    crate::workers::install(document, Arc::new(net_provider.clone()));
 }
 
 /// Load a page outside the browser, for headless capture.

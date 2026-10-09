@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dedicated worker QA</title>
+</head>
+<body>
+  <h1>Dedicated worker QA</h1>
+  <button id="run" type="button">Run worker checks</button>
+  <p id="result" role="status">Ready</p>
+  <button id="responsive" type="button">Page response</button>
+  <p id="response-count">0</p>
+  <script type="module">
+    const result = document.getElementById("result");
+    let responses = 0;
+    document.getElementById("responsive").onclick = () => {
+      document.getElementById("response-count").textContent = String(++responses);
+    };
+    const sourceURL = source => "data:text/javascript," + encodeURIComponent(source);
+    function assert(condition, message) {
+      if (!condition) throw new Error(message);
+    }
+    function answer(worker, value, transfer) {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("worker reply timed out")), 5000);
+        worker.onmessage = event => {
+          clearTimeout(timeout);
+          resolve(event.data);
+        };
+        worker.onerror = event => {
+          clearTimeout(timeout);
+          reject(new Error(event.message));
+        };
+        worker.postMessage(value, transfer);
+      });
+    }
+    document.getElementById("run").onclick = async () => {
+      const workers = [];
+      result.textContent = "Running";
+      try {
+        assert(typeof Worker === "function", "Worker constructor missing");
+        const helper = sourceURL("export const factor = 2;");
+        const moduleSource = `
+          import { factor } from ${JSON.stringify(helper)};
+          const dynamic = await import(${JSON.stringify(helper)});
+          self.onmessage = async event => {
+            const input = event.data;
+            const response = await fetch(input.resource);
+            const json = await response.json();
+            for (let index = 0; index < input.values.length; index++) {
+              input.values[index] *= factor;
+            }
+            setTimeout(() => {
+              postMessage({
+                values: input.values,
+                alias: input.values.buffer,
+                cycle: input.cycle,
+                name: self.name,
+                isolated: typeof document === "undefined" && typeof window === "undefined",
+                imported: dynamic.factor,
+                fetched: json.worker,
+                clock: performance.now() >= 0
+              }, [input.values.buffer]);
+              close();
+            }, 1);
+          };
+        `;
+        const moduleWorker = new Worker(sourceURL(moduleSource), { type: "module", name: "double" });
+        workers.push(moduleWorker);
+        const values = new Float32Array([1.5, -2, 4]);
+        const buffer = values.buffer;
+        const cycle = {};
+        cycle.self = cycle;
+        const replyPromise = answer(moduleWorker, {
+          values, cycle, resource: new URL("./payload.json", location.href).href,
+        }, [buffer]);
+        assert(buffer.byteLength === 0, "page transfer did not detach");
+        const reply = await replyPromise;
+        assert(reply.values instanceof Float32Array, "typed array type was lost");
+        assert(reply.values.join(",") === "3,-4,8", "module worker did not double the array");
+        assert(reply.alias === reply.values.buffer, "shared buffer identity was lost");
+        assert(reply.cycle.self === reply.cycle, "cycle was lost");
+        assert(reply.name === "double" && reply.isolated && reply.clock, "worker scope is incorrect");
+        assert(reply.imported === 2 && reply.fetched === true, "imports or fetch failed");
+
+        const classic = new Worker(sourceURL(`
+          importScripts(${JSON.stringify(sourceURL("self.multiplier = 3;"))});
+          addEventListener("message", event => {
+            const values = event.data;
+            for (let index = 0; index < values.length; index++) values[index] *= multiplier;
+            postMessage(values, [values.buffer]);
+          });
+        `));
+        workers.push(classic);
+        const copied = new Float32Array([2, 3]);
+        const classicReply = await answer(classic, copied);
+        assert(copied.join(",") === "2,3", "non-transferred message was shared");
+        assert(classicReply.join(",") === "6,9", "classic worker failed");
+
+        const untouched = new ArrayBuffer(8);
+        let cloneError = false;
+        try { classic.postMessage({ invalid() {} }, [untouched]); }
+        catch (error) { cloneError = error.name === "DataCloneError"; }
+        assert(cloneError && untouched.byteLength === 8, "failed clone detached its transfer");
+        cloneError = false;
+        try { classic.postMessage(untouched, [untouched, untouched]); }
+        catch (error) { cloneError = error.name === "DataCloneError"; }
+        assert(cloneError && untouched.byteLength === 8, "duplicate transfer was accepted");
+
+        const ordered = new Worker(sourceURL(`
+          let count = 0;
+          const timer = setInterval(() => {
+            if (++count === 3) clearInterval(timer);
+          }, 1);
+          self.onmessage = event => postMessage(event.data);
+        `));
+        workers.push(ordered);
+        const received = [];
+        const order = new Promise((resolve, reject) => {
+          ordered.onerror = event => reject(new Error(event.message));
+          ordered.onmessage = event => {
+            received.push(event.data);
+            if (received.length === 3) resolve();
+          };
+        });
+        ordered.postMessage(1);
+        ordered.postMessage(2);
+        ordered.postMessage(3);
+        await order;
+        assert(received.join(",") === "1,2,3", "messages arrived out of order");
+
+        const throwing = new Worker(sourceURL("throw new Error('worker failure');"));
+        workers.push(throwing);
+        await new Promise((resolve, reject) => {
+          throwing.onerror = event => {
+            if (event.type === "error" && event.message.includes("worker failure")) resolve();
+            else reject(new Error("incorrect worker error event"));
+          };
+        });
+
+        const busy = new Worker(sourceURL("while (true) {}"));
+        workers.push(busy);
+        await new Promise(resolve => setTimeout(resolve, 50));
+        busy.terminate();
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const restarted = new Worker(sourceURL("onmessage = event => postMessage(event.data);"));
+        workers.push(restarted);
+        assert(await answer(restarted, "alive") === "alive", "worker restart failed");
+        result.textContent = "PASS";
+      } catch (error) {
+        result.textContent = "FAIL: " + error.message;
+      } finally {
+        for (const worker of workers) worker.terminate();
+      }
+    };
+  </script>
+</body>
+</html>
+
