@@ -21,6 +21,10 @@
   var otherContexts = new WeakMap();
   var transfer = ArrayBuffer.prototype.transfer;
   var allocationLimit = 64 * 1024 * 1024;
+  var putBytes = globalThis.__chuzzGpuPutBytes;
+  var takeBytes = globalThis.__chuzzGpuTakeBytes;
+  var releaseBytes = globalThis.__chuzzGpuReleaseBytes;
+  var sendNative = globalThis.__chuzzGpuSend;
 
   function missing(member) {
     throw new Error("not implemented in chuzz: " + member);
@@ -103,9 +107,21 @@
       pending[id] = { resolve: resolve, reject: reject };
       fields.webgpu = operation;
       fields.id = id;
+      var uploads = [];
       try {
-        window.ipc.postMessage(JSON.stringify(fields));
+        var message = JSON.stringify(fields, function (key, value) {
+          if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+            var view = byteView(value);
+            var token = putBytes(view.buffer, view.byteOffset, view.byteLength);
+            uploads.push(token);
+            return token;
+          }
+          return value;
+        });
+        // Registration and command admission run synchronously in this context.
+        sendNative(message, uploads);
       } catch (error) {
+        uploads.forEach(function (token) { releaseBytes(token); });
         delete pending[id];
         reject(error);
       }
@@ -116,8 +132,19 @@
     var entry = pending[id];
     if (!entry) { return; }
     delete pending[id];
-    if (result.ok) { entry.resolve(result.value); }
-    else {
+    if (result.ok) {
+      try {
+        var value = result.value;
+        if (value && value.byteId !== undefined) {
+          value = takeBytes(value.byteId);
+        } else if (value && value.data && value.data.byteId !== undefined) {
+          value.data = takeBytes(value.data.byteId);
+        }
+        entry.resolve(value);
+      } catch (error) {
+        entry.reject(error);
+      }
+    } else {
       var error = new Error(result.error);
       error.kind = result.kind;
       error.reported = !!result.reported;
@@ -521,7 +548,7 @@
     if (size > allocationLimit) {
       throw operationError("WebGPU transfer limit reached in chuzz");
     }
-    return Array.from(new Uint8Array(view.buffer, view.byteOffset + offset, size));
+    return new Uint8Array(view.buffer, view.byteOffset + offset, size);
   }
 
   method(GPUDevice.prototype, "createBuffer", function (input) {
@@ -643,11 +670,12 @@
     if (state.destroyed) { return; }
     var ranges = state.writable && state.mapState === "mapped"
       ? state.ranges.map(function (range) {
-        return { offset: range.offset, data: Array.from(new Uint8Array(range.buffer)) };
+        return { offset: range.offset, data: range.buffer };
       }) : [];
+    // send() snapshots each range natively before cancelMapping detaches it.
+    fire(state.device, "unmap", state.handle, { ranges: ranges });
     cancelMapping(state);
     state.writable = false;
-    fire(state.device, "unmap", state.handle, { ranges: ranges });
   });
   method(GPUBuffer.prototype, "destroy", function () {
     var state = receiver(bufferStates, this, "GPUBuffer");

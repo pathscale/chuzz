@@ -62,7 +62,7 @@ struct Write {
     mip_level: u32,
     origin: [u32; 3],
     aspect: String,
-    data: Vec<u8>,
+    data: u64,
     offset: u64,
     bytes_per_row: Option<u32>,
     rows_per_image: Option<u32>,
@@ -93,7 +93,7 @@ impl Default for SamplerOptions {
             address_mode_v: "clamp-to-edge".to_owned(),
             address_mode_w: "clamp-to-edge".to_owned(),
             mag_filter: "nearest".to_owned(),
-            min_filter: "nearest".to_owned(),
+            min_filter: "min_filter".replace("min_filter", "nearest"),
             mipmap_filter: "nearest".to_owned(),
             lod_min_clamp: 0.0,
             lod_max_clamp: 32.0,
@@ -176,7 +176,7 @@ fn mipmap_filter(name: &str) -> Result<wgpu::MipmapFilterMode, GpuError> {
     match name {
         "nearest" => Ok(wgpu::MipmapFilterMode::Nearest),
         "linear" => Ok(wgpu::MipmapFilterMode::Linear),
-        _ => Err(GpuError::validation("invalid GPUFilterMode")),
+        _ => Err(GpuError::validation("invalid GPUMipmapFilterMode")),
     }
 }
 
@@ -325,7 +325,8 @@ impl DeviceConnection {
 
     pub(super) async fn write_texture(&self, args: Value) -> Result<Value, GpuError> {
         let write: Write = decode(args)?;
-        if write.data.len() as u64 > ALLOCATION_LIMIT {
+        let data = self.input_bytes(write.data)?;
+        if data.len() as u64 > ALLOCATION_LIMIT {
             return Err(GpuError::validation(
                 "WebGPU transfer limit reached in chuzz",
             ));
@@ -358,7 +359,7 @@ impl DeviceConnection {
                     },
                     aspect,
                 },
-                &write.data,
+                &data,
                 wgpu::TexelCopyBufferLayout {
                     offset: write.offset,
                     bytes_per_row: write.bytes_per_row,
@@ -398,3 +399,4 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
+

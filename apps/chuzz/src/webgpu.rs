@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
+mod binary;
 mod buffer;
 mod canvas;
 mod encoder;
@@ -59,7 +60,6 @@ const LIMIT_NAMES: &[&str] = &[
     "maxComputeInvocationsPerWorkgroup",
     "maxComputeWorkgroupSizeX",
     "maxComputeWorkgroupSizeY",
-    "maxComputeWorkgroupSizeZ",
     "maxComputeWorkgroupsPerDimension",
 ];
 
@@ -126,6 +126,8 @@ enum Request {
         id: u64,
         device: u64,
         command: Command,
+        #[serde(skip)]
+        bytes: binary::Lease,
     },
 }
 
@@ -259,6 +261,7 @@ struct State {
     devices: HashMap<u64, Arc<DeviceConnection>>,
     incoming: VecDeque<Request>,
     images: external::Images,
+    bytes: Arc<binary::Table>,
     requests: VecDeque<Request>,
     running: bool,
     polling: bool,
@@ -303,9 +306,26 @@ impl Bridge {
     }
 
     pub(crate) fn handle(&self, message: &str) -> bool {
-        let Ok(request) = serde_json::from_str::<Request>(message) else {
+        let Ok(mut request) = serde_json::from_str::<Request>(message) else {
             return false;
         };
+        if let Request::Command { command, bytes, .. } = &mut request {
+            match self.byte_table().claim(command) {
+                Ok(lease) => *bytes = lease,
+                Err(error) => {
+                    self.state().ready.push((
+                        request.id(),
+                        json!({
+                            "ok": false,
+                            "error": error.message,
+                            "kind": error.kind,
+                            "reported": false
+                        }),
+                    ));
+                    return true;
+                }
+            }
+        }
         // DOM snapshots belong to the document thread. Prepare the whole
         // incoming batch there before passing it to the ordered host worker.
         let mut state = self.state();
@@ -346,6 +366,10 @@ impl Bridge {
             document.eval(&format!(
                 "globalThis.__chuzzGpuResolve({id}, {payload});"
             ));
+            // A missing or throwing resolver must not retain a readback.
+            if let Some(value) = payload.get("value") {
+                self.release_reply(value);
+            }
         }
         for (id, payload) in events {
             document.eval(&format!(
@@ -379,7 +403,9 @@ impl Bridge {
                 id,
                 device,
                 command,
+                bytes,
             } => {
+                let _bytes = bytes;
                 // Image operations use the same ordered, bounded worker as
                 // GPU commands, without requiring a GPUDevice.
                 if device == 0 {

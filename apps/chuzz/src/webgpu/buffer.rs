@@ -24,7 +24,12 @@ struct Options {
 #[serde(deny_unknown_fields)]
 struct Write {
     offset: u64,
-    data: Vec<u8>,
+    data: u64,
+}
+
+struct Transfer {
+    offset: u64,
+    data: Arc<Vec<u8>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -139,6 +144,10 @@ impl DeviceConnection {
 
     pub(super) async fn write_buffer(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let write: Write = decode(args)?;
+        let write = Transfer {
+            offset: write.offset,
+            data: self.input_bytes(write.data)?,
+        };
         let buffer = {
             let resources = self.resources();
             let entry = resources
@@ -197,16 +206,27 @@ impl DeviceConnection {
             }
             (Arc::clone(&entry.buffer), mapped)
         };
-        let bytes = map_read(&self.device, buffer, mapped.clone()).await?;
+        let bytes = map_read(&self.device, Arc::clone(&buffer), mapped.clone()).await?;
+        let result = self.export_bytes(binary::Block::Buffer(Arc::new(bytes)));
+        if result.is_err() {
+            buffer.unmap();
+            return result;
+        }
         if let Some(entry) = self.resources().buffers.get_mut(&handle) {
             entry.mapped = Some(mapped);
             entry.writable = false;
         }
-        Ok(json!(bytes))
+        result
     }
 
     pub(super) async fn unmap_buffer(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let unmap: Unmap = decode(args)?;
+        let writes = unmap.ranges.into_iter().map(|write| {
+            Ok(Transfer {
+                offset: write.offset,
+                data: self.input_bytes(write.data)?,
+            })
+        }).collect::<Result<Vec<_>, GpuError>>()?;
         let (buffer, writable, mapped) = {
             let resources = self.resources();
             let entry = resources
@@ -225,7 +245,7 @@ impl DeviceConnection {
                 .ok_or_else(|| GpuError::validation("GPUBuffer is not mapped"))?;
             let mut ranges = Vec::new();
             let mut transferred = 0_u64;
-            for write in &unmap.ranges {
+            for write in &writes {
                 let current = range(write.offset, write.data.len() as u64, mapped.end)?;
                 if current.start < mapped.start
                     || current.start % 8 != 0
@@ -244,13 +264,13 @@ impl DeviceConnection {
                 }
                 ranges.push(current);
             }
-        } else if !unmap.ranges.is_empty() {
+        } else if !writes.is_empty() {
             return Err(GpuError::validation("cannot write a READ mapping"));
         }
 
         checked(&self.device, || {
             if writable {
-                for write in unmap.ranges {
+                for write in writes {
                     if !write.data.is_empty() {
                         buffer
                             .get_mapped_range_mut(
@@ -270,3 +290,4 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
+

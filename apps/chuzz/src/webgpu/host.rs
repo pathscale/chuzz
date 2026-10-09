@@ -159,11 +159,17 @@ impl Bridge {
     fn complete_request(&self, id: u64, result: Result<Value, GpuError>) {
         let flight = self.state().in_flight.remove(&id);
         let Some(flight) = flight else {
+            if let Ok(value) = &result {
+                self.release_reply(value);
+            }
             return;
         };
         let result = if flight.live() {
             result
         } else {
+            if let Ok(value) = &result {
+                self.release_reply(value);
+            }
             if flight.startup {
                 let mut state = self.state();
                 state.adapters.remove(&id);
@@ -234,3 +240,4 @@ impl Bridge {
         });
     }
 }
+

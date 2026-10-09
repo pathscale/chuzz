@@ -21,14 +21,14 @@ enum Source {
     Bitmap { handle: u64 },
     Element { handle: u64 },
     Encoded {
-        data: Vec<u8>,
+        data: u64,
         #[serde(default)]
         node: Option<u64>,
     },
     Pixels {
         width: u32,
         height: u32,
-        data: Vec<u8>,
+        data: u64,
     },
     Canvas {
         canvas: u64,
@@ -190,18 +190,20 @@ impl Bridge {
             Source::Element { handle } => self.state().images.snapshots.remove(&handle)
                 .ok_or_else(|| GpuError::validation("image source has no decoded pixels")),
             Source::Pixels { width, height, data } => {
+                let data = self.byte_table().take_input(data)?;
                 if data.len() != byte_count(width, height)? {
                     return Err(GpuError::validation("invalid ImageData byte length"));
                 }
-                Ok(Arc::new(RasterImageData::new(width, height, Arc::new(data))))
+                Ok(Arc::new(RasterImageData::new(width, height, data)))
             }
             Source::Encoded { data, node } => {
+                let data = self.byte_table().take_input(data)?;
                 let _node = node;
                 if data.len() as u64 > ALLOCATION_LIMIT {
                     return Err(GpuError::validation("image decode limit reached in chuzz"));
                 }
                 let make_reader = || {
-                    image::ImageReader::new(Cursor::new(&data))
+                    image::ImageReader::new(Cursor::new(data.as_slice()))
                         .with_guessed_format()
                         .map_err(|error| GpuError::validation(error.to_string()))
                 };
@@ -258,16 +260,6 @@ impl Bridge {
                     .ok_or_else(|| GpuError::validation("createImageBitmap requires a source"))?;
                 let source = self.resolve_source(source).await?;
                 let image = bitmap(source, &options)?;
-                let value = json!({
-                    "handle": command.handle,
-                    "width": image.width,
-                    "height": image.height,
-                    "data": if options.read_pixels {
-                        Some(image.data.data())
-                    } else {
-                        None
-                    },
-                });
                 let mut state = self.state();
                 if !state.in_flight.get(&id).is_some_and(host::Flight::live) {
                     return Err(GpuError::internal("image request expired in chuzz"));
@@ -281,6 +273,18 @@ impl Bridge {
                 {
                     return Err(GpuError::validation("ImageBitmap allocation limit reached in chuzz"));
                 }
+                let data = if options.read_pixels {
+                    let id = state.bytes.insert(binary::Block::Image(Arc::clone(&image)), false)?;
+                    json!({"byteId": id})
+                } else {
+                    Value::Null
+                };
+                let value = json!({
+                    "handle": command.handle,
+                    "width": image.width,
+                    "height": image.height,
+                    "data": data,
+                });
                 state.images.bitmaps.insert(command.handle, image);
                 Ok(value)
             }

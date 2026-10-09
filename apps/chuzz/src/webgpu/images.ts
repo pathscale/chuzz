@@ -43,7 +43,7 @@
     width = integer(width, "image.width");
     height = integer(height, "image.height");
     if (data.length !== length(width, height)) { throw new TypeError("invalid image byte length"); }
-    return { kind: "pixels", width: width, height: height, data: Array.from(data) };
+    return { kind: "pixels", width: width, height: height, data: data };
   }
   function canvasPixels(canvas) {
     var state = canvasContexts.get(canvas);
@@ -156,7 +156,7 @@
     if (source instanceof Blob) {
       input = source.arrayBuffer().then(function (buffer) {
         if (buffer.byteLength > limit) { throw new RangeError("image decode limit reached in chuzz"); }
-        return { kind: "encoded", data: Array.from(new Uint8Array(buffer)), node: node || null };
+        return { kind: "encoded", data: buffer, node: node || null };
       });
     } else {
       try { input = Promise.resolve(globalThis.__chuzzGpuImageSource(source)); }

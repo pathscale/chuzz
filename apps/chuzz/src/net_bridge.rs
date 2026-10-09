@@ -192,6 +192,8 @@ pub fn install(
     // After the web-API shim, so the real socket replaces the inert one that
     // shim installs when nothing better exists.
     document.eval(crate::ws_bridge::WEBSOCKET_SHIM);
+    let gpu = crate::webgpu::Bridge::default();
+    gpu.install_bytes(document);
     document.eval(crate::webgpu::WEBGPU_SHIM);
 
     let initial_cookie = base
@@ -210,7 +212,6 @@ pub fn install(
     let poll_scroll_mailbox = scroll_mailbox.clone();
     let sockets = crate::ws_bridge::Bridge::new();
     let handler_sockets = sockets.clone();
-    let gpu = crate::webgpu::Bridge::default();
     let handler_gpu = gpu.clone();
     let handler_base = base.clone();
     let poll_base = base.clone();
@@ -462,6 +463,7 @@ const NETWORK_API_SHIM: &str = r#"
       this._id = 0;
     };
     XHR.prototype.open = function (method, url) {
+      var self = this;
       this._method = method || "GET";
       this._url = url;
       this.readyState = 1;
@@ -477,6 +479,7 @@ const NETWORK_API_SHIM: &str = r#"
       this.readyState = 0;
       this.status = 0;
       this.statusText = "";
+      this.responseText = "";
       if (this.onabort) { this.onabort(); }
       if (this.onreadystatechange) { this.onreadystatechange(); }
     };
