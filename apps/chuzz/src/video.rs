@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use blitz_dom::Document as _;
 use blitz_dom::NodeId;
 use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
 use blitz_script::ScriptDocument;
@@ -519,7 +520,9 @@ impl Host {
 }
 
 fn set_image(document: &mut ScriptDocument, id: NodeId, frame: Option<Frame>) {
-    let Some(node) = document.inner_mut().get_node_mut(id) else {
+    // The guard must outlive the node borrow taken from it.
+    let mut doc = document.inner_mut();
+    let Some(node) = doc.get_node_mut(id) else {
         return;
     };
     let Some(element) = node.element_data_mut() else {
