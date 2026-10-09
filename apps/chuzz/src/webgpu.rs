@@ -1,20 +1,28 @@
-//! The first page WebGPU slice: real adapters, devices and queues.
+//! Page WebGPU objects, owned by the document's bridge.
 //!
-//! Boa's public document interface provides IPC and polling rather than host
-//! function registration. Share that channel with the existing bridges.
-//! Native objects remain owned by this document's bridge; JavaScript receives
-//! handles and capability snapshots, not simulated GPU resources.
+//! Native commands execute in page call order. Boa receives handles over IPC;
+//! GPU resources remain on the Rust side. Canvas readback uses Blitz's raster
+//! image path, including the headless CPU painter.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
+
+mod buffer;
+mod canvas;
+mod resources;
+mod texture;
+
+use resources::{Command, GpuError, Resources};
 
 pub(crate) const WEBGPU_SHIM: &str = include_str!("webgpu.ts");
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const OBJECT_LIMIT: usize = 64;
+const REQUEST_LIMIT: usize = 4096;
 
 // Export only WebGPU limits, excluding wgpu's native extensions.
 const LIMIT_NAMES: &[&str] = &[
@@ -108,77 +116,305 @@ enum Request {
         adapter: u64,
         options: DeviceOptions,
     },
+    #[serde(rename = "command")]
+    Command {
+        id: u64,
+        device: u64,
+        command: Command,
+    },
 }
 
 impl Request {
     fn id(&self) -> u64 {
         match self {
-            Self::Adapter { id, .. } | Self::Device { id, .. } => *id,
+            Self::Adapter { id, .. }
+            | Self::Device { id, .. }
+            | Self::Command { id, .. } => *id,
+        }
+    }
+
+    fn error_device(&self) -> Option<u64> {
+        match self {
+            Self::Command {
+                device, command, ..
+            } if !matches!(
+                command.op.as_str(),
+                "popErrorScope" | "pushErrorScope" | "destroy"
+            ) => Some(*device),
+            _ => None,
         }
     }
 }
 
-/// Retain the native connection for subsequent resource and command slices.
-/// There is no device-destroy API in this slice; document teardown releases it.
+struct ErrorScope {
+    filter: String,
+    error: Option<Value>,
+}
+
 struct DeviceConnection {
-    _device: Arc<wgpu::Device>,
-    _queue: Arc<wgpu::Queue>,
+    id: u64,
+    owner: Weak<Mutex<State>>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    lost: Arc<AtomicBool>,
+    scopes: Mutex<Vec<ErrorScope>>,
+    resources: Mutex<Resources>,
+}
+
+impl DeviceConnection {
+    fn resources(&self) -> MutexGuard<'_, Resources> {
+        lock(&self.resources)
+    }
+
+    fn report(&self, error: &GpuError) {
+        let value = error.value();
+        {
+            let mut scopes = lock(&self.scopes);
+            if let Some(scope) = scopes
+                .iter_mut()
+                .rev()
+                .find(|scope| scope.filter == error.kind)
+            {
+                if scope.error.is_none() {
+                    scope.error = Some(value);
+                }
+                return;
+            }
+        }
+        post_event(
+            &self.owner,
+            self.id,
+            json!({"type": "error", "error": value}),
+        );
+    }
+
+    async fn execute(&self, command: Command) -> Result<Value, GpuError> {
+        match command.op.as_str() {
+            "destroy" => {
+                // Removing resources also releases mapped allocations and views.
+                let resources = std::mem::take(&mut *self.resources());
+                drop(resources);
+                self.device.destroy();
+                post_loss(
+                    &self.owner,
+                    self.id,
+                    &self.lost,
+                    "destroyed",
+                    "GPUDevice.destroy() was called".to_owned(),
+                );
+                Ok(Value::Null)
+            }
+            "pushErrorScope" => {
+                let filter = command.args.as_str().ok_or_else(|| {
+                    GpuError::validation("invalid GPUErrorFilter")
+                })?;
+                if !matches!(filter, "validation" | "out-of-memory" | "internal") {
+                    return Err(GpuError::validation("invalid GPUErrorFilter"));
+                }
+                let mut scopes = lock(&self.scopes);
+                if scopes.len() >= 256 {
+                    return Err(GpuError::validation(
+                        "WebGPU error scope limit reached in chuzz",
+                    ));
+                }
+                scopes.push(ErrorScope {
+                    filter: filter.to_owned(),
+                    error: None,
+                });
+                Ok(Value::Null)
+            }
+            "popErrorScope" => lock(&self.scopes)
+                .pop()
+                .map(|scope| scope.error.unwrap_or(Value::Null))
+                .ok_or_else(|| GpuError::validation("GPUDevice has no error scope")),
+            _ => {
+                if self.lost.load(Ordering::Acquire) {
+                    return Err(GpuError::validation("GPUDevice is lost or destroyed"));
+                }
+                self.execute_resource(command).await
+            }
+        }
+    }
+}
+
+impl Drop for DeviceConnection {
+    fn drop(&mut self) {
+        self.device.destroy();
+    }
 }
 
 #[derive(Default)]
 struct State {
     adapters: HashMap<u64, Arc<wgpu::Adapter>>,
     devices: HashMap<u64, Arc<DeviceConnection>>,
+    requests: VecDeque<Request>,
+    running: bool,
     ready: Vec<(u64, Value)>,
+    events: Vec<(u64, Value)>,
+    frames: HashMap<u64, canvas::Frame>,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct Bridge(Arc<Mutex<State>>);
 
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+fn post_event(owner: &Weak<Mutex<State>>, device: u64, value: Value) {
+    if let Some(state) = owner.upgrade() {
+        lock(&state).events.push((device, value));
+    }
+}
+
+fn post_loss(
+    owner: &Weak<Mutex<State>>,
+    device: u64,
+    lost: &AtomicBool,
+    reason: &str,
+    message: String,
+) {
+    if !lost.swap(true, Ordering::AcqRel) {
+        post_event(
+            owner,
+            device,
+            json!({"type": "lost", "reason": reason, "message": message}),
+        );
+    }
+}
+
 impl Bridge {
     fn state(&self) -> MutexGuard<'_, State> {
-        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+        lock(&self.0)
     }
 
     pub(crate) fn handle(&self, message: &str) -> bool {
         let Ok(request) = serde_json::from_str::<Request>(message) else {
             return false;
         };
+        {
+            let mut state = self.state();
+            if state.requests.len() >= REQUEST_LIMIT {
+                state.ready.push((
+                    request.id(),
+                    json!({
+                        "ok": false,
+                        "error": "WebGPU request limit reached in chuzz"
+                    }),
+                ));
+                return true;
+            }
+            state.requests.push_back(request);
+            if state.running {
+                return true;
+            }
+            state.running = true;
+        }
+
+        // One worker per document preserves ordering across synchronous page
+        // methods, including push/write/pop and create/unmap/map sequences.
         let bridge = self.clone();
-        let id = request.id();
         let _ = nagoya::spawn(async move {
-            let result = match nagoya::timeout(DEADLINE, bridge.execute(request)).await {
-                Ok(result) => result,
-                Err(_) => Err("WebGPU request timed out in chuzz".to_owned()),
-            };
-            let payload = match result {
-                Ok(value) => json!({"ok": true, "value": value}),
-                Err(error) => json!({"ok": false, "error": error}),
-            };
-            bridge.state().ready.push((id, payload));
+            loop {
+                let request = {
+                    let mut state = bridge.state();
+                    match state.requests.pop_front() {
+                        Some(request) => request,
+                        None => {
+                            state.running = false;
+                            return;
+                        }
+                    }
+                };
+                let id = request.id();
+                let error_device = request.error_device();
+                let result = match nagoya::timeout(DEADLINE, bridge.execute(request)).await {
+                    Ok(result) => result,
+                    Err(_) => Err(GpuError::internal("WebGPU request timed out in chuzz")),
+                };
+                let payload = match result {
+                    Ok(value) => json!({"ok": true, "value": value}),
+                    Err(error) => {
+                        let device = error_device
+                            .and_then(|id| bridge.state().devices.get(&id).cloned());
+                        if let Some(device) = &device {
+                            device.report(&error);
+                        }
+                        json!({
+                            "ok": false,
+                            "error": error.message,
+                            "reported": device.is_some()
+                        })
+                    }
+                };
+                bridge.state().ready.push((id, payload));
+            }
         });
         true
     }
 
     pub(crate) fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        let ready = std::mem::take(&mut self.state().ready);
-        let changed = !ready.is_empty();
+        // Nonblocking polling delivers driver loss and mapping callbacks even
+        // when the page has stopped issuing GPU commands.
+        let devices: Vec<_> = self.state().devices.values().cloned().collect();
+        for device in devices {
+            let _ = device.device.poll(wgpu::PollType::Poll);
+        }
+
+        let (ready, events, frames) = {
+            let mut state = self.state();
+            (
+                std::mem::take(&mut state.ready),
+                std::mem::take(&mut state.events),
+                std::mem::take(&mut state.frames),
+            )
+        };
+        let mut changed = !ready.is_empty() || !events.is_empty();
+        // Install newly requested JS devices before delivering their events.
         for (id, payload) in ready {
             document.eval(&format!(
                 "globalThis.__chuzzGpuResolve({id}, {payload});"
             ));
         }
+        for (id, payload) in events {
+            document.eval(&format!(
+                "globalThis.__chuzzGpuEvent({id}, {payload});"
+            ));
+        }
+        for frame in frames.into_values() {
+            changed |= frame.paint(document);
+        }
+        // Present each acquired canvas texture at the end of this host turn.
+        // The shim expires it synchronously and queues the native readback.
+        document.eval("globalThis.__chuzzGpuFlushCanvases();");
         changed
     }
 
-    async fn execute(&self, request: Request) -> Result<Value, String> {
+    async fn execute(&self, request: Request) -> Result<Value, GpuError> {
         match request {
-            Request::Adapter { id, options } => self.request_adapter(id, options).await,
+            Request::Adapter { id, options } => self
+                .request_adapter(id, options)
+                .await
+                .map_err(GpuError::validation),
             Request::Device {
                 id,
                 adapter,
                 options,
-            } => self.request_device(id, adapter, options).await,
+            } => self
+                .request_device(id, adapter, options)
+                .await
+                .map_err(GpuError::validation),
+            Request::Command {
+                device, command, ..
+            } => {
+                let device = self
+                    .state()
+                    .devices
+                    .get(&device)
+                    .cloned()
+                    .ok_or_else(|| GpuError::validation("invalid GPUDevice"))?;
+                device.execute(command).await
+            }
         }
     }
 
@@ -286,17 +522,37 @@ impl Bridge {
             "features": feature_names(device.features()),
             "limits": limits_value(&device.limits())?,
         });
+        let connection = Arc::new(DeviceConnection {
+            id,
+            owner: Arc::downgrade(&self.0),
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+            lost: Arc::new(AtomicBool::new(false)),
+            scopes: Mutex::new(Vec::new()),
+            resources: Mutex::new(Resources::default()),
+        });
+
+        let owner = connection.owner.clone();
+        let lost = Arc::clone(&connection.lost);
+        connection.device.set_device_lost_callback(move |reason, message| {
+            let reason = match reason {
+                wgpu::DeviceLostReason::Destroyed => "destroyed",
+                wgpu::DeviceLostReason::Unknown => "unknown",
+            };
+            post_loss(&owner, id, &lost, reason, message);
+        });
+        let weak = Arc::downgrade(&connection);
+        connection.device.on_uncaptured_error(Arc::new(move |error| {
+            if let Some(connection) = weak.upgrade() {
+                connection.report(&GpuError::from(error));
+            }
+        }));
+
         let mut state = self.state();
         if state.adapters.len() + state.devices.len() >= OBJECT_LIMIT {
             return Err("WebGPU object limit reached in chuzz".to_owned());
         }
-        state.devices.insert(
-            id,
-            Arc::new(DeviceConnection {
-                _device: Arc::new(device),
-                _queue: Arc::new(queue),
-            }),
-        );
+        state.devices.insert(id, connection);
         Ok(value)
     }
 }
