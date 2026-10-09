@@ -376,7 +376,13 @@ impl Bridge {
             Some("high-performance") => wgpu::PowerPreference::HighPerformance,
             Some(_) => return Err("invalid GPURequestAdapterOptions.powerPreference".to_owned()),
         };
-        if self.state().adapters.len() + self.state().devices.len() >= OBJECT_LIMIT {
+        // One guard: two `self.state()` temporaries in one expression would
+        // lock the same mutex twice and deadlock this thread.
+        let objects = {
+            let state = self.state();
+            state.adapters.len() + state.devices.len()
+        };
+        if objects >= OBJECT_LIMIT {
             return Err("WebGPU object limit reached in chuzz".to_owned());
         }
 
