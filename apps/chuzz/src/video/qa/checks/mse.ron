@@ -1,0 +1,25 @@
+[
+    (
+        id: "mse-fmp4-playback",
+        group: "media",
+        what: "native byte snapshots feed fMP4 playback, buffered seeking, resumed clocks and EOS",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: MSE buffered seek clock frame EOS PASS",
+        expect: PaintsNamed,
+        covers: ["READY: MSE buffered seek clock frame EOS PASS"],
+        outcome_timeout_ms: 60000,
+    ),
+    (
+        id: "mse-presented-video",
+        group: "media",
+        what: "the decoded MSE video frame reaches captured document painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#movie",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

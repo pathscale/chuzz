@@ -1,0 +1,14 @@
+{
+  "tracks": [
+    {
+      "type": "video/mp4; codecs=\"avc1.64001f, mp4a.40.2\"",
+      "init": "./clip/init.mp4",
+      "segments": [
+        "./clip/segment-1.m4s",
+        "./clip/segment-2.m4s",
+        "./clip/segment-3.m4s",
+        "./clip/segment-4.m4s"
+      ]
+    }
+  ]
+}

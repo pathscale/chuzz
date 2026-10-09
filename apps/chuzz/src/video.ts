@@ -80,6 +80,7 @@
         width: 0,
         height: 0,
         hasFrame: false,
+        frameInk: false,
         error: null,
         muted: false,
         mutedExplicit: false,
@@ -142,6 +143,10 @@
   }
 
   function rawSource(element) {
+    if (globalThis.__chuzzMseSource) {
+      var objectSource = globalThis.__chuzzMseSource(element);
+      if (objectSource !== null) return objectSource;
+    }
     var src = element.getAttribute('src');
     if (src !== null) return src;
     var sources = element.querySelectorAll('source[src]');
@@ -179,6 +184,7 @@
     state.width = 0;
     state.height = 0;
     state.hasFrame = false;
+    state.frameInk = false;
     state.error = null;
     state.buffered = [];
     state.seekable = [];
@@ -191,7 +197,12 @@
       later(state, 'abort');
       later(state, 'emptied');
     }
-    send(state, 'load', { src: src, force: Boolean(force) });
+    var load = { src: src, force: Boolean(force) };
+    if (globalThis.__chuzzMseAttach) {
+      var mediaSource = globalThis.__chuzzMseAttach(state.element, src, Boolean(force));
+      if (mediaSource !== null) load.mse = mediaSource;
+    }
+    send(state, 'load', load);
     updateUi(state);
   }
 
@@ -445,23 +456,11 @@
     configurable: true,
     writable: true,
     value: function (type) {
-      stateFor(this);
-      type = String(type).toLowerCase();
-      if (!globalThis.__chuzzVideoSupported) return '';
-      if (!/^video\/mp4(?:\s*;|$)/.test(type)) return '';
-      var codecs = /\bcodecs\s*=\s*"?([^";]+)/.exec(type);
-      if (!codecs) return 'maybe';
-      var values = codecs[1].split(',');
-      var hasVideo = false;
-      for (var index = 0; index < values.length; index++) {
-        var codec = values[index].trim();
-        if (/^avc[13](?:\.[0-9a-f]{6})?$/.test(codec)) {
-          hasVideo = true;
-        } else if (codec !== 'mp4a.40.2') {
-          return '';
-        }
-      }
-      return hasVideo ? 'probably' : '';
+      type = String(type);
+      if (!globalThis.__chuzzVideoSupported
+          || !globalThis.__chuzzMseSupported
+          || !globalThis.__chuzzMseSupported(type)) return '';
+      return /\bcodecs\s*=/i.test(type) ? 'probably' : 'maybe';
     }
   });
 
@@ -572,6 +571,7 @@
       if (seen.has(id)) return;
       rejectPending(state, exception('The video was removed', 'AbortError'));
       send(state, 'release');
+      if (globalThis.__chuzzMseDetach) globalThis.__chuzzMseDetach(state.element);
       remove(state.posterImage);
       remove(state.bar);
       state.posterImage = null;
@@ -590,13 +590,20 @@
     return result;
   };
 
+  globalThis.__chuzzVideoHasColour = function (element) {
+    var state = byElement.get(element);
+    return Boolean(state && state.hasFrame && state.frameInk);
+  };
+
   globalThis.__chuzzVideoUpdate = function (id, generation, update) {
     var state = states.get(id);
     if (!state || state.generation !== generation) return;
     if (!state.seeking) recordPlayed(state);
     state.selected = update.src;
     state.time = update.time;
-    state.duration = update.duration === null ? NaN : update.duration;
+    state.duration = update.durationInfinite
+      ? Infinity : (update.duration === null ? NaN : update.duration);
+    state.frameInk = Boolean(update.frameInk);
     state.paused = update.paused;
     state.ended = update.ended;
     state.seeking = update.seeking;

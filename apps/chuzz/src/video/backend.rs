@@ -172,7 +172,7 @@ impl Shared {
         Ok(!self.stopped.load(Ordering::Acquire) && self.lock()?.generation == generation)
     }
 
-    fn fail(&self, generation: u64, error: MediaError) {
+    pub(super) fn fail(&self, generation: u64, error: MediaError) {
         if let Ok(mut state) = self.lock()
             && state.generation == generation
             && state.error.is_none()
@@ -187,6 +187,19 @@ pub(super) struct Backend {
     shared: Arc<Shared>,
     output: Option<Output>,
     source: Arc<Mutex<Option<Arc<Source>>>>,
+}
+
+pub(super) fn streaming() -> (Backend, Arc<Shared>) {
+    let shared = Arc::new(Shared {
+        stopped: Arc::new(AtomicBool::new(false)),
+        state: Mutex::new(State::new()),
+    });
+    let backend = Backend {
+        shared: Arc::clone(&shared),
+        output: None,
+        source: Arc::new(Mutex::new(None)),
+    };
+    (backend, shared)
 }
 
 pub(super) fn open(net: Arc<NetProvider>, url: Url, _preload: &str) -> Backend {
@@ -284,6 +297,15 @@ impl VideoDecoder for Backend {
                 return Err(error.clone());
             }
             state.wall_tick();
+            if state
+                .movie
+                .as_ref()
+                .is_some_and(|movie| movie.video.avcc.is_empty())
+                && !state.audio.is_empty()
+            {
+                state.presented = true;
+                state.seeking = false;
+            }
             let mut selected = None;
             if !state.presented {
                 selected = state.video.pop_front();
@@ -339,6 +361,8 @@ impl VideoDecoder for Backend {
                 playing: state.runnable() && !waiting,
                 enough: state.presented && state.video_done && state.audio_done,
                 frame,
+                has_data: state.presented,
+                end_allowed: true,
                 src: String::new(),
             };
             (
@@ -540,7 +564,11 @@ async fn queue_picture(
     }
 }
 
-fn annex_b(sample: &[u8], length_size: usize, output: &mut Vec<u8>) -> Result<(), MediaError> {
+pub(super) fn annex_b(
+    sample: &[u8],
+    length_size: usize,
+    output: &mut Vec<u8>,
+) -> Result<(), MediaError> {
     if !matches!(length_size, 1 | 2 | 4) {
         return Err(MediaError::decode("invalid H.264 NAL length size"));
     }
@@ -571,7 +599,7 @@ fn annex_b(sample: &[u8], length_size: usize, output: &mut Vec<u8>) -> Result<()
     Ok(())
 }
 
-fn video_error(error: DecodeError) -> MediaError {
+pub(super) fn video_error(error: DecodeError) -> MediaError {
     match error {
         DecodeError::Unsupported(message) => MediaError::unsupported(message),
         error => MediaError::decode(format!("H.264: {error}")),
@@ -685,7 +713,7 @@ async fn decode_audio(
     Ok(())
 }
 
-fn audio_error(error: symphonia::core::errors::Error) -> MediaError {
+pub(super) fn audio_error(error: symphonia::core::errors::Error) -> MediaError {
     match error {
         symphonia::core::errors::Error::Unsupported(message) => MediaError::unsupported(message),
         error => MediaError::decode(format!("AAC: {error}")),

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fragmented MP4 MSE QA</title>
+  <style>
+    /* Headless chuzz has no system fonts: the fixture bundles its own face. */
+    @font-face { font-family: "Fira Sans"; src: url("fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { font-family: "Fira Sans", sans-serif; }
+  </style>
+</head>
+<body>
+  <h1>Fragmented MP4 MSE QA</h1>
+  <button id="run" type="button">Run MSE checks</button>
+  <p id="result" role="status">Ready</p>
+  <video id="movie" muted controls width="320" height="180"></video>
+  <script src="./src/mse.ts"></script>
+</body>
+</html>

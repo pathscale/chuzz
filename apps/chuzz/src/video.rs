@@ -19,6 +19,8 @@ use crate::document_loader::NetProvider;
 
 mod backend;
 mod demux;
+mod fragments;
+mod mse;
 mod output;
 mod planar;
 mod source;
@@ -75,6 +77,8 @@ struct Snapshot {
     playing: bool,
     enough: bool,
     frame: Option<Frame>,
+    has_data: bool,
+    end_allowed: bool,
     src: String,
 }
 
@@ -118,6 +122,8 @@ struct Command {
     preload: String,
     #[serde(default)]
     force: bool,
+    #[serde(default)]
+    mse: Option<u64>,
 }
 
 fn one() -> f64 {
@@ -384,6 +390,11 @@ impl Entry {
         } else {
             snapshot.frame.take()
         };
+        if snapshot.has_data && !self.has_frame {
+            self.has_frame = true;
+            self.events.push("loadeddata");
+            self.dirty = true;
+        }
         if let Some(frame) = frame.as_ref() {
             if self.width != frame.width || self.height != frame.height {
                 self.width = frame.width;
@@ -444,7 +455,8 @@ impl Entry {
             }
         }
 
-        if !self.paused
+        if snapshot.end_allowed
+            && !self.paused
             && !self.seeking
             && self.rate > 0.0
             && self
@@ -476,7 +488,11 @@ impl Entry {
         };
         let payload = serde_json::json!({
             "src": self.src,
-            "duration": self.duration,
+            "duration": self.duration.filter(|duration| duration.is_finite()),
+            "durationInfinite": self.duration == Some(f64::INFINITY),
+            "frameInk": self.pixels.chunks_exact(4).any(|pixel| {
+                pixel[..3].iter().any(|channel| *channel != 0)
+            }),
             "time": self.position,
             "paused": self.paused,
             "ended": self.ended,
@@ -501,6 +517,7 @@ impl Entry {
 
 struct Host {
     net: Arc<NetProvider>,
+    mse: Arc<mse::Host>,
     entries: HashMap<u64, Entry>,
 }
 
@@ -535,7 +552,16 @@ impl Host {
                     continue;
                 };
                 let mut entry = Entry::new(node, url, &command, now);
-                if !matches!(entry.url.scheme(), "http" | "https" | "file" | "data") {
+                if let Some(source) = command.mse {
+                    entry.requested = true;
+                    match self.mse.decoder(source) {
+                        Ok(decoder) => {
+                            entry.decoder = Some(decoder);
+                            entry.configure_decoder();
+                        }
+                        Err(error) => entry.fail(error),
+                    }
+                } else if !matches!(entry.url.scheme(), "http" | "https" | "file" | "data") {
                     entry.fail(MediaError::unsupported("unsupported video URL"));
                 }
                 self.entries.insert(command.id, entry);
@@ -623,10 +649,13 @@ fn set_image(
 }
 
 pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
+    let mse = mse::install(document);
     document.eval("globalThis.__chuzzVideoSupported = true;");
     document.eval(include_str!("video.ts"));
+    document.eval(include_str!("video/mse.ts"));
     let mut host = Host {
         net,
+        mse,
         entries: HashMap::new(),
     };
     document.add_poll_hook(move |document, _| host.poll(document));
