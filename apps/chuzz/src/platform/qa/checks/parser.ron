@@ -1,0 +1,14 @@
+[
+    (
+        id: "sites-dom-parser",
+        group: "parser",
+        what: "Inert HTML and all XML MIME types have scoped lookup and ownership; XML serialization preserves namespaces and malformed XML produces parsererror",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "PASS: parser",
+        expect: PaintsNamed,
+        covers: ["Parsed content"],
+        outcome_timeout_ms: 10000,
+    ),
+]
