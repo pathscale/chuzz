@@ -580,4 +580,3 @@ pub(crate) fn install(document: &mut ScriptDocument) {
         true
     });
 }
-

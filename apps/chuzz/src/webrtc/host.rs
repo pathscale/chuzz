@@ -181,7 +181,9 @@ impl Page {
         let reader = {
             let mut state = lock(&self.state);
             if state.events.len() >= EVENTS {
-                state.events.retain(|event| event["peer"].as_u64() != Some(peer));
+                state
+                    .events
+                    .retain(|event| event["peer"].as_u64() != Some(peer));
                 state.events.push_back(json!({
                     "peer": peer,
                     "event": {"type": "fatal", "error": "OperationError: peer event queue overflow"}
@@ -190,7 +192,9 @@ impl Page {
                     peer.close();
                 }
             } else {
-                state.events.push_back(json!({"peer": peer, "event": event}));
+                state
+                    .events
+                    .push_back(json!({"peer": peer, "event": event}));
             }
             state.reader.take()
         };
@@ -238,9 +242,9 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
     if op == "create" {
         let config = gather::Config::parse(&data["configuration"])?;
         let mut state = lock(&page.state);
-        state.peers.retain(|_, peer| {
-            !peer.closed() || lock(&peer.metrics).running
-        });
+        state
+            .peers
+            .retain(|_, peer| !peer.closed() || lock(&peer.metrics).running);
         if state.peers.len() >= PEERS || state.next == MAX_ID {
             return Err("OperationError: page peer-connection limit reached".into());
         }
@@ -287,7 +291,9 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
         return Ok(json!({"track": id}));
     }
 
-    let token = data.get("token").map_or(Ok(0), |_| integer(&data, "token"))?;
+    let token = data
+        .get("token")
+        .map_or(Ok(0), |_| integer(&data, "token"))?;
     let mut track = None;
     let mut input = None;
     let mut output = None;
@@ -414,4 +420,3 @@ pub(super) fn install(document: &mut ScriptDocument) {
         true
     });
 }
-

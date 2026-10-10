@@ -34,7 +34,9 @@ pub(super) fn flatten(
             let hidden = hidden
                 || node.attr(blitz_dom::LocalName::from("aria-hidden")) == Some("true")
                 || node.computed_style_properties().is_some_and(|properties| {
-                    properties.iter().any(|(name, value)| *name == "display" && value == "none")
+                    properties
+                        .iter()
+                        .any(|(name, value)| *name == "display" && value == "none")
                 });
             let name = node.element_data().and_then(|element| {
                 let named = element.attrs().iter().any(|attribute| {
@@ -65,7 +67,8 @@ pub(super) fn flatten(
         .collect();
     let mut parents = HashMap::new();
     for (id, parent, hidden, name, inspectable) in traversal {
-        if inspectable && !records.contains_key(&id)
+        if inspectable
+            && !records.contains_key(&id)
             && let DebugResponse::AgentSnapshot(extra) = inspect_node(document, id)
         {
             for node in extra.nodes {
@@ -105,4 +108,3 @@ fn flattened_text(root: &Node) -> String {
     }
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
-

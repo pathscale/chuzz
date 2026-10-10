@@ -10,10 +10,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ServerConfig, ServerConnection};
 use serde::Deserialize;
 
-const HTML: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/tls/index.html");
-const SCRIPT: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/tls/src/tls.ts");
+const HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/tls/index.html");
+const SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/tls/src/tls.ts");
 const FONT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/webrtc/qa/tls/fonts/FiraSans-Regular.woff2");
 const SUBPROTOCOL: &str = "chuzz.w03.v1";
@@ -114,14 +112,12 @@ fn run() -> Result<(), String> {
     );
     nagoya::block_on(async {
         loop {
-            let (stream, _) = listener
-                .accept()
-                .await
-                .map_err(|error| error.to_string())?;
+            let (stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
             let config = Arc::clone(&config);
             let version = options.version_name;
             let _ = nagoya::spawn(async move {
-                match nagoya::timeout(Duration::from_secs(60), serve(stream, config, version)).await {
+                match nagoya::timeout(Duration::from_secs(60), serve(stream, config, version)).await
+                {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => eprintln!("TLS fixture connection failed: {error}"),
                     Err(_) => eprintln!("TLS fixture connection deadline expired"),
@@ -196,10 +192,7 @@ async fn serve(
                 .secure_random
                 .fill(&mut entropy)
                 .map_err(|_| "session entropy unavailable".to_owned())?;
-            let session: String = entropy
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
+            let session: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
             let hello = serde_json::json!({
                 "type": "hello",
                 "session": session,
@@ -227,7 +220,9 @@ async fn serve(
                             || !heartbeat.payload.bytes().all(|byte| byte == b'q')
                             || expected > 32
                         {
-                            return Err("heartbeat session, sequence or payload mismatch".to_owned());
+                            return Err(
+                                "heartbeat session, sequence or payload mismatch".to_owned()
+                            );
                         }
                         let reply = serde_json::json!({
                             "type": "ack",
@@ -324,4 +319,3 @@ struct Heartbeat {
     sequence: u32,
     payload: String,
 }
-

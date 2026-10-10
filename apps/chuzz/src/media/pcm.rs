@@ -111,4 +111,3 @@ impl Pcm {
         (self.energy() / self.samples.len() as f64).sqrt()
     }
 }
-

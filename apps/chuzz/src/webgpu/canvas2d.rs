@@ -808,7 +808,10 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
         inputs.push(Arc::new(bytes.to_vec()));
     }
     for command in &mut request.commands {
-        if let Some(image) = command.brush.as_mut().and_then(|brush| brush.image.as_mut())
+        if let Some(image) = command
+            .brush
+            .as_mut()
+            .and_then(|brush| brush.image.as_mut())
             && let Some(handle) = image.video.take()
         {
             let frame = crate::video::take_frame(context, handle)

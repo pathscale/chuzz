@@ -41,18 +41,20 @@ impl Config {
         {
             return Err("NotSupportedError: candidate pooling is unavailable".into());
         }
-        let mut hosts: Vec<IpAddr> = vec![
-            Ipv4Addr::LOCALHOST.into(),
-            Ipv6Addr::LOCALHOST.into(),
-        ];
+        let mut hosts: Vec<IpAddr> = vec![Ipv4Addr::LOCALHOST.into(), Ipv6Addr::LOCALHOST.into()];
         if let Ok(configured) = std::env::var("CHUZZ_WEBRTC_HOSTS") {
-            for value in configured.split(',').filter(|value| !value.trim().is_empty()) {
+            for value in configured
+                .split(',')
+                .filter(|value| !value.trim().is_empty())
+            {
                 let ip: IpAddr = value
                     .trim()
                     .parse()
                     .map_err(|_| "OperationError: invalid CHUZZ_WEBRTC_HOSTS address")?;
                 if ip.is_unspecified() || ip.is_multicast() {
-                    return Err("OperationError: WebRTC host addresses must be concrete unicast IPs".into());
+                    return Err(
+                        "OperationError: WebRTC host addresses must be concrete unicast IPs".into(),
+                    );
                 }
                 if !hosts.contains(&ip) {
                     hosts.push(ip);
@@ -85,9 +87,9 @@ impl Config {
                         .collect::<Result<_, _>>()?
                 };
                 for url in urls {
-                    let address = url.strip_prefix("stun:").ok_or(
-                        "NotSupportedError: only numeric stun: UDP servers are supported",
-                    )?;
+                    let address = url
+                        .strip_prefix("stun:")
+                        .ok_or("NotSupportedError: only numeric stun: UDP servers are supported")?;
                     let address = address.strip_suffix("?transport=udp").unwrap_or(address);
                     let address = address
                         .parse::<SocketAddr>()
@@ -96,9 +98,9 @@ impl Config {
                                 .parse::<IpAddr>()
                                 .map(|ip| SocketAddr::new(ip, 3478))
                         })
-                        .map_err(|_| {
-                            "NotSupportedError: STUN DNS names require a later resolver lane"
-                        })?;
+                        .map_err(
+                            |_| "NotSupportedError: STUN DNS names require a later resolver lane",
+                        )?;
                     if address.ip().is_unspecified()
                         || address.ip().is_multicast()
                         || address.port() == 0
@@ -153,10 +155,7 @@ fn mapped(bytes: &[u8], transaction: &[u8; 12]) -> Option<SocketAddr> {
     let mut cursor = 20;
     while cursor + 4 <= bytes.len() {
         let kind = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]);
-        let length = usize::from(u16::from_be_bytes([
-            bytes[cursor + 2],
-            bytes[cursor + 3],
-        ]));
+        let length = usize::from(u16::from_be_bytes([bytes[cursor + 2], bytes[cursor + 3]]));
         cursor += 4;
         let value = bytes.get(cursor..cursor.checked_add(length)?)?;
         if kind == 0x0020 && value.len() >= 4 && value[0] == 0 {
@@ -235,10 +234,7 @@ async fn binding(
                 if sleep.as_mut().poll(context).is_ready() {
                     return Poll::Ready(None);
                 }
-                socket
-                    .socket
-                    .poll_recv_from(context, &mut buffer)
-                    .map(Some)
+                socket.socket.poll_recv_from(context, &mut buffer).map(Some)
             })
             .await;
             let Some(Ok((length, source))) = received else {
@@ -303,9 +299,8 @@ pub(super) async fn gather(
                     socket.local.ip(),
                     socket.local.port()
                 );
-                candidates.push(
-                    Candidate::from_sdp_string(&value).map_err(|error| error.to_string())?,
-                );
+                candidates
+                    .push(Candidate::from_sdp_string(&value).map_err(|error| error.to_string())?);
             }
         }
     }
@@ -314,4 +309,3 @@ pub(super) async fn gather(
     }
     Ok((sockets, candidates))
 }
-

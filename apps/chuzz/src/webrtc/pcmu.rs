@@ -29,9 +29,7 @@ pub(super) fn decode(bytes: &[u8]) -> Arc<[f32]> {
         .iter()
         .map(|byte| {
             let value = !byte;
-            let magnitude = (((i32::from(value & 15) << 3) + 132)
-                << ((value >> 4) & 7))
-                - 132;
+            let magnitude = (((i32::from(value & 15) << 3) + 132) << ((value >> 4) & 7)) - 132;
             let sample = if value & 128 != 0 {
                 -magnitude
             } else {
@@ -42,4 +40,3 @@ pub(super) fn decode(bytes: &[u8]) -> Arc<[f32]> {
         .collect::<Vec<_>>()
         .into()
 }
-

@@ -107,4 +107,3 @@ impl HeadlessSink {
         self.stats.consumed_seconds = self.stats.frames as f64 / f64::from(RATE);
     }
 }
-

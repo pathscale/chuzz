@@ -561,7 +561,11 @@ impl Host {
             };
             for request in requests {
                 let node = request.node_id;
-                match load.call(&JsValue::undefined(), &[request.element.clone().into()], context) {
+                match load.call(
+                    &JsValue::undefined(),
+                    &[request.element.clone().into()],
+                    context,
+                ) {
                     Ok(value) => {
                         if let Some(id) = value.as_number() {
                             nodes.insert(id as u64, node);
@@ -657,23 +661,18 @@ impl Host {
         for (&id, entry) in &mut self.entries {
             match entry.tick(&self.net, now) {
                 Ok(Some(frame)) => {
-                    let result = set_image(
-                        document,
-                        entry.node,
-                        Some(frame),
-                        &mut entry.pixels,
-                    )
-                    .and_then(|()| {
-                        self.frames
-                            .publish(
-                                id,
-                                entry.generation,
-                                entry.width,
-                                entry.height,
-                                Arc::clone(&entry.pixels),
-                            )
-                            .map_err(MediaError::decode)
-                    });
+                    let result = set_image(document, entry.node, Some(frame), &mut entry.pixels)
+                        .and_then(|()| {
+                            self.frames
+                                .publish(
+                                    id,
+                                    entry.generation,
+                                    entry.width,
+                                    entry.height,
+                                    Arc::clone(&entry.pixels),
+                                )
+                                .map_err(MediaError::decode)
+                        });
                     match result {
                         Ok(()) => entry.total_frames += 1,
                         Err(error) => {

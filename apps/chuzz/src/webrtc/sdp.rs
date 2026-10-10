@@ -101,8 +101,7 @@ fn audio_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
         let name = mapping.names.get(&number).map(String::as_str);
         let pcmu = number == 0
             && name.is_none_or(|name| {
-                name.eq_ignore_ascii_case("PCMU/8000")
-                    || name.eq_ignore_ascii_case("PCMU/8000/1")
+                name.eq_ignore_ascii_case("PCMU/8000") || name.eq_ignore_ascii_case("PCMU/8000/1")
             });
         if number == 0 && !pcmu {
             return Err("OperationError: payload type zero must be mono PCMU at 8000 Hz".into());
@@ -123,7 +122,12 @@ fn audio_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
         };
         if opus {
             let mut keys = BTreeSet::new();
-            for entry in codec.fmtp.split(';').map(str::trim).filter(|entry| !entry.is_empty()) {
+            for entry in codec
+                .fmtp
+                .split(';')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+            {
                 let (key, value) = entry
                     .split_once('=')
                     .ok_or("OperationError: incomplete Opus format parameter")?;
@@ -137,7 +141,9 @@ fn audio_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
                         let enabled = match value {
                             "0" => false,
                             "1" => true,
-                            _ => return Err("OperationError: invalid Opus boolean parameter".into()),
+                            _ => {
+                                return Err("OperationError: invalid Opus boolean parameter".into());
+                            }
                         };
                         match key.as_str() {
                             "stereo" => codec.stereo = enabled,
@@ -279,9 +285,7 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
                 || fields[1] == "0"
                 || fields[2] != "UDP/TLS/RTP/SAVPF"
             {
-                return Err(
-                    "NotSupportedError: active DTLS audio sections are required".into(),
-                );
+                return Err("NotSupportedError: active DTLS audio sections are required".into());
             }
             if sections.len() == SLOT_LIMIT {
                 return Err("OperationError: too many SDP sections".into());
@@ -293,7 +297,10 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
             if payloads.iter().copied().collect::<BTreeSet<_>>().len() != payloads.len() {
                 return Err("OperationError: duplicate m-line payload type".into());
             }
-            mappings.push(Mapping { payloads, ..Mapping::default() });
+            mappings.push(Mapping {
+                payloads,
+                ..Mapping::default()
+            });
             sections.push(defaults.clone());
         } else {
             attributes(sections.last_mut().unwrap_or(&mut defaults), line)?;
@@ -361,7 +368,9 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
     }
     let expected: Vec<_> = sections.iter().map(|section| section.mid.clone()).collect();
     if bundle.as_ref() != Some(&expected) {
-        return Err("OperationError: BUNDLE must preserve all MID identities and m-line order".into());
+        return Err(
+            "OperationError: BUNDLE must preserve all MID identities and m-line order".into(),
+        );
     }
     Ok(sections)
 }
@@ -382,7 +391,12 @@ pub(super) fn local(
         .map(|(section, preferences)| {
             preferences
                 .iter()
-                .flat_map(|name| section.codecs.iter().filter(move |codec| codec.name() == name))
+                .flat_map(|name| {
+                    section
+                        .codecs
+                        .iter()
+                        .filter(move |codec| codec.name() == name)
+                })
                 .collect()
         })
         .collect();
@@ -443,10 +457,7 @@ pub(super) fn local(
 
 /// Set answer directions and outgoing track identity after str0m accepts an
 /// offer. Codec, ICE, DTLS, SSRC, extension and payload mappings are preserved.
-pub(super) fn answer(
-    original: &str,
-    entries: &[(&str, Option<&str>, Option<&str>)],
-) -> String {
+pub(super) fn answer(original: &str, entries: &[(&str, Option<&str>, Option<&str>)]) -> String {
     let mut result = String::new();
     let mut index = None;
     for line in original.lines() {
@@ -483,4 +494,3 @@ pub(super) fn answer(
     }
     result
 }
-

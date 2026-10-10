@@ -521,13 +521,7 @@ fn select_fixed_audio(
     let channels = f64::from(channel_count);
     let latency = 128.0 / rate;
     numeric(sets, "sampleRate", [rate, rate], rate, true)?;
-    numeric(
-        sets,
-        "channelCount",
-        [channels, channels],
-        channels,
-        true,
-    )?;
+    numeric(sets, "channelCount", [channels, channels], channels, true)?;
     numeric(sets, "sampleSize", [32.0, 32.0], 32.0, true)?;
     numeric(sets, "latency", [latency, latency], latency, false)?;
     scalar(sets, "deviceId", json!(""))?;
@@ -574,4 +568,3 @@ fn resolve_fixed_audio(
     }
     Ok(selected)
 }
-

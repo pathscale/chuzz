@@ -9,7 +9,9 @@ use blitz_script::boa_engine::builtins::error::Error;
 use blitz_script::boa_engine::object::builtins::{
     AlignedVec, JsArray, JsArrayBuffer, JsDataView, JsDate, JsMap, JsRegExp, JsSet, JsTypedArray,
 };
-use blitz_script::boa_engine::{Context, JsBigInt, JsNativeError, JsResult, JsString, JsValue, Source};
+use blitz_script::boa_engine::{
+    Context, JsBigInt, JsNativeError, JsResult, JsString, JsValue, Source,
+};
 
 use super::{argument, call, named_error, register, string};
 

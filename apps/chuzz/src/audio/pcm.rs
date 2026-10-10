@@ -17,11 +17,7 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-pub(crate) fn resample_block(
-    pcm: &Pcm,
-    output_rate: u32,
-    output_channels: u16,
-) -> Arc<[f32]> {
+pub(crate) fn resample_block(pcm: &Pcm, output_rate: u32, output_channels: u16) -> Arc<[f32]> {
     super::resample::block(pcm, output_rate, output_channels)
 }
 
@@ -34,11 +30,7 @@ pub(crate) struct Buffer {
 }
 
 impl Buffer {
-    pub(crate) fn new(
-        sample_rate: u32,
-        channels: u16,
-        producer: Option<(u64, u64)>,
-    ) -> Arc<Self> {
+    pub(crate) fn new(sample_rate: u32, channels: u16, producer: Option<(u64, u64)>) -> Arc<Self> {
         Arc::new(Self {
             sample_rate,
             channels,
@@ -169,9 +161,10 @@ impl Track {
     pub fn ended(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
             || self.buffer.ended.load(Ordering::Acquire)
-            || self.media.as_ref().is_some_and(|media| {
-                media.upgrade().is_none_or(|track| track.is_stopped())
-            })
+            || self
+                .media
+                .as_ref()
+                .is_some_and(|media| media.upgrade().is_none_or(|track| track.is_stopped()))
     }
 
     pub fn stop(&self) {
@@ -218,4 +211,3 @@ impl Track {
         self.buffer.close();
     }
 }
-

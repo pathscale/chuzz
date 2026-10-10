@@ -124,10 +124,7 @@ impl Pair {
                 .set_rtcp_report_interval_audio(Duration::from_millis(100))
                 .build(now)
         };
-        let mut peers = [
-            make(certificates[0].clone()),
-            make(certificates[1].clone()),
-        ];
+        let mut peers = [make(certificates[0].clone()), make(certificates[1].clone())];
         let addresses: [SocketAddr; 2] = [
             (Ipv4Addr::LOCALHOST, 40_002).into(),
             (Ipv4Addr::LOCALHOST, 40_003).into(),
@@ -256,14 +253,12 @@ impl Pair {
         Ok((deadlines, progressed))
     }
 
-    fn until(
-        &mut self,
-        capture: bool,
-        complete: impl Fn(&Self) -> bool,
-    ) -> Result<(), RtcError> {
+    fn until(&mut self, capture: bool, complete: impl Fn(&Self) -> bool) -> Result<(), RtcError> {
         for _ in 0..CYCLE_LIMIT {
             if self.now >= self.start + VIRTUAL_LIMIT {
-                return Err(driver_failure("crypto fixture exceeded its protocol deadline"));
+                return Err(driver_failure(
+                    "crypto fixture exceeded its protocol deadline",
+                ));
             }
             let (deadlines, progressed) = self.cycle(capture)?;
             if complete(self) {
@@ -504,7 +499,11 @@ fn run_fixture() -> Result<Report, String> {
                 )?;
                 wrong_fingerprints_rejected += 1;
             }
-            Err(error) => return Err(format!("wrong fingerprint failed for another reason: {error}")),
+            Err(error) => {
+                return Err(format!(
+                    "wrong fingerprint failed for another reason: {error}"
+                ));
+            }
             Ok(()) => return Err("wrong certificate fingerprint was accepted".into()),
         }
     }
@@ -529,8 +528,7 @@ fn run_fixture() -> Result<Report, String> {
 }
 
 fn probe(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let report = run_fixture()
-        .map_err(|error| JsNativeError::error().with_message(error))?;
+    let report = run_fixture().map_err(|error| JsNativeError::error().with_message(error))?;
     let json = serde_json::to_string(&report)
         .map_err(|error| JsNativeError::error().with_message(error.to_string()))?;
     Ok(JsString::from(json).into())
@@ -547,4 +545,3 @@ pub(super) fn install(document: &mut ScriptDocument) {
             .expect("WebRTC crypto native fixture bridge");
     });
 }
-

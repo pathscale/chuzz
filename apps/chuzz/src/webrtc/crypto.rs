@@ -17,4 +17,3 @@ pub fn config() -> RtcConfig {
         .set_crypto_provider(provider())
         .set_dtls_version(DtlsVersion::Dtls12)
 }
-

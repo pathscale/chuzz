@@ -236,4 +236,3 @@ fn publish_clock(state: &mut State, latency: f64) {
         state.position = state.position.max(presented).min(state.duration());
     }
 }
-

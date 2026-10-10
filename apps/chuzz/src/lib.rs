@@ -81,4 +81,3 @@ pub mod serve;
 // guest-built page cannot render one way in a tab and another in a capture.
 #[cfg(feature = "wasm")]
 pub mod wasm_page;
-

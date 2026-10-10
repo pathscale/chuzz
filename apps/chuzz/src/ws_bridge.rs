@@ -36,7 +36,6 @@ use nago_wss::stream::{ByteStream, Errno, StreamExt};
 use nagoya::net::TcpStream;
 use nagoya::reactor::Reactor;
 
-
 // The default 16 MiB frame cap disconnects pages that send a self-contained
 // image-rich JSON result in one frame. Keep a bounded cap, with room for the
 // 38 MiB OpenCaptchaWorld image-matching response and similarly sized pages.

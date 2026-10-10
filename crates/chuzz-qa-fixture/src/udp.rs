@@ -2,7 +2,7 @@ use std::io;
 use std::time::Duration;
 
 use nagoya::net::UdpSocket;
-use nagoya::reactor::{block_on_with, Addr, Handle, Reactor};
+use nagoya::reactor::{Addr, Handle, Reactor, block_on_with};
 
 const WAIT: Duration = Duration::from_millis(30);
 
@@ -60,9 +60,8 @@ pub fn run() -> io::Result<String> {
         }),
     );
     reactor.shutdown();
-    result.map_err(|_| {
-        io::Error::new(io::ErrorKind::TimedOut, "UDP fixture exceeded its deadline")
-    })?
+    result
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "UDP fixture exceeded its deadline"))?
 }
 
 fn check(value: bool, message: &str) -> io::Result<()> {
@@ -88,9 +87,7 @@ async fn exercise(bind_addr: Addr, handle: &Handle) -> io::Result<Report> {
     let server_addr = server.local_addr()?;
     let client_addr = client.local_addr()?;
     check(
-        server_addr.port() != 0
-            && client_addr.port() != 0
-            && server_addr != client_addr,
+        server_addr.port() != 0 && client_addr.port() != 0 && server_addr != client_addr,
         "ephemeral UDP addresses were not distinct",
     )?;
 
@@ -116,9 +113,7 @@ async fn exercise(bind_addr: Addr, handle: &Handle) -> io::Result<Report> {
         let (length, source) = server.recv_from(&mut buffer).await?;
         let expected = packet(sequence);
         check(
-            source == client_addr
-                && length == expected.len()
-                && buffer[..length] == expected[..],
+            source == client_addr && length == expected.len() && buffer[..length] == expected[..],
             "sequenced datagram payload, source or boundary changed",
         )?;
         received.push(sequence);
@@ -136,9 +131,7 @@ async fn exercise(bind_addr: Addr, handle: &Handle) -> io::Result<Report> {
         let (length, source) = client.recv_from(&mut buffer).await?;
         let expected = packet(sequence);
         check(
-            source == server_addr
-                && length == expected.len()
-                && buffer[..length] == expected[..],
+            source == server_addr && length == expected.len() && buffer[..length] == expected[..],
             "echo order, payload, source or boundary changed",
         )?;
         echoes.push(sequence);
@@ -194,9 +187,7 @@ async fn exercise(bind_addr: Addr, handle: &Handle) -> io::Result<Report> {
     )?;
     let (length, source) = server.recv_from(&mut buffer).await?;
     check(
-        source == client_addr
-            && length == recovery.len()
-            && buffer[..length] == recovery[..],
+        source == client_addr && length == recovery.len() && buffer[..length] == recovery[..],
         "receive after cancellation changed the datagram",
     )?;
 
@@ -228,4 +219,3 @@ async fn exercise(bind_addr: Addr, handle: &Handle) -> io::Result<Report> {
         shared_port,
     })
 }
-

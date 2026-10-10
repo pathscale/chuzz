@@ -107,8 +107,7 @@ impl Analysis {
                     );
                     let first = values[base + index];
                     values[base + index] = (first.0 + product.0, first.1 + product.1);
-                    values[base + index + width / 2] =
-                        (first.0 - product.0, first.1 - product.1);
+                    values[base + index + width / 2] = (first.0 - product.0, first.1 - product.1);
                 }
             }
             width *= 2;
@@ -134,11 +133,7 @@ impl Analysis {
                 .into_iter()
                 .map(|sample| (128.0 * (1.0 + f64::from(sample))).clamp(0.0, 255.0) as u8)
                 .collect()),
-            "floatTime" => Ok(self
-                .time()
-                .into_iter()
-                .flat_map(f32::to_le_bytes)
-                .collect()),
+            "floatTime" => Ok(self.time().into_iter().flat_map(f32::to_le_bytes).collect()),
             "byteFrequency" => {
                 self.frequency();
                 Ok(self

@@ -63,10 +63,10 @@ use blitz_script::ScriptDocument;
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
-#[path = "serve_supervisor.rs"]
-mod supervisor;
 #[path = "serve_shadow.rs"]
 mod shadow_inspect;
+#[path = "serve_supervisor.rs"]
+mod supervisor;
 
 fn trace(message: &str) {
     eprintln!("chuzz-headless: {message}");
@@ -1940,13 +1940,9 @@ fn serve_page(target: &str) -> Result<(), String> {
                     condense_response(&policy, level, options, || {
                         revision += 1;
                         let response = inspect_document(&mut *document, None, 0, revision);
-                        shadow_inspect::flatten(
-                            &mut document,
-                            response,
-                            None,
-                            0,
-                            |document, id| inspect_document(document, Some(id), 1, revision),
-                        )
+                        shadow_inspect::flatten(&mut document, response, None, 0, |document, id| {
+                            inspect_document(document, Some(id), 1, revision)
+                        })
                     })
                 }
                 // The remaining request types are not implemented by this host.

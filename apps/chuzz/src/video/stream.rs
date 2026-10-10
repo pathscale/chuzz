@@ -65,7 +65,12 @@ impl Frames {
             .iter()
             .filter(|(other, _)| **other != id)
             .map(|(_, (_, frame))| frame.pixels.len())
-            .chain(registry.leases.values().map(|(_, frame)| frame.pixels.len()))
+            .chain(
+                registry
+                    .leases
+                    .values()
+                    .map(|(_, frame)| frame.pixels.len()),
+            )
             .sum::<usize>();
         if other_bytes.saturating_add(pixels.len()) > FRAME_BYTES_LIMIT
             || !registry.current.contains_key(&id) && registry.current.len() >= LEASE_LIMIT
@@ -104,7 +109,12 @@ impl Frames {
             .current
             .values()
             .map(|(_, frame)| frame.pixels.len())
-            .chain(registry.leases.values().map(|(_, frame)| frame.pixels.len()))
+            .chain(
+                registry
+                    .leases
+                    .values()
+                    .map(|(_, frame)| frame.pixels.len()),
+            )
             .sum::<usize>();
         if registry.leases.len() >= LEASE_LIMIT
             || registry.next >= MAX_HANDLE
@@ -180,11 +190,11 @@ fn acquire(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
             .cloned()
             .unwrap_or_default()
             .to_number(context)?;
-        if !value.is_finite()
-            || value.fract() != 0.0
-            || !(0.0..=MAX_HANDLE as f64).contains(&value)
+        if !value.is_finite() || value.fract() != 0.0 || !(0.0..=MAX_HANDLE as f64).contains(&value)
         {
-            return Err(JsNativeError::typ().with_message("invalid video handle").into());
+            return Err(JsNativeError::typ()
+                .with_message("invalid video handle")
+                .into());
         }
         *number = value as u64;
     }
@@ -277,7 +287,9 @@ impl Entry {
         handles: &[u64],
     ) -> Result<(), MediaError> {
         if handles.len() > 32 {
-            return Err(MediaError::unsupported("too many tracks in a media element"));
+            return Err(MediaError::unsupported(
+                "too many tracks in a media element",
+            ));
         }
         let mut tracks = Vec::with_capacity(handles.len());
         for &handle in handles {
@@ -409,7 +421,8 @@ impl Entry {
         let available = video.is_none() || self.frame_key.is_some();
         if available && !self.ready {
             self.ready = true;
-            self.events.extend(["loadeddata", "canplay", "canplaythrough"]);
+            self.events
+                .extend(["loadeddata", "canplay", "canplaythrough"]);
             self.dirty = true;
         }
         if !self.paused && available {
@@ -592,7 +605,9 @@ fn rgba(frame: &VideoFrame) -> Result<Vec<u8>, MediaError> {
         }
         VideoPixels::I420 { y, u, v } => {
             for row in 0..height {
-                let y = y.row(row).ok_or_else(|| MediaError::decode("invalid Y row"))?;
+                let y = y
+                    .row(row)
+                    .ok_or_else(|| MediaError::decode("invalid Y row"))?;
                 let u = u
                     .row(row / 2)
                     .ok_or_else(|| MediaError::decode("invalid U row"))?;
@@ -615,4 +630,3 @@ fn rgba(frame: &VideoFrame) -> Result<Vec<u8>, MediaError> {
     }
     Ok(output)
 }
-

@@ -3,9 +3,9 @@
 //! One nagoya task drives each context's render clock. Codecs and processing
 //! functions remain synchronous. Only metadata completions reach Boa.
 
-pub mod pcm;
 mod analysis;
 mod graph;
+pub mod pcm;
 mod resample;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -299,9 +299,13 @@ fn execute(page: &Arc<Page>, command: Command) -> Result<Value, String> {
             lock(&page.engine(context)?.graph).automate(node, &name, event)?;
             Ok(Value::Null)
         }
-        Command::ParamValue { context, node, name } => {
-            Ok(json!(lock(&page.engine(context)?.graph).parameter_value(node, &name)?))
-        }
+        Command::ParamValue {
+            context,
+            node,
+            name,
+        } => Ok(json!(
+            lock(&page.engine(context)?.graph).parameter_value(node, &name)?
+        )),
         Command::Cancel {
             context,
             node,
@@ -366,7 +370,10 @@ fn execute(page: &Arc<Page>, command: Command) -> Result<Value, String> {
                         .tracks
                         .iter()
                         .filter(|(_, track)| {
-                            track.buffer.producer.is_some_and(|producer| producer.0 == context)
+                            track
+                                .buffer
+                                .producer
+                                .is_some_and(|producer| producer.0 == context)
                         })
                         .map(|(&id, _)| id)
                         .collect::<Vec<_>>()
@@ -384,9 +391,9 @@ fn execute(page: &Arc<Page>, command: Command) -> Result<Value, String> {
             let original = page.track(track)?;
             match action.as_str() {
                 "inspect" => {}
-                "enabled" => original.set_enabled(
-                    enabled.ok_or("TypeError: missing track enabled value")?,
-                ),
+                "enabled" => {
+                    original.set_enabled(enabled.ok_or("TypeError: missing track enabled value")?)
+                }
                 "stop" => original.stop(),
                 "clone" => {
                     let clone = original.fork();
@@ -409,7 +416,9 @@ fn command(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
         .to_string(context)?
         .to_std_string_escaped();
     if message.len() > 65_536 {
-        return Err(native_error("QuotaExceededError: audio command limit".to_owned()));
+        return Err(native_error(
+            "QuotaExceededError: audio command limit".to_owned(),
+        ));
     }
     let command = serde_json::from_str(&message)
         .map_err(|error| native_error(format!("TypeError: invalid audio command: {error}")))?;
@@ -418,9 +427,16 @@ fn command(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
 }
 
 fn integer(args: &[JsValue], index: usize, context: &mut Context) -> JsResult<u64> {
-    let value = args.get(index).cloned().unwrap_or_default().to_number(context)?;
-    if !value.is_finite() || value <= 0.0 || value.fract() != 0.0 || value > 9_007_199_254_740_991.0 {
-        return Err(native_error("TypeError: invalid audio identifier".to_owned()));
+    let value = args
+        .get(index)
+        .cloned()
+        .unwrap_or_default()
+        .to_number(context)?;
+    if !value.is_finite() || value <= 0.0 || value.fract() != 0.0 || value > 9_007_199_254_740_991.0
+    {
+        return Err(native_error(
+            "TypeError: invalid audio identifier".to_owned(),
+        ));
     }
     Ok(value as u64)
 }
@@ -440,11 +456,7 @@ fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValu
         .map_err(native_error)?;
     // This owned readback is constructed on the document thread. No Boa
     // allocation or borrow is retained by the render task.
-    Ok(JsArrayBuffer::from_byte_block(
-        AlignedVec::from_iter(0, bytes),
-        context,
-    )?
-    .into())
+    Ok(JsArrayBuffer::from_byte_block(AlignedVec::from_iter(0, bytes), context)?.into())
 }
 
 async fn run(engine: Weak<Engine>, page: Weak<Page>) {
@@ -491,10 +503,12 @@ async fn run(engine: Weak<Engine>, page: Weak<Page>) {
             let Some(page) = page.upgrade() else {
                 return;
             };
-            let debt = (Instant::now().saturating_duration_since(deadline).as_secs_f64()
+            let debt = (Instant::now()
+                .saturating_duration_since(deadline)
+                .as_secs_f64()
                 / quantum.as_secs_f64())
-                .floor()
-                .max(1.0) as u64;
+            .floor()
+            .max(1.0) as u64;
             let mut graph = lock(&engine.graph);
             if !graph.running || graph.closed {
                 break;
@@ -578,7 +592,10 @@ pub(crate) fn install(document: &mut ScriptDocument) {
                 for (context_id, node) in &events {
                     callback.call(
                         &JsValue::undefined(),
-                        &[JsValue::from(*context_id as f64), JsValue::from(*node as f64)],
+                        &[
+                            JsValue::from(*context_id as f64),
+                            JsValue::from(*node as f64),
+                        ],
                         context,
                     )?;
                 }
@@ -591,4 +608,3 @@ pub(crate) fn install(document: &mut ScriptDocument) {
         true
     });
 }
-

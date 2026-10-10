@@ -87,12 +87,7 @@ impl Param {
             anchor_time = event.time;
             match event.kind {
                 EventKind::Target => {
-                    target = Some((
-                        event.time,
-                        previous,
-                        event.value,
-                        event.time_constant,
-                    ));
+                    target = Some((event.time, previous, event.value, event.time_constant));
                     anchor_value = previous;
                 }
                 _ => {
@@ -118,7 +113,9 @@ impl Param {
         if self.events.len() == AUTOMATION_EVENTS {
             return Err("QuotaExceededError: audio automation event limit".to_owned());
         }
-        let index = self.events.partition_point(|existing| existing.time <= event.time);
+        let index = self
+            .events
+            .partition_point(|existing| existing.time <= event.time);
         self.events.insert(index, event);
         Ok(())
     }
@@ -289,9 +286,9 @@ impl Graph {
             "oscillator" => Kind::Oscillator,
             "gain" => Kind::Gain,
             "analyser" => Kind::Analyser,
-            "source" => Kind::Source(
-                track.ok_or("InvalidAccessError: unknown audio stream track")?,
-            ),
+            "source" => {
+                Kind::Source(track.ok_or("InvalidAccessError: unknown audio stream track")?)
+            }
             "streamDestination" => {
                 let buffer = Buffer::new(self.sample_rate, 2, Some((self.id, id)));
                 output = Some(Track::from_buffer(Arc::clone(&buffer)));
@@ -338,8 +335,14 @@ impl Graph {
         param: Option<String>,
     ) -> Result<(), String> {
         self.open()?;
-        let source = self.nodes.get(&from).ok_or("InvalidAccessError: unknown source node")?;
-        let destination = self.nodes.get(&to).ok_or("InvalidAccessError: unknown destination node")?;
+        let source = self
+            .nodes
+            .get(&from)
+            .ok_or("InvalidAccessError: unknown source node")?;
+        let destination = self
+            .nodes
+            .get(&to)
+            .ok_or("InvalidAccessError: unknown destination node")?;
         if matches!(&source.kind, Kind::Destination | Kind::StreamDestination(_)) {
             return Err("IndexSizeError: audio node has no output".to_owned());
         }
@@ -373,8 +376,7 @@ impl Graph {
         }
         let before = self.edges.len();
         self.edges.retain(|edge| {
-            !(edge.from == from
-                && to.is_none_or(|to| edge.to == to && edge.param == param))
+            !(edge.from == from && to.is_none_or(|to| edge.to == to && edge.param == param))
         });
         if to.is_some() && self.edges.len() == before {
             return Err("InvalidAccessError: audio connection does not exist".to_owned());
@@ -390,12 +392,7 @@ impl Graph {
             .ok_or_else(|| "InvalidAccessError: unknown AudioParam".to_owned())
     }
 
-    pub(crate) fn automate(
-        &mut self,
-        node: u64,
-        name: &str,
-        event: Event,
-    ) -> Result<(), String> {
+    pub(crate) fn automate(&mut self, node: u64, name: &str, event: Event) -> Result<(), String> {
         self.param(node, name)?.insert(event)
     }
 
@@ -419,7 +416,10 @@ impl Graph {
         if !matches!(wave.as_str(), "sine" | "square" | "sawtooth" | "triangle") {
             return Err("NotSupportedError: unsupported oscillator waveform".to_owned());
         }
-        let node = self.nodes.get_mut(&id).ok_or("InvalidAccessError: unknown oscillator")?;
+        let node = self
+            .nodes
+            .get_mut(&id)
+            .ok_or("InvalidAccessError: unknown oscillator")?;
         if !matches!(&node.kind, Kind::Oscillator) {
             return Err("InvalidAccessError: node is not an oscillator".to_owned());
         }
@@ -432,7 +432,10 @@ impl Graph {
         if !time.is_finite() || time < 0.0 {
             return Err("RangeError: invalid oscillator time".to_owned());
         }
-        let node = self.nodes.get_mut(&id).ok_or("InvalidAccessError: unknown oscillator")?;
+        let node = self
+            .nodes
+            .get_mut(&id)
+            .ok_or("InvalidAccessError: unknown oscillator")?;
         if !matches!(&node.kind, Kind::Oscillator) {
             return Err("InvalidAccessError: node is not an oscillator".to_owned());
         }
@@ -491,7 +494,9 @@ impl Graph {
     }
 
     pub(crate) fn skip(&mut self, quanta: u64) {
-        self.cursor = self.cursor.saturating_add(quanta.saturating_mul(QUANTUM as u64));
+        self.cursor = self
+            .cursor
+            .saturating_add(quanta.saturating_mul(QUANTUM as u64));
         self.underruns = self.underruns.saturating_add(quanta);
     }
 
@@ -537,13 +542,7 @@ impl Graph {
                 self.pcm(
                     start,
                     track.channels(),
-                    resample::read(
-                        track,
-                        start,
-                        QUANTUM,
-                        self.sample_rate,
-                        track.channels(),
-                    ),
+                    resample::read(track, start, QUANTUM, self.sample_rate, track.channels()),
                 )
             };
             rendered.insert(id, Arc::clone(&pcm));
@@ -606,10 +605,7 @@ impl Graph {
                 }
             }
             node.phase = phase;
-            if node.start.is_some()
-                && !node.ended
-                && time + QUANTUM as f64 / rate >= node.stop
-            {
+            if node.start.is_some() && !node.ended && time + QUANTUM as f64 / rate >= node.stop {
                 node.ended = true;
                 ended.push(id);
             }
@@ -632,7 +628,11 @@ impl Graph {
         }
 
         let pcm = self.pcm(start, channels, samples);
-        if let Some(analysis) = self.nodes.get_mut(&id).and_then(|node| node.analysis.as_mut()) {
+        if let Some(analysis) = self
+            .nodes
+            .get_mut(&id)
+            .and_then(|node| node.analysis.as_mut())
+        {
             analysis.push(&pcm);
         }
         if let Kind::StreamDestination(buffer) = &kind {
@@ -655,7 +655,9 @@ impl Graph {
             self.render(id, start, &mut rendered, &mut ended);
         }
         let destination = &rendered[&1];
-        self.samples = self.samples.saturating_add(destination.samples().len() as u64);
+        self.samples = self
+            .samples
+            .saturating_add(destination.samples().len() as u64);
         self.sum_squares += destination
             .samples()
             .iter()
@@ -683,8 +685,7 @@ fn poly_blep(phase: f64, step: f64) -> f64 {
 fn oscillator(wave: &str, phase: f64, step: f64) -> f32 {
     let sample = match wave {
         "square" => {
-            (if phase < 0.5 { 1.0 } else { -1.0 })
-                + poly_blep(phase, step)
+            (if phase < 0.5 { 1.0 } else { -1.0 }) + poly_blep(phase, step)
                 - poly_blep((phase + 0.5).rem_euclid(1.0), step)
         }
         "sawtooth" => 2.0 * phase - 1.0 - poly_blep(phase, step),
@@ -696,9 +697,13 @@ fn oscillator(wave: &str, phase: f64, step: f64) -> f32 {
             };
             let mut sum = 0.0;
             for harmonic in (1..=maximum).step_by(2) {
-                let sign = if (harmonic / 2).is_multiple_of(2) { 1.0 } else { -1.0 };
-                sum += sign * (2.0 * PI * harmonic as f64 * phase).sin()
-                    / (harmonic as f64).powi(2);
+                let sign = if (harmonic / 2).is_multiple_of(2) {
+                    1.0
+                } else {
+                    -1.0
+                };
+                sum +=
+                    sign * (2.0 * PI * harmonic as f64 * phase).sin() / (harmonic as f64).powi(2);
             }
             8.0 * sum / PI.powi(2)
         }

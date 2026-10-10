@@ -170,14 +170,13 @@ impl Receiver {
         })
     }
 
-    pub(super) fn enqueue(
-        &mut self,
-        timestamp: u64,
-        bytes: Arc<[u8]>,
-    ) -> Result<(), String> {
+    pub(super) fn enqueue(&mut self, timestamp: u64, bytes: Arc<[u8]>) -> Result<(), String> {
         let frames = packet_frames(&bytes)?;
         if self.expected.is_some_and(|expected| timestamp < expected)
-            || self.packets.iter().any(|packet| packet.timestamp == timestamp)
+            || self
+                .packets
+                .iter()
+                .any(|packet| packet.timestamp == timestamp)
         {
             return Ok(());
         }
@@ -189,7 +188,14 @@ impl Receiver {
             .iter()
             .position(|packet| packet.timestamp > timestamp)
             .unwrap_or(self.packets.len());
-        self.packets.insert(index, Packet { timestamp, frames, bytes });
+        self.packets.insert(
+            index,
+            Packet {
+                timestamp,
+                frames,
+                bytes,
+            },
+        );
         Ok(())
     }
 
@@ -224,16 +230,14 @@ impl Receiver {
             self.decoder = OpusDecoder::new(RATE as i32, CHANNELS).map_err(failure)?;
             self.expected = Some(first.timestamp);
             self.frame = first.frames;
-            let position = ((now.saturating_duration_since(epoch) + PLAYOUT)
-                .as_secs_f64()
+            let position = ((now.saturating_duration_since(epoch) + PLAYOUT).as_secs_f64()
                 * f64::from(RATE)) as u64;
             self.position = self.position.max(position);
             // The decode deadline belongs to the same sample clock as the
             // PCM position. Do not conceal 60 ms ahead of presentation and
             // then discard a successor that arrived within the playout budget.
             self.due = Some(
-                epoch
-                    + Duration::from_secs_f64(self.position as f64 / f64::from(RATE))
+                epoch + Duration::from_secs_f64(self.position as f64 / f64::from(RATE))
                     - DECODE_LEAD,
             );
             self.lost = 0;
@@ -276,7 +280,10 @@ impl Receiver {
                 (packet.frames, packet.bytes, false)
             } else if let Some(next) = self.packets.front() {
                 let gap = next.timestamp - expected;
-                let frames = self.frame.min(FRAME).min(gap.min(MAX_FRAMES as u64) as usize);
+                let frames = self
+                    .frame
+                    .min(FRAME)
+                    .min(gap.min(MAX_FRAMES as u64) as usize);
                 // Only the immediately preceding frame can use this packet's
                 // LBRR. Older missing frames advance the decoder through PLC.
                 // The fork's LBRR entry point is mono; stereo loss uses PLC.
@@ -296,8 +303,8 @@ impl Receiver {
             }
 
             let mut buffer = self.buffer(frames * CHANNELS);
-            let output = Arc::get_mut(&mut buffer)
-                .ok_or("OperationError: leased Opus output buffer")?;
+            let output =
+                Arc::get_mut(&mut buffer).ok_or("OperationError: leased Opus output buffer")?;
             let result = if normal {
                 self.decoder.decode(&bytes, frames, output)
             } else if fec {
@@ -308,13 +315,12 @@ impl Receiver {
                 self.repacketizer.reset();
                 self.repacketizer
                     .cat(&bytes)
-                    .and_then(|()| {
-                        self.repacketizer.out_range_into(0, 1, &mut self.fec_packet)
-                    })
+                    .and_then(|()| self.repacketizer.out_range_into(0, 1, &mut self.fec_packet))
                     .and_then(|length| {
                         // This API uses LBRR when present and PLC otherwise.
                         // An attempt does not prove redundancy was present.
-                        self.decoder.decode_fec(&self.fec_packet[..length], frames, output)
+                        self.decoder
+                            .decode_fec(&self.fec_packet[..length], frames, output)
                     })
             } else {
                 self.decoder.decode(&[], frames, output)
@@ -349,4 +355,3 @@ impl Receiver {
         Ok(())
     }
 }
-

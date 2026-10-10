@@ -38,4 +38,3 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }
-

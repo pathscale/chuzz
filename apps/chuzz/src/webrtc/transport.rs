@@ -25,8 +25,8 @@ use crate::media::track::Track;
 
 use super::gather::{self, Config, Socket};
 use super::host::{Job, Peer};
-use super::{opus, pcmu};
 use super::sdp::{self, Description, Section};
+use super::{opus, pcmu};
 
 const AUDIO_QUANTUM: Duration = Duration::from_millis(20);
 const OUTPUTS: usize = 128;
@@ -172,9 +172,19 @@ impl Engine {
     }
 
     fn commit_codecs(&mut self) -> Result<(), String> {
-        let local = self.current_local.as_ref().ok_or("OperationError: missing local SDP")?;
-        let remote = self.current_remote.as_ref().ok_or("OperationError: missing remote SDP")?;
-        let answer = if local.r#type == "answer" { local } else { remote };
+        let local = self
+            .current_local
+            .as_ref()
+            .ok_or("OperationError: missing local SDP")?;
+        let remote = self
+            .current_remote
+            .as_ref()
+            .ok_or("OperationError: missing remote SDP")?;
+        let answer = if local.r#type == "answer" {
+            local
+        } else {
+            remote
+        };
         let answers = sdp::sections(answer)?;
         let remotes = sdp::sections(remote)?;
         for section in answers {
@@ -187,7 +197,11 @@ impl Engine {
                 .iter_mut()
                 .find(|slot| slot.mid.is_some_and(|mid| mid.to_string() == section.mid))
                 .ok_or("OperationError: missing negotiated codec slot")?;
-            let old_opus = slot.codecs.iter().find(|codec| codec.opus).map(|codec| codec.payload_type);
+            let old_opus = slot
+                .codecs
+                .iter()
+                .find(|codec| codec.opus)
+                .map(|codec| codec.payload_type);
             slot.codecs = section
                 .codecs
                 .into_iter()
@@ -197,12 +211,18 @@ impl Engine {
                     remote
                         .codecs
                         .iter()
-                        .find(|remote| remote.payload_type == codec.payload_type && remote.opus == codec.opus)
+                        .find(|remote| {
+                            remote.payload_type == codec.payload_type && remote.opus == codec.opus
+                        })
                         .cloned()
                         .unwrap_or(codec)
                 })
                 .collect();
-            let new_opus = slot.codecs.iter().find(|codec| codec.opus).map(|codec| codec.payload_type);
+            let new_opus = slot
+                .codecs
+                .iter()
+                .find(|codec| codec.opus)
+                .map(|codec| codec.payload_type);
             if old_opus != new_opus {
                 slot.receive = None;
             }
@@ -289,7 +309,10 @@ impl Engine {
                     .zip(&sections)
                     .any(|(old, new)| old.mid != new.mid)
             {
-                return Err("OperationError: established MID identity and m-line order are immutable".into());
+                return Err(
+                    "OperationError: established MID identity and m-line order are immutable"
+                        .into(),
+                );
             }
             if !previous[0]
                 .fingerprint
@@ -324,15 +347,17 @@ impl Engine {
             if let Some(mid) = slot.mid {
                 changes.set_direction(mid, direction);
             } else {
-                slot.mid = Some(changes.add_media(
-                    MediaKind::Audio,
-                    direction,
-                    slot.stream.clone(),
-                    slot.track
-                        .as_ref()
-                        .map(|track| format!("chuzz-track-{}", track.id)),
-                    None,
-                ));
+                slot.mid = Some(
+                    changes.add_media(
+                        MediaKind::Audio,
+                        direction,
+                        slot.stream.clone(),
+                        slot.track
+                            .as_ref()
+                            .map(|track| format!("chuzz-track-{}", track.id)),
+                        None,
+                    ),
+                );
             }
         }
         if self.restart {
@@ -379,7 +404,10 @@ impl Engine {
                 .iter()
                 .find(|slot| slot.mid.is_some_and(|mid| mid.to_string() == section.mid))
                 .ok_or("OperationError: answer section has no slot")?;
-            let remote = slot.remote.as_ref().ok_or("OperationError: missing remote slot")?;
+            let remote = slot
+                .remote
+                .as_ref()
+                .ok_or("OperationError: missing remote slot")?;
             identities.push((
                 sdp::intersect(&slot.direction, &remote.direction).to_owned(),
                 slot.stream.clone(),
@@ -423,14 +451,18 @@ impl Engine {
         match value.r#type.as_str() {
             "offer" if matches!(self.signaling, "stable" | "have-local-offer") => {
                 if self.generated_offer.as_ref() != Some(&value) || self.pending.is_none() {
-                    return Err("OperationError: local offer must be the current generated offer".into());
+                    return Err(
+                        "OperationError: local offer must be the current generated offer".into(),
+                    );
                 }
                 self.pending_local = Some(value.clone());
                 self.signaling = "have-local-offer";
             }
             "answer" if self.signaling == "have-remote-offer" => {
                 if self.generated_answer.as_ref() != Some(&value) {
-                    return Err("OperationError: local answer must be the current generated answer".into());
+                    return Err(
+                        "OperationError: local answer must be the current generated answer".into(),
+                    );
                 }
                 self.current_local = Some(value.clone());
                 self.current_remote = self.pending_remote.take();
@@ -438,9 +470,8 @@ impl Engine {
                 self.signaling = "stable";
                 for slot in &mut self.slots {
                     if let Some(remote) = &slot.remote {
-                        slot.current = Some(
-                            sdp::intersect(&slot.direction, &remote.direction).into(),
-                        );
+                        slot.current =
+                            Some(sdp::intersect(&slot.direction, &remote.direction).into());
                     }
                 }
             }
@@ -466,9 +497,7 @@ impl Engine {
                     let existing = self
                         .slots
                         .iter()
-                        .find(|slot| {
-                            slot.mid.is_some_and(|mid| mid.to_string() == section.mid)
-                        })
+                        .find(|slot| slot.mid.is_some_and(|mid| mid.to_string() == section.mid))
                         .or_else(|| {
                             self.slots
                                 .iter()
@@ -536,7 +565,9 @@ impl Engine {
             "answer" if self.signaling == "have-local-offer" => {
                 let sections = self.preflight(&value)?;
                 let offered = sdp::sections(
-                    self.pending_local.as_ref().ok_or("OperationError: missing local offer")?,
+                    self.pending_local
+                        .as_ref()
+                        .ok_or("OperationError: missing local offer")?,
                 )?;
                 if sections.len() != offered.len()
                     || sections.iter().zip(&offered).any(|(answer, offer)| {
@@ -547,13 +578,13 @@ impl Engine {
                                         && offered.opus == codec.opus
                                 })
                             })
-                            || (sdp::sends(&answer.direction)
-                                && !sdp::receives(&offer.direction))
-                            || (sdp::receives(&answer.direction)
-                                && !sdp::sends(&offer.direction))
+                            || (sdp::sends(&answer.direction) && !sdp::receives(&offer.direction))
+                            || (sdp::receives(&answer.direction) && !sdp::sends(&offer.direction))
                     })
                 {
-                    return Err("OperationError: answer does not match the offered slot table".into());
+                    return Err(
+                        "OperationError: answer does not match the offered slot table".into(),
+                    );
                 }
                 let answer = SdpAnswer::from_sdp_string(&value.sdp)
                     .map_err(|error| format!("OperationError: {error}"))?;
@@ -569,13 +600,9 @@ impl Engine {
                     let slot = self
                         .slots
                         .iter_mut()
-                        .find(|slot| {
-                            slot.mid.is_some_and(|mid| mid.to_string() == section.mid)
-                        })
+                        .find(|slot| slot.mid.is_some_and(|mid| mid.to_string() == section.mid))
                         .ok_or("OperationError: missing answer slot")?;
-                    slot.current = Some(
-                        sdp::intersect(&slot.direction, &section.direction).into(),
-                    );
+                    slot.current = Some(sdp::intersect(&slot.direction, &section.direction).into());
                     slot.remote = Some(section);
                 }
                 self.current_local = self.pending_local.take();
@@ -656,8 +683,12 @@ impl Engine {
                     .as_u64()
                     .filter(|bitrate| (6000..=510_000).contains(bitrate))
                     .ok_or("RangeError: Opus bitrate must be between 6000 and 510000")?;
-                let cbr = job.data["cbr"].as_bool().ok_or("TypeError: cbr must be boolean")?;
-                let active = job.data["active"].as_bool().ok_or("TypeError: active must be boolean")?;
+                let cbr = job.data["cbr"]
+                    .as_bool()
+                    .ok_or("TypeError: cbr must be boolean")?;
+                let active = job.data["active"]
+                    .as_bool()
+                    .ok_or("TypeError: active must be boolean")?;
                 let slot = self.slot(slot_id(&job.data)?)?;
                 slot.send.bitrate = bitrate as u32;
                 slot.send.cbr = cbr;
@@ -666,15 +697,21 @@ impl Engine {
             }
             "preferences" => {
                 if self.signaling != "stable" {
-                    return Err("InvalidStateError: change codec preferences in stable signaling".into());
+                    return Err(
+                        "InvalidStateError: change codec preferences in stable signaling".into(),
+                    );
                 }
                 let values = job.data["codecs"]
                     .as_array()
                     .ok_or("TypeError: codec preferences must be an array")?;
                 let mut preferences = Vec::new();
                 for value in values {
-                    let name = value.as_str().ok_or("TypeError: invalid codec preference")?;
-                    if !matches!(name, "opus" | "pcmu") || preferences.iter().any(|value| value == name) {
+                    let name = value
+                        .as_str()
+                        .ok_or("TypeError: invalid codec preference")?;
+                    if !matches!(name, "opus" | "pcmu")
+                        || preferences.iter().any(|value| value == name)
+                    {
                         return Err("NotSupportedError: invalid audio codec preference".into());
                     }
                     preferences.push(name.to_owned());
@@ -709,7 +746,9 @@ impl Engine {
                     .pending_remote
                     .as_ref()
                     .or(self.current_remote.as_ref())
-                    .ok_or("InvalidStateError: set a remote description before adding candidates")?;
+                    .ok_or(
+                        "InvalidStateError: set a remote description before adding candidates",
+                    )?;
                 let sections = sdp::sections(remote)?;
                 let mid = value["sdpMid"].as_str();
                 let index = value["sdpMLineIndex"].as_u64();
@@ -721,12 +760,16 @@ impl Engine {
                 .and_then(|index| sections.get(index))
                 .ok_or("OperationError: candidate does not identify a remote section")?;
                 if index.is_some_and(|index| {
-                    sections.get(index as usize).is_none_or(|indexed| indexed.mid != section.mid)
+                    sections
+                        .get(index as usize)
+                        .is_none_or(|indexed| indexed.mid != section.mid)
                 }) || value["usernameFragment"]
                     .as_str()
                     .is_some_and(|ufrag| ufrag != section.ufrag)
                 {
-                    return Err("OperationError: candidate belongs to another ICE generation or MID".into());
+                    return Err(
+                        "OperationError: candidate belongs to another ICE generation or MID".into(),
+                    );
                 }
                 let candidate = Candidate::from_sdp_string(
                     value["candidate"]
@@ -817,7 +860,12 @@ impl Engine {
             // Floating-point seconds can truncate a microsecond, placing
             // a packet one sample before Receiver's expected timestamp.
             writer
-                .write(pt, now, MediaTime::from_millis(start.as_millis() as u64), bytes)
+                .write(
+                    pt,
+                    now,
+                    MediaTime::from_millis(start.as_millis() as u64),
+                    bytes,
+                )
                 .map_err(|error| format!("OperationError: {error}"))?;
             peer.metrics(|metrics| {
                 metrics.tx_codec = Some(codec.name());
@@ -825,10 +873,16 @@ impl Engine {
                 if codec.opus {
                     metrics.opus_packets_sent += 1;
                     metrics.opus_bytes_sent += length as u64;
-                    metrics.opus_min_packet_bytes =
-                        Some(metrics.opus_min_packet_bytes.map_or(length, |value| value.min(length)));
-                    metrics.opus_max_packet_bytes =
-                        Some(metrics.opus_max_packet_bytes.map_or(length, |value| value.max(length)));
+                    metrics.opus_min_packet_bytes = Some(
+                        metrics
+                            .opus_min_packet_bytes
+                            .map_or(length, |value| value.min(length)),
+                    );
+                    metrics.opus_max_packet_bytes = Some(
+                        metrics
+                            .opus_max_packet_bytes
+                            .map_or(length, |value| value.max(length)),
+                    );
                 }
             });
         }
@@ -866,20 +920,20 @@ impl Engine {
             Event::MediaData(data)
                 if matches!(data.params.spec().codec, Codec::Opus | Codec::PCMU) =>
             {
-                let Some(slot) = self.slots.iter_mut().find(|slot| slot.mid == Some(data.mid)) else {
+                let Some(slot) = self
+                    .slots
+                    .iter_mut()
+                    .find(|slot| slot.mid == Some(data.mid))
+                else {
                     return Ok(());
                 };
                 if !slot.current.as_deref().is_some_and(sdp::receives) {
                     return Ok(());
                 }
-                let Some(codec) = slot
-                    .codecs
-                    .iter()
-                    .find(|codec| {
-                        data.params.pt() == codec.payload_type.into()
-                            && codec.opus == (data.params.spec().codec == Codec::Opus)
-                    })
-                else {
+                let Some(codec) = slot.codecs.iter().find(|codec| {
+                    data.params.pt() == codec.payload_type.into()
+                        && codec.opus == (data.params.spec().codec == Codec::Opus)
+                }) else {
                     return Ok(());
                 };
                 let (Some(output), Some(receiver)) = (&slot.output, &slot.receiver) else {
@@ -893,8 +947,14 @@ impl Engine {
                     if slot.receive.is_none() {
                         slot.receive = Some(Box::new(opus::Receiver::new(true, slot.rx_next)?));
                     }
-                    let receive = slot.receive.as_mut().ok_or("OperationError: missing Opus receiver")?;
-                    let timestamp = data.time.rebase(str0m::media::Frequency::FORTY_EIGHT_KHZ).numer();
+                    let receive = slot
+                        .receive
+                        .as_mut()
+                        .ok_or("OperationError: missing Opus receiver")?;
+                    let timestamp = data
+                        .time
+                        .rebase(str0m::media::Frequency::FORTY_EIGHT_KHZ)
+                        .numer();
                     if let Err(error) = receive.enqueue(timestamp, data.data.into()) {
                         eprintln!(
                             "WebRTC Opus enqueue failed at RTP timestamp {timestamp}: {error}"
@@ -956,11 +1016,7 @@ enum Wake {
     Closed,
 }
 
-async fn drive(
-    peer: &Peer,
-    config: Config,
-    epoch: Instant,
-) -> Result<(), String> {
+async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String> {
     let certificate = super::crypto::provider()
         .dtls_provider
         .generate_certificate()
@@ -1025,14 +1081,20 @@ async fn drive(
 
         let mut protocol_deadline = None;
         for _ in 0..OUTPUTS {
-            match engine.rtc.poll_output().map_err(|error| format!("OperationError: {error}"))? {
+            match engine
+                .rtc
+                .poll_output()
+                .map_err(|error| format!("OperationError: {error}"))?
+            {
                 Output::Timeout(deadline) => {
                     protocol_deadline = Some(deadline);
                     break;
                 }
                 Output::Transmit(packet) => {
                     if packet.proto != Protocol::Udp || transmits.len() == TRANSMITS {
-                        return Err("OperationError: unsupported transport or transmit backlog".into());
+                        return Err(
+                            "OperationError: unsupported transport or transmit backlog".into()
+                        );
                     }
                     transmits.push_back(packet);
                 }
@@ -1067,7 +1129,9 @@ async fn drive(
                 let Some(Socket { socket, .. }) =
                     sockets.iter().find(|socket| socket.local == packet.source)
                 else {
-                    return Poll::Ready(Err("OperationError: str0m selected an unowned UDP source".into()));
+                    return Poll::Ready(Err(
+                        "OperationError: str0m selected an unowned UDP source".into(),
+                    ));
                 };
                 match socket.poll_send_to(
                     context,
@@ -1084,10 +1148,14 @@ async fn drive(
                         return Poll::Ready(Ok(Wake::Sent));
                     }
                     Poll::Ready(Ok(_)) => {
-                        return Poll::Ready(Err("OperationError: partial UDP datagram send".into()));
+                        return Poll::Ready(
+                            Err("OperationError: partial UDP datagram send".into()),
+                        );
                     }
                     Poll::Ready(Err(error)) => {
-                        return Poll::Ready(Err(format!("OperationError: UDP send failed: {error}")));
+                        return Poll::Ready(Err(format!(
+                            "OperationError: UDP send failed: {error}"
+                        )));
                     }
                     Poll::Pending => {}
                 }
@@ -1100,7 +1168,9 @@ async fn drive(
                         return Poll::Ready(Ok(Wake::Received(index, length, source)));
                     }
                     Poll::Ready(Err(error)) => {
-                        return Poll::Ready(Err(format!("OperationError: UDP receive failed: {error}")));
+                        return Poll::Ready(Err(format!(
+                            "OperationError: UDP receive failed: {error}"
+                        )));
                     }
                     Poll::Pending => {}
                 }
@@ -1170,4 +1240,3 @@ pub(super) async fn run(peer: Arc<Peer>, config: Config, epoch: Instant) {
         metrics.running = false;
     });
 }
-

@@ -11,12 +11,7 @@ use super::pcm::{Pcm, Track};
 
 const RADIUS: i32 = 16;
 
-fn input_sample(
-    blocks: &[Arc<Pcm>],
-    time: f64,
-    channel: usize,
-    output_channels: u16,
-) -> f64 {
+fn input_sample(blocks: &[Arc<Pcm>], time: f64, channel: usize, output_channels: u16) -> f64 {
     for block in blocks {
         let offset = (time - block.start().as_secs_f64()) * f64::from(block.sample_rate());
         let frame = offset.round();
@@ -76,8 +71,8 @@ pub(crate) fn read_into(
     let cutoff = (target_rate / input_rate).min(1.0);
     // Different context clocks can run in either order. Leave enough history
     // for an input quantum and the symmetric interpolation filter.
-    let latency = 2.0 * (128.0 / target_rate).max(128.0 / input_rate)
-        + f64::from(RADIUS) / input_rate;
+    let latency =
+        2.0 * (128.0 / target_rate).max(128.0 / input_rate) + f64::from(RADIUS) / input_rate;
     let blocks = if let Some(media) = track.media()
         && media.source.is_capture()
     {
@@ -87,8 +82,7 @@ pub(crate) fn read_into(
             .floor()
             .max(0.0) as u64;
         let first = first.saturating_sub(RADIUS as u64);
-        let last = ((start.as_secs_f64() + frames as f64 / target_rate - latency)
-            * input_rate)
+        let last = ((start.as_secs_f64() + frames as f64 / target_rate - latency) * input_rate)
             .ceil()
             .max(0.0) as u64;
         let last = last.saturating_add(RADIUS as u64 + 1);
@@ -114,12 +108,7 @@ pub(crate) fn read_into(
             for tap in -RADIUS..=RADIUS {
                 let index = center + f64::from(tap);
                 let weight = weight(position - index, cutoff);
-                sum += input_sample(
-                    &blocks,
-                    index / input_rate,
-                    channel,
-                    output_channels,
-                ) * weight;
+                sum += input_sample(&blocks, index / input_rate, channel, output_channels) * weight;
                 weight_sum += weight;
             }
             if weight_sum.abs() > 1.0e-12 {
@@ -133,8 +122,8 @@ pub(crate) fn read_into(
 /// Convert an already decoded block without the capture/graph clock delay.
 /// Edge extension prevents packet boundaries introducing artificial silence.
 pub(crate) fn block(pcm: &Pcm, output_rate: u32, output_channels: u16) -> Arc<[f32]> {
-    let frames = (pcm.frames() as u64 * u64::from(output_rate)
-        / u64::from(pcm.sample_rate())) as usize;
+    let frames =
+        (pcm.frames() as u64 * u64::from(output_rate) / u64::from(pcm.sample_rate())) as usize;
     let input_rate = f64::from(pcm.sample_rate());
     let target_rate = f64::from(output_rate);
     let cutoff = (target_rate / input_rate).min(1.0);
@@ -153,11 +142,9 @@ pub(crate) fn block(pcm: &Pcm, output_rate: u32, output_channels: u16) -> Arc<[f
                 weight_sum += weight;
             }
             if weight_sum.abs() > 1.0e-12 {
-                output[frame * usize::from(output_channels) + channel] =
-                    (sum / weight_sum) as f32;
+                output[frame * usize::from(output_channels) + channel] = (sum / weight_sum) as f32;
             }
         }
     }
     output.into()
 }
-
