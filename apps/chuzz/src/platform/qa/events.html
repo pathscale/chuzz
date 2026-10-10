@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Platform events</title>
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      font-family: "Fira Sans";
+      margin: 24px;
+      background: #f5f7fa;
+      color: #182436;
+    }
+    button, input {
+      font-family: "Fira Sans";
+      font-size: 18px;
+      padding: 12px;
+    }
+    #result {
+      padding: 16px;
+      background: #ffffff;
+      border: 2px solid #465d78;
+      font-size: 20px;
+    }
+    #sandbox {
+      padding: 12px;
+      margin-top: 16px;
+      border: 1px solid #465d78;
+    }
+  </style>
+  <script src="./src/events.ts" defer></script>
+</head>
+<body>
+  <h1>Platform events</h1>
+  <p>Run verifies native click identity, event dictionaries, dispatch, legacy initialization and history traversal.</p>
+  <button id="run">Run</button>
+  <p id="result" role="status">Waiting for Run</p>
+  <div id="sandbox">
+    <input id="first" aria-label="First focus target">
+    <input id="second" aria-label="Second focus target">
+    <button id="submitter" type="button">Submitter reference</button>
+  </div>
+</body>
+</html>

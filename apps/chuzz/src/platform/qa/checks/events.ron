@@ -1,0 +1,15 @@
+[
+    (
+        id: "events-all",
+        group: "events",
+        what: "native click identity, event dictionaries, cancellation, TouchLists, legacy initialization and asynchronous history notifications",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: events PASS",
+        expect: PaintsNamed,
+        covers: ["READY: events PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+
