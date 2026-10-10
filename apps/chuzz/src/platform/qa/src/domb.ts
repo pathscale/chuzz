@@ -309,6 +309,12 @@
             "relative area URL");
         assert(document.createElement("a").pathname === "" && sandbox.pathname === undefined,
             "missing href and non-link elements");
+
+        const meta = document.createElement("meta");
+        meta.content = "width=device-width";
+        assert(meta.content === "width=device-width"
+            && meta.getAttribute("content") === "width=device-width", "meta content reflection");
+        assert(document.createElement("template").content instanceof DocumentFragment, "template content");
     }
 
     document.getElementById("run").addEventListener("click", function () {
