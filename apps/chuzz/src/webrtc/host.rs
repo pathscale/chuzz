@@ -455,7 +455,7 @@ pub(super) fn install(document: &mut ScriptDocument) {
             )
             .expect("peer metadata bridge");
     });
-    document.eval(include_str!("../webrtc.ts"));
+    document.eval_named(include_str!("../webrtc.ts"), "<chuzz-webrtc>");
     document.add_poll_hook(move |document, task_context| {
         let events: Vec<_> = {
             let mut state = lock(&page.state);

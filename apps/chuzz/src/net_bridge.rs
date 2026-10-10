@@ -556,14 +556,14 @@ pub fn install(
                 .expect("page network native bridge");
         }
     });
-    document.eval(include_str!("network.ts"));
+    document.eval_named(include_str!("network.ts"), "<chuzz-network>");
     document.eval(crate::ws_bridge::WEBSOCKET_SHIM);
 
     let wake = PageWake::new(Arc::clone(&document.inner().shell_provider));
     let gpu = crate::webgpu::Bridge::new(wake.clone());
     gpu.install_bytes(document);
     gpu.install_canvas_readback(document);
-    document.eval(crate::webgpu::WEBGPU_SHIM);
+    document.eval_named(crate::webgpu::WEBGPU_SHIM, "<chuzz-webgpu>");
 
     let mailbox = Mailbox {
         entries: Arc::new(Mutex::new(Vec::new())),

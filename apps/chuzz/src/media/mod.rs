@@ -567,7 +567,7 @@ pub(crate) fn install(document: &mut ScriptDocument) {
             )
             .expect("capture metadata bridge");
     });
-    document.eval(include_str!("../media.ts"));
+    document.eval_named(include_str!("../media.ts"), "<chuzz-media>");
     document.add_poll_hook(move |document, _| {
         let Ok(updates) = host.updates() else {
             return false;

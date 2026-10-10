@@ -751,9 +751,9 @@ pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
         (capture, frames)
     });
     document.eval("globalThis.__chuzzVideoSupported = true;");
-    document.eval(include_str!("video.ts"));
-    document.eval(include_str!("video/mse.ts"));
-    document.eval(include_str!("video/stream.ts"));
+    document.eval_named(include_str!("video.ts"), "<chuzz-video>");
+    document.eval_named(include_str!("video/mse.ts"), "<chuzz-mse>");
+    document.eval_named(include_str!("video/stream.ts"), "<chuzz-stream>");
     let mut host = Host {
         net,
         mse,
