@@ -7,15 +7,92 @@
     @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
     body { font-family: Fixture; }
   </style>
+  <script>
+    (() => {
+      "use strict";
+      const makeParsedCase = Base => {
+        const entry = { calls: [], wrappers: [], errors: [] };
+        class Parsed extends Base {
+          static get observedAttributes() { return ["label"]; }
+          constructor() {
+            super();
+            this.parserState = Object.create(null);
+            entry.wrappers.push(this);
+            entry.calls.push(["construct"]);
+          }
+          _checkReceiver() {
+            if (Object.getPrototypeOf(this) !== Parsed.prototype
+              || this.constructor !== Parsed
+              || entry.wrappers[0] !== this
+              || !this.parserState) {
+              throw new Error("Parsed callback receiver or constructor state");
+            }
+          }
+          _attributeToProperty(name, value) {
+            this.parserState[name] = value;
+          }
+          attributeChangedCallback(name, oldValue, newValue, namespace) {
+            try {
+              this._checkReceiver();
+              entry.calls.push(["attribute", name, oldValue, newValue, namespace]);
+              if (oldValue !== newValue) this._attributeToProperty(name, newValue);
+            } catch (error) {
+              entry.errors.push(error.message);
+              throw error;
+            }
+          }
+          connectedCallback() {
+            try {
+              this._checkReceiver();
+              entry.calls.push(["connect"]);
+              this.removeAttribute("label");
+              entry.calls.push(["returned"]);
+            } catch (error) {
+              entry.errors.push(error.message);
+              throw error;
+            }
+          }
+        }
+        entry.Class = Parsed;
+        return entry;
+      };
+      const cases = {
+        early: makeParsedCase(HTMLElement),
+        late: makeParsedCase(HTMLElement),
+        customized: makeParsedCase(HTMLDivElement),
+        written: makeParsedCase(HTMLElement),
+        tail: makeParsedCase(HTMLElement)
+      };
+      globalThis.__qaParserCustomElements = cases;
+      customElements.define("qa-parser-early", cases.early.Class);
+      customElements.define("qa-parser-div", cases.customized.Class, { extends: "div" });
+      customElements.define("qa-parser-written", cases.written.Class);
+      customElements.define("qa-parser-tail", cases.tail.Class);
+    })();
+  </script>
 </head>
 <body data-feature="custom-elements">
   <h1>Custom elements QA</h1>
   <button id="run" type="button">Run custom elements</button>
   <p id="result" role="status">Ready</p>
-  <div id="fixture"></div>
+  <div id="fixture">
+    <qa-parser-early id="qa-parser-early" label="before">Early parsed custom element</qa-parser-early>
+    <qa-parser-late id="qa-parser-late" label="before">Late parsed custom element</qa-parser-late>
+    <div is="qa-parser-div" id="qa-parser-div" label="before">Parsed customized element</div>
+  </div>
   <script>
     (() => {
       "use strict";
+      const parserCases = globalThis.__qaParserCustomElements;
+      // Snapshot before any DOM binding can collect or deliver reactions.
+      const parserBoundary = {
+        early: JSON.stringify(parserCases.early.calls),
+        customized: JSON.stringify(parserCases.customized.calls),
+        lateConstructors: parserCases.late.wrappers.length,
+        lateCalls: parserCases.late.calls.length
+      };
+      customElements.define("qa-parser-late", parserCases.late.Class);
+      document.write('<qa-parser-written id="qa-parser-written" label="before">Written parsed custom element</qa-parser-written><script>globalThis.__qaParserCustomElements.writtenBoundary = JSON.stringify(globalThis.__qaParserCustomElements.written.calls);<\/script>');
       const check = (condition, message) => {
         if (!condition) throw new Error(message);
       };
@@ -24,6 +101,46 @@
       document.getElementById("run").addEventListener("click", async () => {
         document.getElementById("run").disabled = true;
         try {
+          const expectedParserCalls = JSON.stringify([
+            ["construct"],
+            ["attribute", "label", null, "before", null],
+            ["connect"],
+            ["attribute", "label", "before", null, null],
+            ["returned"]
+          ]);
+          check(parserBoundary.early === expectedParserCalls,
+            "Known parsed definition reacts before the next script");
+          check(parserBoundary.customized === expectedParserCalls,
+            "Known parsed customized definition reacts before the next script");
+          check(parserBoundary.lateConstructors === 0 && parserBoundary.lateCalls === 0,
+            "Undefined parsed element has no constructor or callbacks");
+          check(parserCases.writtenBoundary === expectedParserCalls,
+            "Written markup reacts before its following inline script");
+          const expectParsedCases = () => {
+            for (const [key, id] of [
+              ["early", "qa-parser-early"],
+              ["late", "qa-parser-late"],
+              ["customized", "qa-parser-div"],
+              ["written", "qa-parser-written"],
+              ["tail", "qa-parser-tail"]
+            ]) {
+              const entry = parserCases[key];
+              const element = document.getElementById(id);
+              check(entry.errors.length === 0, key + ": parsed callback errors");
+              check(element === entry.wrappers[0] && entry.wrappers.length === 1,
+                key + ": parsed constructor and callback identity");
+              check(element instanceof entry.Class && element.constructor === entry.Class,
+                key + ": parsed prototype identity");
+              check(JSON.stringify(entry.calls) === expectedParserCalls,
+                key + ": parsed upgrade, attributes, connection and nested removal order");
+              check(element.getAttribute("label") === null && element.parserState.label === null,
+                key + ": connected removal reaches the instance method with null");
+            }
+          };
+          expectParsedCases();
+          await new Promise(resolve => setTimeout(resolve, 0));
+          expectParsedCases();
+
           const calls = [];
           const waiting = customElements.whenDefined("qa-site-card");
           check(waiting === customElements.whenDefined("qa-site-card"), "Pending promise identity");
@@ -356,6 +473,7 @@
       });
     })();
   </script>
+  <qa-parser-tail id="qa-parser-tail" label="before">Parsed custom element at EOF</qa-parser-tail>
 </body>
 </html>
 
