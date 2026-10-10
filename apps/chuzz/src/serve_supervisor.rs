@@ -27,6 +27,9 @@ use super::{
 const WORKER_ENV: &str = "CHUZZ_HEADLESS_PAGE_WORKER";
 const ROUTE_ENV: &str = "CHUZZ_HEADLESS_WORKER_ROUTE";
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
+/// A real site fetches dozens of scripts over the network before it is ready;
+/// ten seconds is a budget for local fixtures, not for the web.
+const REMOTE_LOAD_DEADLINE: Duration = Duration::from_secs(60);
 const IO_SLICE: Duration = Duration::from_millis(8);
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
@@ -267,7 +270,12 @@ impl Session {
         if let Some(route) = route {
             command.env(ROUTE_ENV, route);
         }
-        let startup_deadline = Instant::now() + REQUEST_DEADLINE;
+        let startup_deadline = Instant::now()
+            + if local {
+                REQUEST_DEADLINE
+            } else {
+                REMOTE_LOAD_DEADLINE
+            };
         let child = command.spawn().map_err(|error| error.to_string())?;
         Ok(Self {
             child,
@@ -290,7 +298,7 @@ impl Session {
 
     fn expired(&self, now: Instant) -> Option<String> {
         if !self.ready && now >= self.startup_deadline {
-            return Some("the page did not finish loading within 10s".to_owned());
+            return Some("the page did not finish loading within its startup deadline".to_owned());
         }
         self.operations
             .iter()
