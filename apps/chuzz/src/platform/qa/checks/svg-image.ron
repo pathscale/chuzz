@@ -1,0 +1,24 @@
+[
+    (
+        id: "svg-image-script",
+        group: "svg-image",
+        what: "a detached new Image() with a relative SVG src loads with the SVG's natural size and draws into a 2D canvas",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: SVGIMG PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "svg-image-canvas-paints",
+        group: "svg-image",
+        what: "the canvas holding the drawn SVG reaches document painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#target",
+        expect: VisibleInk,
+        outcome_timeout_ms: 10000,
+    ),
+]

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SVG image QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <img id="markup" src="img/badge.svg" alt="Markup badge">
+  <canvas id="target" width="80" height="60" aria-label="SVG canvas"></canvas>
+  <p id="result" role="status">SVG image waiting</p>
+  <script>
+    // A script-created Image with a relative SVG URL, never attached to the document, loaded and then drawn into a
+    // 2D canvas: the sprite-loading pattern of canvas games. Chrome fires load with naturalWidth/Height from the SVG.
+    var result = document.getElementById("result");
+    function fail(reason) { result.textContent = "FAIL: SVGIMG " + reason; }
+    var image = new Image();
+    image.onerror = function () { fail("onerror fired for a valid SVG"); };
+    image.onload = function () {
+      if (image.naturalWidth !== 40 || image.naturalHeight !== 30) {
+        return fail("natural size " + image.naturalWidth + "x" + image.naturalHeight);
+      }
+      var context = document.getElementById("target").getContext("2d");
+      context.drawImage(image, 0, 0, 80, 60);
+      var corner = context.getImageData(4, 4, 1, 1).data;
+      var centre = context.getImageData(40, 30, 1, 1).data;
+      if (corner[0] < 200 || corner[3] !== 255) return fail("corner " + Array.from(corner).join("/"));
+      if (centre[2] < 200) return fail("centre " + Array.from(centre).join("/"));
+      var markup = document.getElementById("markup");
+      if (!markup.complete || markup.naturalWidth !== 40) return fail("markup img " + markup.naturalWidth);
+      result.textContent = "READY: SVGIMG PASS";
+    };
+    image.src = "img/badge.svg";
+  </script>
+</body>
+</html>
