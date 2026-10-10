@@ -33,13 +33,18 @@
     }
     return size;
   }
-  function marker(element) {
+  function marker(element, renew) {
     var value = markers.get(element);
+    if (renew && value !== undefined) {
+      sourceFinalizers.unregister(element);
+      globalThis.__chuzzCanvas2D(JSON.stringify({ action: "release", id: value }), []);
+      value = undefined;
+    }
     if (value === undefined) {
       value = bridge.nextHandle();
       markers.set(element, value);
       element.setAttribute("data-chuzz-gpu-source", String(value));
-      sourceFinalizers.register(element, value);
+      sourceFinalizers.register(element, value, element);
     }
     return value;
   }
@@ -69,7 +74,7 @@
       if (bitmap.closed) { throw new DOMException("ImageBitmap is closed", "InvalidStateError"); }
       return { kind: "bitmap", handle: bitmap.handle };
     }
-    var image = imageStates.get(source);
+    var image = isImage(source) ? imageState(source) : imageStates.get(source);
     if (image) {
       if (!image.bitmap) { throw new DOMException("image is not decoded", "InvalidStateError"); }
       return globalThis.__chuzzGpuImageSource(image.bitmap);
@@ -158,13 +163,14 @@
       readPixels: false
     };
   }
-  function create(source, crop, options, node) {
+  function create(source, crop, options) {
     var handle = bridge.nextHandle();
     var input;
     if (source instanceof Blob) {
       input = source.arrayBuffer().then(function (buffer) {
         if (buffer.byteLength > limit) { throw new RangeError("image decode limit reached in chuzz"); }
-        return { kind: "encoded", data: buffer, node: node || null };
+        // A node snapshot has no URL identity and may contain a previous src.
+        return { kind: "encoded", data: buffer };
       });
     } else {
       try { input = Promise.resolve(globalThis.__chuzzGpuImageSource(source)); }
@@ -223,70 +229,291 @@
     Object.defineProperty(ImageData.prototype, Symbol.toStringTag, { value: "ImageData" });
   }
 
-  function installImage(element) {
-    if (imageStates.has(element)) { return element; }
-    var state = { epoch: 0, bitmap: null, source: "", complete: false, promise: Promise.resolve() };
-    imageStates.set(element, state);
-    marker(element);
-    var setAttribute = element.setAttribute;
-    function load(value) {
-      state.source = String(value);
-      state.complete = false;
-      var epoch = ++state.epoch;
-      if (state.bitmap) { state.bitmap.close(); state.bitmap = null; }
-      setAttribute.call(element, "src", state.source);
-      state.promise = fetch(state.source).then(function (response) {
-        if (!response.ok) { throw new Error("image fetch failed"); }
-        return response.blob();
-      }).then(function (blob) {
-        return create(blob, null, {}, marker(element));
-      }).then(function (bitmap) {
-        if (state.epoch !== epoch) { bitmap.close(); return; }
-        state.bitmap = bitmap;
-        state.complete = true;
-        post("paintImage", 0, {
-          node: marker(element), source: globalThis.__chuzzGpuImageSource(bitmap)
-        });
-        element.dispatchEvent(new Event("load"));
-      }, function (error) {
-        if (state.epoch === epoch) {
-          state.complete = true;
-          element.dispatchEvent(new Event("error"));
-        }
-        throw error;
-      });
-      state.promise.catch(function () {});
-    }
-    Object.defineProperties(element, {
-      src: { configurable: true, get: function () { return state.source; }, set: load },
-      complete: { configurable: true, get: function () { return state.complete; } },
-      naturalWidth: { configurable: true, get: function () { return state.bitmap ? state.bitmap.width : 0; } },
-      naturalHeight: { configurable: true, get: function () { return state.bitmap ? state.bitmap.height : 0; } }
-    });
-    ["width", "height"].forEach(function (name) {
-      Object.defineProperty(element, name, {
-        configurable: true,
-        get: function () {
-          var attribute = element.getAttribute(name);
-          return attribute === null ? (state.bitmap ? state.bitmap[name] : 0)
-            : integer(Number(attribute), name);
-        },
-        set: function (value) { setAttribute.call(element, name, String(integer(value, name))); }
-      });
-    });
-    element.decode = function () { return state.promise.then(function () {}); };
-    element.setAttribute = function (name, value) {
-      if (String(name).toLowerCase() === "src") { load(value); }
-      else { return setAttribute.call(element, name, value); }
-    };
-    return element;
+  function isImage(element) {
+    return !!element && element.nodeType === 1 &&
+      String(element.tagName).toLowerCase() === "img" &&
+      (!element.namespaceURI || element.namespaceURI === "http://www.w3.org/1999/xhtml");
   }
+  function imageError(message) {
+    return new DOMException(message || "image is not decoded", "EncodingError");
+  }
+  function imageUrl(element, source) {
+    return new URL(source, element.baseURI || location.href).href;
+  }
+  function startImage(element, state, source) {
+    var epoch = ++state.epoch;
+    if (state.reject) { state.reject(imageError("image source changed")); }
+    if (state.controller) { state.controller.abort(); }
+    if (state.bitmap) { state.bitmap.close(); state.bitmap = null; }
+    state.source = source;
+    state.complete = source === null || source === "";
+    state.controller = null;
+    var resolve, reject;
+    state.promise = new Promise(function (yes, no) { resolve = yes; reject = no; });
+    state.promise.catch(function () {});
+    state.reject = reject;
+    // A paint already queued for an older request must not match this node.
+    var node = marker(element, true);
+    function current() {
+      return state.epoch === epoch && element.ownerDocument === document &&
+        element.getAttribute("src") === source;
+    }
+    function event(type, error) {
+      setTimeout(function () {
+        if (!current()) { return; }
+        element.dispatchEvent(new Event(type));
+        if (!current()) { return; }
+        state.reject = null;
+        if (error) { reject(error); }
+        else { resolve(); }
+      }, 0);
+    }
+    function failed() {
+      if (!current()) { return; }
+      if (state.bitmap) { state.bitmap.close(); state.bitmap = null; }
+      state.controller = null;
+      state.complete = true;
+      event("error", imageError("image could not be loaded or decoded"));
+    }
+    if (source === null) {
+      state.reject = null;
+      reject(imageError("image has no source"));
+      return;
+    }
+    if (source === "") { failed(); return; }
+    if (typeof AbortController === "function") { state.controller = new AbortController(); }
+    var controller = state.controller;
+    // The initial scan can run before the host finishes installing IPC.
+    // Starting transport in a task also coalesces superseded same-turn writes.
+    new Promise(function (ready) { setTimeout(ready, 0); }).then(function () {
+      if (!current()) { throw imageError("image source changed"); }
+      return fetch(imageUrl(element, source), controller ? { signal: controller.signal } : undefined);
+    }).then(function (response) {
+      if (!current()) { throw imageError("image source changed"); }
+      if (!response.ok) { throw imageError("image fetch failed"); }
+      return response.blob();
+    }).then(function (blob) {
+      if (!current()) { throw imageError("image source changed"); }
+      return create(blob, null, {});
+    }).then(function (bitmap) {
+      if (!current()) { bitmap.close(); return; }
+      state.bitmap = bitmap;
+      state.complete = true;
+      state.controller = null;
+      return bridge.send("paintImage", 0, {
+        node: node, source: globalThis.__chuzzGpuImageSource(bitmap)
+      }).then(function () {
+        if (current()) { event("load"); }
+      });
+    }).catch(failed);
+  }
+  function imageState(element, force) {
+    var state = imageStates.get(element);
+    if (!state) {
+      state = {
+        epoch: 0, bitmap: null, source: undefined, complete: true,
+        controller: null, reject: null, promise: Promise.reject(imageError())
+      };
+      state.promise.catch(function () {});
+      imageStates.set(element, state);
+    }
+    // DOMParser and template owner documents remain inert until adoption.
+    // srcset/sizes selection is not implemented; src is the fallback.
+    var source = element.getAttribute("src");
+    if (element.ownerDocument === document) {
+      if (force || state.source !== source) { startImage(element, state, source); }
+    } else {
+      state.complete = source === null || source === "";
+    }
+    return state;
+  }
+  function propertyDescriptor(prototype, name) {
+    while (prototype) {
+      var descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+      if (descriptor) { return descriptor; }
+      prototype = Object.getPrototypeOf(prototype);
+    }
+    return null;
+  }
+  var imageProbe = document.createElement("img");
+  var imagePrototype = Object.getPrototypeOf(imageProbe);
+  function imageProperty(name, get, set) {
+    var previous = propertyDescriptor(imagePrototype, name);
+    var descriptor = {
+      configurable: true, enumerable: previous ? previous.enumerable : true,
+      get: function () {
+        if (isImage(this)) { return get.call(this); }
+        return previous ? (previous.get ? previous.get.call(this) : previous.value) : undefined;
+      }
+    };
+    if (set || (previous && previous.set)) {
+      descriptor.set = function (value) {
+        if (isImage(this)) {
+          if (set) { set.call(this, value); }
+        } else if (previous && previous.set) {
+          previous.set.call(this, value);
+        } else if (!previous || previous.writable !== false) {
+          Object.defineProperty(this, name, {
+            configurable: true, enumerable: true, writable: true, value: value
+          });
+        }
+      };
+    }
+    Object.defineProperty(imagePrototype, name, descriptor);
+  }
+  imageProperty("src", function () {
+    imageState(this);
+    var source = this.getAttribute("src");
+    if (source === null) { return ""; }
+    try { return imageUrl(this, source); }
+    catch (error) { return source; }
+  }, function (value) { this.setAttribute("src", String(value)); });
+  imageProperty("complete", function () { return imageState(this).complete; });
+  imageProperty("naturalWidth", function () {
+    var state = imageState(this);
+    return state.bitmap ? state.bitmap.width : 0;
+  });
+  imageProperty("naturalHeight", function () {
+    var state = imageState(this);
+    return state.bitmap ? state.bitmap.height : 0;
+  });
+  ["width", "height"].forEach(function (name) {
+    imageProperty(name, function () {
+      var state = imageState(this);
+      var attribute = this.getAttribute(name);
+      return attribute === null ? (state.bitmap ? state.bitmap[name] : 0)
+        : integer(Number(attribute), name);
+    }, function (value) { this.setAttribute(name, String(integer(value, name))); });
+  });
+  var previousDecode = propertyDescriptor(imagePrototype, "decode");
+  Object.defineProperty(imagePrototype, "decode", {
+    configurable: true, writable: true,
+    value: function () {
+      if (!isImage(this)) {
+        var previous = previousDecode &&
+          (previousDecode.get ? previousDecode.get.call(this) : previousDecode.value);
+        if (typeof previous !== "function") { throw new TypeError("invalid HTMLImageElement"); }
+        return previous.apply(this, arguments);
+      }
+      return imageState(this).promise.then(function () {});
+    }
+  });
+  function wrapMethod(probe, name, wrap) {
+    var owner = probe;
+    while (owner && !Object.prototype.hasOwnProperty.call(owner, name)) {
+      owner = Object.getPrototypeOf(owner);
+    }
+    if (!owner) { return; }
+    var descriptor = Object.getOwnPropertyDescriptor(owner, name);
+    if (typeof descriptor.value !== "function") { return; }
+    descriptor.value = wrap(descriptor.value);
+    Object.defineProperty(owner, name, descriptor);
+  }
+  ["setAttribute", "removeAttribute", "toggleAttribute",
+   "setAttributeNS", "removeAttributeNS"].forEach(function (name) {
+    wrapMethod(imageProbe, name, function (original) {
+      return function () {
+        var args = Array.from(arguments);
+        var namespaced = name === "setAttributeNS" || name === "removeAttributeNS";
+        var index = namespaced ? 1 : 0;
+        var image = isImage(this);
+        if (image && args.length > index) { args[index] = String(args[index]); }
+        var source = image && args.length > index &&
+          args[index].toLowerCase() === "src" &&
+          (!namespaced || args[0] === null || args[0] === "");
+        var result = original.apply(this, args);
+        if (source) { imageState(this, true); }
+        return result;
+      };
+    });
+  });
+
+  var imageObserver;
+  var observedRoots = new WeakSet();
+  function observeImages(root) {
+    if (!imageObserver || observedRoots.has(root)) { return; }
+    observedRoots.add(root);
+    imageObserver.observe(root, {
+      subtree: true, childList: true, attributes: true, attributeFilter: ["src"]
+    });
+  }
+  function walkImages(root, visit, templates) {
+    var pending = [root];
+    while (pending.length) {
+      var node = pending.pop();
+      if (!node) { continue; }
+      if (isImage(node)) { visit(node); }
+      if (templates && String(node.tagName).toLowerCase() === "template" && node.content) {
+        pending.push(node.content);
+      }
+      if (node.shadowRoot) {
+        if (!templates) { observeImages(node.shadowRoot); }
+        pending.push(node.shadowRoot);
+      }
+      var children = node.childNodes;
+      if (children) {
+        for (var index = children.length - 1; index >= 0; index--) { pending.push(children[index]); }
+      }
+    }
+  }
+  function scanImages(root) {
+    walkImages(root, function (element) {
+      if (element.ownerDocument === document && element.isConnected) { imageState(element); }
+    }, false);
+  }
+  function copiedImages(copy) {
+    // cloneNode/importNode copy attributes, including a native paint marker.
+    // They must not alias the original image's marker or request state.
+    walkImages(copy, function (element) {
+      element.removeAttribute("data-chuzz-gpu-source");
+    }, true);
+    return copy;
+  }
+  wrapMethod(imageProbe, "cloneNode", function (original) {
+    return function () { return copiedImages(original.apply(this, arguments)); };
+  });
+  wrapMethod(document, "importNode", function (original) {
+    return function () { return copiedImages(original.apply(this, arguments)); };
+  });
+  if (typeof MutationObserver === "function") {
+    imageObserver = new MutationObserver(function (records) {
+      records.forEach(function (record) {
+        if (record.type === "attributes") {
+          if (isImage(record.target)) { imageState(record.target); }
+        } else if (record.type === "childList") {
+          for (var index = 0; index < record.addedNodes.length; index++) {
+            scanImages(record.addedNodes[index]);
+          }
+        }
+      });
+    });
+    observeImages(document);
+  }
+  wrapMethod(imageProbe, "attachShadow", function (original) {
+    return function () {
+      var root = original.apply(this, arguments);
+      observeImages(root);
+      scanImages(root);
+      return root;
+    };
+  });
+  ["write", "writeln"].forEach(function (name) {
+    wrapMethod(document, name, function (original) {
+      return function () {
+        var result = original.apply(this, arguments);
+        if (this === document) { scanImages(this); }
+        return result;
+      };
+    });
+  });
+  document.addEventListener("DOMContentLoaded", function () { scanImages(document); });
+  scanImages(document);
+
   ["createElement", "createElementNS"].forEach(function (name) {
     var original = document[name];
     document[name] = function () {
       var element = original.apply(this, arguments);
       var tag = String(element.tagName).toLowerCase();
-      if (tag === "img") { installImage(element); }
       if (tag === "canvas") { bridge.reflectCanvas(element); }
       return element;
     };
@@ -314,7 +541,7 @@
       if (bitmap.closed) { throw new DOMException("ImageBitmap is closed", "InvalidStateError"); }
       return { nativeBitmap: bitmap.handle, width: bitmap.width, height: bitmap.height };
     }
-    var image = imageStates.get(source);
+    var image = isImage(source) ? imageState(source) : imageStates.get(source);
     if (image) {
       if (!image.bitmap) { throw new DOMException("image is not decoded", "InvalidStateError"); }
       return pixelsOf(image.bitmap);

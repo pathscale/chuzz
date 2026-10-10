@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IMGSHIM image element proof</title>
+<style>
+@font-face {
+    font-family: "Fixture Sans";
+    src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+}
+body {
+    font-family: "Fixture Sans";
+    margin: 20px;
+    color: #102030;
+    background: #ffffff;
+}
+button { font: inherit; padding: 8px 20px; }
+#result { font-size: 20px; }
+img { width: 24px; height: 24px; image-rendering: pixelated; }
+#samples { display: block; width: 512px; height: 16px; image-rendering: pixelated; }
+</style>
+<script>
+globalThis.__imgshimProof = {
+    red: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAHUlEQVR4AQESAO3/AP8AAP//AAD/AP8AAP//AAD/R8oH+YOsvdsAAAAASUVORK5CYII=",
+    markupLoads: 0,
+    lateLoads: 0,
+    writtenLoads: 0,
+    errors: 0,
+    beforeLate: false
+};
+</script>
+</head>
+<body>
+<h1>IMGSHIM image element proof</h1>
+<button id="run" type="button">Run image checks</button>
+<p id="result" role="status">READY: IMGSHIM awaiting run</p>
+<canvas id="samples" width="64" height="2" aria-label="IMGSHIM decoded red and green pixels"></canvas>
+<img id="markup" alt="Initial markup image"
+    src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAHUlEQVR4AQESAO3/AP8AAP//AAD/AP8AAP//AAD/R8oH+YOsvdsAAAAASUVORK5CYII="
+    onload="__imgshimProof.markupLoads++"
+    onerror="__imgshimProof.errors++">
+<img id="blank" alt="Markup image without a source">
+<template id="image-template">
+    <section><img alt="Template image"
+        src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAHUlEQVR4AQESAO3/AP8AAP//AAD/AP8AAP//AAD/R8oH+YOsvdsAAAAASUVORK5CYII="></section>
+</template>
+<script>
+document.write('<img id="written" alt="document.write image" src="' +
+    __imgshimProof.red + '" onload="__imgshimProof.writtenLoads++" ' +
+    'onerror="__imgshimProof.errors++">');
+__imgshimProof.beforeLate = document.getElementById("late") === null;
+</script>
+<img id="late" alt="Later parser image"
+    src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAHUlEQVR4AQESAO3/AP8AAP//AAD/AP8AAP//AAD/R8oH+YOsvdsAAAAASUVORK5CYII="
+    onload="__imgshimProof.lateLoads++"
+    onerror="__imgshimProof.errors++">
+<div id="fixture"></div>
+<script>
+(function () {
+    "use strict";
+
+    const proof = globalThis.__imgshimProof;
+    const red = proof.red;
+    const fixture = document.getElementById("fixture");
+    const samples = document.getElementById("samples").getContext("2d");
+    samples.imageSmoothingEnabled = false;
+    let sample = 0;
+
+    function assert(value, message) {
+        if (!value) throw new Error(message);
+    }
+
+    function task() {
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    function deferred() {
+        let resolve, reject;
+        const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+        return { promise, resolve, reject };
+    }
+
+    function deadline(promise, label) {
+        let timer;
+        return Promise.race([
+            promise,
+            new Promise((resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(label + " timed out")), 8000);
+            })
+        ]).finally(() => clearTimeout(timer));
+    }
+
+    function track(image) {
+        const first = deferred();
+        const state = { loads: 0, errors: 0, synchronous: true, event: first.promise };
+        function receive(event) {
+            try {
+                assert(!state.synchronous, "image event ran inside a mutation");
+                assert(event.target === image && !event.bubbles, "image event target and bubbling");
+                if (event.type === "load") state.loads++;
+                else state.errors++;
+                first.resolve(event.type);
+            } catch (error) {
+                first.reject(error);
+            }
+        }
+        image.addEventListener("load", receive);
+        image.addEventListener("error", receive);
+        state.stop = () => {
+            image.removeEventListener("load", receive);
+            image.removeEventListener("error", receive);
+        };
+        return state;
+    }
+
+    function pixels(image, colour, label) {
+        assert(image.complete === true, label + " complete");
+        assert(image.naturalWidth === 2 && image.naturalHeight === 2, label + " natural dimensions");
+        assert(!Object.prototype.hasOwnProperty.call(image, "src") &&
+            !Object.prototype.hasOwnProperty.call(image, "decode"), label + " inherited behaviour");
+        const x = sample++ * 2;
+        assert(x + 2 <= 64, "sample canvas capacity");
+        samples.drawImage(image, x, 0, 2, 2);
+        const actual = samples.getImageData(x, 0, 2, 2).data;
+        for (let offset = 0; offset < actual.length; offset++) {
+            assert(Math.abs(actual[offset] - colour[offset % 4]) <= 1,
+                label + " decoded pixel component " + offset + ": " + actual[offset]);
+        }
+    }
+
+    async function loaded(image, action, label, colour, keep) {
+        const state = track(image);
+        action();
+        state.synchronous = false;
+        assert(image.complete === false, label + " pending complete");
+        assert(image.naturalWidth === 0 && image.naturalHeight === 0, label + " pending dimensions");
+        const decode = image.decode().then(() => {
+            assert(state.loads === 1, label + " decode resolves after load");
+        });
+        await Promise.resolve();
+        assert(state.loads === 0 && state.errors === 0, label + " events are tasks");
+        const values = await deadline(Promise.all([state.event, decode]), label);
+        assert(values[0] === "load", label + " load event");
+        await task();
+        assert(state.loads === 1 && state.errors === 0, label + " exactly one load");
+        pixels(image, colour, label);
+        if (!keep) state.stop();
+        return state;
+    }
+
+    async function rejectsDecode(image, label) {
+        let rejected = false;
+        await deadline(image.decode().then(() => {
+            throw new Error(label + " decode unexpectedly resolved");
+        }, error => {
+            assert(error.name === "EncodingError", label + " EncodingError");
+            rejected = true;
+        }), label);
+        assert(rejected, label + " decode rejected");
+    }
+
+    async function failed(image, action, label) {
+        const state = track(image);
+        action();
+        state.synchronous = false;
+        const decode = rejectsDecode(image, label);
+        await Promise.resolve();
+        assert(state.loads === 0 && state.errors === 0, label + " error is a task");
+        const values = await deadline(Promise.all([state.event, decode]), label);
+        assert(values[0] === "error", label + " error event");
+        await task();
+        assert(state.loads === 0 && state.errors === 1, label + " exactly one error");
+        assert(image.complete === true && image.naturalWidth === 0 &&
+            image.naturalHeight === 0, label + " broken image fields");
+        state.stop();
+    }
+
+    document.getElementById("run").addEventListener("click", async function () {
+        this.disabled = true;
+        const result = document.getElementById("result");
+        const actualFetch = globalThis.fetch;
+        let held = null;
+        let redBlob = null;
+        const heldUrl = new URL("./imgshim-held.png", location.href).href;
+        try {
+            result.textContent = "RUNNING: IMGSHIM";
+            await document.fonts.ready;
+
+            assert(proof.beforeLate, "later markup was parser-inserted after the script checkpoint");
+            for (const id of ["markup", "written", "late"]) {
+                const image = document.getElementById(id);
+                await deadline(image.decode(), id);
+                pixels(image, [255, 0, 0, 255], id);
+            }
+            assert(proof.markupLoads === 1 && proof.writtenLoads === 1 &&
+                proof.lateLoads === 1 && proof.errors === 0, "automatic markup and parser load events");
+
+            const source = document.createElement("canvas");
+            source.width = 2;
+            source.height = 2;
+            const context = source.getContext("2d");
+            context.fillStyle = "#00ff00";
+            context.fillRect(0, 0, 2, 2);
+            const green = source.toDataURL();
+            const redColour = [255, 0, 0, 255];
+            const greenColour = [0, 255, 0, 255];
+
+            const blank = document.getElementById("blank");
+            assert(blank.complete === true && blank.naturalWidth === 0 &&
+                blank.naturalHeight === 0, "no-src markup fields");
+            await rejectsDecode(blank, "no-src markup");
+            await loaded(blank, () => { blank.src = red; }, "markup property", redColour);
+
+            const inner = document.createElement("div");
+            fixture.appendChild(inner);
+            inner.innerHTML = '<img alt="innerHTML image">';
+            const innerImage = inner.querySelector("img");
+            await loaded(innerImage, () => innerImage.setAttribute("src", red),
+                "innerHTML attribute", redColour);
+
+            const adjacent = document.createElement("div");
+            fixture.appendChild(adjacent);
+            let adjacentImage;
+            const adjacentGate = deferred();
+            const insertionObserver = new MutationObserver(records => {
+                for (const record of records) {
+                    if (record.type === "childList" && adjacent.querySelector("img")) {
+                        insertionObserver.disconnect();
+                        adjacentGate.resolve();
+                        return;
+                    }
+                }
+            });
+            insertionObserver.observe(adjacent, { childList: true });
+            adjacent.insertAdjacentHTML("beforeend", '<img alt="adjacent image" src="' + red + '">');
+            await deadline(adjacentGate.promise, "adjacent insertion");
+            adjacentImage = adjacent.querySelector("img");
+            await deadline(adjacentImage.decode(), "insertAdjacentHTML");
+            pixels(adjacentImage, redColour, "insertAdjacentHTML");
+
+            const outer = document.createElement("div");
+            outer.innerHTML = "<span>replace me</span>";
+            fixture.appendChild(outer);
+            outer.firstChild.outerHTML = '<img alt="outerHTML image">';
+            const outerImage = outer.querySelector("img");
+            await loaded(outerImage, () => outerImage.setAttributeNS(null, "src", red),
+                "outerHTML namespaced attribute", redColour);
+
+            const template = document.getElementById("image-template");
+            let templateEvents = 0;
+            template.content.querySelector("img").addEventListener("load", () => templateEvents++);
+            const templateClone = template.cloneNode(true);
+            const fragment = templateClone.content.cloneNode(true);
+            const templateImage = fragment.querySelector("img");
+            await loaded(templateImage, () => fixture.appendChild(fragment),
+                "deep template and content clone", redColour);
+            assert(templateEvents === 0, "template contents remain inert and listeners are not cloned");
+
+            const copy = blank.cloneNode(true);
+            assert(copy !== blank && copy.decode === blank.decode, "clone has independent state and shared method");
+            assert(copy.getAttribute("data-chuzz-gpu-source") === null, "clone discards native marker");
+            await loaded(copy, () => fixture.appendChild(copy), "loaded image clone", redColour);
+            await loaded(blank, () => { blank.src = green; }, "original changes after clone", greenColour);
+            pixels(copy, redColour, "clone retains its own decoded pixels");
+
+            const imported = document.importNode(template.content, true);
+            const importedImage = imported.querySelector("img");
+            await loaded(importedImage, () => fixture.appendChild(imported),
+                "imported template content", redColour);
+
+            const foreign = new DOMParser().parseFromString('<img src="' + red + '">', "text/html");
+            const foreignImage = foreign.querySelector("img");
+            assert(foreign.defaultView === null && foreignImage.naturalWidth === 0,
+                "DOMParser image is inert");
+            await rejectsDecode(foreignImage, "inert DOMParser image");
+            const foreignCopy = document.importNode(foreignImage, true);
+            await loaded(foreignCopy, () => fixture.appendChild(foreignCopy),
+                "DOMParser import", redColour);
+            const adopted = document.adoptNode(foreignImage);
+            await loaded(adopted, () => fixture.appendChild(adopted),
+                "DOMParser adoption", redColour);
+
+            const created = document.createElement("img");
+            await loaded(created, () => { created.src = red; }, "createElement", redColour);
+            const namespaced = document.createElementNS("http://www.w3.org/1999/xhtml", "img");
+            await loaded(namespaced, () => { namespaced.src = green; }, "createElementNS", greenColour);
+            const constructed = new Image(9, 7);
+            assert(constructed.width === 9 && constructed.height === 7 &&
+                constructed.getAttribute("width") === "9" &&
+                constructed.getAttribute("height") === "7", "Image dimensions reflect attributes");
+            await loaded(constructed, () => { constructed.src = red; }, "Image constructor", redColour);
+            constructed.setAttribute("width", "11");
+            assert(constructed.width === 11 && constructed.naturalWidth === 2,
+                "attribute dimensions preserve natural dimensions");
+
+            await loaded(created, () => created.setAttribute("src", red),
+                "same URL attribute reload", redColour);
+
+            const script = document.createElement("script");
+            script.src = "./imgshim-not-executed.js";
+            assert(script.getAttribute("src") === "./imgshim-not-executed.js",
+                "non-image src forwarding");
+            assert(source.width === 2 && source.height === 2, "canvas dimensions remain functional");
+
+            redBlob = await (await actualFetch(red)).blob();
+            globalThis.fetch = function (input, options) {
+                if (String(input) === heldUrl && held) {
+                    const request = held;
+                    request.signal = options && options.signal;
+                    request.started.resolve();
+                    // Deliberately deliver even after abort to exercise epoch guards.
+                    return request.response.promise;
+                }
+                return actualFetch.apply(this, arguments);
+            };
+
+            const changing = document.createElement("img");
+            fixture.appendChild(changing);
+            held = { started: deferred(), response: deferred(), signal: null };
+            changing.src = heldUrl;
+            let superseded = false;
+            const previousDecode = changing.decode().then(() => {
+                throw new Error("superseded decode resolved");
+            }, error => {
+                assert(error.name === "EncodingError", "superseded decode EncodingError");
+                superseded = true;
+            });
+            await deadline(held.started.promise, "held fetch start");
+            const changeEvents = await loaded(changing, () => { changing.src = green; },
+                "source changes mid-load", greenColour, true);
+            await deadline(previousDecode, "superseded decode");
+            assert(superseded, "superseded decode settles promptly");
+            if (held.signal) assert(held.signal.aborted, "superseded fetch is aborted");
+            held.response.resolve(new Response(redBlob));
+            await task();
+            await task();
+            assert(changeEvents.loads === 1 && changeEvents.errors === 0,
+                "late older response fires no event");
+            pixels(changing, greenColour, "late older response preserves replacement pixels");
+            changeEvents.stop();
+
+            held = { started: deferred(), response: deferred(), signal: null };
+            const removed = document.createElement("img");
+            fixture.appendChild(removed);
+            const removedEvents = track(removed);
+            removed.src = heldUrl;
+            removedEvents.synchronous = false;
+            const removedDecode = rejectsDecode(removed, "removed pending source");
+            await deadline(held.started.promise, "removed source fetch start");
+            removed.removeAttribute("src");
+            await removedDecode;
+            assert(removed.complete === true && removed.naturalWidth === 0 &&
+                removed.naturalHeight === 0, "removed src fields");
+            await rejectsDecode(removed, "removed source");
+            held.response.resolve(new Response(redBlob));
+            await task();
+            await task();
+            assert(removedEvents.loads === 0 && removedEvents.errors === 0,
+                "removing src cancels events");
+            removedEvents.stop();
+
+            await failed(innerImage, () => { innerImage.src = "data:image/png;base64,AA=="; },
+                "invalid PNG");
+            await failed(outerImage, () => outerImage.setAttribute("src", ""),
+                "empty src");
+            assert(proof.errors === 0, "automatic markup images have no errors");
+            result.textContent = "READY: IMGSHIM PASS";
+        } catch (error) {
+            result.textContent = "FAIL: IMGSHIM " + error.message;
+        } finally {
+            globalThis.fetch = actualFetch;
+            if (held && redBlob) held.response.resolve(new Response(redBlob));
+        }
+    });
+})();
+</script>
+</body>
+</html>

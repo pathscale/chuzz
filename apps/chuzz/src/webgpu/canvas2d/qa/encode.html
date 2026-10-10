@@ -26,10 +26,27 @@
     context.fillStyle = "#00ff00"; context.fillRect(8, 0, 8, 8);
     context.fillStyle = "rgba(0, 0, 255, 0.5)"; context.clearRect(15, 7, 1, 1); context.fillRect(15, 7, 1, 1);
     function load(image, url) {
-      return new Promise(function (resolve, reject) {
-        image.onload = function () { resolve(image); };
+      var synchronous = true;
+      var timer;
+      var event = new Promise(function (resolve, reject) {
+        timer = setTimeout(function () { reject(new Error("load timed out for " + image.id)); }, 8000);
+        image.onload = function () {
+          if (synchronous || !image.complete) {
+            reject(new Error("invalid load timing or complete for " + image.id));
+          } else {
+            resolve(image);
+          }
+        };
         image.onerror = function () { reject(new Error("decode failed for " + image.id)); };
         image.src = url;
+      });
+      synchronous = false;
+      assert(image.complete === false, "pending complete for " + image.id);
+      return Promise.all([event, image.decode()]).then(function () {
+        return image;
+      }).finally(function () {
+        clearTimeout(timer);
+        image.onload = image.onerror = null;
       });
     }
     function samples(image) {
@@ -51,20 +68,27 @@
       near(s[0], [255, 0, 0, 255], label + " red");
       near(s[1], [0, 255, 0, 255], label + " green");
       near(s[2], [0, 0, 255, 128], label + " translucent blue");
+      assert(image.complete === true, label + " complete");
       assert(image.naturalWidth === 16 && image.naturalHeight === 8, label + " size " + image.naturalWidth + "x" + image.naturalHeight);
     }
     document.getElementById("run").onclick = async function () {
+      var blobUrl;
       try {
+        assert(document.getElementById("from-blob").complete === true &&
+          document.getElementById("from-data").complete === true, "markup images without src are complete");
         assert(typeof source.toBlob === "function", "toBlob missing");
         var blob = await new Promise(function (resolve) { source.toBlob(resolve, "image/png"); });
         assert(blob && blob.type === "image/png" && blob.size > 20, "toBlob gave no PNG");
-        check(await load(document.getElementById("from-blob"), URL.createObjectURL(blob)), "toBlob");
+        blobUrl = URL.createObjectURL(blob);
+        check(await load(document.getElementById("from-blob"), blobUrl), "toBlob");
         var url = source.toDataURL();
         assert(url.indexOf("data:image/png;base64,") === 0, "toDataURL prefix " + url.slice(0, 30));
         check(await load(document.getElementById("from-data"), url), "toDataURL");
         result.textContent = "READY: canvas encode PASS";
       } catch (error) {
         result.textContent = "FAIL: " + error.message;
+      } finally {
+        if (blobUrl) { URL.revokeObjectURL(blobUrl); }
       }
     };
   </script>

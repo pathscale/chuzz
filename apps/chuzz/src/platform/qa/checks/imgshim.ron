@@ -1,0 +1,25 @@
+[
+    (
+        id: "imgshim-all-creation-paths",
+        group: "imgshim",
+        what: "markup, later parser insertion, document.write, innerHTML, outerHTML, insertAdjacentHTML, template and loaded image clones, importNode, DOMParser adoption, createElement and Image share image behaviour; load and error are tasks, decode settles, source changes cancel older requests and decoded canvas pixels remain correct",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: IMGSHIM PASS",
+        expect: PaintsNamed,
+        covers: ["READY: IMGSHIM PASS"],
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "imgshim-decoded-pixels-paint",
+        group: "imgshim",
+        what: "the red and green image pixels verified by canvas readback reach document painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

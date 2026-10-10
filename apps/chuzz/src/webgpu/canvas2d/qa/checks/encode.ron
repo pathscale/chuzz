@@ -2,7 +2,7 @@
     (
         id: "canvas-encode-roundtrip",
         group: "canvas-encode",
-        what: "toBlob and toDataURL produce PNGs that decode back to the drawn red, green and translucent blue pixels",
+        what: "markup images expose complete, fire asynchronous load events and resolve decode for blob and data PNGs produced by toBlob and toDataURL, preserving red, green and translucent blue pixels",
         open: None,
         hover: None,
         click: Some("#run"),
