@@ -1,0 +1,15 @@
+[
+    (
+        id: "recur-depth",
+        group: "recur",
+        what: "9000 plain calls, getter recursion, 500 dispatchEvent re-entries, a 10000-long promise chain, and a catchable RangeError",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: RECUR PASS",
+        expect: PaintsNamed,
+        covers: ["READY: RECUR PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

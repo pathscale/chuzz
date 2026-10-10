@@ -27,10 +27,10 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // The script runtime allows about 8000 JS frames, and a frame that calls
-    // through a native accessor back into JS also holds Rust stack. The main
-    // thread's 8 MB ran out first on YouTube's Polymer, aborting the worker,
-    // so the page runs on a thread whose stack fits the script limit. The
+    // JavaScript frames live on a heap value stack. Native re-entry (a getter
+    // or dispatchEvent nesting `Context::run`) holds this thread's stack. The
+    // main thread's 8 MB ran out first on YouTube's Polymer, aborting the
+    // worker, so the page runs on a thread sized for that nesting. The
     // reservation is virtual; pages are committed only as they are touched.
     let page = std::thread::Builder::new()
         .name("chuzz-page".into())

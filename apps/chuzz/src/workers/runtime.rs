@@ -296,10 +296,15 @@ pub(super) fn run(
         }
     };
     context.set_interrupt_flag(Arc::clone(&endpoint.canceled));
-    context.runtime_limits_mut().set_recursion_limit(8192);
-    context
-        .runtime_limits_mut()
-        .set_stack_size_limit(1024 * 100);
+    // Same JS frame budget and value-stack budget as the page. A plain
+    // function is about 7 slots, so 16384 * 32 still hits the frame limit
+    // first. Native re-entry nests `Context::run` on this worker's 2 MB
+    // thread, so the host cap stays at the depth the old combined limit of
+    // 8192 already allowed (about 4096), which fits that stack.
+    let limits = context.runtime_limits_mut();
+    limits.set_recursion_limit(16384);
+    limits.set_host_recursion_limit(4096);
+    limits.set_stack_size_limit(16384 * 32);
     let host = Host {
         endpoint: Arc::clone(&endpoint),
         page,
