@@ -1,0 +1,132 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>inventory</title>
+<style>@font-face{font-family:F;src:url("./FiraSans-Regular.woff2") format("woff2");} body{font-family:F;font-size:10px}</style></head>
+<body>
+<div id="host"><span class="a" data-x="1" title="t">hi</span><!--c--></div>
+<script>
+// Reports every listed web platform name that is missing, as aria-labelled <p> lines "MISSING: name".
+var missing = [];
+function has(path) {
+  try {
+    var v = (0, eval)(path);
+    if (v === undefined || v === null) missing.push(path);
+  } catch (e) { missing.push(path + ' (' + e.message + ')'); }
+}
+[
+ 'window.Attr', 'window.NamedNodeMap', 'window.DOMParser', 'window.XMLSerializer', 'window.TreeWalker', 'window.NodeIterator',
+ 'window.NodeFilter', 'window.Range', 'window.Selection', 'window.getSelection', 'document.createRange', 'document.createTreeWalker',
+ 'document.createNodeIterator', 'document.createComment', 'document.createTextNode', 'document.createEvent', 'document.importNode',
+ 'document.adoptNode', 'document.createElementNS', 'document.createAttribute', 'document.getElementsByClassName', 'document.getElementsByTagName',
+ 'document.getElementsByName', 'document.elementFromPoint', 'document.elementsFromPoint', 'document.activeElement', 'document.hasFocus',
+ 'document.visibilityState', 'document.hidden', 'document.readyState', 'document.currentScript', 'document.cookie', 'document.referrer',
+ 'document.title', 'document.head', 'document.body', 'document.documentElement', 'document.forms', 'document.images', 'document.links',
+ 'document.scripts', 'document.styleSheets', 'document.fonts', 'document.defaultView', 'document.location', 'document.domain',
+ 'document.characterSet', 'document.contentType', 'document.compatMode', 'document.implementation', 'document.adoptedStyleSheets',
+ 'document.execCommand', 'document.queryCommandSupported', 'document.write', 'document.open', 'document.close', 'document.dispatchEvent',
+ 'document.createDocumentFragment', 'document.fullscreenElement', 'document.exitFullscreen', 'document.timeline', 'document.getAnimations',
+ 'Element.prototype.attributes', 'Element.prototype.getAttributeNames', 'Element.prototype.getAttributeNode', 'Element.prototype.setAttributeNode',
+ 'Element.prototype.toggleAttribute', 'Element.prototype.getAttributeNS', 'Element.prototype.setAttributeNS', 'Element.prototype.removeAttributeNS',
+ 'Element.prototype.hasAttributes', 'Element.prototype.className', 'Element.prototype.closest', 'Element.prototype.matches',
+ 'Element.prototype.webkitMatchesSelector', 'Element.prototype.getElementsByClassName', 'Element.prototype.getElementsByTagName',
+ 'Element.prototype.insertAdjacentHTML', 'Element.prototype.insertAdjacentElement', 'Element.prototype.insertAdjacentText',
+ 'Element.prototype.before', 'Element.prototype.after', 'Element.prototype.replaceWith', 'Element.prototype.remove', 'Element.prototype.prepend',
+ 'Element.prototype.append', 'Element.prototype.replaceChildren', 'Element.prototype.firstElementChild', 'Element.prototype.lastElementChild',
+ 'Element.prototype.nextElementSibling', 'Element.prototype.previousElementSibling', 'Element.prototype.childElementCount',
+ 'Element.prototype.getClientRects', 'Element.prototype.scrollTo', 'Element.prototype.scrollBy', 'Element.prototype.scroll',
+ 'Element.prototype.requestFullscreen', 'Element.prototype.animate', 'Element.prototype.getAnimations', 'Element.prototype.attachShadow',
+ 'Element.prototype.shadowRoot', 'Element.prototype.slot', 'Element.prototype.assignedSlot', 'Element.prototype.part',
+ 'Element.prototype.setPointerCapture', 'Element.prototype.releasePointerCapture', 'Element.prototype.hasPointerCapture',
+ 'Element.prototype.checkVisibility', 'Element.prototype.computedStyleMap', 'Element.prototype.outerHTML', 'Element.prototype.innerText',
+ 'Element.prototype.outerText', 'Element.prototype.hidden', 'Element.prototype.tabIndex', 'Element.prototype.title', 'Element.prototype.lang',
+ 'Element.prototype.dir', 'Element.prototype.draggable', 'Element.prototype.contentEditable', 'Element.prototype.isContentEditable',
+ 'Element.prototype.offsetParent', 'Element.prototype.click', 'Element.prototype.role', 'Element.prototype.ariaLabel',
+ 'Node.prototype.textContent', 'Node.prototype.nodeValue', 'Node.prototype.cloneNode', 'Node.prototype.contains', 'Node.prototype.isConnected',
+ 'Node.prototype.getRootNode', 'Node.prototype.compareDocumentPosition', 'Node.prototype.isEqualNode', 'Node.prototype.isSameNode',
+ 'Node.prototype.normalize', 'Node.prototype.hasChildNodes', 'Node.prototype.childNodes', 'Node.prototype.ownerDocument',
+ 'Node.prototype.parentElement', 'Node.prototype.insertBefore', 'Node.prototype.replaceChild', 'Node.prototype.lookupNamespaceURI',
+ 'Node.ELEMENT_NODE', 'Node.DOCUMENT_POSITION_CONTAINED_BY',
+ 'window.Node', 'window.Element', 'window.HTMLElement', 'window.HTMLDivElement', 'window.HTMLAnchorElement', 'window.HTMLInputElement',
+ 'window.HTMLButtonElement', 'window.HTMLFormElement', 'window.HTMLImageElement', 'window.HTMLScriptElement', 'window.HTMLIFrameElement',
+ 'window.HTMLVideoElement', 'window.HTMLMediaElement', 'window.HTMLCanvasElement', 'window.HTMLTemplateElement', 'window.HTMLSlotElement',
+ 'window.HTMLUnknownElement', 'window.HTMLSelectElement', 'window.HTMLTextAreaElement', 'window.HTMLLinkElement', 'window.HTMLStyleElement',
+ 'window.SVGElement', 'window.SVGSVGElement', 'window.Text', 'window.Comment', 'window.CharacterData', 'window.Document', 'window.HTMLDocument',
+ 'window.DocumentFragment', 'window.ShadowRoot', 'window.HTMLCollection', 'window.NodeList', 'window.DOMTokenList', 'window.DOMRect',
+ 'window.DOMRectReadOnly', 'window.DOMMatrix', 'window.DOMPoint', 'window.DOMException', 'window.CSSStyleDeclaration', 'window.CSSStyleSheet',
+ 'window.CSS', 'CSS.supports', 'CSS.escape', 'window.StyleSheet', 'window.MediaQueryList',
+ 'window.Event', 'window.CustomEvent', 'window.UIEvent', 'window.MouseEvent', 'window.PointerEvent', 'window.KeyboardEvent', 'window.FocusEvent',
+ 'window.InputEvent', 'window.WheelEvent', 'window.TouchEvent', 'window.Touch', 'window.MessageEvent', 'window.ErrorEvent', 'window.PopStateEvent',
+ 'window.HashChangeEvent', 'window.ProgressEvent', 'window.AnimationEvent', 'window.TransitionEvent', 'window.PageTransitionEvent',
+ 'window.StorageEvent', 'window.SubmitEvent', 'window.ClipboardEvent', 'window.DragEvent', 'window.CompositionEvent', 'window.EventTarget',
+ 'window.AbortController', 'window.AbortSignal', 'AbortSignal.timeout', 'AbortSignal.any',
+ 'window.MutationObserver', 'window.IntersectionObserver', 'window.ResizeObserver', 'window.PerformanceObserver', 'window.ReportingObserver',
+ 'window.customElements', 'window.customElements.define', 'window.customElements.whenDefined', 'window.customElements.upgrade',
+ 'window.fetch', 'window.Request', 'window.Response', 'window.Headers', 'window.FormData', 'window.URLSearchParams', 'window.URL',
+ 'URL.createObjectURL', 'URL.revokeObjectURL', 'URL.canParse', 'window.Blob', 'window.File', 'window.FileReader', 'window.FileList',
+ 'window.ReadableStream', 'window.WritableStream', 'window.TransformStream', 'window.TextEncoder', 'window.TextDecoder',
+ 'window.TextEncoderStream', 'window.CompressionStream', 'window.DecompressionStream', 'window.XMLHttpRequest', 'window.WebSocket',
+ 'window.EventSource', 'window.BroadcastChannel', 'window.MessageChannel', 'window.MessagePort', 'window.Worker', 'window.SharedWorker',
+ 'navigator.serviceWorker', 'navigator.sendBeacon', 'navigator.userAgent', 'navigator.language', 'navigator.languages', 'navigator.platform',
+ 'navigator.cookieEnabled', 'navigator.onLine', 'navigator.hardwareConcurrency', 'navigator.maxTouchPoints', 'navigator.vendor',
+ 'navigator.userAgentData', 'navigator.clipboard', 'navigator.permissions', 'navigator.mediaDevices', 'navigator.storage',
+ 'navigator.connection', 'navigator.getBattery', 'navigator.webdriver', 'navigator.pdfViewerEnabled', 'navigator.doNotTrack',
+ 'navigator.plugins', 'navigator.mimeTypes', 'navigator.javaEnabled', 'navigator.gpu', 'navigator.locks', 'navigator.share',
+ 'window.crypto', 'crypto.getRandomValues', 'crypto.randomUUID', 'crypto.subtle', 'window.indexedDB', 'window.caches', 'window.localStorage',
+ 'window.sessionStorage', 'window.history', 'history.pushState', 'history.replaceState', 'history.state', 'history.scrollRestoration',
+ 'window.location', 'location.assign', 'location.replace', 'location.reload', 'location.origin', 'location.ancestorOrigins',
+ 'window.screen', 'screen.width', 'screen.orientation', 'window.devicePixelRatio', 'window.innerWidth', 'window.outerWidth', 'window.scrollX',
+ 'window.pageYOffset', 'window.scrollTo', 'window.scrollBy', 'window.scroll', 'window.getComputedStyle', 'window.matchMedia',
+ 'window.requestAnimationFrame', 'window.cancelAnimationFrame', 'window.requestIdleCallback', 'window.cancelIdleCallback',
+ 'window.queueMicrotask', 'window.structuredClone', 'window.setTimeout', 'window.setInterval', 'window.clearTimeout', 'window.atob', 'window.btoa',
+ 'window.performance', 'performance.now', 'performance.mark', 'performance.measure', 'performance.getEntriesByType', 'performance.timing',
+ 'performance.timeOrigin', 'performance.memory', 'window.console', 'window.alert', 'window.confirm', 'window.prompt', 'window.open',
+ 'window.close', 'window.focus', 'window.blur', 'window.postMessage', 'window.parent', 'window.top', 'window.self', 'window.frames',
+ 'window.opener', 'window.frameElement', 'window.name', 'window.closed', 'window.length', 'window.isSecureContext', 'window.origin',
+ 'window.crossOriginIsolated', 'window.visualViewport', 'window.speechSynthesis', 'window.Notification', 'window.Image', 'window.Audio',
+ 'window.Option', 'window.Intl', 'Intl.DateTimeFormat', 'Intl.NumberFormat', 'Intl.PluralRules', 'Intl.RelativeTimeFormat', 'Intl.Collator',
+ 'Intl.Segmenter', 'Intl.ListFormat', 'Intl.Locale', 'window.WeakRef', 'window.FinalizationRegistry', 'window.Proxy', 'window.Reflect',
+ 'window.SharedArrayBuffer', 'window.Atomics', 'window.WebAssembly', 'window.AudioContext', 'window.webkitAudioContext', 'window.MediaSource',
+ 'window.ManagedMediaSource', 'window.MediaStream', 'window.RTCPeerConnection', 'window.OffscreenCanvas', 'window.ImageData', 'window.ImageBitmap',
+ 'window.createImageBitmap', 'window.Path2D', 'window.FontFace', 'window.WebGLRenderingContext', 'window.WebGL2RenderingContext',
+ 'window.trustedTypes', 'window.reportError', 'window.Promise.withResolvers', 'window.Array.prototype.at', 'window.Array.prototype.findLast',
+ 'window.Array.prototype.toSorted', 'window.Object.hasOwn', 'window.Object.groupBy', 'window.String.prototype.replaceAll',
+ 'window.String.prototype.at', 'window.globalThis', 'window.Symbol.asyncIterator', 'window.BigInt', 'window.Iterator'
+].forEach(has);
+// behaviour, not just presence
+function check(name, f) { try { if (!f()) missing.push('WRONG ' + name); } catch (e) { missing.push('WRONG ' + name + ' (' + e.message + ')'); } }
+var host = document.getElementById('host'), span = host.firstChild;
+check('childNodes includes comment', function () { return host.childNodes.length === 2; });
+check('instanceof HTMLElement', function () { return span instanceof HTMLElement && span instanceof Element && span instanceof Node; });
+check('constructor name', function () { return span.constructor && span.constructor.name === 'HTMLSpanElement'; });
+check('nodeType', function () { return span.nodeType === 1 && host.lastChild.nodeType === 8; });
+check('attributes length', function () { return span.attributes.length === 3; });
+check('attributes named', function () { return span.attributes['data-x'].value === '1'; });
+check('dataset', function () { return span.dataset.x === '1'; });
+check('getElementsByClassName live', function () { var c = document.getElementsByClassName('a'); return c.length === 1; });
+check('cloneNode deep', function () { return span.cloneNode(true).textContent === 'hi'; });
+check('insertAdjacentHTML', function () { var d = document.createElement('div'); d.insertAdjacentHTML('beforeend', '<i>x</i>'); return d.firstChild.tagName === 'I'; });
+check('outerHTML setter', function () { var d = document.createElement('div'); var e = document.createElement('b'); d.appendChild(e); e.outerHTML = '<u>u</u>'; return d.innerHTML === '<u>u</u>'; });
+check('innerHTML roundtrip', function () { var d = document.createElement('div'); d.innerHTML = '<p>a &amp; b</p><br><div></div>'; return d.innerHTML === '<p>a &amp; b</p><br><div></div>'; });
+check('detached querySelector', function () { var d = document.createElement('div'); d.innerHTML = '<i class="q"></i>'; return !!d.querySelector('.q'); });
+check('fragment querySelector', function () { var f = document.createDocumentFragment(); f.appendChild(document.createElement('i')); return !!f.querySelector('i'); });
+check('template content fragment', function () { var t = document.createElement('template'); t.innerHTML = '<b></b>'; return t.content && t.content.nodeType === 11 && t.content.firstChild.tagName === 'B'; });
+check('Event ctor bubbles', function () { var e = new Event('x', { bubbles: true }); return e.bubbles === true; });
+check('CustomEvent detail', function () { return new CustomEvent('x', { detail: 5 }).detail === 5; });
+check('dispatchEvent bubbling', function () { var n = 0; host.addEventListener('zz', function () { n++; }); span.dispatchEvent(new Event('zz', { bubbles: true })); return n === 1; });
+check('getComputedStyle display', function () { return getComputedStyle(span).display === 'inline'; });
+check('getComputedStyle getPropertyValue', function () { return getComputedStyle(host).getPropertyValue('display') === 'block'; });
+check('style setProperty', function () { span.style.setProperty('--v', '1'); return span.style.getPropertyValue('--v').trim() === '1'; });
+check('matchMedia', function () { return typeof matchMedia('(min-width: 1px)').matches === 'boolean'; });
+check('Object.getOwnPropertyDescriptor innerHTML', function () { var d = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML'); return d && typeof d.get === 'function'; });
+check('URL', function () { return new URL('/a?b=1', 'https://x.y/').searchParams.get('b') === '1'; });
+check('TextEncoder', function () { return new TextEncoder().encode('é').length === 2; });
+check('Blob size', function () { return new Blob(['abc']).size === 3; });
+check('Headers', function () { return new Headers({ a: '1' }).get('a') === '1'; });
+check('crypto.getRandomValues', function () { return crypto.getRandomValues(new Uint8Array(4)).length === 4; });
+check('Intl.DateTimeFormat', function () { return typeof new Intl.DateTimeFormat('en-US').format(new Date(0)) === 'string'; });
+check('location.href', function () { return location.href.indexOf('http') === 0; });
+check('document.currentScript', function () { return true; });
+check('MutationObserver fires', function () { return typeof new MutationObserver(function () {}).observe === 'function'; });
+missing.forEach(function (l) { var p = document.createElement('p'); p.textContent = l; p.setAttribute('aria-label', 'MISSING: ' + l); document.body.appendChild(p); });
+var done = document.createElement('p'); done.textContent = 'TOTAL ' + missing.length; done.setAttribute('aria-label', 'MISSING: TOTAL ' + missing.length); document.body.appendChild(done);
+</script>
+</body></html>
