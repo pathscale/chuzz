@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebRTC separate-process echo QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    button { padding: 12px 20px; font: inherit; }
+    p, pre { max-width: 960px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC audio echo in a separate process</h1>
+  <button id="run" type="button">Run</button>
+  <p id="process">Process pending</p>
+  <p id="roles">Roles pending</p>
+  <p id="candidates">Candidates pending</p>
+  <p id="transport">Transport pending</p>
+  <p id="tone">Tone pending</p>
+  <p id="renegotiation">Renegotiation pending</p>
+  <p id="restart">Restart pending</p>
+  <p id="fallback">Fallback pending</p>
+  <p id="close">Close pending</p>
+  <p id="result" role="status">Echo pending</p>
+  <pre id="evidence"></pre>
+  <script src="./src/common.ts"></script>
+  <script src="./src/echo.ts"></script>
+</body>
+</html>
+

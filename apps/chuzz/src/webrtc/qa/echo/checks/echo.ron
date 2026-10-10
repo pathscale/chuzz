@@ -1,0 +1,26 @@
+[
+    (
+        id: "echo-all",
+        group: "webrtc-echo",
+        what: "A separately launched chuzz-headless echoes received microphone PCM over authenticated loopback UDP, in both SDP roles, through renegotiation, ICE restart, asymmetric codec preferences and teardown",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: echo PASS",
+        expect: PaintsNamed,
+        covers: [
+            "READY: echo PASS",
+            "PASS: fixture-launched helper processes and sequenced HTTP signaling",
+            "PASS: page offerer and page answerer",
+            "PASS: candidates exchanged separately from SDP",
+            "PASS: real UDP and authenticated DTLS 1.2 in both processes",
+            "PASS: returned Opus 440 Hz tone follows microphone mute and unmute",
+            "PASS: added and removed audio preserve the primary MID and receiver",
+            "PASS: both restart initiators change credentials and reject stale candidates",
+            "PASS: asymmetric Opus and PCMU preferences return the microphone tone",
+            "PASS: both peers release sockets, tracks and graphs; helpers are reaped",
+        ],
+        outcome_timeout_ms: 180000,
+    ),
+]
+
