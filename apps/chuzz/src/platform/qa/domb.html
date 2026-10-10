@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DOMB platform behaviour</title>
+<style>
+@font-face {
+    font-family: "Fira Sans";
+    src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+}
+body {
+    font-family: "Fira Sans";
+    margin: 24px;
+    color: #182332;
+    background: #f8fafc;
+}
+button { font: inherit; padding: 10px 18px; }
+#result { font-size: 20px; }
+#sandbox { margin-top: 16px; }
+</style>
+</head>
+<body>
+<h1>DOMB platform behaviour</h1>
+<button id="run">Run</button>
+<p id="result" role="status">Waiting for Run</p>
+<div id="sandbox"></div>
+<script src="./src/domb.ts"></script>
+</body>
+</html>
+

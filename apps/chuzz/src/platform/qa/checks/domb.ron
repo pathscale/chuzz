@@ -1,0 +1,15 @@
+[
+    (
+        id: "domb-all",
+        group: "domb",
+        what: "native DOM interfaces, live collections, HTML reflection, rendered text, synthetic activation and geometry behave correctly",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: domb PASS",
+        expect: PaintsNamed,
+        covers: ["READY: domb PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+
