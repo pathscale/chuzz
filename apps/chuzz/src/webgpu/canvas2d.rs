@@ -893,8 +893,13 @@ impl Canvas {
             .path
             .command(&command.op, &command.n, Affine::new(command.matrix))?
         {
-            if self.path.path.elements().len() > PATH_LIMIT {
-                return Err("canvas path limit reached in chuzz".to_owned());
+            let elements = self.path.path.elements().len();
+            if elements > PATH_LIMIT {
+                return Err(format!(
+                    "canvas path limit reached in chuzz: {elements} elements in one path on a {}x{} canvas \
+                     (a draw loop is probably missing beginPath)",
+                    self.width, self.height
+                ));
             }
             return Ok(());
         }

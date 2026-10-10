@@ -326,6 +326,14 @@
       commands = []; buffers = []; references = []; transferBytes = 0;
       try {
         return native(request, queuedBuffers);
+      } catch (error) {
+        // Name the canvas, so a page with several can tell which context hit a limit.
+        var element = context.canvas;
+        if (error && typeof error.message === "string" && element && element.getAttribute) {
+          var name = element.id ? "#" + element.id : (element.getAttribute("class") ? "." + element.getAttribute("class").split(" ")[0] : "<canvas>");
+          error.message += " [" + name + "]";
+        }
+        throw error;
       } finally {
         queuedReferences.length = 0;
         if (active === context) { active = null; }
