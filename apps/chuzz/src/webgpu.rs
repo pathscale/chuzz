@@ -611,6 +611,17 @@ impl Bridge {
             scopes: Mutex::new(Vec::new()),
             resources: Mutex::new(Resources::default()),
         });
+        {
+            // Zero-filled at creation; 64 KiB covers the vertices a draw over an
+            // empty binding could legitimately index under robust access.
+            let empty = connection.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chuzz empty vertex/index binding"),
+                size: 65_536,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
+                mapped_at_creation: false,
+            });
+            lock(&connection.resources).empty_binding = Some(Arc::new(empty));
+        }
 
         let owner = connection.owner.clone();
         let lost = Arc::clone(&connection.lost);

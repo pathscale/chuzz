@@ -1,0 +1,24 @@
+[
+    (
+        id: "webgpu-empty-bindings",
+        group: "webgpu",
+        what: "zero-size vertex and index buffer bindings are accepted (no validation error) and a following draw paints",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: WebGPU bindings PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "webgpu-empty-bindings-stage-paints",
+        group: "webgpu",
+        what: "the red triangle drawn after the empty bindings reaches the document painter",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#stage",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

@@ -94,6 +94,10 @@ pub(super) struct Resources {
     pub canvases: HashMap<u64, canvas::Configuration>,
     pub pipelines: pipeline::Objects,
     pub encoding: encoder::Objects,
+    /// Zero-filled stand-in for an empty vertex or index binding. WebGPU allows
+    /// a zero-size binding (only a draw that reads it fails); wgpu cannot slice
+    /// an empty range, so empty bindings point here instead.
+    pub empty_binding: Option<Arc<wgpu::Buffer>>,
 }
 
 impl Resources {

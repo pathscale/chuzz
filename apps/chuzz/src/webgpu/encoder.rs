@@ -355,7 +355,14 @@ fn buffer_slice(
 ) -> Result<wgpu::BufferSlice<'_>, GpuError> {
     let range = buffer_range(resources, handle, offset, size)?;
     if range.is_empty() {
-        return Err(GpuError::validation("empty GPUBuffer binding"));
+        // A zero-size vertex or index binding is valid WebGPU (three.js binds
+        // one for an empty geometry attribute); only a draw that reads it is
+        // not. wgpu cannot slice an empty range, so bind zeros instead.
+        return resources
+            .empty_binding
+            .as_ref()
+            .map(|buffer| buffer.slice(..))
+            .ok_or_else(|| GpuError::validation("empty GPUBuffer binding"));
     }
     Ok(get(&resources.buffers, handle, "GPUBuffer")?
         .buffer
