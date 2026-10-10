@@ -2,6 +2,7 @@
 (function () {
   var dirty = new Set();
   var brushes = new WeakMap();
+  var active = null;
   var identity = [1, 0, 0, 1, 0, 0];
 
   function missing(member) {
@@ -41,9 +42,14 @@
 
   globalThis.__chuzzMake2D = function (canvas, id, pixelsOf) {
     var context = { canvas: canvas };
-    var commands = [], buffers = [], transferBytes = 0, stack = [];
+    var commands = [], buffers = [], references = [], transferBytes = 0, stack = [];
     var width = canvas.width, height = canvas.height;
     var state;
+    function order() {
+      var previous = active;
+      active = context;
+      if (previous && previous !== context) { previous.__submit(); }
+    }
     function defaults() {
       state = {
         fillStyle: "#000000", strokeStyle: "#000000", globalAlpha: 1,
@@ -56,8 +62,9 @@
       stack = [];
     }
     function reset() {
+      order();
       width = canvas.width; height = canvas.height;
-      commands = []; buffers = []; transferBytes = 0;
+      commands = []; buffers = []; references = []; transferBytes = 0;
       defaults();
       native({ action: "reset", id: id, width: width, height: height });
       dirty.add(context);
@@ -81,14 +88,20 @@
       };
     }
     function flush(action, extra) {
+      if (action !== "submit") { order(); }
       ensure();
       var request = { action: action, id: id, width: width, height: height, commands: commands };
       if (extra) {
         Object.keys(extra).forEach(function (name) { request[name] = extra[name]; });
       }
-      var queuedBuffers = buffers;
-      commands = []; buffers = []; transferBytes = 0;
-      return native(request, queuedBuffers);
+      var queuedBuffers = buffers, queuedReferences = references;
+      commands = []; buffers = []; references = []; transferBytes = 0;
+      try {
+        return native(request, queuedBuffers);
+      } finally {
+        queuedReferences.length = 0;
+        if (active === context) { active = null; }
+      }
     }
     function room(bytes) {
       if (commands.length >= 4096 || buffers.length >= 512 || transferBytes + bytes > 32 * 1024 * 1024) {
@@ -96,6 +109,17 @@
       }
     }
     function source(image) {
+      if (image.nativeCanvas !== undefined || image.nativeBitmap !== undefined || image.nativeImage !== undefined) {
+        room(0);
+        var descriptor = {
+          index: 0, width: image.width, height: image.height,
+          offset: 0, length: image.width * image.height * 4
+        };
+        if (image.nativeCanvas !== undefined) { descriptor.canvas = image.nativeCanvas; }
+        if (image.nativeBitmap !== undefined) { descriptor.bitmap = image.nativeBitmap; }
+        if (image.nativeImage !== undefined) { descriptor.native = image.nativeImage; }
+        return descriptor;
+      }
       if (image.nativeVideo !== undefined) {
         room(0);
         return {
@@ -120,9 +144,11 @@
       var resource = brushes.get(value);
       if (!resource) { return { kind: "color", color: String(value) }; }
       if (resource.kind === "pattern") {
+        var image = source(pixelsOf(resource.source));
+        references.push(resource.source);
         return {
           kind: "pattern", matrix: multiply(state.matrix, resource.matrix),
-          repetition: resource.repetition, image: source(pixelsOf(resource.source))
+          repetition: resource.repetition, image: image
         };
       }
       return {
@@ -131,6 +157,7 @@
       };
     }
     function record(op, n, drawing, value, text) {
+      order();
       ensure();
       room(0);
       var command = { op: op, n: n || [], matrix: state.matrix.slice() };
@@ -141,6 +168,7 @@
       }
       if (text !== undefined) { command.text = text; }
       commands.push(command);
+      active = context;
     }
     function property(name, validate) {
       Object.defineProperty(context, name, {
@@ -369,6 +397,7 @@
       return new ImageData(flush("read", { n: n }), n[2], n[3]);
     };
     context.putImageData = function (image, x, y, dirtyX, dirtyY, dirtyWidth, dirtyHeight) {
+      order();
       ensure();
       if (!image || !(image.data instanceof Uint8ClampedArray)) { throw new TypeError("expected ImageData"); }
       if (image.colorSpace && image.colorSpace !== "srgb") { missing("putImageData.colorSpace"); }
@@ -379,9 +408,11 @@
       room(0);
       var input = source(image);
       commands.push({ op: "putImageData", n: n, brush: { kind: "image", image: input } });
+      active = context;
       dirty.add(context);
     };
     context.drawImage = function (image) {
+      order();
       ensure();
       var pixels = pixelsOf(image);
       var args = Array.prototype.slice.call(arguments, 1).map(Number);
@@ -397,7 +428,9 @@
       if (n[7] < 0) { n[5] += n[7]; n[7] = -n[7]; }
       room(0);
       var input = source(pixels);
+      references.push(image);
       commands.push({ op: "drawImage", n: n, state: snapshot(), brush: { kind: "image", image: input } });
+      active = context;
       dirty.add(context);
     };
     context.getContextAttributes = function () { return { alpha: true, colorSpace: "srgb" }; };
@@ -407,6 +440,15 @@
     });
     Object.defineProperties(context, {
       __pixels: { value: function () { return flush("snapshot"); } },
+      __source: { value: function () {
+        ensure();
+        context.__submit();
+        return { nativeCanvas: id, width: width, height: height };
+      } },
+      __submit: { value: function () {
+        ensure();
+        if (commands.length) { flush("submit"); }
+      } },
       __resize: { value: reset },
       __paint: { value: function () { flush("paint"); } }
     });
@@ -421,10 +463,15 @@
     reset();
     return context;
   };
+  globalThis.__chuzzSubmit2D = function () {
+    var context = active;
+    if (context) { context.__submit(); }
+    active = null;
+  };
   globalThis.__chuzzFlush2D = function () {
     var batch = Array.from(dirty);
     dirty.clear();
     batch.forEach(function (context) { context.__paint(); });
+    active = null;
   };
 })();
-

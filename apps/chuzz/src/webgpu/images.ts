@@ -7,6 +7,12 @@
   var canvasContexts = new WeakMap();
   var offscreens = new WeakMap();
   var markers = new WeakMap();
+  var sourceFinalizers = new FinalizationRegistry(function (handle) {
+    globalThis.__chuzzCanvas2D(JSON.stringify({ action: "release", id: handle }), []);
+  });
+  var bitmapFinalizers = new FinalizationRegistry(function (handle) {
+    post("closeImage", handle, null);
+  });
   // Readback request ids live above 2^52, clear of the bridge's own request counter.
   var readbackSerial = 4503599627370496;
   var limit = 64 * 1024 * 1024;
@@ -33,6 +39,7 @@
       value = bridge.nextHandle();
       markers.set(element, value);
       element.setAttribute("data-chuzz-gpu-source", String(value));
+      sourceFinalizers.register(element, value);
     }
     return value;
   }
@@ -107,17 +114,18 @@
     var state = bitmaps.get(this);
     if (!state) { throw new TypeError("invalid ImageBitmap"); }
     if (state.closed) { return; }
+    globalThis.__chuzzSubmit2D();
     state.closed = true;
-    state.data = null;
+    bitmapFinalizers.unregister(this);
     post("closeImage", state.handle, null);
   };
   function makeBitmap(value) {
     var object = Object.create(ImageBitmap.prototype);
     bitmaps.set(object, {
       handle: value.handle, width: value.width, height: value.height,
-      data: value.data === null ? null : new Uint8ClampedArray(value.data),
       closed: false
     });
+    bitmapFinalizers.register(object, value.handle, object);
     return object;
   }
   function bitmapOptions(source, crop, options) {
@@ -147,7 +155,7 @@
       resizeWidth: options.resizeWidth === undefined ? null : integer(options.resizeWidth, "resizeWidth"),
       resizeHeight: options.resizeHeight === undefined ? null : integer(options.resizeHeight, "resizeHeight"),
       resizeQuality: options.resizeQuality === undefined ? "low" : String(options.resizeQuality),
-      readPixels: true
+      readPixels: false
     };
   }
   function create(source, crop, options, node) {
@@ -302,22 +310,37 @@
   };
   function pixelsOf(source) {
     var bitmap = bitmaps.get(source);
-    if (bitmap && !bitmap.closed && bitmap.data) { return bitmap; }
+    if (bitmap) {
+      if (bitmap.closed) { throw new DOMException("ImageBitmap is closed", "InvalidStateError"); }
+      return { nativeBitmap: bitmap.handle, width: bitmap.width, height: bitmap.height };
+    }
     var image = imageStates.get(source);
-    if (image && image.bitmap) { return pixelsOf(image.bitmap); }
+    if (image) {
+      if (!image.bitmap) { throw new DOMException("image is not decoded", "InvalidStateError"); }
+      return pixelsOf(image.bitmap);
+    }
     var canvas = offscreens.get(source) || source;
-    var pixels = canvasPixels(canvas);
-    if (pixels) { return pixels; }
+    var state = canvasContexts.get(canvas);
+    if (state) { return state.context.__source(); }
     if (source && source.data instanceof Uint8ClampedArray) { return source; }
-    // A WebGPU canvas or a decoded element: read its pixels back synchronously, after the GPU work queued before.
-    var gpu = String(canvas && canvas.tagName).toLowerCase() === "canvas" ? bridge.canvasSource(canvas) : null;
+    var isCanvas = String(canvas && canvas.tagName).toLowerCase() === "canvas";
+    var gpu = isCanvas ? bridge.canvasSource(canvas) : null;
+    if (isCanvas && !gpu) {
+      var context = canvas.getContext("2d");
+      if (context) { return context.__source(); }
+    }
     if (!gpu && String(source && source.tagName).toLowerCase() === "img") {
       gpu = { kind: "element", handle: marker(source) };
     }
     if (!gpu) { return missing("CanvasRenderingContext2D.drawImage source readback"); }
-    var result = globalThis.__chuzzCanvasReadback(JSON.stringify(gpu), ++readbackSerial);
-    if (typeof result[0] === "string") { throw new DOMException(String(result[1]), "InvalidStateError"); }
-    return { width: result[0], height: result[1], data: result[2] };
+    // Pin preceding uses before replacing this native source's current version.
+    // Texture readback remains native, including its alpha conversion.
+    globalThis.__chuzzSubmit2D();
+    var handle = marker(isCanvas ? canvas : source);
+    var result = globalThis.__chuzzCanvas2D(JSON.stringify({
+      action: "source", id: handle, serial: ++readbackSerial, source: gpu
+    }), []);
+    return { nativeImage: handle, width: result[0], height: result[1] };
   }
   function make2D(canvas) {
     var context = globalThis.__chuzzMake2D(canvas, marker(canvas), pixelsOf);
@@ -374,4 +397,3 @@
     };
   }
 })();
-

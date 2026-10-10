@@ -9,10 +9,11 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct Images {
-    bitmaps: HashMap<u64, Arc<RasterImageData>>,
+    pub bitmaps: HashMap<u64, Arc<RasterImageData>>,
     snapshots: HashMap<u64, Arc<RasterImageData>>,
     pub canvases: HashMap<u64, (u64, Arc<RasterImageData>)>,
     pub paint: HashMap<u64, Arc<RasterImageData>>,
+    pub image_cache: Arc<Mutex<anyrender_vello_cpu::ImageCache>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -313,7 +314,16 @@ impl Bridge {
     pub(super) async fn execute_image(&self, id: u64, command: Command) -> Result<Value, GpuError> {
         match command.op.as_str() {
             "closeImage" => {
-                self.state().images.bitmaps.remove(&command.handle);
+                let (image, cache) = {
+                    let mut state = self.state();
+                    (
+                        state.images.bitmaps.remove(&command.handle),
+                        Arc::clone(&state.images.image_cache),
+                    )
+                };
+                if let Some(image) = image {
+                    lock(&cache).remove(image.data.id());
+                }
                 Ok(Value::Null)
             }
             "paintImage" => {

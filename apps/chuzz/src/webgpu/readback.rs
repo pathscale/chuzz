@@ -44,17 +44,13 @@ fn argument(args: &[JsValue], index: usize) -> JsValue {
     args.get(index).cloned().unwrap_or_default()
 }
 
-fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let bridge = context
-        .get_data::<CanvasHost>()
-        .ok_or_else(|| JsNativeError::typ().with_message("canvas host is unavailable"))?
-        .0
-        .clone();
-    let source = argument(args, 0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    let source: Source = serde_json::from_str(&source)
-        .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+/// Resolve ordered native image work without allocating page pixel memory.
+pub(super) fn image(
+    bridge: &Bridge,
+    source: Source,
+    id: u64,
+    context: &mut Context,
+) -> JsResult<ImageResult> {
     if !matches!(
         &source,
         // Texture: a WebGPU canvas read in the same task as its render(), before the frame is presented.
@@ -68,13 +64,11 @@ fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValu
             .with_message("invalid synchronous canvas image source")
             .into());
     }
-    let id = argument(args, 1).to_number(context)?;
-    if !id.is_finite() || id.fract() != 0.0 || !(1.0..=9_007_199_254_740_991.0).contains(&id) {
+    if !(1..=9_007_199_254_740_991).contains(&id) {
         return Err(JsNativeError::typ()
             .with_message("invalid canvas readback handle")
             .into());
     }
-    let id = id as u64;
     let incoming = {
         let mut state = bridge.state();
         if state.incoming.len() + state.in_flight.len() >= REQUEST_LIMIT
@@ -110,7 +104,27 @@ fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValu
 
     // All preceding GPU and image work stays on the ordered Nagoya worker.
     // No DOM or Boa borrow crosses this wait, and no page jobs run reentrantly.
-    match completion.wait() {
+    Ok(completion.wait())
+}
+
+fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let bridge = context
+        .get_data::<CanvasHost>()
+        .ok_or_else(|| JsNativeError::typ().with_message("canvas host is unavailable"))?
+        .0
+        .clone();
+    let source = argument(args, 0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let source: Source = serde_json::from_str(&source)
+        .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+    let id = argument(args, 1).to_number(context)?;
+    if !id.is_finite() || id.fract() != 0.0 || !(1.0..=9_007_199_254_740_991.0).contains(&id) {
+        return Err(JsNativeError::typ()
+            .with_message("invalid canvas readback handle")
+            .into());
+    }
+    match image(&bridge, source, id as u64, context)? {
         Ok(image) => {
             // Boa's returned array is mutable page memory. Make one native
             // typed-array allocation here, sharing the Arc everywhere else.

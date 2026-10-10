@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyrender::{Paint, PaintScene};
-use anyrender_vello_cpu::VelloCpuScenePainter;
+use anyrender_vello_cpu::{ImageCache, VelloCpuScenePainter};
 use blitz_dom::kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use blitz_dom::node::RasterImageData;
 use blitz_script::boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsUint8ClampedArray};
@@ -103,6 +103,9 @@ pub(super) fn from_html(
 #[derive(Clone)]
 struct Host {
     canvases: Arc<Mutex<HashMap<u64, Canvas>>>,
+    sources: Arc<Mutex<HashMap<u64, ImageData>>>,
+    image_cache: Arc<Mutex<ImageCache>>,
+    transferred: Arc<Mutex<u64>>,
     fonts: Fonts,
     bridge: Bridge,
 }
@@ -119,6 +122,9 @@ struct Request {
     height: u32,
     #[serde(default)]
     commands: Vec<Command>,
+    #[serde(default)]
+    serial: u64,
+    source: Option<super::external::Source>,
     #[serde(default)]
     n: Vec<f64>,
     #[serde(default)]
@@ -210,7 +216,7 @@ impl DrawState {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Image {
     index: usize,
@@ -220,6 +226,14 @@ struct Image {
     length: usize,
     #[serde(default)]
     video: Option<u64>,
+    #[serde(default)]
+    canvas: Option<u64>,
+    #[serde(default)]
+    bitmap: Option<u64>,
+    #[serde(default)]
+    native: Option<u64>,
+    #[serde(skip)]
+    resolved: Option<ImageData>,
 }
 
 #[derive(Deserialize)]
@@ -239,9 +253,29 @@ struct Brush {
     repetition: String,
 }
 
+fn raster_image(image: &RasterImageData) -> ImageData {
+    ImageData {
+        data: image.data.clone(),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: image.width,
+        height: image.height,
+    }
+}
+
 fn image_data(source: &Image, inputs: &[Arc<Vec<u8>>]) -> Result<ImageData> {
     if source.length != byte_count(source.width, source.height)? {
         return Err("invalid canvas image length".to_owned());
+    }
+    if let Some(image) = &source.resolved {
+        if source.offset != 0
+            || image.width != source.width
+            || image.height != source.height
+            || image.data.len() != source.length
+        {
+            return Err("invalid native canvas image descriptor".to_owned());
+        }
+        return Ok(image.clone());
     }
     let bytes = inputs
         .get(source.index)
@@ -386,18 +420,28 @@ struct Canvas {
     width: u32,
     height: u32,
     pixels: Arc<Vec<u8>>,
+    image: Option<ImageData>,
+    image_cache: Arc<Mutex<ImageCache>>,
     painter: Option<VelloCpuScenePainter>,
     path: paths::Path,
     clips: Vec<Clip>,
     saves: Vec<usize>,
 }
 
+impl Drop for Canvas {
+    fn drop(&mut self) {
+        self.invalidate();
+    }
+}
+
 impl Canvas {
-    fn new(width: u32, height: u32) -> Result<Self> {
+    fn new(width: u32, height: u32, image_cache: Arc<Mutex<ImageCache>>) -> Result<Self> {
         Ok(Self {
             width,
             height,
             pixels: Arc::new(vec![0; byte_count(width, height)?]),
+            image: None,
+            image_cache,
             painter: None,
             path: paths::Path::default(),
             clips: Vec::new(),
@@ -405,19 +449,33 @@ impl Canvas {
         })
     }
 
-    fn painter(&mut self) -> Option<&mut VelloCpuScenePainter> {
-        if self.width == 0 || self.height == 0 {
-            return None;
+    fn invalidate(&mut self) {
+        if let Some(image) = self.image.take() {
+            lock(&self.image_cache).remove(image.data.id());
         }
-        if self.painter.is_none() {
-            let mut painter = VelloCpuScenePainter::new(self.width as u16, self.height as u16);
-            let base = ImageData {
+    }
+
+    fn source_image(&mut self) -> ImageData {
+        self.flush();
+        self.image
+            .get_or_insert_with(|| ImageData {
                 data: Blob::new(Arc::clone(&self.pixels) as Arc<dyn AsRef<[u8]> + Send + Sync>),
                 format: ImageFormat::Rgba8,
                 alpha_type: ImageAlphaType::Alpha,
                 width: self.width,
                 height: self.height,
-            };
+            })
+            .clone()
+    }
+
+    fn painter(&mut self) -> Option<&mut VelloCpuScenePainter> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+        if self.painter.is_none() {
+            let base = self.source_image();
+            let mut painter = VelloCpuScenePainter::new(self.width as u16, self.height as u16)
+                .with_image_cache(Arc::clone(&self.image_cache));
             painter.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
@@ -444,6 +502,7 @@ impl Canvas {
                     };
                 }
             }
+            self.invalidate();
             self.pixels = Arc::new(bytes);
         }
     }
@@ -541,6 +600,7 @@ impl Canvas {
             painter.pop_layer();
         }
         painter.pop_layer();
+        self.invalidate();
         Ok(())
     }
 
@@ -560,6 +620,7 @@ impl Canvas {
         let dx = n[0].trunc() as i64;
         let dy = n[1].trunc() as i64;
         self.flush();
+        self.invalidate();
         let target = Arc::make_mut(&mut self.pixels);
         for y in y0.max(-dy)..y1.min(self.height as i64 - dy) {
             let left = x0.max(-dx);
@@ -684,14 +745,7 @@ impl Canvas {
                     n: Vec::new(),
                     matrix: image_matrix.as_coeffs(),
                     stops: Vec::new(),
-                    image: Some(Image {
-                        index: source.index,
-                        width: source.width,
-                        height: source.height,
-                        offset: source.offset,
-                        length: source.length,
-                        video: None,
-                    }),
+                    image: Some(source.clone()),
                     repetition: "no-repeat".to_owned(),
                 };
                 actual.matrix = image_matrix.as_coeffs();
@@ -777,6 +831,79 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
             .map_err(|error| JsNativeError::typ().with_message(error))?;
         return Ok(JsString::from(font).into());
     }
+    if request.action == "stats" {
+        let cache = lock(&host.image_cache);
+        let value = serde_json::json!({
+            "transferredBytes": *lock(&host.transferred),
+            "cacheBytes": cache.retained_bytes(),
+            "cacheLimit": cache.byte_limit(),
+            "cacheEntries": cache.len(),
+            "cacheHits": cache.hits(),
+            "cacheMisses": cache.misses(),
+        });
+        return Ok(JsString::from(value.to_string()).into());
+    }
+    if request.action == "release" {
+        lock(&host.canvases).remove(&request.id);
+        if let Some(image) = lock(&host.sources).remove(&request.id) {
+            lock(&host.image_cache).remove(image.data.id());
+        }
+        host.bridge.state().images.paint.remove(&request.id);
+        return Ok(JsValue::undefined());
+    }
+    if request.action == "source" {
+        if request.id == 0 || request.id > 9_007_199_254_740_991 {
+            return Err(JsNativeError::typ()
+                .with_message("invalid native canvas source handle")
+                .into());
+        }
+        let source = request
+            .source
+            .take()
+            .ok_or_else(|| JsNativeError::typ().with_message("missing native canvas source"))?;
+        let image = match source {
+            super::external::Source::Element { handle } => {
+                blitz_script::raster_image_for_attribute(
+                    context,
+                    "data-chuzz-gpu-source",
+                    &handle.to_string(),
+                )
+                .map(Arc::new)
+                .ok_or_else(|| JsNativeError::typ().with_message("image is not decoded"))?
+            }
+            source => super::readback::image(&host.bridge, source, request.serial, context)?
+                .map_err(|error| JsNativeError::typ().with_message(error.message))?,
+        };
+        let size = byte_count(image.width, image.height)
+            .map_err(|error| JsNativeError::typ().with_message(error))?;
+        if size != image.data.len() {
+            return Err(JsNativeError::typ()
+                .with_message("invalid native canvas source pixels")
+                .into());
+        }
+        {
+            let mut sources = lock(&host.sources);
+            let previous = sources.get(&request.id).map_or(0, |image| image.data.len());
+            let allocated = sources.values().map(|image| image.data.len()).sum::<usize>();
+            if (!sources.contains_key(&request.id) && sources.len() >= 8192)
+                || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
+            {
+                return Err(JsNativeError::typ()
+                    .with_message("native canvas source allocation limit reached")
+                    .into());
+            }
+            if let Some(previous) = sources.insert(request.id, raster_image(&image))
+                && previous.data.id() != image.data.id()
+            {
+                lock(&host.image_cache).remove(previous.data.id());
+            }
+        }
+        return Ok(JsArray::from_iter(
+            [JsValue::from(image.width), JsValue::from(image.height)],
+            context,
+        )
+        .into());
+    }
     let array = args
         .get(1)
         .and_then(JsValue::as_object)
@@ -807,29 +934,57 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
         }
         inputs.push(Arc::new(bytes.to_vec()));
     }
+    {
+        let mut transferred = lock(&host.transferred);
+        *transferred = transferred.saturating_add(input_size as u64);
+    }
     for command in &mut request.commands {
-        if let Some(image) = command
+        let Some(image) = command
             .brush
             .as_mut()
             .and_then(|brush| brush.image.as_mut())
-            && let Some(handle) = image.video.take()
-        {
+        else {
+            continue;
+        };
+        let references = [
+            image.video,
+            image.canvas,
+            image.bitmap,
+            image.native,
+        ]
+        .iter()
+        .filter(|handle| handle.is_some())
+        .count();
+        if references > 1 {
+            return Err(JsNativeError::typ()
+                .with_message("ambiguous native canvas image source")
+                .into());
+        }
+        if let Some(handle) = image.video.take() {
             let frame = crate::video::take_frame(context, handle)
                 .map_err(|error| JsNativeError::typ().with_message(error))?;
-            input_size = input_size.saturating_add(frame.pixels.len());
-            if image.width != frame.image.width
-                || image.height != frame.image.height
-                || image.offset != 0
-                || image.length != frame.pixels.len()
-                || inputs.len() >= 1024
-                || input_size > IMAGE_LIMIT
-            {
-                return Err(JsNativeError::typ()
-                    .with_message("invalid or oversized native canvas video source")
-                    .into());
-            }
-            image.index = inputs.len();
-            inputs.push(frame.pixels);
+            image.resolved = Some(raster_image(&frame.image));
+        } else if let Some(handle) = image.bitmap {
+            let bitmap = host
+                .bridge
+                .state()
+                .images
+                .bitmaps
+                .get(&handle)
+                .cloned()
+                .ok_or_else(|| JsNativeError::typ().with_message("ImageBitmap is closed or invalid"))?;
+            image.resolved = Some(raster_image(&bitmap));
+        } else if let Some(handle) = image.native {
+            image.resolved = Some(
+                lock(&host.sources)
+                    .get(&handle)
+                    .cloned()
+                    .ok_or_else(|| JsNativeError::typ().with_message("native canvas source was released"))?,
+            );
+        }
+        if image.resolved.is_some() {
+            image_data(image, &inputs)
+                .map_err(|error| JsNativeError::typ().with_message(error))?;
         }
     }
     let result = (|| -> Result<JsValue> {
@@ -854,12 +1009,35 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
                 canvas.width != request.width || canvas.height != request.height
             })
         {
-            canvases.insert(request.id, Canvas::new(request.width, request.height)?);
+            canvases.insert(
+                request.id,
+                Canvas::new(request.width, request.height, Arc::clone(&host.image_cache))?,
+            );
+        }
+        for command in &mut request.commands {
+            if let Some(image) = command
+                .brush
+                .as_mut()
+                .and_then(|brush| brush.image.as_mut())
+                && let Some(source) = image.canvas
+            {
+                // Resolve at this command, not at the beginning of the batch.
+                // For self-draw this flushes the preceding commands and pins
+                // the old allocation while execute draws the new contents.
+                image.resolved = Some(
+                    canvases
+                        .get_mut(&source)
+                        .ok_or("native source canvas was released")?
+                        .source_image(),
+                );
+                image_data(image, &inputs)?;
+            }
+            canvases
+                .get_mut(&request.id)
+                .ok_or("invalid canvas")?
+                .execute(command, &inputs, &host.fonts)?;
         }
         let canvas = canvases.get_mut(&request.id).ok_or("invalid canvas")?;
-        for command in &request.commands {
-            canvas.execute(command, &inputs, &host.fonts)?;
-        }
         match request.action.as_str() {
             "reset" | "submit" => Ok(JsValue::undefined()),
             "snapshot" => {
@@ -904,8 +1082,12 @@ pub(super) fn install(document: &mut blitz_script::ScriptDocument, bridge: Bridg
             .get_data::<Fonts>()
             .cloned()
             .unwrap_or_else(|| Fonts(Arc::new(Mutex::new(default_fonts()))));
+        let image_cache = Arc::clone(&bridge.state().images.image_cache);
         context.insert_data(Host {
             canvases: Arc::new(Mutex::new(HashMap::new())),
+            sources: Arc::new(Mutex::new(HashMap::new())),
+            image_cache,
+            transferred: Arc::new(Mutex::new(0)),
             fonts,
             bridge,
         });

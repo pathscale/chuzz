@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CANVASSRC native sources QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; image-rendering: pixelated; background: white; }
+    #self { width: 256px; height: 32px; }
+    #timing { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>CANVASSRC native sources QA</h1>
+  <button id="run" type="button">Run native source checks</button>
+  <p id="result" role="status">Ready</p>
+  <p id="timing">Budget: 750 ms per completed frame</p>
+  <canvas id="target" width="256" height="128" aria-label="Canvas and image colour samples"></canvas>
+  <canvas id="self" width="8" height="1" aria-label="Overlapping self-draw colour samples"></canvas>
+  <canvas id="patterns" width="128" height="64" aria-label="Current canvas pattern colour samples"></canvas>
+  <script>
+    (function () {
+      var result = document.getElementById("result");
+      var timing = document.getElementById("timing");
+      function assert(value, message) { if (!value) { throw new Error(message); } }
+      function near(context, x, y, expected, label) {
+        var actual = context.getImageData(x, y, 1, 1).data;
+        assert(expected.every(function (value, index) {
+          return Math.abs(actual[index] - value) <= 2;
+        }), label + ": " + Array.from(actual).join(","));
+      }
+      function stats() {
+        return JSON.parse(globalThis.__chuzzCanvas2D(JSON.stringify({ action: "stats" }), []));
+      }
+      function frame() {
+        return new Promise(function (resolve) { requestAnimationFrame(resolve); });
+      }
+      function word(value) {
+        return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
+      }
+      function chunk(name, bytes) {
+        var payload = Array.from(name, function (letter) { return letter.charCodeAt(0); }).concat(bytes);
+        var crc = 4294967295;
+        payload.forEach(function (byte) {
+          crc ^= byte;
+          for (var bit = 0; bit < 8; bit++) {
+            crc = (crc >>> 1) ^ ((crc & 1) ? 3988292384 : 0);
+          }
+        });
+        return word(bytes.length).concat(payload, word((crc ^ 4294967295) >>> 0));
+      }
+      function yellowPng() {
+        // Two opaque yellow RGBA rows in a zlib stored block.
+        var rows = [0, 255, 255, 0, 255, 255, 255, 0, 255,
+                    0, 255, 255, 0, 255, 255, 255, 0, 255];
+        var a = 1, b = 0;
+        rows.forEach(function (byte) { a = (a + byte) % 65521; b = (b + a) % 65521; });
+        var deflate = [120, 1, 1, 18, 0, 237, 255].concat(rows, word(((b << 16) | a) >>> 0));
+        var bytes = [137, 80, 78, 71, 13, 10, 26, 10]
+          .concat(chunk("IHDR", [0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0]),
+                  chunk("IDAT", deflate), chunk("IEND", []));
+        return "data:image/png;base64," + btoa(String.fromCharCode.apply(null, bytes));
+      }
+      document.getElementById("run").addEventListener("click", async function () {
+        this.disabled = true;
+        try {
+          var target = document.getElementById("target");
+          var context = target.getContext("2d");
+          context.imageSmoothingEnabled = false;
+          var source = document.createElement("canvas");
+          source.width = 1024; source.height = 1024;
+          var sourceContext = source.getContext("2d");
+          var image = new Image();
+          image.src = yellowPng();
+          await image.decode();
+
+          var self = document.getElementById("self");
+          var selfContext = self.getContext("2d");
+          selfContext.imageSmoothingEnabled = false;
+          selfContext.fillStyle = "#ff0000"; selfContext.fillRect(0, 0, 1, 1);
+          selfContext.fillStyle = "#00ff00"; selfContext.fillRect(1, 0, 1, 1);
+          selfContext.fillStyle = "#0000ff"; selfContext.fillRect(2, 0, 1, 1);
+          selfContext.drawImage(self, 0, 0, 3, 1, 1, 0, 3, 1);
+          near(selfContext, 1, 0, [255, 0, 0, 255], "self red");
+          near(selfContext, 2, 0, [0, 255, 0, 255], "self green");
+          near(selfContext, 3, 0, [0, 0, 255, 255], "self blue");
+
+          var patterns = document.getElementById("patterns").getContext("2d");
+          patterns.imageSmoothingEnabled = false;
+          sourceContext.fillStyle = "#ff0000"; sourceContext.fillRect(0, 0, 1024, 1024);
+          var pattern = patterns.createPattern(source, "repeat");
+          patterns.fillStyle = pattern; patterns.fillRect(0, 0, 32, 32);
+          sourceContext.fillStyle = "#00ff00"; sourceContext.fillRect(0, 0, 1024, 1024);
+          patterns.fillRect(32, 0, 32, 32);
+          near(patterns, 8, 8, [255, 0, 0, 255], "pattern before source write");
+          near(patterns, 40, 8, [0, 255, 0, 255], "pattern after source write");
+          patterns.drawImage(source, 0, 32, 32, 32);
+          source.width = 1024;
+          sourceContext.fillStyle = "#0000ff"; sourceContext.fillRect(0, 0, 1024, 1024);
+          patterns.fillRect(64, 0, 32, 32);
+          near(patterns, 8, 40, [0, 255, 0, 255], "draw before same-size resize");
+          near(patterns, 72, 8, [0, 0, 255, 255], "pattern after same-size resize");
+
+          var mutable = new ImageData(new Uint8ClampedArray([255, 0, 255, 255]), 1, 1);
+          context.putImageData(mutable, 200, 0);
+          mutable.data.set([0, 255, 255, 255]);
+          near(context, 200, 0, [255, 0, 255, 255], "putImageData captured mutable bytes");
+          var bitmap = await createImageBitmap(mutable);
+          mutable.data.fill(0);
+          context.drawImage(bitmap, 208, 0);
+          bitmap.close();
+          near(context, 208, 0, [0, 255, 255, 255], "bitmap survives queued draw then close");
+          var rejected = false;
+          try { context.drawImage(bitmap, 216, 0); } catch (error) { rejected = true; }
+          assert(rejected, "closed bitmap accepted");
+
+          await frame();
+          var before = stats(), times = [];
+          for (var index = 0; index < 6; index++) {
+            await frame();
+            var start = performance.now();
+            var colour = index % 2 ? "#00ff00" : "#ff0000";
+            var expected = index % 2 ? [0, 255, 0, 255] : [255, 0, 0, 255];
+            sourceContext.fillStyle = colour;
+            sourceContext.fillRect(0, 0, 1024, 1024);
+            for (var draw = 0; draw < 200; draw++) { context.drawImage(source, 0, 0, 64, 64); }
+            for (var drawImage = 0; drawImage < 200; drawImage++) { context.drawImage(image, 80, 0, 64, 64); }
+            // Reads force native execution and CPU painting inside the timed interval.
+            near(context, 32, 32, expected, "canvas frame " + index);
+            near(context, 112, 32, [255, 255, 0, 255], "image frame " + index);
+            var elapsed = performance.now() - start;
+            times.push(elapsed);
+            assert(elapsed < 750, "frame " + index + " exceeded 750 ms: " + elapsed);
+          }
+          var after = stats();
+          assert(after.transferredBytes === before.transferredBytes, "native draws transferred page pixel buffers");
+          assert(after.cacheMisses - before.cacheMisses < 40, "sources converted per draw");
+          assert(after.cacheHits - before.cacheHits >= 2300, "native sources did not reuse conversions");
+          assert(after.cacheBytes <= after.cacheLimit, "conversion cache exceeded its byte budget");
+          timing.textContent = "Budget: 750 ms per completed frame\nFrames: "
+            + times.map(function (ms) { return ms.toFixed(1); }).join(", ") + " ms\n"
+            + "Pixel buffers transferred: 0; conversion misses: "
+            + (after.cacheMisses - before.cacheMisses) + "; cache bytes: "
+            + after.cacheBytes + "/" + after.cacheLimit;
+          result.textContent = "PASS: CANVASSRC native sources";
+        } catch (error) {
+          result.textContent = "FAIL: CANVASSRC native sources: " + String(error);
+          console.error(error);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
