@@ -1,0 +1,19 @@
+[
+    (
+        id: "gridcache-intrinsic-reuse",
+        group: "gridcache",
+        what: "30 synchronous layouts of nested flex/grid controls under 1500 ms, stable widths, and text-height invalidation",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: GRIDCACHE PASS",
+        expect: PaintsNamed,
+        covers: [
+            "budget: 1500 ms",
+            "unchanged subtree widths",
+            "changed and restored intrinsic text height",
+        ],
+        outcome_timeout_ms: 30000,
+    ),
+]
+

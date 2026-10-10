@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Restyle cost QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    #panels { display: flex; gap: 8px; }
+    .column { display: grid; grid-template-columns: repeat(auto-fill, minmax(min-content, 1fr)); gap: 4px; flex: 1; }
+    .group { display: flex; flex-direction: column; border: 1px solid #334; padding: 4px; }
+    .tip { position: absolute; left: 0; top: 0; visibility: hidden; }
+    .holder { position: relative; }
+  </style>
+</head>
+<body>
+  <button id="run" type="button">Measure restyles</button>
+  <p id="result" role="status">Restyle cost waiting</p>
+  <p>Status <span id="pulse">pulse</span> with <a id="link" href="#x">a link</a></p>
+  <select id="picker" aria-label="Picker"></select>
+  <svg id="badge" width="40" height="40" aria-label="Badge"><circle id="dot" cx="20" cy="20" r="16" fill="#3a7"/></svg>
+  <div id="panels"></div>
+  <script>
+    // A page laid out by nested flex and grid, plus three kinds of node that are never flushed to layout on their own:
+    // inline spans and links shaped into their parent's text, options inside a select, and inline SVG content.
+    // Recolouring them changes no box, so it must not move layout or make each tick re-run layout of the whole page (the
+    // measured cost lives in a larger WebGPU test page; this page guards correctness and a budget).
+    var panels = document.getElementById("panels");
+    for (var c = 0; c < 3; c++) {
+      var column = document.createElement("div");
+      column.className = "column";
+      for (var g = 0; g < 60; g++) {
+        var group = document.createElement("div");
+        group.className = "group holder";
+        group.innerHTML = "<label>Control " + c + "." + g + "</label><input value='" + g + "'><button type='button'>Apply</button><span class='tip'>tip</span>";
+        column.appendChild(group);
+      }
+      panels.appendChild(column);
+    }
+    var picker = document.getElementById("picker");
+    for (var o = 0; o < 40; o++) {
+      var option = document.createElement("option");
+      option.textContent = "Option " + o;
+      picker.appendChild(option);
+    }
+    document.getElementById("run").addEventListener("click", function () {
+      var pulse = document.getElementById("pulse");
+      var link = document.getElementById("link");
+      var dot = document.getElementById("dot");
+      var width = panels.offsetWidth;
+      var start = performance.now();
+      var round = 0;
+      // One recolour per host tick: the cost being measured is what each tick does after it.
+      function step() {
+        var colour = round % 2 ? "#e85" : "#5ae";
+        pulse.style.color = colour;
+        link.style.color = colour;
+        picker.options[round % 40].style.color = colour;
+        dot.style.fill = colour;
+        if (panels.offsetWidth !== width) {
+          document.getElementById("result").textContent = "FAIL: restyle cost layout moved";
+          return;
+        }
+        if (++round < 300) { setTimeout(step, 0); return; }
+        var ms = Math.round(performance.now() - start);
+        document.getElementById("result").textContent = ms < 2000
+          ? "READY: restyle cost PASS " + ms + " ms" : "FAIL: restyle cost " + ms + " ms";
+      }
+      step();
+    });
+  </script>
+</body>
+</html>

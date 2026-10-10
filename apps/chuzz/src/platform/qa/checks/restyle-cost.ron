@@ -1,0 +1,13 @@
+[
+    (
+        id: "restyle-cost-unflushed",
+        group: "restyle-cost",
+        what: "recolouring inline spans, links, options and inline SVG 200 times, each followed by an offsetWidth read, does not re-run layout of the whole page",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: restyle cost PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 60000,
+    ),
+]

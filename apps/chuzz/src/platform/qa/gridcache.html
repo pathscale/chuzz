@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GRIDCACHE QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      margin: 16px;
+      font-family: Fixture;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+    input, button {
+      font-family: Fixture;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+    #fixture {
+      display: flex;
+      width: 1080px;
+      max-width: 100%;
+      gap: 12px;
+      align-items: stretch;
+    }
+    .column {
+      display: grid;
+      flex: 1 1 0;
+      min-width: 0;
+      grid-template-columns: auto 1fr;
+      align-content: start;
+      gap: 6px;
+    }
+    .column:nth-child(2) {
+      grid-template-columns: 1fr auto;
+    }
+    .column:nth-child(3) {
+      grid-template-columns: minmax(min-content, 1fr) auto;
+    }
+    .group {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: auto 1fr;
+      align-items: start;
+      min-width: 0;
+      gap: 6px;
+      padding: 3px;
+      border: 1px solid #777;
+    }
+    .group label {
+      display: block;
+      width: 96px;
+    }
+    .controls {
+      display: flex;
+      min-width: 0;
+      gap: 4px;
+      align-items: start;
+    }
+    .controls input {
+      flex: 1 1 80px;
+      width: 80px;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    .controls button {
+      flex: 0 0 auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>GRIDCACHE QA</h1>
+  <button id="run" type="button">Run GRIDCACHE</button>
+  <p id="result" role="status">Waiting for GRIDCACHE run</p>
+  <p>30 label changes with synchronous layout. Budget: 1500 ms.</p>
+  <div id="fixture"></div>
+  <script>
+    (() => {
+      "use strict";
+
+      const fixture = document.getElementById("fixture");
+      const result = document.getElementById("result");
+      const run = document.getElementById("run");
+      const columns = [];
+      const groups = [];
+      const labels = [];
+      const inputs = [];
+      const buttons = [];
+
+      for (let columnIndex = 0; columnIndex < 3; columnIndex++) {
+        const column = document.createElement("div");
+        column.className = "column";
+        columns.push(column);
+
+        for (let groupIndex = 0; groupIndex < 40; groupIndex++) {
+          const group = document.createElement("div");
+          group.className = "group";
+
+          const label = document.createElement("label");
+          const inputId = "control-" + columnIndex + "-" + groupIndex;
+          label.htmlFor = inputId;
+          label.textContent = "Control " + String(groupIndex).padStart(2, "0");
+
+          const controls = document.createElement("div");
+          controls.className = "controls";
+
+          const input = document.createElement("input");
+          input.id = inputId;
+          input.type = "text";
+          input.value = "12";
+
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "Set";
+
+          controls.appendChild(input);
+          controls.appendChild(button);
+          group.appendChild(label);
+          group.appendChild(controls);
+          column.appendChild(group);
+
+          groups.push(group);
+          labels.push(label);
+          inputs.push(input);
+          buttons.push(button);
+        }
+
+        fixture.appendChild(column);
+      }
+
+      run.addEventListener("click", async () => {
+        run.disabled = true;
+        result.textContent = "Running GRIDCACHE";
+        let elapsed = 0;
+
+        try {
+          await document.fonts.ready;
+
+          const target = labels[0];
+          const originalText = target.textContent;
+          const tracked = [
+            fixture,
+            columns[0],
+            columns[1],
+            columns[2],
+            groups[0],
+            groups[40],
+            groups[119],
+            labels[0],
+            inputs[0],
+            inputs[80],
+            buttons[119]
+          ];
+          const widths = tracked.map(element => element.offsetWidth);
+          if (widths.some(width => width <= 0)) {
+            throw new Error("Fixture has a zero-width box");
+          }
+          const originalHeight = groups[0].offsetHeight;
+          const rowWidth = fixture.offsetWidth;
+
+          const start = performance.now();
+          for (let iteration = 0; iteration < 30; iteration++) {
+            target.textContent = "Control "
+              + String(iteration + 1).padStart(2, "0");
+            if (fixture.offsetWidth !== rowWidth) {
+              throw new Error("Row width changed during layout");
+            }
+          }
+          elapsed = performance.now() - start;
+
+          tracked.forEach((element, index) => {
+            if (element.offsetWidth !== widths[index]) {
+              throw new Error("Measured width changed at probe " + index);
+            }
+          });
+
+          // Stable widths alone could conceal stale text layout. Require a
+          // real height change, then restore the original geometry.
+          target.textContent =
+            "Control alpha beta gamma delta epsilon zeta eta theta";
+          if (groups[0].offsetHeight <= originalHeight) {
+            throw new Error("Changed text did not invalidate intrinsic height");
+          }
+          target.textContent = originalText;
+          if (groups[0].offsetHeight !== originalHeight) {
+            throw new Error("Restored text did not restore intrinsic height");
+          }
+          tracked.forEach((element, index) => {
+            if (element.offsetWidth !== widths[index]) {
+              throw new Error("Restored width changed at probe " + index);
+            }
+          });
+
+          if (!Number.isFinite(elapsed) || elapsed >= 1500) {
+            throw new Error("Performance budget exceeded");
+          }
+          result.textContent = "READY: GRIDCACHE PASS "
+            + elapsed.toFixed(1) + " ms";
+        } catch (error) {
+          result.textContent = "FAIL: GRIDCACHE "
+            + elapsed.toFixed(1) + " ms: " + error.message;
+          console.error(error);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
+
