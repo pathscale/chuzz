@@ -8,7 +8,9 @@ use anyrender::{Paint, PaintScene};
 use anyrender_vello_cpu::{ImageCache, VelloCpuScenePainter};
 use blitz_dom::kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use blitz_dom::node::RasterImageData;
-use blitz_script::boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsUint8Array, JsUint8ClampedArray};
+use blitz_script::boa_engine::object::builtins::{
+    JsArray, JsArrayBuffer, JsUint8Array, JsUint8ClampedArray,
+};
 use blitz_script::boa_engine::{
     Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
 };
@@ -299,6 +301,59 @@ fn image_data(source: &Image, inputs: &[Arc<Vec<u8>>]) -> Result<ImageData> {
         width: source.width,
         height: source.height,
     })
+}
+
+/// The pixel-aligned part of `source` covering `x0..x1` by `y0..y1`, as a
+/// resolved image, and where it sits in the source. The whole image comes back
+/// unchanged when the rectangle covers it.
+fn crop_source(
+    source: &Image,
+    inputs: &[Arc<Vec<u8>>],
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+) -> Result<(Image, (f64, f64))> {
+    let left = x0.floor() as u32;
+    let top = y0.floor() as u32;
+    let right = (x1.ceil() as u32).min(source.width);
+    let bottom = (y1.ceil() as u32).min(source.height);
+    if left == 0 && top == 0 && right == source.width && bottom == source.height {
+        return Ok((source.clone(), (0.0, 0.0)));
+    }
+    let data = image_data(source, inputs)?;
+    let bytes = data.data.data();
+    let (width, height) = (right - left, bottom - top);
+    let row = width as usize * 4;
+    let mut cropped = Vec::with_capacity(row * height as usize);
+    for y in top..bottom {
+        let start = (y as usize * source.width as usize + left as usize) * 4;
+        cropped.extend_from_slice(
+            bytes
+                .get(start..start + row)
+                .ok_or("invalid canvas image range")?,
+        );
+    }
+    let length = cropped.len();
+    let image = Image {
+        index: 0,
+        width,
+        height,
+        offset: 0,
+        length,
+        video: None,
+        canvas: None,
+        bitmap: None,
+        native: None,
+        resolved: Some(ImageData {
+            data: Blob::new(Arc::new(cropped)),
+            format: data.format,
+            alpha_type: data.alpha_type,
+            width,
+            height,
+        }),
+    };
+    Ok((image, (f64::from(left), f64::from(top))))
 }
 
 fn image_brush(data: ImageData, smoothing: bool, x: Extend, y: Extend) -> Paint {
@@ -739,16 +794,19 @@ impl Canvas {
                     * Affine::translate((n[4], n[5]))
                     * Affine::scale_non_uniform(n[6] / n[2], n[7] / n[3])
                     * Affine::translate((-n[0], -n[1]));
-                let mut actual = Brush {
+                // Sample only the source rectangle: scaling a sub-rect must
+                // clamp at its own edges, not filter in the pixels around it,
+                // and a small strip of a large canvas converts only the strip.
+                let (crop, origin) = crop_source(source, inputs, x0, y0, x1, y1)?;
+                let actual = Brush {
                     kind: "pattern".to_owned(),
                     color: String::new(),
                     n: Vec::new(),
-                    matrix: image_matrix.as_coeffs(),
+                    matrix: (image_matrix * Affine::translate(origin)).as_coeffs(),
                     stops: Vec::new(),
-                    image: Some(source.clone()),
+                    image: Some(crop),
                     repetition: "no-repeat".to_owned(),
                 };
-                actual.matrix = image_matrix.as_coeffs();
                 image_paint = Some(actual);
                 image_matrix * Rect::new(x0, y0, x1, y1).to_path(0.1)
             }
@@ -816,8 +874,13 @@ fn encode_png(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
         .and_then(JsValue::as_object)
         .ok_or_else(|| failure("expected canvas pixels"))?;
     let buffer = JsArrayBuffer::from_object(object.clone())?;
-    let pixels = buffer.data().ok_or_else(|| failure("detached canvas pixels"))?;
-    if width == 0 || height == 0 || pixels.len() != byte_count(width, height).map_err(|e| failure(&e))? {
+    let pixels = buffer
+        .data()
+        .ok_or_else(|| failure("detached canvas pixels"))?;
+    if width == 0
+        || height == 0
+        || pixels.len() != byte_count(width, height).map_err(|e| failure(&e))?
+    {
         return Err(failure("canvas pixels do not match the canvas size").into());
     }
     let mut png = Vec::new();
@@ -825,8 +888,12 @@ fn encode_png(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
         let mut encoder = png::Encoder::new(&mut png, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().map_err(|e| failure(&e.to_string()))?;
-        writer.write_image_data(&pixels).map_err(|e| failure(&e.to_string()))?;
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| failure(&e.to_string()))?;
+        writer
+            .write_image_data(&pixels)
+            .map_err(|e| failure(&e.to_string()))?;
         writer.finish().map_err(|e| failure(&e.to_string()))?;
     }
     Ok(JsUint8Array::from_iter(png, context)?.into())
@@ -911,7 +978,10 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
         {
             let mut sources = lock(&host.sources);
             let previous = sources.get(&request.id).map_or(0, |image| image.data.len());
-            let allocated = sources.values().map(|image| image.data.len()).sum::<usize>();
+            let allocated = sources
+                .values()
+                .map(|image| image.data.len())
+                .sum::<usize>();
             if (!sources.contains_key(&request.id) && sources.len() >= 8192)
                 || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
             {
@@ -973,15 +1043,10 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
         else {
             continue;
         };
-        let references = [
-            image.video,
-            image.canvas,
-            image.bitmap,
-            image.native,
-        ]
-        .iter()
-        .filter(|handle| handle.is_some())
-        .count();
+        let references = [image.video, image.canvas, image.bitmap, image.native]
+            .iter()
+            .filter(|handle| handle.is_some())
+            .count();
         if references > 1 {
             return Err(JsNativeError::typ()
                 .with_message("ambiguous native canvas image source")
@@ -999,19 +1064,17 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
                 .bitmaps
                 .get(&handle)
                 .cloned()
-                .ok_or_else(|| JsNativeError::typ().with_message("ImageBitmap is closed or invalid"))?;
+                .ok_or_else(|| {
+                    JsNativeError::typ().with_message("ImageBitmap is closed or invalid")
+                })?;
             image.resolved = Some(raster_image(&bitmap));
         } else if let Some(handle) = image.native {
-            image.resolved = Some(
-                lock(&host.sources)
-                    .get(&handle)
-                    .cloned()
-                    .ok_or_else(|| JsNativeError::typ().with_message("native canvas source was released"))?,
-            );
+            image.resolved = Some(lock(&host.sources).get(&handle).cloned().ok_or_else(|| {
+                JsNativeError::typ().with_message("native canvas source was released")
+            })?);
         }
         if image.resolved.is_some() {
-            image_data(image, &inputs)
-                .map_err(|error| JsNativeError::typ().with_message(error))?;
+            image_data(image, &inputs).map_err(|error| JsNativeError::typ().with_message(error))?;
         }
     }
     let result = (|| -> Result<JsValue> {

@@ -1,0 +1,24 @@
+[
+    (
+        id: "canvas-subrect-extrude",
+        group: "canvas-subrect",
+        what: "drawImage of a canvas onto itself with 1-pixel source strips scaled into padding samples only the source rectangle, so the padding matches the chart colour",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: canvas subrect PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "canvas-subrect-paints",
+        group: "canvas-subrect",
+        what: "the extruded atlas reaches document painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#atlas",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

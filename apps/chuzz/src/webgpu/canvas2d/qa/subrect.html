@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas drawImage source rectangle QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    canvas { width: 256px; height: 256px; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">Canvas subrect waiting</p>
+  <canvas id="atlas" width="256" height="256" aria-label="Extruded atlas"></canvas>
+  <script>
+    // The texture atlas extrude pattern: each chart's 1-pixel edges are scaled out into transparent padding by
+    // drawImage of the canvas onto itself. Sampling must clamp to the source rectangle, so the padding is opaque.
+    var canvas = document.getElementById("atlas");
+    var context = canvas.getContext("2d");
+    var pad = 4, size = 24, step = size + 2 * pad, charts = [];
+    for (var y = pad; y + size + pad <= 256; y += step) {
+      for (var x = pad; x + size + pad <= 256; x += step) {
+        var hue = (charts.length * 47) % 360;
+        context.fillStyle = "hsl(" + hue + " 70% 50%)";
+        context.fillRect(x, y, size, size);
+        context.drawImage(canvas, x, y, size, 1, x, y - pad, size, pad);
+        context.drawImage(canvas, x, y + size - 1, size, 1, x, y + size, size, pad);
+        context.drawImage(canvas, x, y, 1, size, x - pad, y, pad, size);
+        context.drawImage(canvas, x + size - 1, y, 1, size, x + size, y, pad, size);
+        context.drawImage(canvas, x, y, 1, 1, x - pad, y - pad, pad, pad);
+        context.drawImage(canvas, x + size - 1, y + size - 1, 1, 1, x + size, y + size, pad, pad);
+        charts.push([x, y]);
+      }
+    }
+    var bad = [];
+    charts.forEach(function (chart) {
+      var x = chart[0], y = chart[1];
+      var inside = context.getImageData(x + 5, y + 5, 1, 1).data;
+      [[x + 5, y - pad], [x + 5, y + size + pad - 1], [x - pad, y + 5], [x + size + pad - 1, y + 5],
+        [x - pad, y - pad], [x + size + pad - 1, y + size + pad - 1]].forEach(function (point) {
+        var edge = context.getImageData(point[0], point[1], 1, 1).data;
+        for (var channel = 0; channel < 4; channel++) {
+          if (Math.abs(edge[channel] - inside[channel]) > 1) { bad.push(point.join(",") + "=" + Array.from(edge).join("/")); break; }
+        }
+      });
+    });
+    document.getElementById("result").textContent = bad.length === 0
+      ? "READY: canvas subrect PASS " + charts.length + " charts"
+      : "FAIL: canvas subrect " + bad.slice(0, 4).join(" ");
+  </script>
+</body>
+</html>
