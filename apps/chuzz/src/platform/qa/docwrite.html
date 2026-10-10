@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DOCWRITE platform proof</title>
+<style>
+@font-face {
+    font-family: "Fira Sans";
+    src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+}
+body {
+    font-family: "Fira Sans";
+    margin: 20px;
+    color: #102030;
+    background: #ffffff;
+}
+button { font: inherit; padding: 8px 20px; }
+#result { font-size: 20px; }
+</style>
+<script src="./src/docwrite.ts" defer></script>
+</head>
+<body>
+<h1>DOCWRITE platform proof</h1>
+<script id="writer">
+globalThis.__docwriteProof = {
+    order: ["writer"],
+    futureHidden: document.getElementById("later") === null,
+    parentRestored: false,
+    writtenCurrent: false,
+    external: false
+};
+document.write('<section id="written"><span id="split');
+document.writeln('">split input</span></section>');
+document.write(
+    '<script id="written-inline">' +
+    '__docwriteProof.order.push("inline");' +
+    '__docwriteProof.writtenCurrent = document.currentScript.id === "written-inline";' +
+    'document.write("<b id=\\"nested\\">nested input</b>");' +
+    '<\/script>'
+);
+document.write('<script src="./src/docwrite-written.ts"><\/script>');
+__docwriteProof.parentRestored = document.currentScript.id === "writer";
+__docwriteProof.order.push("writer-end");
+</script>
+<p id="later">Later source markup</p>
+<script>
+__docwriteProof.order.push("later");
+__docwriteProof.position =
+    document.getElementById("written").nextElementSibling.id === "written-inline" &&
+    document.getElementById("nested").nextElementSibling.tagName === "SCRIPT" &&
+    document.getElementById("split").textContent === "split input";
+</script>
+<button id="run">Run</button>
+<p id="result" role="status">READY: DOCWRITE awaiting run</p>
+</body>
+</html>

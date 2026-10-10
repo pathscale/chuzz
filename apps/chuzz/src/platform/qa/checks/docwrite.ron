@@ -1,0 +1,14 @@
+[
+    (
+        id: "docwrite-all",
+        group: "docwrite",
+        what: "parser insertion, nested and external written scripts, document streams, real CSS and binary font loads, font events and document metadata have observable behavior",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: DOCWRITE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: DOCWRITE PASS"],
+        outcome_timeout_ms: 20000,
+    ),
+]
