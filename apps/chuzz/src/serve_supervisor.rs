@@ -399,6 +399,21 @@ impl Supervisor {
     }
 
     fn check_deadlines(&mut self) {
+        // A worker killed by a signal (a native stack overflow, the memory
+        // killer) leaves its socket open in no state the transport notices, so
+        // ask the process itself and name how it ended.
+        let exited = self
+            .session
+            .as_mut()
+            .and_then(|session| match session.child.try_wait() {
+                Ok(Some(status)) => Some(status.to_string()),
+                Ok(None) => None,
+                Err(error) => Some(format!("unknown status ({error})")),
+            });
+        if let Some(status) = exited {
+            self.fail(&format!("the page worker exited: {status}"));
+            return;
+        }
         let now = Instant::now();
         if self
             .pending
