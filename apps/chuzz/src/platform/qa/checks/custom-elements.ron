@@ -2,7 +2,7 @@
     (
         id: "sites-custom-elements",
         group: "custom-elements",
-        what: "native constructors, captured callbacks, reaction ordering, customized buttons and adoption",
+        what: "native constructors, captured callbacks, reaction ordering, customized buttons, adoption, upgraded style reflection, synchronous CSSOM writes and namespaced old values",
         open: None,
         hover: None,
         click: Some("#run"),

@@ -154,6 +154,182 @@
           check(parsedButton.firstChild.constructed, "Parsed customized button");
           fixture.appendChild(parsedButton);
 
+          const styleDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "style");
+          check(typeof styleDescriptor.get === "function" && typeof styleDescriptor.set === "function",
+            "Native style forwarding accessor");
+
+          const exerciseStyle = async (name, customized) => {
+            const styleCalls = [];
+            const isCalls = [];
+            const mutationCalls = [];
+            let overflow = false;
+            let connected = 0;
+            const Base = customized ? HTMLDivElement : HTMLElement;
+            class Reflecting extends Base {
+              static get observedAttributes() { return ["style", "is"]; }
+              connectedCallback() { connected++; }
+              attributeChangedCallback(attribute, oldValue, newValue, namespace) {
+                if (attribute === "is") {
+                  isCalls.push([oldValue, newValue, namespace]);
+                  return;
+                }
+                styleCalls.push([oldValue, newValue, namespace]);
+                if (styleCalls.length > 24) {
+                  overflow = true;
+                  return;
+                }
+                if (oldValue !== newValue) this.style = newValue;
+              }
+            }
+            const styled = document.createElement(customized ? "div" : name,
+              customized ? { is: name } : undefined);
+            styled.setAttribute("style", "width: 1px;");
+            fixture.appendChild(styled);
+            const observer = new MutationObserver(records => {
+              mutationCalls.push(...records.filter(record => record.attributeName === "style"));
+            });
+            observer.observe(styled, { attributes: true, attributeOldValue: true });
+            customElements.define(name, Reflecting, customized ? { extends: "div" } : undefined);
+            check(styled instanceof Reflecting && connected === 1, name + ": existing upgrade");
+            const expected = [[null, "width: 1px;", null], ["width: 1px;", "width: 1px;", null]];
+            const expectStyles = label => {
+              check(!overflow && JSON.stringify(styleCalls) === JSON.stringify(expected),
+                name + ": " + label);
+            };
+            expectStyles("Polymer style reflection after upgrade");
+            check(JSON.stringify(isCalls) === JSON.stringify(customized ? [[null, name, null]] : []),
+              name + ": is upgrade callback exactly once");
+
+            const declaration = styled.style;
+            const expectChange = (oldValue, newValue, label) => {
+              expected.push([oldValue, newValue, null], [newValue, newValue, null]);
+              expectStyles(label);
+              check(styled.getAttribute("style") === newValue, name + ": current style value");
+            };
+            declaration.width = "2px";
+            expectChange("width: 1px;", "width: 2px;", "synchronous CSSOM width");
+            declaration.width = "3px";
+            expectChange("width: 2px;", "width: 3px;", "second CSSOM write has current old value");
+            declaration.cssText = "width: 4px;";
+            expectChange("width: 3px;", "width: 4px;", "synchronous cssText");
+            declaration.setProperty("width", "5px");
+            expectChange("width: 4px;", "width: 5px;", "synchronous setProperty");
+            check(declaration.removeProperty("width") === "5px", name + ": removeProperty result");
+            expectChange("width: 5px;", "", "synchronous removeProperty");
+            styled.style = "width: 6px;";
+            expectChange("", "width: 6px;", "style forwards to cssText");
+            check(declaration.width === "6px", name + ": retained declaration stays live");
+            declaration.setProperty("width", "invalid-width");
+            expectStyles("invalid CSSOM edit has no reaction");
+
+            styled.setAttribute("style", "width: 6px;");
+            expected.push(["width: 6px;", "width: 6px;", null]);
+            expectStyles("equal-value setAttribute exactly once");
+            styled.removeAttribute("style");
+            expected.push(["width: 6px;", null, null], [null, "", null], ["", "", null]);
+            expectStyles("removal reflection converts null to empty cssText");
+            check(styled.getAttribute("style") === "" && declaration.cssText === "",
+              name + ": null style forwarding");
+
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expectStyles("no reaction replay at mutation checkpoint");
+            check(mutationCalls.length === expected.length - 1,
+              name + ": one mutation record per reflected write");
+            check(JSON.stringify(mutationCalls.map(record => record.oldValue))
+              === JSON.stringify(expected.slice(1).map(call => call[0])),
+              name + ": mutation records retain each write's old value");
+            check(JSON.stringify(isCalls) === JSON.stringify(customized ? [[null, name, null]] : []),
+              name + ": no is callback replay");
+            observer.disconnect();
+          };
+          await exerciseStyle("qa-reflecting-style", false);
+          await exerciseStyle("qa-reflecting-div", true);
+
+          const exerciseConstructorAttributes = async (name, customized) => {
+            const constructorCalls = [];
+            const Base = customized ? HTMLDivElement : HTMLElement;
+            class ConstructorAttributes extends Base {
+              static get observedAttributes() { return ["style"]; }
+              constructor() {
+                super();
+                this.setAttribute("style", "width: 2px;");
+                this.style.width = "3px";
+                this.style.width = "4px";
+                this.callbackDuringConstruction = constructorCalls.length !== 0;
+              }
+              attributeChangedCallback(attribute, oldValue, newValue, namespace) {
+                constructorCalls.push([attribute, oldValue, newValue, namespace]);
+              }
+            }
+            const candidate = document.createElement(customized ? "div" : name,
+              customized ? { is: name } : undefined);
+            candidate.setAttribute("style", "width: 1px;");
+            customElements.define(name, ConstructorAttributes, customized ? { extends: "div" } : undefined);
+            customElements.upgrade(candidate);
+            check(candidate instanceof ConstructorAttributes && !candidate.callbackDuringConstruction,
+              name + ": constructor reaction timing");
+            check(candidate.style.width === "4px", name + ": constructor writes applied");
+            const expected = [["style", null, "width: 1px;", null]];
+            check(JSON.stringify(constructorCalls) === JSON.stringify(expected),
+              name + ": only existing attribute upgrade reaction");
+            candidate.setAttribute("style", "width: 5px;");
+            expected.push(["style", "width: 4px;", "width: 5px;", null]);
+            check(JSON.stringify(constructorCalls) === JSON.stringify(expected),
+              name + ": post-construction write captures current old value");
+            await new Promise(resolve => setTimeout(resolve, 0));
+            check(JSON.stringify(constructorCalls) === JSON.stringify(expected),
+              name + ": constructor writes do not replay");
+          };
+          await exerciseConstructorAttributes("qa-constructor-style", false);
+          await exerciseConstructorAttributes("qa-constructor-div", true);
+
+          const namespaceCalls = [];
+          const attributeNamespace = "urn:qa:attributes";
+          let namespaceOverflow = false;
+          class Namespaced extends HTMLElement {
+            static get observedAttributes() { return ["value"]; }
+            attributeChangedCallback(attribute, oldValue, newValue, namespace) {
+              namespaceCalls.push([attribute, oldValue, newValue, namespace]);
+              if (namespaceCalls.length > 12) {
+                namespaceOverflow = true;
+                return;
+              }
+              if (namespace === attributeNamespace && newValue !== null && oldValue !== newValue) {
+                const prefix = this.getAttributeNodeNS(namespace, attribute).prefix;
+                this.setAttributeNS(namespace, prefix === "a" ? "b:value" : "a:value", newValue);
+              }
+            }
+          }
+          customElements.define("qa-namespaced-reactions", Namespaced);
+          const namespaced = document.createElement("qa-namespaced-reactions");
+          namespaced.setAttributeNS(attributeNamespace, "a:value", "one");
+          const expectedNamespaceCalls = [
+            ["value", null, "one", attributeNamespace],
+            ["value", "one", "one", attributeNamespace]
+          ];
+          const expectNamespace = label => {
+            check(!namespaceOverflow && JSON.stringify(namespaceCalls) === JSON.stringify(expectedNamespaceCalls),
+              label);
+          };
+          expectNamespace("Prefix-changing reflection terminates with equal old and new values");
+          namespaced.setAttribute("value", "plain");
+          expectedNamespaceCalls.push(["value", null, "plain", null]);
+          expectNamespace("Same local name in another namespace has its own old value");
+          namespaced.setAttributeNS(attributeNamespace, "a:value", "two");
+          expectedNamespaceCalls.push(
+            ["value", "one", "two", attributeNamespace],
+            ["value", "two", "two", attributeNamespace]
+          );
+          expectNamespace("Prefix replacement captures the existing expanded-name value");
+          namespaced.removeAttributeNS(attributeNamespace, "value");
+          expectedNamespaceCalls.push(["value", "two", null, attributeNamespace]);
+          expectNamespace("Namespaced removal reacts exactly once");
+          namespaced.removeAttributeNS(attributeNamespace, "value");
+          expectNamespace("Absent namespaced removal has no reaction");
+          check(namespaced.getAttribute("value") === "plain", "Other namespace remains intact");
+          await new Promise(resolve => setTimeout(resolve, 0));
+          expectNamespace("Namespaced reactions do not replay");
+
           let attempts = 0;
           const broken = document.createElement("qa-broken");
           fixture.appendChild(broken);
