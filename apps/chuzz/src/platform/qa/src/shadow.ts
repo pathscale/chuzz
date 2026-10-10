@@ -195,13 +195,15 @@
             const nestedHost = document.createElement("div");
             nestedHost.style.setProperty("--nested-ink", "rgb(100, 110, 120)");
             probeRoot.appendChild(nestedHost);
-            const nestedLabel = document.createElement("span");
+            // An element the outer root's own `span` rule does not match: across tree
+            // contexts the outer normal declaration would win over ::slotted.
+            const nestedLabel = document.createElement("em");
             nestedLabel.textContent = "Nested slot";
             nestedHost.appendChild(nestedLabel);
             const nestedRoot = nestedHost.attachShadow({ mode: "open" });
             nestedRoot.innerHTML =
                 '<style>:host { display: block; } slot { display: contents; }'
-                + '::slotted(span) { display: block; min-height: 20px; '
+                + '::slotted(em) { display: block; min-height: 20px; '
                 + 'color: var(--nested-ink); }</style><slot></slot>';
             check(getComputedStyle(nestedLabel).color === "rgb(100, 110, 120)"
                 && nestedLabel.getBoundingClientRect().height >= 20,
