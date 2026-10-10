@@ -1,0 +1,15 @@
+[
+    (
+        id: "domexc-all",
+        group: "domexc",
+        what: "DOMException branding and codes, MessageEvent delivery, port queues, drag data, clipboard, static and live ranges, custom-element errors and device-free media load have observable behavior",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: DOMEXC PASS",
+        expect: PaintsNamed,
+        covers: ["READY: DOMEXC PASS"],
+        outcome_timeout_ms: 15000,
+    ),
+]
+

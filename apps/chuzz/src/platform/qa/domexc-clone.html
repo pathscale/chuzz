@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DOMEXCC clone proof</title>
+<style>
+@font-face {
+    font-family: "Fixture Sans";
+    src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+}
+body {
+    font-family: "Fixture Sans";
+    margin: 20px;
+    color: #102030;
+    background: #ffffff;
+}
+button { font: inherit; padding: 8px 20px; }
+#result { font-size: 20px; }
+</style>
+</head>
+<body>
+<h1>DOMEXCC clone proof</h1>
+<button id="run">Run</button>
+<p id="result" role="status">READY: DOMEXCC awaiting run</p>
+<script>
+(function () {
+    "use strict";
+
+    function assert(value, message) {
+        if (!value) throw new Error(message);
+    }
+
+    function graph() {
+        const exception = new DOMException("cancelled", "AbortError");
+        Object.defineProperty(exception, "stack", {
+            value: "exception stack", writable: true, configurable: true
+        });
+        const error = new TypeError("bad input");
+        error.stack = "error stack";
+        error.ignored = "custom properties are not cloned";
+        const other = new Error("normalized");
+        other.name = "toString";
+        const buffer = new Uint8Array([3, 7]).buffer;
+        const value = { exception, alias: exception, error, other, buffer };
+        error.cause = value;
+        return value;
+    }
+
+    function check(value) {
+        assert(value.exception instanceof DOMException &&
+            value.exception instanceof Error, "DOMException brand");
+        assert(value.exception.name === "AbortError" &&
+            value.exception.message === "cancelled" &&
+            value.exception.code === 20, "DOMException fields");
+        assert(value.exception.stack === "exception stack", "DOMException string stack");
+        assert(value.alias === value.exception, "shared exception identity");
+        assert(value.error instanceof TypeError &&
+            value.error.message === "bad input" &&
+            value.error.stack === "error stack", "Error fields and constructor");
+        assert(value.error.cause === value, "cyclic Error cause");
+        assert(!("ignored" in value.error), "Error custom properties are omitted");
+        assert(value.other instanceof Error &&
+            value.other.name === "Error" &&
+            value.other.message === "normalized", "unknown Error name normalization");
+        assert(new Uint8Array(value.buffer)[1] === 7, "buffer alongside exceptions");
+    }
+
+    function deadline(promise) {
+        let timer;
+        return Promise.race([
+            promise,
+            new Promise((resolve, reject) => {
+                timer = setTimeout(() => reject(new Error("message timed out")), 5000);
+            })
+        ]).finally(() => clearTimeout(timer));
+    }
+
+    async function run() {
+        const original = graph();
+        const copy = structuredClone(original);
+        check(copy);
+        assert(copy !== original && copy.exception !== original.exception, "fresh objects");
+
+        const spoof = structuredClone(Object.create(DOMException.prototype));
+        assert(!(spoof instanceof DOMException), "prototype alone does not confer a native brand");
+
+        const posted = deadline(new Promise(resolve => {
+            const listener = event => {
+                if (!event.data || event.data.domexcc !== true) return;
+                window.removeEventListener("message", listener);
+                resolve(event);
+            };
+            window.addEventListener("message", listener);
+        }));
+        window.postMessage({ domexcc: true, value: original }, "*");
+        const message = await posted;
+        assert(message instanceof MessageEvent && message instanceof Event &&
+            message.source === window && message.target === window &&
+            message.origin === new URL(location.href).origin &&
+            message.lastEventId === "" && message.ports.length === 0 &&
+            Object.isFrozen(message.ports), "window MessageEvent fields");
+        check(message.data.value);
+
+        const source = `
+            onmessage = function (event) {
+                var value = event.data;
+                postMessage({
+                    value: value,
+                    branded: value.exception instanceof DOMException &&
+                        value.exception instanceof Error &&
+                        value.error instanceof TypeError,
+                    fields: event instanceof MessageEvent && event instanceof Event &&
+                        event.target === self && event.source === null &&
+                        event.origin === "" && event.lastEventId === "" &&
+                        event.ports.length === 0 && Object.isFrozen(event.ports)
+                });
+            };
+        `;
+        const worker = new Worker("data:text/javascript," + encodeURIComponent(source));
+        try {
+            assert(worker instanceof EventTarget, "Worker EventTarget inheritance");
+            const reply = deadline(new Promise((resolve, reject) => {
+                worker.addEventListener("message", resolve, { once: true });
+                worker.onerror = event => reject(new Error(event.message));
+            }));
+            const sent = graph();
+            worker.postMessage(sent, [sent.buffer]);
+            assert(sent.buffer.byteLength === 0, "transfer still detaches");
+            const received = await reply;
+            assert(received instanceof MessageEvent && received instanceof Event &&
+                received.target === worker && received.source === null &&
+                received.origin === "" && received.lastEventId === "" &&
+                received.ports.length === 0 && Object.isFrozen(received.ports),
+                "worker reply MessageEvent fields");
+            assert(received.data.branded && received.data.fields, "worker realm interfaces");
+            check(received.data.value);
+        } finally {
+            worker.terminate();
+        }
+
+        const audio = document.createElement("audio");
+        const video = document.createElement("video");
+        assert(audio.load === HTMLMediaElement.prototype.load &&
+            video.load === HTMLMediaElement.prototype.load, "inherited media load");
+        assert(audio.load() === undefined && video.load() === undefined,
+            "detached device-free media load");
+    }
+
+    document.getElementById("run").addEventListener("click", function () {
+        const button = this;
+        const result = document.getElementById("result");
+        button.disabled = true;
+        result.textContent = "RUNNING: DOMEXCC";
+        run().then(function () {
+            result.textContent = "READY: DOMEXCC PASS";
+        }, function (error) {
+            result.textContent = "FAIL: DOMEXCC " + error;
+        }).finally(function () {
+            button.disabled = false;
+        });
+    });
+})();
+</script>
+</body>
+</html>

@@ -9,9 +9,7 @@ use blitz_script::boa_engine::builtins::error::Error;
 use blitz_script::boa_engine::object::builtins::{
     AlignedVec, JsArray, JsArrayBuffer, JsDataView, JsDate, JsMap, JsRegExp, JsSet, JsTypedArray,
 };
-use blitz_script::boa_engine::{
-    Context, JsBigInt, JsNativeError, JsResult, JsString, JsValue, Source,
-};
+use blitz_script::boa_engine::{Context, JsBigInt, JsNativeError, JsResult, JsString, JsValue, Source};
 
 use super::{argument, call, named_error, register, string};
 
@@ -26,10 +24,15 @@ pub(super) struct Wire {
 }
 
 fn kind(_: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let Some(object) = argument(args, 0).as_object() else {
+    let value = argument(args, 0);
+    let Some(object) = value.as_object() else {
         return Ok(JsString::from("primitive").into());
     };
-    let kind = if object.is_array() {
+    let kind = if blitz_script::dom_exception::is_instance(&value) {
+        "domexception"
+    } else if object.is::<Error>() {
+        "error"
+    } else if object.is_array() {
         "array"
     } else if object.is_ordinary() {
         "object"
@@ -47,8 +50,6 @@ fn kind(_: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
         "map"
     } else if JsSet::from_object(object.clone()).is_ok() {
         "set"
-    } else if object.is::<Error>() {
-        "error"
     } else if object.is::<bool>() {
         "boolean"
     } else if object.is::<f64>() {
@@ -190,6 +191,7 @@ fn structured_clone(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 }
 
 pub(super) fn install(context: &mut Context) -> JsResult<()> {
+    blitz_script::dom_exception::register(context);
     register(context, "__chuzzCloneKind", 1, kind)?;
     register(context, "__chuzzStructuredClone", 2, structured_clone)?;
     context.eval(Source::from_bytes(include_str!("clone.ts")))?;

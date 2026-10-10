@@ -4,6 +4,7 @@
   const nativeClone = g.__chuzzStructuredClone;
   const keys = Object.keys;
   const define = Object.defineProperty;
+  const hasOwn = Object.prototype.hasOwnProperty;
   const stringify = JSON.stringify;
   const parse = JSON.parse;
   const ArrayCtor = Array;
@@ -16,8 +17,11 @@
   const BigIntCtor = BigInt;
   const StringCtor = String;
   const DataViewCtor = DataView;
+  const DOMExceptionCtor = g.DOMException;
   const get = (prototype, name) =>
     Object.getOwnPropertyDescriptor(prototype, name).get;
+  const exceptionName = get(DOMExceptionCtor.prototype, "name");
+  const exceptionMessage = get(DOMExceptionCtor.prototype, "message");
   const typedPrototype = Object.getPrototypeOf(Uint8Array.prototype);
   const typedName = get(typedPrototype, Symbol.toStringTag);
   const typedBuffer = get(typedPrototype, "buffer");
@@ -52,7 +56,11 @@
     Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError,
   };
   function failure(message) {
-    return g.__chuzzWorkerException("DataCloneError", message);
+    return new DOMExceptionCtor(message, "DataCloneError");
+  }
+  function stackOf(value) {
+    const stack = value.stack;
+    return typeof stack === "string" ? stack : null;
   }
   function publish(name, value) {
     define(g, name, { value });
@@ -87,7 +95,12 @@
       records.push(null);
       const kind = kindOf(value);
       let record;
-      if (kind === "buffer") {
+      if (kind === "domexception") {
+        record = [
+          "domexception", exceptionName.call(value), exceptionMessage.call(value),
+          stackOf(value),
+        ];
+      } else if (kind === "buffer") {
         record = ["buffer", bufferId(value)];
       } else if (kind === "typed") {
         record = [
@@ -112,11 +125,11 @@
         setEach.call(value, entry => entries.push(visit(entry)));
         record = ["set", entries];
       } else if (kind === "error") {
-        const name = StringCtor(value.name);
+        const name = value.name;
         record = [
-          "error", errors[name] ? name : "Error",
-          StringCtor(value.message), StringCtor(value.stack || ""),
-          "cause" in value ? visit(value.cause) : null,
+          "error", typeof name === "string" && hasOwn.call(errors, name) ? name : "Error",
+          value.message === undefined ? "" : StringCtor(value.message), stackOf(value),
+          hasOwn.call(value, "cause") ? visit(value.cause) : null,
         ];
       } else if (boxed[kind]) {
         record = ["boxed", visit(boxed[kind].call(value))];
@@ -155,6 +168,9 @@
       const kind = record[0];
       let value;
       switch (kind) {
+        case "domexception":
+          value = new DOMExceptionCtor(record[2], record[1]);
+          break;
         case "buffer": value = buffers[record[1]]; break;
         case "typed":
           value = new typed[record[1]](read(record[2]), record[3], record[4]);
@@ -170,13 +186,16 @@
         case "object": value = {}; break;
         case "boxed": value = ObjectCtor(read(record[1])); break;
         case "error":
+          if (!hasOwn.call(errors, record[1])) throw failure("invalid error record");
           value = new errors[record[1]](record[2]);
-          define(value, "stack", { value: record[3], writable: true, configurable: true });
           break;
         default: throw failure("invalid clone record");
       }
       values[id] = value;
       constructed.add(id);
+      if ((kind === "error" || kind === "domexception") && record[3] !== null) {
+        define(value, "stack", { value: record[3], writable: true, configurable: true });
+      }
       if (kind === "array" || kind === "object") {
         for (const [key, token] of record[1]) {
           define(value, key, {

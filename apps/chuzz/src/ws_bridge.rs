@@ -612,7 +612,22 @@ pub const WEBSOCKET_SHIM: &str = r#"
         socket.protocol = event.protocol || "";
         fire("open", { type: "open", target: socket });
       } else if (event.type === "message") {
-        fire("message", { type: "message", data: event.data, target: socket });
+        var message = new MessageEvent("message", {
+          data: event.data,
+          origin: new URL(socket.url, location.href).origin
+        });
+        Object.defineProperties(message, {
+          target: { value: socket, configurable: true },
+          currentTarget: { value: socket, configurable: true },
+          eventPhase: { value: 2, configurable: true }
+        });
+        try { fire("message", message); }
+        finally {
+          Object.defineProperties(message, {
+            currentTarget: { value: null, configurable: true },
+            eventPhase: { value: 0, configurable: true }
+          });
+        }
       } else if (event.type === "error") {
         fire("error", { type: "error", target: socket, message: event.message });
       } else if (event.type === "close") {
@@ -629,6 +644,9 @@ pub const WEBSOCKET_SHIM: &str = r#"
     };
 
     this.send = function (data) {
+      if (socket.readyState === 0) {
+        throw new DOMException("WebSocket is connecting", "InvalidStateError");
+      }
       if (socket.readyState !== 1) { return; }
       post({ ws: "send", id: id, data: String(data) });
     };

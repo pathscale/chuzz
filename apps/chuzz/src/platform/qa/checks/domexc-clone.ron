@@ -1,0 +1,14 @@
+[
+    (
+        id: "domexcc-clone",
+        group: "domexc-clone",
+        what: "Error and DOMException clone with native brands, fields, string stacks, shared references and cyclic causes through structuredClone, window messaging and both worker directions; buffer transfers and inherited device-free media load remain functional",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: DOMEXCC PASS",
+        expect: PaintsNamed,
+        covers: ["READY: DOMEXCC PASS"],
+        outcome_timeout_ms: 15000,
+    ),
+]

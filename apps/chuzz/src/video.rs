@@ -13,6 +13,7 @@ use blitz_dom::Document as _;
 use blitz_dom::NodeId;
 use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
 use blitz_script::ScriptDocument;
+use blitz_script::boa_engine::{JsString, JsValue};
 use blitz_traits::net::Url;
 
 use crate::document_loader::NetProvider;
@@ -524,15 +525,45 @@ struct Host {
 impl Host {
     fn poll(&mut self, document: &mut ScriptDocument) -> bool {
         let now = Instant::now();
+        let loaded_nodes = document.with_js_context(|context| {
+            let requests = blitz_script::media::take_load_requests(context);
+            let mut nodes = HashMap::new();
+            if requests.is_empty() {
+                return nodes;
+            }
+            let load = context
+                .global_object()
+                .get(JsString::from("__chuzzVideoLoad"), context)
+                .ok()
+                .and_then(|value| value.as_object())
+                .filter(|function| function.is_callable());
+            let Some(load) = load else {
+                eprintln!("Media load hook is unavailable");
+                return nodes;
+            };
+            for request in requests {
+                let node = request.node_id;
+                match load.call(&JsValue::undefined(), &[request.element.clone().into()], context) {
+                    Ok(value) => {
+                        if let Some(id) = value.as_number() {
+                            nodes.insert(id as u64, node);
+                        }
+                    }
+                    Err(error) => eprintln!("Media load request: {error}"),
+                }
+            }
+            nodes
+        });
         let commands = document
             .eval_json("globalThis.__chuzzVideoDrain()")
             .ok()
             .and_then(|value| serde_json::from_value::<Vec<Command>>(value).ok())
             .unwrap_or_default();
-        let mut changed = false;
+        let mut changed = !loaded_nodes.is_empty();
 
         for command in commands {
             if command.op == "load" || command.op == "release" {
+                let existing_node = self.entries.get(&command.id).map(|entry| entry.node);
                 if let Some(mut previous) = self.entries.remove(&command.id) {
                     let _ = set_image(document, previous.node, None, &mut previous.pixels);
                     changed = true;
@@ -540,8 +571,16 @@ impl Host {
                 if command.op == "release" || command.src.as_deref().is_none_or(str::is_empty) {
                     continue;
                 }
-                let selector = format!("video[data-chuzz-video='{}']", command.id);
-                let Some(node) = document.inner().query_selector(&selector).ok().flatten() else {
+                let selector = format!(
+                    "video[data-chuzz-video='{}'],audio[data-chuzz-video='{}']",
+                    command.id, command.id
+                );
+                let node = loaded_nodes
+                    .get(&command.id)
+                    .copied()
+                    .or(existing_node)
+                    .or_else(|| document.inner().query_selector(&selector).ok().flatten());
+                let Some(node) = node else {
                     continue;
                 };
                 let url = document

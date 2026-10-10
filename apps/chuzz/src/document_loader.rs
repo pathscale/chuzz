@@ -390,7 +390,7 @@ pub(crate) const WEB_API_SHIM: &str = r#"
         if (!parent) return;
         reference = this.nextSibling;
       } else {
-        throw new SyntaxError('invalid insertAdjacentHTML position');
+        throw new DOMException('invalid insertAdjacentHTML position', 'SyntaxError');
       }
       while (container.firstChild) {
         parent.insertBefore(container.firstChild, reference);
@@ -449,46 +449,7 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       });
     };
   }
-  if (typeof globalThis.MessageChannel === 'undefined') {
-    function MessagePort() {
-      this.onmessage = null;
-      this.__listeners = [];
-      this.__other = null;
-      this.__closed = false;
-    }
-    MessagePort.prototype.postMessage = function (data) {
-      var target = this.__other;
-      if (this.__closed || !target || target.__closed) return;
-      globalThis.setTimeout(function () {
-        var event = typeof globalThis.MessageEvent === 'function'
-          ? new globalThis.MessageEvent('message', { data: data })
-          : new globalThis.Event('message');
-        if (typeof event.data === 'undefined') event.data = data;
-        if (typeof target.onmessage === 'function') target.onmessage.call(target, event);
-        target.__listeners.slice().forEach(function (listener) {
-          listener.call(target, event);
-        });
-      }, 0);
-    };
-    MessagePort.prototype.addEventListener = function (type, listener) {
-      if (type === 'message' && typeof listener === 'function'
-          && this.__listeners.indexOf(listener) < 0) this.__listeners.push(listener);
-    };
-    MessagePort.prototype.removeEventListener = function (type, listener) {
-      if (type !== 'message') return;
-      var index = this.__listeners.indexOf(listener);
-      if (index >= 0) this.__listeners.splice(index, 1);
-    };
-    MessagePort.prototype.start = function () {};
-    MessagePort.prototype.close = function () { this.__closed = true; };
-    globalThis.MessageChannel = function () {
-      this.port1 = new MessagePort();
-      this.port2 = new MessagePort();
-      this.port1.__other = this.port2;
-      this.port2.__other = this.port1;
-    };
-    globalThis.MessagePort = MessagePort;
-  }
+
   /*
    * `performance`, and specifically `getEntriesByType`.
    *
@@ -1294,34 +1255,7 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       return out;
     };
   }
-  if (typeof globalThis.DOMException === 'undefined') {
-    // Real. A DOMException is a name, a message and a legacy code, and the
-    // reason pages reach for it is `error.name === 'AbortError'` rather than
-    // anything the platform has to provide. Building it here also gives the
-    // abort machinery below the type a browser would actually throw.
-    var LEGACY_CODES = {
-      IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4,
-      InvalidCharacterError: 5, NoModificationAllowedError: 7, NotFoundError: 8,
-      NotSupportedError: 9, InUseAttributeError: 10, InvalidStateError: 11,
-      SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14,
-      InvalidAccessError: 15, TypeMismatchError: 17, SecurityError: 18,
-      NetworkError: 19, AbortError: 20, URLMismatchError: 21,
-      QuotaExceededError: 22, TimeoutError: 23, InvalidNodeTypeError: 24,
-      DataCloneError: 25
-    };
-    globalThis.DOMException = function (message, name) {
-      this.message = message === undefined ? '' : String(message);
-      this.name = name === undefined ? 'Error' : String(name);
-      this.code = LEGACY_CODES[this.name] || 0;
-      // Not inherited from Error, because Boa's Error does not take to being
-      // subclassed from a plain constructor. A stack is attached instead, since
-      // that is the one property a reporter reads off a caught exception.
-      this.stack = this.name + ': ' + this.message;
-    };
-    globalThis.DOMException.prototype.toString = function () {
-      return this.name + ': ' + this.message;
-    };
-  }
+
   if (typeof globalThis.TextEncoder === 'undefined') {
     // Real UTF-8, including surrogate pairs, because the callers that reach for
     // this are hashing, signing or framing bytes. An encoder that got the

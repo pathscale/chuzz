@@ -105,6 +105,10 @@
 
   class File extends Blob {
     constructor(parts, name, options = {}) {
+      if (arguments.length < 2) throw new TypeError("File requires parts and a name");
+      if (typeof name === "symbol") throw new TypeError("File name must be a string");
+      options = options || {};
+      name = usv(name).replace(/\//g, ":");
       super(parts, options);
       const modified = options.lastModified === undefined ? Date.now() : Number(options.lastModified);
       Object.defineProperties(this, {

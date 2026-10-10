@@ -2,7 +2,8 @@
 // directly. It is installed after the shared DOM compatibility shim.
 (function () {
   var prototype = Object.getPrototypeOf(document.createElement('video'));
-  var originalSrc = Object.getOwnPropertyDescriptor(prototype, 'src');
+  var mediaPrototype = HTMLMediaElement.prototype;
+  var mediaLoad = mediaPrototype.load;
   var states = new Map();
   var byElement = new WeakMap();
   var commands = [];
@@ -58,8 +59,8 @@
   });
 
   function stateFor(element) {
-    if (!element || element.tagName !== 'VIDEO') {
-      throw new TypeError('This operation requires an HTMLVideoElement');
+    if (!element || (element.tagName !== 'VIDEO' && element.tagName !== 'AUDIO')) {
+      throw new TypeError('This operation requires an HTMLMediaElement');
     }
     var state = byElement.get(element);
     if (!state) {
@@ -93,6 +94,8 @@
         playedStart: null,
         configuration: '',
         autoAttempted: false,
+        loadQueued: false,
+        detachedLoad: false,
         pending: [],
         posterImage: null,
         bar: null,
@@ -207,7 +210,9 @@
   }
 
   function property(name, get, set) {
-    Object.defineProperty(prototype, name, {
+    var target = name === 'videoWidth' || name === 'videoHeight' || name === 'poster'
+      ? prototype : mediaPrototype;
+    Object.defineProperty(target, name, {
       configurable: true,
       enumerable: true,
       get: function () { return get(stateFor(this)); },
@@ -248,24 +253,17 @@
     state.playedStart = state.time;
   }
 
-  Object.defineProperty(prototype, 'src', {
+  Object.defineProperty(mediaPrototype, 'src', {
     configurable: true,
     enumerable: true,
     get: function () {
-      if (this.tagName === 'VIDEO') {
-        return resolvedSource(this.getAttribute('src') || '');
-      }
-      return originalSrc && originalSrc.get
-        ? originalSrc.get.call(this)
-        : (this.getAttribute('src') || '');
+      stateFor(this);
+      return resolvedSource(this.getAttribute('src') || '');
     },
     set: function (value) {
-      if (this.tagName !== 'VIDEO' && originalSrc && originalSrc.set) {
-        originalSrc.set.call(this, value);
-        return;
-      }
+      var state = stateFor(this);
       this.setAttribute('src', String(value));
-      if (this.tagName === 'VIDEO') sync(stateFor(this), false);
+      sync(state, false);
     }
   });
 
@@ -379,33 +377,37 @@
     ['NETWORK_EMPTY', 0], ['NETWORK_IDLE', 1],
     ['NETWORK_LOADING', 2], ['NETWORK_NO_SOURCE', 3]
   ].forEach(function (constant) {
-    if (typeof prototype[constant[0]] === 'undefined') {
-      Object.defineProperty(prototype, constant[0], { value: constant[1] });
+    if (typeof mediaPrototype[constant[0]] === 'undefined') {
+      Object.defineProperty(mediaPrototype, constant[0], { value: constant[1] });
     }
   });
 
-  // One load for every media element, as in browsers: video goes through this
-  // host, audio keeps the engine's device-free load.
-  var mediaPrototype = typeof HTMLMediaElement === 'function' ? HTMLMediaElement.prototype : prototype;
-  var nativeLoad = mediaPrototype.load;
   Object.defineProperty(mediaPrototype, 'load', {
     configurable: true,
     writable: true,
     value: function () {
-      if (this.tagName === 'VIDEO' || typeof nativeLoad !== 'function') sync(stateFor(this), true);
-      else nativeLoad.call(this);
+      mediaLoad.call(this);
+      var state = stateFor(this);
+      state.loadQueued = true;
+      state.detachedLoad = !this.isConnected;
+      sync(state, true);
     }
   });
-  if (mediaPrototype !== prototype) delete prototype.load;
-  Object.defineProperty(prototype, 'play', {
+  // Native load requests can also originate from a saved engine method.
+  // Ordinary load() already resets synchronously, before a following play().
+  globalThis.__chuzzVideoLoad = function (element) {
+    var state = stateFor(element);
+    if (!state.loadQueued) {
+      state.detachedLoad = !element.isConnected;
+      sync(state, true);
+    }
+    state.loadQueued = false;
+    return state.id;
+  };
+  Object.defineProperty(mediaPrototype, 'play', {
     configurable: true,
     writable: true,
     value: function () {
-      if (this.tagName !== 'VIDEO') {
-        return Promise.reject(exception(
-          'Audio elements are unavailable', 'NotSupportedError'
-        ));
-      }
       var state = stateFor(this);
       sync(state, false);
       if (!state.requested) {
@@ -439,7 +441,7 @@
       return promise;
     }
   });
-  Object.defineProperty(prototype, 'pause', {
+  Object.defineProperty(mediaPrototype, 'pause', {
     configurable: true,
     writable: true,
     value: function () {
@@ -455,12 +457,12 @@
       updateUi(state);
     }
   });
-  Object.defineProperty(prototype, 'fastSeek', {
+  Object.defineProperty(mediaPrototype, 'fastSeek', {
     configurable: true,
     writable: true,
     value: function (time) { this.currentTime = time; }
   });
-  Object.defineProperty(prototype, 'canPlayType', {
+  Object.defineProperty(mediaPrototype, 'canPlayType', {
     configurable: true,
     writable: true,
     value: function (type) {
@@ -493,6 +495,7 @@
 
   function updateUi(state) {
     var element = state.element;
+    if (element.tagName !== 'VIDEO') return;
     var poster = resolvedSource(element.getAttribute('poster') || '');
     var controls = element.hasAttribute('controls');
     if (!document.body || !element.parentNode) return;
@@ -555,9 +558,10 @@
 
   globalThis.__chuzzVideoDrain = function () {
     var seen = new Set();
-    var elements = document.querySelectorAll('video');
+    var elements = document.querySelectorAll('video,audio');
     for (var index = 0; index < elements.length; index++) {
       var state = stateFor(elements[index]);
+      state.detachedLoad = false;
       seen.add(state.id);
       sync(state, false);
       var configuration = [
@@ -577,7 +581,11 @@
     }
     states.forEach(function (state, id) {
       if (seen.has(id)) return;
-      rejectPending(state, exception('The video was removed', 'AbortError'));
+      if (state.detachedLoad && !state.element.isConnected) {
+        sync(state, false);
+        if (state.requested) return;
+      }
+      rejectPending(state, exception('The media element was removed', 'AbortError'));
       send(state, 'release');
       if (globalThis.__chuzzMseDetach) globalThis.__chuzzMseDetach(state.element);
       remove(state.posterImage);
