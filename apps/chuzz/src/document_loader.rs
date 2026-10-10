@@ -1757,6 +1757,7 @@ pub(crate) fn install_web_api_shim(
     document.eval(&format!(
         "if (globalThis.navigator) navigator.userAgent = {user_agent};"
     ));
+    crate::media::install(document);
     crate::video::install(document, Arc::new(net_provider.clone()));
     crate::workers::install(document, Arc::new(net_provider.clone()));
     crate::webapi::install(document);

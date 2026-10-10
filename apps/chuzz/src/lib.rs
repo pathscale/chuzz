@@ -51,6 +51,8 @@ pub mod identity;
 // The browser's own documents: view source, the error page. Pages rather than
 // chrome, so the headless host reaches them too.
 pub mod internal_pages;
+#[cfg(feature = "javascript")]
+pub mod media;
 pub mod nav;
 pub mod net_bridge;
 // A built site needs an origin before it is a site. Only the headless host
@@ -75,4 +77,3 @@ pub mod serve;
 // guest-built page cannot render one way in a tab and another in a capture.
 #[cfg(feature = "wasm")]
 pub mod wasm_page;
-

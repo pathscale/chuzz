@@ -1,0 +1,23 @@
+[
+    (
+        id: "devices-all",
+        group: "webrtc-devices",
+        what: "Fake capture generates moving frames and tone PCM with independent track lifecycle, constraints and device events",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: devices PASS",
+        expect: PaintsNamed,
+        covers: [
+            "READY: devices PASS",
+            "PASS: stable fake devices and permission labels",
+            "PASS: moving deterministic I420 and disabled black frames",
+            "PASS: measured 440 Hz PCM and exact disabled silence",
+            "PASS: exact, ideal, advanced and atomic independent settings",
+            "PASS: shared sources, independent clone disposal and released handles",
+            "PASS: mute, unmute, devicechange and source ended events",
+        ],
+        outcome_timeout_ms: 20000,
+    ),
+]
+
