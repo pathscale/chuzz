@@ -1,0 +1,13 @@
+[
+    (
+        id: "canvas-long-path",
+        group: "canvas-long-path",
+        what: "a path grown to 200,000 elements across frames without beginPath still strokes, as in Chrome",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: LONGPATH PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 60000,
+    ),
+]

@@ -33,7 +33,9 @@ type Result<T> = std::result::Result<T, String>;
 const IMAGE_LIMIT: usize = 64 * 1024 * 1024;
 const DOCUMENT_LIMIT: usize = 512 * 1024 * 1024;
 const COMMAND_LIMIT: usize = 8192;
-const PATH_LIMIT: usize = 65_536;
+// Elements in the current path. A page that strokes in a loop without beginPath grows one path across frames;
+// Chrome keeps going (slowly), so this only stops what would otherwise exhaust memory.
+const PATH_LIMIT: usize = 1 << 20;
 const STACK_LIMIT: usize = 256;
 
 fn identity() -> [f64; 6] {
