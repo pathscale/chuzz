@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Shadow DOM QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      margin: 24px;
+      background: #182335;
+      color: white;
+      font-family: Fixture;
+    }
+    button { padding: 12px 20px; font: inherit; }
+    #fixture { margin-top: 24px; }
+    #fixture > div { margin-bottom: 16px; }
+    #styled-host::part(action) { border: 3px solid rgb(255, 210, 80); }
+  </style>
+</head>
+<body data-feature="shadow">
+  <h1>Shadow DOM QA</h1>
+  <button id="run" type="button">Run shadow DOM</button>
+  <p id="result" role="status">Ready</p>
+  <div id="fixture"></div>
+  <script src="./src/shadow.ts"></script>
+</body>
+</html>
+

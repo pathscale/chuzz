@@ -65,6 +65,8 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 
 #[path = "serve_supervisor.rs"]
 mod supervisor;
+#[path = "serve_shadow.rs"]
+mod shadow_inspect;
 
 fn trace(message: &str) {
     eprintln!("chuzz-headless: {message}");
@@ -1882,6 +1884,13 @@ fn serve_page(target: &str) -> Result<(), String> {
                         max_depth
                     };
                     let response = inspect_document(&mut *document, root, depth, revision);
+                    let response = shadow_inspect::flatten(
+                        &mut document,
+                        response,
+                        root,
+                        depth as usize,
+                        |document, id| inspect_document(document, Some(id), 1, revision),
+                    );
                     sanitize_inspection(&policy, &document, response)
                 }
                 AgentControlRequest::Act(action) => {
@@ -1930,7 +1939,14 @@ fn serve_page(target: &str) -> Result<(), String> {
                 AgentControlRequest::Condense { level, options } => {
                     condense_response(&policy, level, options, || {
                         revision += 1;
-                        inspect_document(&mut *document, None, 0, revision)
+                        let response = inspect_document(&mut *document, None, 0, revision);
+                        shadow_inspect::flatten(
+                            &mut document,
+                            response,
+                            None,
+                            0,
+                            |document, id| inspect_document(document, Some(id), 1, revision),
+                        )
                     })
                 }
                 // The remaining request types are not implemented by this host.

@@ -70,6 +70,7 @@ javascript = [
   # Real sites format dates, numbers and plurals through Intl before they
   # render anything; without it their bundles throw "Intl is not defined".
   "blitz-script/intl",
+  "blitz-script/shadow-dom",
   "dep:mp4parse",
   "dep:ps-rust_h264",
   "dep:rusty-opus",

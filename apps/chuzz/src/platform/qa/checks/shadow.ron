@@ -1,0 +1,26 @@
+[
+    (
+        id: "sites-shadow",
+        group: "shadow",
+        what: "native roots, scoped styles, slots, constructable sheets and composed event boundaries work",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "PASS: shadow",
+        expect: PaintsNamed,
+        covers: ["Shadow button", "Slotted label"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "sites-shadow-interaction",
+        group: "shadow",
+        what: "a styled shadow button accepts a real pointer click",
+        open: None,
+        hover: None,
+        click: Some("Shadow button"),
+        subject: "PASS: shadow button interaction",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]
+
