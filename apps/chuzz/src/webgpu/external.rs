@@ -95,6 +95,122 @@ fn byte_count(width: u32, height: u32) -> Result<usize, GpuError> {
     Ok(count as usize)
 }
 
+fn might_be_svg(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    bytes[start..].starts_with(b"<")
+}
+
+fn svg_pixels(value: f32) -> Result<u32, GpuError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(GpuError::validation("svg image has no drawable size"));
+    }
+    let rounded = value.round();
+    if rounded < 1.0 || rounded > u16::MAX as f32 {
+        return Err(GpuError::validation(
+            "svg image size is invalid or too large",
+        ));
+    }
+    Ok(rounded as u32)
+}
+
+fn unpremultiply(source: &[u8], target: &mut [u8]) {
+    for (source, target) in source.chunks_exact(4).zip(target.chunks_exact_mut(4)) {
+        let alpha = u32::from(source[3]);
+        target[3] = source[3];
+        for index in 0..3 {
+            target[index] = if alpha == 0 {
+                0
+            } else {
+                ((u32::from(source[index]) * 255 + alpha / 2) / alpha).min(255) as u8
+            };
+        }
+    }
+}
+
+fn decode_raster(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
+    let make_reader = || {
+        image::ImageReader::new(Cursor::new(data))
+            .with_guessed_format()
+            .map_err(|error| GpuError::validation(error.to_string()))
+    };
+    let (width, height) = make_reader()?
+        .into_dimensions()
+        .map_err(|error| GpuError::validation(error.to_string()))?;
+    byte_count(width, height)?;
+    let mut reader = make_reader()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(ALLOCATION_LIMIT);
+    reader.limits(limits);
+    let rgba = reader
+        .decode()
+        .map_err(|error| GpuError::validation(error.to_string()))?
+        .into_rgba8();
+    Ok(Arc::new(RasterImageData::new(
+        rgba.width(),
+        rgba.height(),
+        Arc::new(rgba.into_raw()),
+    )))
+}
+
+fn decode_encoded(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
+    match decode_raster(data) {
+        Ok(image) => Ok(image),
+        Err(raster_error) => decode_svg(data)?.ok_or(raster_error),
+    }
+}
+
+/// `image` does not decode SVG. Rasterize with the painter blitz-paint already
+/// uses, at usvg's resolved size (root width/height, otherwise the viewBox).
+/// The CPU pixmap is premultiplied; ImageBitmap storage is straight RGBA.
+#[cfg(any(feature = "javascript", feature = "capture"))]
+fn decode_svg(bytes: &[u8]) -> Result<Option<Arc<RasterImageData>>, GpuError> {
+    use anyrender_vello_cpu::VelloCpuScenePainter;
+    use blitz_dom::kurbo::Affine;
+
+    if !might_be_svg(bytes) {
+        return Ok(None);
+    }
+    let tree =
+        match anyrender_svg::usvg::Tree::from_data(bytes, &anyrender_svg::usvg::Options::default())
+        {
+            Ok(tree) => tree,
+            Err(_) => return Ok(None),
+        };
+    let size = tree.size();
+    let width = svg_pixels(size.width())?;
+    let height = svg_pixels(size.height())?;
+    let count = byte_count(width, height)?;
+    let mut painter = VelloCpuScenePainter::new(width as u16, height as u16);
+    let transform = Affine::scale_non_uniform(
+        f64::from(width) / f64::from(size.width()),
+        f64::from(height) / f64::from(size.height()),
+    );
+    anyrender_svg::render_svg_tree(&mut painter, &tree, transform);
+    let pixmap = painter.finish_shared();
+    let source = pixmap.as_ref();
+    if source.len() != count {
+        return Err(GpuError::validation(
+            "svg raster size did not match the image",
+        ));
+    }
+    let mut straight = vec![0; count];
+    unpremultiply(source, &mut straight);
+    Ok(Some(Arc::new(RasterImageData::new(
+        width,
+        height,
+        Arc::new(straight),
+    ))))
+}
+
+#[cfg(not(any(feature = "javascript", feature = "capture")))]
+fn decode_svg(_bytes: &[u8]) -> Result<Option<Arc<RasterImageData>>, GpuError> {
+    Ok(None)
+}
+
 fn marker_matches(element: &blitz_dom::node::ElementData, marker: &str) -> bool {
     element.attrs().iter().any(|attribute| {
         attribute.name.local.as_ref() == "data-chuzz-gpu-source"
@@ -250,28 +366,7 @@ impl Bridge {
                 if data.len() as u64 > ALLOCATION_LIMIT {
                     return Err(GpuError::validation("image decode limit reached in chuzz"));
                 }
-                let make_reader = || {
-                    image::ImageReader::new(Cursor::new(data.as_slice()))
-                        .with_guessed_format()
-                        .map_err(|error| GpuError::validation(error.to_string()))
-                };
-                let (width, height) = make_reader()?
-                    .into_dimensions()
-                    .map_err(|error| GpuError::validation(error.to_string()))?;
-                byte_count(width, height)?;
-                let mut reader = make_reader()?;
-                let mut limits = image::Limits::default();
-                limits.max_alloc = Some(ALLOCATION_LIMIT);
-                reader.limits(limits);
-                let rgba = reader
-                    .decode()
-                    .map_err(|error| GpuError::validation(error.to_string()))?
-                    .into_rgba8();
-                Ok(Arc::new(RasterImageData::new(
-                    rgba.width(),
-                    rgba.height(),
-                    Arc::new(rgba.into_raw()),
-                )))
+                decode_encoded(data.as_slice())
             }
             Source::Canvas {
                 canvas,

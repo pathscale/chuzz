@@ -80,6 +80,7 @@ javascript = [
   "dep:symphonia",
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
+  "dep:anyrender_svg",
   "dep:peniko",
   "dep:parley",
   "dep:skrifa",
@@ -128,6 +129,7 @@ webp = ["image/webp"]
 capture = [
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
+  "dep:anyrender_svg",
   "dep:blitz-paint",
   "dep:png",
   "wasm",
@@ -166,6 +168,7 @@ brotli.workspace = true
 image = { workspace = true, default-features = false }
 anyrender = { workspace = true, optional = true }
 anyrender_vello_cpu = { workspace = true, optional = true }
+anyrender_svg = { workspace = true, optional = true }
 # These are already in Blitz's renderer and text graph. Naming their public
 # types lets the canvas use the same painter, font collection and outlines.
 peniko = { version = "^0.6", optional = true }
@@ -228,4 +231,5 @@ wat = "1"
 
 [build-dependencies]
 brotli.workspace = true
+
 

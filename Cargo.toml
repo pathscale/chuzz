@@ -80,6 +80,10 @@ anyrender = { package = "ps-anyrender", version = "^0.13" }
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.3", features = ["filters"] }
+# SVG `<img>` / `Image()` bytes are not a raster format. This is the painter
+# blitz-paint already uses; it has to be named here to be called. Default
+# features stay off so SVG text does not pull system fonts into a headless build.
+anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15", default-features = false, features = ["image_format_png", "image_format_jpeg", "image_format_gif", "image_format_webp"] }
 blitz-paint = { package = "ps-blitz-paint", version = "^0.5" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
@@ -151,4 +155,5 @@ strip = "none"
 # The fork is published as `ps-usvg` now and ps-blitz depends on it by version,
 # so the requirement travels with the dependency instead of being restated by
 # every consumer.
+
 
