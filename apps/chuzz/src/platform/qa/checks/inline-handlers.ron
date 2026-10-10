@@ -1,0 +1,15 @@
+[
+    (
+        id: "inline-handlers-all",
+        group: "inline-handlers",
+        what: "lazy content handlers, parser and document.write, attribute updates, innerHTML, cloning, scope chains, IDL replacement, removal, cancellation, window forwarding and shadow dispatch",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: INLINEHANDLERS PASS",
+        expect: PaintsNamed,
+        covers: ["READY: INLINEHANDLERS PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

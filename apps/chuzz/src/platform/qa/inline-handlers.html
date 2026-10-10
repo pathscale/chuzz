@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Platform inline handlers</title>
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      font-family: "Fira Sans";
+      margin: 24px;
+      background: #f5f7fa;
+      color: #182436;
+    }
+    button, input, a {
+      font-family: "Fira Sans";
+      font-size: 18px;
+      padding: 12px;
+    }
+    #result {
+      padding: 16px;
+      background: white;
+      border: 2px solid #465d78;
+      font-size: 20px;
+    }
+    #sandbox {
+      padding: 12px;
+      margin-top: 16px;
+      border: 1px solid #465d78;
+    }
+  </style>
+  <script>
+    var inlineProof = {
+      markup: 0,
+      written: 0,
+      bodyLoads: 0,
+      bodyThis: null,
+      hits: [],
+      linkClicks: 0,
+      linkEvent: null
+    };
+  </script>
+</head>
+<body onload="inlineProof.bodyLoads++; inlineProof.bodyThis = this">
+  <h1>Platform inline handlers</h1>
+  <button id="run" type="button" onclick="runInlineHandlers(event, this)">Run</button>
+  <p id="result" role="status">Waiting for Run</p>
+  <div id="sandbox">
+    <button id="markup" type="button"
+      onclick="inlineProof.markup++; inlineProof.markupThis = this; inlineProof.markupEvent = event">Markup</button>
+    <a id="cancel-link" href="#unexpected-navigation"
+      onclick="inlineProof.linkClicks++; inlineProof.linkEvent = event; return false">Cancelled link</a>
+    <input id="cancel-checkbox" type="checkbox" onclick="return false" aria-label="Cancelled checkbox">
+    <form id="owner">
+      <button id="scope" type="button"
+        onclick="this.form.reportValidity && submitted++; reportValidity(); inlineProof.scope = [scopeValue, documentValue, document === ownerDocument, this.form]">Form scope</button>
+    </form>
+    <button id="external" type="button" form="owner"
+      onclick="submitted++; inlineProof.externalForm = this.form">External form owner</button>
+    <script>
+      document.write('<button id="written" type="button" onclick="inlineProof.written++">Written</button>');
+    </script>
+    <div id="inner"></div>
+  </div>
+  <script>
+    function inlineAssert(value, message) {
+      if (!value) throw new Error(message);
+    }
+
+    async function runInlineHandlers(event, button) {
+      // Read before the first await: per spec currentTarget is reset to null once
+      // dispatch finishes, so the async remainder cannot observe it.
+      var dispatchedTo = event.currentTarget;
+      button.disabled = true;
+      var result = document.getElementById("result");
+      var savedLoad = window.onload;
+      var savedError = window.onerror;
+      try {
+        result.textContent = "RUNNING: INLINEHANDLERS";
+        await document.fonts.ready;
+        inlineAssert(event.type === "click" && dispatchedTo === button,
+          "native markup handler receives its click");
+        inlineAssert(inlineProof.bodyLoads === 1 && inlineProof.bodyThis === window,
+          "markup body onload forwards to window");
+
+        var markup = document.getElementById("markup");
+        var first = markup.onclick;
+        inlineAssert(typeof first === "function" && first.length === 1 &&
+          markup.onclick === first, "IDL getter compiles once");
+        markup.click();
+        inlineAssert(inlineProof.markup === 1 && inlineProof.markupThis === markup &&
+          inlineProof.markupEvent.target === markup, "markup source, this and event");
+        document.getElementById("written").click();
+        inlineAssert(inlineProof.written === 1, "document.write content handler");
+
+        var dynamic = document.createElement("button");
+        dynamic.type = "button";
+        document.getElementById("sandbox").appendChild(dynamic);
+        dynamic.setAttribute("onclick", "inlineProof.hits.push('attribute')");
+        dynamic.click();
+        inlineAssert(inlineProof.hits.join(",") === "attribute", "setAttribute handler");
+
+        var source = "inlineProof.hits.push('same')";
+        dynamic.setAttribute("onclick", source);
+        var before = dynamic.onclick;
+        dynamic.onclick = function () { inlineProof.hits.push("override"); };
+        dynamic.click();
+        inlineAssert(inlineProof.hits.join(",") === "attribute,override", "IDL override");
+        inlineAssert(dynamic.getAttribute("onclick") === source, "IDL preserves content attribute");
+        dynamic.setAttribute("onclick", source);
+        inlineAssert(dynamic.onclick !== before, "equal-value attribute write recompiles");
+        dynamic.click();
+        inlineAssert(inlineProof.hits.join(",") === "attribute,override,same", "attribute replaces IDL");
+
+        dynamic.removeAttribute("onclick");
+        inlineAssert(dynamic.onclick === null, "removeAttribute clears handler");
+        dynamic.click();
+        inlineAssert(inlineProof.hits.length === 3, "removed handler does not run");
+        dynamic.onclick = function () { inlineProof.hits.push("property"); };
+        dynamic.removeAttribute("onclick");
+        dynamic.click();
+        inlineAssert(inlineProof.hits[3] === "property", "absent attribute removal preserves IDL");
+
+        dynamic.setAttribute("onclick", "throw new Error('must not compile before override')");
+        dynamic.onclick = function () { inlineProof.hits.push("lazy override"); };
+        dynamic.click();
+        inlineAssert(inlineProof.hits[4] === "lazy override", "IDL replaces pending raw handler");
+
+        dynamic.setAttribute("onclick", "return )");
+        inlineAssert(dynamic.onclick === null && dynamic.onclick === null,
+          "syntax failure reports and consumes raw handler without setter exception");
+        dynamic.setAttribute("onclick", "inlineProof.hits.push('recovered')");
+        dynamic.click();
+        inlineAssert(inlineProof.hits[5] === "recovered", "replacement recovers from syntax failure");
+        dynamic.onclick = "inlineProof.hits.push('wrong')";
+        inlineAssert(dynamic.onclick === null, "non-callable IDL assignment becomes null");
+
+        var inner = document.getElementById("inner");
+        inner.innerHTML = '<button type="button" onclick="inlineProof.hits.push(this.token)">Inner</button>';
+        var child = inner.firstChild;
+        child.token = "inner";
+        child.click();
+        var originalHandler = child.onclick;
+        child.onclick = function () { inlineProof.hits.push("original override"); };
+        var clone = child.cloneNode(true);
+        clone.token = "clone";
+        inner.appendChild(clone);
+        inlineAssert(clone.onclick !== originalHandler && clone.onclick !== child.onclick,
+          "clone compiles an independent content handler");
+        clone.click();
+        child.click();
+        inlineAssert(inlineProof.hits.slice(-3).join(",") === "inner,clone,original override",
+          "innerHTML and clone use their own element scopes");
+        clone.removeAttribute("onclick");
+        clone.click();
+        inlineAssert(inlineProof.hits[inlineProof.hits.length - 1] === "original override",
+          "clone removal is independent");
+
+        var owner = document.getElementById("owner");
+        var scope = document.getElementById("scope");
+        owner.submitted = 0;
+        owner.scopeValue = "form";
+        scope.scopeValue = "element";
+        document.documentValue = "document";
+        var validityCalls = 0;
+        owner.reportValidity = function () {
+          inlineAssert(this === owner, "bare form method receiver");
+          validityCalls++;
+          return true;
+        };
+        scope.click();
+        document.getElementById("external").click();
+        inlineAssert(owner.submitted === 2 && validityCalls === 1 &&
+          inlineProof.scope[0] === "element" && inlineProof.scope[1] === "document" &&
+          inlineProof.scope[2] === true && inlineProof.scope[3] === owner &&
+          inlineProof.externalForm === owner, "element, form, document and global scope order");
+
+        var names = [
+          "click", "dblclick", "contextmenu", "mousedown", "mouseup", "mousemove",
+          "mouseenter", "mouseleave", "mouseover", "mouseout", "pointerdown",
+          "pointerup", "pointermove", "pointercancel", "pointerenter", "pointerleave",
+          "pointerover", "pointerout", "touchstart", "touchmove", "touchend",
+          "touchcancel", "keydown", "keyup", "keypress", "input", "change", "focus",
+          "blur", "focusin", "focusout", "submit", "scroll", "wheel", "error",
+          "load", "slotchange"
+        ];
+        var all = document.createElement("div");
+        all.seen = [];
+        for (var name of names) {
+          all.setAttribute("on" + name, "this.seen.push(event.type); return false");
+          var supplied = new Event(name, { cancelable: true });
+          inlineAssert(all.dispatchEvent(supplied) === false && supplied.defaultPrevented,
+            "content handler and ordinary cancellation for " + name);
+        }
+        inlineAssert(all.seen.join(",") === names.join(","), "every ON_EVENT_TYPES handler");
+
+        var listenerOnly = document.createElement("div");
+        listenerOnly.addEventListener("click", function () { return false; });
+        inlineAssert(listenerOnly.dispatchEvent(new Event("click", { cancelable: true })),
+          "listener return false does not cancel");
+        listenerOnly.setAttribute("onclick", "return 0");
+        inlineAssert(listenerOnly.dispatchEvent(new Event("click", { cancelable: true })),
+          "falsy non-boolean handler return does not cancel");
+        listenerOnly.setAttribute("onclick", "return false");
+        inlineAssert(listenerOnly.dispatchEvent(new Event("click")),
+          "non-cancelable event ignores return false");
+
+        var replacement = document.createElement("div");
+        replacement.setAttribute("onclick", "inlineProof.hits.push('stale')");
+        replacement.addEventListener("click", function () {
+          replacement.onclick = function () { inlineProof.hits.push("during dispatch"); };
+        });
+        replacement.dispatchEvent(new Event("click"));
+        inlineAssert(inlineProof.hits[inlineProof.hits.length - 1] === "during dispatch",
+          "listener IDL replacement takes effect before handler invocation");
+
+        document.body.setAttribute("onload", "inlineProof.manualLoad = this === window");
+        inlineAssert(document.body.onload === window.onload, "body and window IDL identity");
+        window.dispatchEvent(new Event("load"));
+        inlineAssert(inlineProof.manualLoad, "updated body handler dispatches at window");
+        window.onload = function () { inlineProof.manualLoad = "override"; };
+        inlineAssert(document.body.onload === window.onload, "window IDL override reflected by body");
+        window.dispatchEvent(new Event("load"));
+        inlineAssert(inlineProof.manualLoad === "override", "window override runs");
+        document.body.removeAttribute("onload");
+        inlineAssert(window.onload === null && document.body.onload === null,
+          "body removal clears window handler");
+
+        document.body.setAttribute("onerror",
+          "inlineProof.errorArgs = [event, source, lineno, colno, error, this]; return true");
+        inlineAssert(window.onerror.length === 5 && document.body.onerror === window.onerror,
+          "forwarded onerror has five parameters");
+        var token = new Error("fixture");
+        var errorEvent = new ErrorEvent("error", {
+          message: "inline",
+          filename: "fixture.js",
+          lineno: 7,
+          colno: 9,
+          error: token,
+          cancelable: true
+        });
+        inlineAssert(window.dispatchEvent(errorEvent) === false && errorEvent.defaultPrevented,
+          "window onerror return true cancels");
+        inlineAssert(inlineProof.errorArgs[0] === "inline" &&
+          inlineProof.errorArgs[1] === "fixture.js" && inlineProof.errorArgs[2] === 7 &&
+          inlineProof.errorArgs[3] === 9 && inlineProof.errorArgs[4] === token &&
+          inlineProof.errorArgs[5] === window, "window error arguments and receiver");
+        window.onerror = function () { return false; };
+        inlineAssert(window.dispatchEvent(new ErrorEvent("error", { cancelable: true })),
+          "window onerror return false does not cancel");
+        document.body.removeAttribute("onerror");
+        inlineAssert(window.onerror === null, "body onerror removal clears window");
+
+        if (typeof HTMLElement.prototype.attachShadow === "function") {
+          var host = document.createElement("div");
+          document.getElementById("sandbox").appendChild(host);
+          var root = host.attachShadow({ mode: "open" });
+          root.innerHTML = '<button type="button" onclick="this.ran = true; return false">Shadow</button>';
+          var shadowButton = root.firstChild;
+          inlineAssert(shadowButton.dispatchEvent(new Event("click", {
+            bubbles: true, composed: true, cancelable: true
+          })) === false && shadowButton.ran, "shadow content handler and cancellation");
+        }
+
+        var href = location.href;
+        document.getElementById("cancel-link").click();
+        document.getElementById("cancel-checkbox").click();
+        inlineAssert(inlineProof.linkClicks === 1 && inlineProof.linkEvent.defaultPrevented,
+          "return false cancels link click");
+        inlineAssert(!document.getElementById("cancel-checkbox").checked,
+          "return false restores checkbox activation");
+        await new Promise(function (resolve) { setTimeout(resolve, 30); });
+        inlineAssert(location.href === href, "cancelled link does not navigate");
+        result.textContent = "READY: INLINEHANDLERS PASS";
+      } catch (error) {
+        result.textContent = "FAIL: INLINEHANDLERS " + error.message;
+      } finally {
+        window.onload = savedLoad;
+        window.onerror = savedError;
+      }
+    }
+  </script>
+</body>
+</html>
+
