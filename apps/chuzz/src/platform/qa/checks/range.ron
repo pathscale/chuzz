@@ -1,0 +1,15 @@
+[
+    (
+        id: "range-all",
+        group: "range",
+        what: "Range content operations, live mutation boundaries, UTF-16 offsets, Text splitting and normalization, document scope, Selection identity, and range geometry",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: range PASS",
+        expect: PaintsNamed,
+        covers: ["READY: range PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

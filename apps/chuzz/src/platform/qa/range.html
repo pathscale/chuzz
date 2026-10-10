@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Range QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { font-family: Fixture; margin: 24px; color: #142034; }
+    button { font: inherit; padding: 8px 16px; }
+    #fixture { margin-top: 20px; font-size: 24px; }
+    #result { min-height: 28px; }
+    strong { color: #174e9e; }
+  </style>
+</head>
+<body>
+  <h1>Range and Selection QA</h1>
+  <button id="run" type="button">Run Range</button>
+  <p id="result" role="status" aria-label="READY: range">Ready</p>
+  <div id="fixture"></div>
+  <script src="./src/range.ts"></script>
+</body>
+</html>
