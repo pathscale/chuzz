@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Chuzz WEBAPI fixture</title>
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { font-family: "Fira Sans"; margin: 32px; color: #18212b; background: #f5f7fa; }
+    button { font-family: "Fira Sans"; padding: 12px 24px; }
+    #result { font-size: 24px; }
+    .scroll-proof { height: 2000px; }
+  </style>
+  <script src="./src/webapi.ts" defer></script>
+</head>
+<body>
+  <h1>WEBAPI behaviour</h1>
+  <button id="run">Run</button>
+  <p id="result" role="status">Ready to run</p>
+  <form id="sample">
+    <input name="title" value="hello">
+    <input name="excluded" value="no" disabled>
+    <input type="checkbox" name="checked" checked>
+    <input type="checkbox" name="unchecked">
+    <textarea name="description">two lines</textarea>
+  </form>
+  <div class="scroll-proof">Viewport scrolling proof</div>
+</body>
+</html>
+

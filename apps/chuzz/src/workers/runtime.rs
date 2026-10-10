@@ -338,6 +338,7 @@ pub(super) fn run(
                 JsString::from(url.as_str()).into(),
             ],
         )?;
+        crate::webapi::install_context(&mut context, Some(&url))?;
         Ok(())
     })();
     if let Err(error) = bootstrap {
@@ -454,3 +455,4 @@ pub(super) fn run(
         context.clear_kept_objects();
     }
 }
+

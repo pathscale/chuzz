@@ -117,6 +117,40 @@
       return error;
     },
   });
+  // A document has the engine's native Event, whose dispatch accepts only real
+  // events: MessageEvent there is a subclass of it. A worker realm keeps the
+  // script event class above.
+  if (typeof g.MessageEvent !== "function" && typeof g.Event === "function" && typeof g.document === "object") {
+    g.MessageEvent = class MessageEvent extends g.Event {
+      constructor(type, init) {
+        super(type, init);
+        const options = init || {};
+        Object.defineProperties(this, {
+          data: { configurable: true, enumerable: true, value: options.data === undefined ? null : options.data },
+          origin: { configurable: true, enumerable: true, value: options.origin === undefined ? "" : String(options.origin) },
+          lastEventId: { configurable: true, enumerable: true, value: options.lastEventId === undefined ? "" : String(options.lastEventId) },
+          source: { configurable: true, enumerable: true, value: options.source === undefined ? null : options.source },
+          ports: { configurable: true, enumerable: true, value: Object.freeze(Array.from(options.ports || [])) },
+        });
+      }
+    };
+  }
+  if (typeof g.ErrorEvent !== "function" && typeof g.Event === "function" && typeof g.document === "object") {
+    g.ErrorEvent = class ErrorEvent extends g.Event {
+      constructor(type, init) {
+        super(type, init);
+        const options = init || {};
+        const field = value => ({ configurable: true, enumerable: true, value });
+        Object.defineProperties(this, {
+          message: field(String(options.message || "")),
+          filename: field(String(options.filename || "")),
+          lineno: field(Number(options.lineno || 0)),
+          colno: field(Number(options.colno || 0)),
+          error: field(options.error === undefined ? null : options.error),
+        });
+      }
+    };
+  }
   if (typeof g.MessageEvent !== "function") g.MessageEvent = WorkerMessageEvent;
   if (typeof g.ErrorEvent !== "function") g.ErrorEvent = WorkerErrorEvent;
 })(globalThis);

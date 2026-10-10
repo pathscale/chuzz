@@ -1,0 +1,15 @@
+[
+    (
+        id: "webapi-all",
+        group: "webapi",
+        what: "fetch bodies, multipart forms, files, streams, compression, broadcasts, locks and window APIs exercise real behaviour",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: webapi PASS",
+        expect: PaintsNamed,
+        covers: ["READY: webapi PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

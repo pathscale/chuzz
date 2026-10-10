@@ -25,83 +25,10 @@
     set: function (value) { __chuzzCookieSet(String(value)); }
   });
 
-  function HeaderBag(input) {
-    this.values = Object.create(null);
-    var self = this;
-    if (!input) return;
-    if (Array.isArray(input)) {
-      input.forEach(function (pair) { self.append(pair[0], pair[1]); });
-    } else if (typeof input.forEach === 'function') {
-      input.forEach(function (value, name) { self.append(name, value); });
-    } else {
-      Object.keys(input).forEach(function (name) { self.append(name, input[name]); });
-    }
-  }
-
-  HeaderBag.prototype.append = function (name, value) {
-    name = String(name).toLowerCase();
-    value = String(value).trim();
-    if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) || /[\r\n\0]/.test(value)) {
-      throw new TypeError('Invalid HTTP header');
-    }
-    this.values[name] = this.values[name] === undefined
-      ? value : this.values[name] + ', ' + value;
-  };
-  HeaderBag.prototype.get = function (name) {
-    var value = this.values[String(name).toLowerCase()];
-    return value === undefined ? null : value;
-  };
-  HeaderBag.prototype.has = function (name) { return this.get(name) !== null; };
-  HeaderBag.prototype.forEach = function (callback, receiver) {
-    var self = this;
-    Object.keys(this.values).sort().forEach(function (name) {
-      callback.call(receiver, self.values[name], name, self);
-    });
-  };
-  HeaderBag.prototype.pairs = function () {
-    var result = [];
-    this.forEach(function (value, name) { result.push([name, value]); });
-    return result;
-  };
-
-  function encodeBody(body, headers) {
-    if (body == null) return null;
-    var bytes;
-    if (body instanceof ArrayBuffer) {
-      bytes = new Uint8Array(body);
-    } else if (ArrayBuffer.isView(body)) {
-      bytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-    } else if (typeof URLSearchParams === 'function' && body instanceof URLSearchParams) {
-      if (!headers.has('content-type')) {
-        headers.append('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
-      }
-      bytes = new TextEncoder().encode(String(body));
-    } else if (typeof body === 'string') {
-      if (!headers.has('content-type')) headers.append('content-type', 'text/plain;charset=UTF-8');
-      bytes = new TextEncoder().encode(body);
-    } else {
-      throw new TypeError('Unsupported request body');
-    }
-    return Array.from(bytes);
-  }
+  var HeaderBag = globalThis.Headers;
 
   function request(url, options) {
-    options = options || {};
-    var headers = new HeaderBag(options.headers);
-    var method = String(options.method || 'GET');
-    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(method)) {
-      throw new TypeError('Invalid HTTP method');
-    }
-    if (/^(delete|get|head|options|post|put)$/i.test(method)) method = method.toUpperCase();
-    if (/^(CONNECT|TRACE|TRACK)$/i.test(method)) throw new TypeError('Forbidden HTTP method');
-    var body = method === 'GET' || method === 'HEAD' ? null : encodeBody(options.body, headers);
-    return {
-      url: String(url),
-      method: method,
-      headers: headers.pairs(),
-      body: body,
-      credentials: options.credentials || 'same-origin'
-    };
+    return globalThis.__chuzzBodyApi.payloadSync(url, options);
   }
 
   function send(payload, callback) {
@@ -119,82 +46,7 @@
 
   function forget(id) { delete pending[id]; }
 
-  function Response(result) {
-    this.status = result.status;
-    this.statusText = result.statusText || '';
-    this.ok = this.status >= 200 && this.status < 300;
-    this.url = result.url || '';
-    this.headers = new HeaderBag(result.headers);
-    this.bodyUsed = false;
-    this._result = result;
-  }
-
-  Response.prototype._consume = function (reader) {
-    if (this.bodyUsed) return Promise.reject(new TypeError('Response body already consumed'));
-    this.bodyUsed = true;
-    try { return Promise.resolve(reader(this._result)); }
-    catch (error) { return Promise.reject(error); }
-  };
-  Response.prototype.text = function () {
-    return this._consume(function (result) { return result.body || ''; });
-  };
-  Response.prototype.json = function () {
-    return this._consume(function (result) { return JSON.parse(result.body || ''); });
-  };
-  Response.prototype.arrayBuffer = function () {
-    return this._consume(function (result) { return new Uint8Array(result.bytes).buffer; });
-  };
-  Response.prototype.blob = function () {
-    var type = this.headers.get('content-type') || '';
-    return this._consume(function (result) {
-      return new Blob([new Uint8Array(result.bytes)], { type: type });
-    });
-  };
-  Response.prototype.clone = function () {
-    if (this.bodyUsed) throw new TypeError('Response body already consumed');
-    return new Response(this._result);
-  };
-
-  if (typeof globalThis.fetch !== 'function') {
-    globalThis.fetch = function (input, init) {
-      init = init || {};
-      var source = input && typeof input === 'object' ? input : {};
-      var signal = init.signal || source.signal;
-      var options = {
-        method: init.method || source.method,
-        headers: init.headers === undefined ? source.headers : init.headers,
-        body: init.body === undefined ? source.body : init.body,
-        credentials: init.credentials || source.credentials
-      };
-      return new Promise(function (resolve, reject) {
-        var abort = function () {
-          forget(id);
-          cleanup();
-          reject(signal.reason === undefined
-            ? exception('AbortError', 'The operation was aborted') : signal.reason);
-        };
-        function cleanup() {
-          if (signal) signal.removeEventListener('abort', abort);
-        }
-        if (signal && signal.aborted) {
-          reject(signal.reason === undefined
-            ? exception('AbortError', 'The operation was aborted') : signal.reason);
-          return;
-        }
-        var payload = request(source.url || input, options);
-        if ((payload.method === 'GET' || payload.method === 'HEAD') && options.body != null) {
-          reject(new TypeError('GET and HEAD requests cannot have a body'));
-          return;
-        }
-        var id = send(payload, function (result) {
-          cleanup();
-          if (result.ok) resolve(new Response(result));
-          else reject(new TypeError('fetch failed: ' + result.error));
-        });
-        if (signal) signal.addEventListener('abort', abort, { once: true });
-      });
-    };
-  }
+  globalThis.__chuzzBodyApi.installFetch(send, forget);
 
   function EventTarget() {
     this._listeners = Object.create(null);
@@ -411,7 +263,7 @@
       var generation = this._generation;
       var payload = request(this._url, {
         method: this._method,
-        headers: this._requestHeaders.pairs(),
+        headers: Array.from(this._requestHeaders),
         body: body,
         credentials: this.withCredentials ? 'include' : 'same-origin'
       });
@@ -501,3 +353,4 @@
     globalThis.XMLHttpRequest = XHR;
   }
 })();
+

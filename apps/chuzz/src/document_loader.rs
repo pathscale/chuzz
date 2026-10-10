@@ -823,59 +823,7 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     globalThis.frames = globalThis;
     globalThis.frameElement = null;
   }
-  if (typeof globalThis.scrollX === 'undefined') {
-    // ScriptDocument has no synchronous host-call API. Queue a real viewport
-    // scroll through its IPC bridge; net_bridge applies it to the native DOM
-    // on the next document poll and refreshes this mirror from that viewport.
-    var viewportScroll = { x: 0, y: 0 };
-    globalThis.__chuzzScrollRefresh = function (position) {
-      if (!position) { return; }
-      viewportScroll.x = Number(position.x) || 0;
-      viewportScroll.y = Number(position.y) || 0;
-    };
-    Object.defineProperties(globalThis, {
-      scrollX: { configurable: true, enumerable: true, get: function () { return viewportScroll.x; } },
-      scrollY: { configurable: true, enumerable: true, get: function () { return viewportScroll.y; } },
-      pageXOffset: { configurable: true, enumerable: true, get: function () { return viewportScroll.x; } },
-      pageYOffset: { configurable: true, enumerable: true, get: function () { return viewportScroll.y; } }
-    });
-    var queueViewportScroll = function (mode, left, top) {
-      try {
-        if (globalThis.ipc && typeof globalThis.ipc.postMessage === 'function') {
-          globalThis.ipc.postMessage(JSON.stringify({
-            __chuzz_scroll: { mode: mode, left: left, top: top }
-          }));
-        }
-      } catch (error) {}
-    };
-    var scrollNumber = function (value) {
-      var number = Number(value);
-      return Number.isFinite(number) ? number : 0;
-    };
-    var scrollArguments = function (args) {
-      if (args.length < 2) {
-        var options = args.length === 0 ? undefined : args[0];
-        if (options === undefined || options === null) { return [undefined, undefined]; }
-        var dictionary = Object(options);
-        var left = dictionary.left;
-        var top = dictionary.top;
-        return [
-          left === undefined ? undefined : scrollNumber(left),
-          top === undefined ? undefined : scrollNumber(top)
-        ];
-      }
-      return [scrollNumber(args[0]), scrollNumber(args[1])];
-    };
-    globalThis.scrollTo = function (x, y) {
-      var position = scrollArguments(arguments);
-      queueViewportScroll('to', position[0], position[1]);
-    };
-    globalThis.scrollBy = function (x, y) {
-      var delta = scrollArguments(arguments);
-      queueViewportScroll('by', delta[0], delta[1]);
-    };
-    globalThis.scroll = globalThis.scrollTo;
-  }
+  // The WEBAPI bootstrap binds scrolling to the engine's viewport.
   if (typeof globalThis.requestIdleCallback === 'undefined') {
     globalThis.requestIdleCallback = function (callback) {
       return setTimeout(function () {
@@ -1811,6 +1759,7 @@ pub(crate) fn install_web_api_shim(
     ));
     crate::video::install(document, Arc::new(net_provider.clone()));
     crate::workers::install(document, Arc::new(net_provider.clone()));
+    crate::webapi::install(document);
 }
 
 /// Load a page outside the browser, for headless capture.
