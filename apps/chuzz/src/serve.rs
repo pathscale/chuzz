@@ -1818,9 +1818,22 @@ fn serve_page(target: &str) -> Result<(), String> {
             trace("the page exceeded the bot browser node limit");
             break;
         }
+        // Sleep only until the page has something to do. A fixed tick made
+        // every `setTimeout(0)` continuation wait for the next frame (~20 ms
+        // measured), so code that yields every few milliseconds sat idle most
+        // of the time.
+        let wait = if document.has_pending_jobs() {
+            std::time::Duration::ZERO
+        } else {
+            document
+                .next_timer_deadline()
+                .map_or(IDLE_TICK, |due| {
+                    due.saturating_duration_since(std::time::Instant::now()).min(IDLE_TICK)
+                })
+        };
         let received = match queued_request.take() {
             Some(pair) => Ok(pair),
-            None => request_rx.recv_timeout(IDLE_TICK),
+            None => request_rx.recv_timeout(wait),
         };
         let (request, reply) = match received {
             Ok(pair) => pair,
