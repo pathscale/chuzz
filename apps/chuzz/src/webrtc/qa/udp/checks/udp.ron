@@ -1,0 +1,15 @@
+[
+    (
+        id: "udp-reactor",
+        group: "webrtc-udp",
+        what: "native IPv4 and IPv6 UDP exchanges preserve datagrams, check sources, handle empty and oversized datagrams, and recover after cancellation",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: udp PASS",
+        expect: PaintsNamed,
+        covers: ["READY: udp PASS"],
+        outcome_timeout_ms: 15000,
+    ),
+]
+

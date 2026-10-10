@@ -2,6 +2,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
+mod udp;
+
 const INDEX_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/index.html");
 const FIRST_JS: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/first.js");
 const SECOND_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/second.html");
@@ -10,6 +12,10 @@ const SITES_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/sites
 const SITES_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/src/sites.ts");
 const FONT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/video/qa/fonts/FiraSans-Regular.woff2");
+const UDP_HTML: &[u8] =
+    include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/index.html");
+const UDP_SCRIPT: &[u8] =
+    include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/src/udp.ts");
 const PIXEL: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0,
     0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100, 248, 15, 0, 1, 5, 1, 1,
@@ -111,6 +117,37 @@ fn serve(mut stream: TcpStream) -> std::io::Result<()> {
         "/sites.html" => ("text/html; charset=utf-8", SITES_HTML.to_vec()),
         "/src/sites.ts" => ("text/javascript; charset=utf-8", SITES_SCRIPT.to_vec()),
         "/fonts/FiraSans-Regular.woff2" => ("font/woff2", FONT.to_vec()),
+        "/udp/" | "/udp/index.html" => ("text/html; charset=utf-8", UDP_HTML.to_vec()),
+        "/udp/src/udp.ts" => ("text/javascript; charset=utf-8", UDP_SCRIPT.to_vec()),
+        "/udp/fonts/FiraSans-Regular.woff2" => ("font/woff2", FONT.to_vec()),
+        "/api/udp" => {
+            if method != "POST" {
+                return respond(
+                    &mut stream,
+                    "405 Method Not Allowed",
+                    "text/plain",
+                    b"POST required",
+                );
+            }
+            match udp::run() {
+                Ok(report) => {
+                    return respond(
+                        &mut stream,
+                        "200 OK",
+                        "application/json",
+                        report.as_bytes(),
+                    );
+                }
+                Err(error) => {
+                    return respond(
+                        &mut stream,
+                        "500 Internal Server Error",
+                        "text/plain",
+                        format!("UDP fixture failed: {error}").as_bytes(),
+                    );
+                }
+            }
+        }
         "/api/sites" => {
             let accepted = method == "POST"
                 && request_body == b"age=18"
@@ -187,3 +224,4 @@ fn respond(
     )?;
     stream.write_all(body)
 }
+

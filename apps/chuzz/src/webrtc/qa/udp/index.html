@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>UDP reactor QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    button { padding: 12px 20px; font: inherit; }
+    pre { white-space: pre-wrap; font: inherit; }
+  </style>
+</head>
+<body>
+  <h1>UDP reactor QA</h1>
+  <p>Exchange sequenced datagrams through the native host on IPv4 and IPv6 loopback.</p>
+  <button id="run" type="button">Run UDP checks</button>
+  <p id="result" role="status" aria-label="UDP pending" data-state="pending">UDP pending</p>
+  <pre id="evidence" aria-label="UDP evidence"></pre>
+  <script src="./src/udp.ts"></script>
+</body>
+</html>
+
