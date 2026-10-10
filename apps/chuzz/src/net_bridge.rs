@@ -616,4 +616,10 @@ pub fn install(
         }
         changed
     });
+
+    // Image discovery can reserve requests during shim installation. Release
+    // them only after IPC admission and reply polling are both installed.
+    document.eval(
+        "if (globalThis.__chuzzGpuImageBridge) globalThis.__chuzzGpuImageBridge.imagesReady();",
+    );
 }

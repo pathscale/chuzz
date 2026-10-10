@@ -2,7 +2,7 @@
     (
         id: "imgshim-all-creation-paths",
         group: "imgshim",
-        what: "markup, later parser insertion, document.write, innerHTML, outerHTML, insertAdjacentHTML, template and loaded image clones, importNode, DOMParser adoption, createElement and Image share image behaviour; load and error are tasks, decode settles, source changes cancel older requests and decoded canvas pixels remain correct",
+        what: "markup, later parser insertion and document.write deliver one inline and listener load; deferred connection, pending and completed rescans, reinsertion, nested open and closed shadow roots, innerHTML, outerHTML, insertAdjacentHTML, template and loaded image clones, importNode, DOMParser adoption, createElement and Image share image behaviour; load and error are tasks, decode settles, source changes cancel older requests and decoded canvas pixels remain correct",
         open: None,
         hover: None,
         click: Some("#run"),
@@ -23,3 +23,4 @@
         outcome_timeout_ms: 5000,
     ),
 ]
+

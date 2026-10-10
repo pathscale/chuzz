@@ -2,6 +2,11 @@
 (function () {
   var bridge = globalThis.__chuzzGpuImageBridge;
   if (!bridge) { return; }
+  var resolveTransport;
+  var transportReady = new Promise(function (resolve) { resolveTransport = resolve; });
+  // The host resolves this after installing IPC and the reply poll hook.
+  // Resolving more than once does not release another batch of starts.
+  bridge.imagesReady = function () { resolveTransport(); };
   var bitmaps = new WeakMap();
   var imageStates = new WeakMap();
   var canvasContexts = new WeakMap();
@@ -240,25 +245,35 @@
   function imageUrl(element, source) {
     return new URL(source, element.baseURI || location.href).href;
   }
-  function startImage(element, state, source) {
+  function startImage(element, state, source, explicit) {
     var epoch = ++state.epoch;
     if (state.reject) { state.reject(imageError("image source changed")); }
     if (state.controller) { state.controller.abort(); }
     if (state.bitmap) { state.bitmap.close(); state.bitmap = null; }
+    // Reserve the source and epoch before waiting for connection or transport.
+    // Every discovery path sees this same request, including deferred starts.
     state.source = source;
     state.complete = source === null || source === "";
     state.controller = null;
+    state.start = null;
     var resolve, reject;
     state.promise = new Promise(function (yes, no) { resolve = yes; reject = no; });
     state.promise.catch(function () {});
     state.reject = reject;
     // A paint already queued for an older request must not match this node.
     var node = marker(element, true);
+    var eventQueued = false;
     function current() {
+      // A markup image that left the document (the streaming parser rebuilds
+      // parsed markup when it runs scripts) must not complete a load: its
+      // replacement node loads on its own. Script-set sources keep loading
+      // while detached, as `new Image().src` does in browsers.
       return state.epoch === epoch && element.ownerDocument === document &&
-        element.getAttribute("src") === source;
+        element.getAttribute("src") === source && (explicit || element.isConnected);
     }
     function event(type, error) {
+      if (!current() || eventQueued) { return; }
+      eventQueued = true;
       setTimeout(function () {
         if (!current()) { return; }
         element.dispatchEvent(new Event(type));
@@ -269,7 +284,7 @@
       }, 0);
     }
     function failed() {
-      if (!current()) { return; }
+      if (!current() || eventQueued) { return; }
       if (state.bitmap) { state.bitmap.close(); state.bitmap = null; }
       state.controller = null;
       state.complete = true;
@@ -280,39 +295,43 @@
       reject(imageError("image has no source"));
       return;
     }
-    if (source === "") { failed(); return; }
-    if (typeof AbortController === "function") { state.controller = new AbortController(); }
-    var controller = state.controller;
-    // The initial scan can run before the host finishes installing IPC.
-    // Starting transport in a task also coalesces superseded same-turn writes.
-    new Promise(function (ready) { setTimeout(ready, 0); }).then(function () {
-      if (!current()) { throw imageError("image source changed"); }
-      return fetch(imageUrl(element, source), controller ? { signal: controller.signal } : undefined);
-    }).then(function (response) {
-      if (!current()) { throw imageError("image source changed"); }
-      if (!response.ok) { throw imageError("image fetch failed"); }
-      return response.blob();
-    }).then(function (blob) {
-      if (!current()) { throw imageError("image source changed"); }
-      return create(blob, null, {});
-    }).then(function (bitmap) {
-      if (!current()) { bitmap.close(); return; }
-      state.bitmap = bitmap;
-      state.complete = true;
-      state.controller = null;
-      return bridge.send("paintImage", 0, {
-        node: node, source: globalThis.__chuzzGpuImageSource(bitmap)
-      }).then(function () {
-        if (current()) { event("load"); }
-      });
-    }).catch(failed);
+    state.start = function () {
+      if (!current() || (!explicit && !element.isConnected)) { return; }
+      // Clear synchronously, before attaching the readiness continuation.
+      // Scans cannot enqueue a second continuation for this epoch.
+      state.start = null;
+      transportReady.then(function () {
+        if (!current()) { throw imageError("image source changed"); }
+        if (source === "") { throw imageError("image has an empty source"); }
+        if (typeof AbortController === "function") { state.controller = new AbortController(); }
+        var controller = state.controller;
+        return fetch(imageUrl(element, source), controller ? { signal: controller.signal } : undefined);
+      }).then(function (response) {
+        if (!current()) { throw imageError("image source changed"); }
+        if (!response.ok) { throw imageError("image fetch failed"); }
+        return response.blob();
+      }).then(function (blob) {
+        if (!current()) { throw imageError("image source changed"); }
+        return create(blob, null, {});
+      }).then(function (bitmap) {
+        if (!current()) { bitmap.close(); return; }
+        state.bitmap = bitmap;
+        state.complete = true;
+        state.controller = null;
+        return bridge.send("paintImage", 0, {
+          node: node, source: globalThis.__chuzzGpuImageSource(bitmap)
+        }).then(function () {
+          if (current()) { event("load"); }
+        });
+      }).catch(failed);
+    };
   }
   function imageState(element, force) {
     var state = imageStates.get(element);
     if (!state) {
       state = {
         epoch: 0, bitmap: null, source: undefined, complete: true,
-        controller: null, reject: null, promise: Promise.reject(imageError())
+        controller: null, start: null, reject: null, promise: Promise.reject(imageError())
       };
       state.promise.catch(function () {});
       imageStates.set(element, state);
@@ -321,7 +340,10 @@
     // srcset/sizes selection is not implemented; src is the fallback.
     var source = element.getAttribute("src");
     if (element.ownerDocument === document) {
-      if (force || state.source !== source) { startImage(element, state, source); }
+      // Explicit src writes still load detached script-created images and
+      // deliberately reassigning the same src still creates a new epoch.
+      if (force || state.source !== source) { startImage(element, state, source, force); }
+      if (state.start) { state.start(); }
     } else {
       state.complete = source === null || source === "";
     }
@@ -430,9 +452,11 @@
 
   var imageObserver;
   var observedRoots = new WeakSet();
+  var observedShadows = [];
   function observeImages(root) {
     if (!imageObserver || observedRoots.has(root)) { return; }
     observedRoots.add(root);
+    if (root.host) { observedShadows.push(new WeakRef(root)); }
     imageObserver.observe(root, {
       subtree: true, childList: true, attributes: true, attributeFilter: ["src"]
     });
@@ -456,10 +480,49 @@
       }
     }
   }
+  function connectedImage(element) {
+    if (isImage(element) && element.ownerDocument === document && element.isConnected) {
+      imageState(element);
+    }
+  }
+  function scanLightImages(root) {
+    connectedImage(root);
+    // Keep childList processing in native queries rather than allocating a
+    // JavaScript wrapper for every descendant of an image-free SVG subtree.
+    var images;
+    if (typeof root.getElementsByTagName === "function") {
+      images = root.getElementsByTagName("img");
+    } else if (typeof root.querySelectorAll === "function") {
+      images = root.querySelectorAll("img");
+    } else {
+      return;
+    }
+    for (var index = 0; index < images.length; index++) { connectedImage(images[index]); }
+  }
   function scanImages(root) {
-    walkImages(root, function (element) {
-      if (element.ownerDocument === document && element.isConnected) { imageState(element); }
-    }, false);
+    if (!root || (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11)) { return; }
+    if (root !== document && (root.ownerDocument !== document || !root.isConnected)) { return; }
+    if (root.shadowRoot) { observeImages(root.shadowRoot); }
+    scanLightImages(root);
+    // Queries do not cross shadow boundaries. Roots attached while a host
+    // was detached must be scanned when that host, or an ancestor, connects.
+    // Retain weak references so removed hosts are not kept alive by this list.
+    for (var index = 0; index < observedShadows.length;) {
+      var shadow = observedShadows[index].deref();
+      if (!shadow) { observedShadows.splice(index, 1); continue; }
+      index++;
+      var host = shadow.host;
+      if (!host || host.ownerDocument !== document || !host.isConnected) { continue; }
+      while (host) {
+        if (root === host || (typeof root.contains === "function" && root.contains(host))) {
+          scanLightImages(shadow);
+          break;
+        }
+        // A nested host can itself live inside an open or closed shadow root.
+        var tree = host.getRootNode();
+        host = tree && tree.host;
+      }
+    }
   }
   function copiedImages(copy) {
     // cloneNode/importNode copy attributes, including a native paint marker.
@@ -507,7 +570,9 @@
     });
   });
   document.addEventListener("DOMContentLoaded", function () { scanImages(document); });
-  scanImages(document);
+  // Discover any pre-existing open roots once. Subsequent scans use native
+  // image queries and the roots registered here or by attachShadow.
+  walkImages(document, connectedImage, false);
 
   ["createElement", "createElementNS"].forEach(function (name) {
     var original = document[name];

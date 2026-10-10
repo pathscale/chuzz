@@ -26,7 +26,21 @@ globalThis.__imgshimProof = {
     lateLoads: 0,
     writtenLoads: 0,
     errors: 0,
-    beforeLate: false
+    beforeLate: false,
+    listeners: { markup: 0, written: 0, late: 0 },
+    listenerErrors: 0,
+    eventShape: true
+};
+__imgshimProof.watch = function (id) {
+    const image = document.getElementById(id);
+    image.addEventListener("load", function (event) {
+        __imgshimProof.listeners[id]++;
+        __imgshimProof.eventShape = __imgshimProof.eventShape &&
+            event.target === image && !event.bubbles;
+    });
+    image.addEventListener("error", function () {
+        __imgshimProof.listenerErrors++;
+    });
 };
 </script>
 </head>
@@ -45,9 +59,11 @@ globalThis.__imgshimProof = {
         src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAHUlEQVR4AQESAO3/AP8AAP//AAD/AP8AAP//AAD/R8oH+YOsvdsAAAAASUVORK5CYII="></section>
 </template>
 <script>
+__imgshimProof.watch("markup");
 document.write('<img id="written" alt="document.write image" src="' +
     __imgshimProof.red + '" onload="__imgshimProof.writtenLoads++" ' +
     'onerror="__imgshimProof.errors++">');
+__imgshimProof.watch("written");
 __imgshimProof.beforeLate = document.getElementById("late") === null;
 </script>
 <img id="late" alt="Later parser image"
@@ -56,6 +72,7 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
     onerror="__imgshimProof.errors++">
 <div id="fixture"></div>
 <script>
+__imgshimProof.watch("late");
 (function () {
     "use strict";
 
@@ -88,6 +105,19 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
                 timer = setTimeout(() => reject(new Error(label + " timed out")), 8000);
             })
         ]).finally(() => clearTimeout(timer));
+    }
+
+    function automaticEvents() {
+        assert(proof.markupLoads === 1 && proof.writtenLoads === 1 &&
+            proof.lateLoads === 1 && proof.errors === 0,
+            "automatic markup and parser load events (markup " + proof.markupLoads +
+            ", written " + proof.writtenLoads + ", late " + proof.lateLoads +
+            ", errors " + proof.errors + ")");
+        assert(proof.listeners.markup === 1 && proof.listeners.written === 1 &&
+            proof.listeners.late === 1 && proof.listenerErrors === 0 && proof.eventShape,
+            "automatic parser listeners (markup " + proof.listeners.markup +
+            ", written " + proof.listeners.written + ", late " + proof.listeners.late +
+            ", errors " + proof.listenerErrors + ")");
     }
 
     function track(image) {
@@ -192,8 +222,9 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
                 await deadline(image.decode(), id);
                 pixels(image, [255, 0, 0, 255], id);
             }
-            assert(proof.markupLoads === 1 && proof.writtenLoads === 1 &&
-                proof.lateLoads === 1 && proof.errors === 0, "automatic markup and parser load events");
+            await task();
+            await task();
+            automaticEvents();
 
             const source = document.createElement("canvas");
             source.width = 2;
@@ -306,6 +337,7 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
             globalThis.fetch = function (input, options) {
                 if (String(input) === heldUrl && held) {
                     const request = held;
+                    request.starts++;
                     request.signal = options && options.signal;
                     request.started.resolve();
                     // Deliberately deliver even after abort to exercise epoch guards.
@@ -314,9 +346,73 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
                 return actualFetch.apply(this, arguments);
             };
 
+            held = { started: deferred(), response: deferred(), signal: null, starts: 0 };
+            const deferredContainer = document.createElement("div");
+            deferredContainer.innerHTML = '<section><img alt="Deferred markup image" src="' + heldUrl + '"></section>';
+            const deferredImage = deferredContainer.querySelector("img");
+            const deferredEvents = track(deferredImage);
+            deferredEvents.synchronous = false;
+            const deferredDecode = deferredImage.decode();
+            assert(deferredImage.complete === false && deferredImage.naturalWidth === 0,
+                "detached markup reserves a pending decode");
+            await task();
+            assert(held.starts === 0, "detached markup waits for connection");
+            fixture.appendChild(deferredContainer);
+            fixture.appendChild(deferredContainer);
+            document.dispatchEvent(new Event("DOMContentLoaded"));
+            const rescannedDecode = deferredImage.decode();
+            await deadline(held.started.promise, "deferred markup fetch start");
+
+            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            for (let index = 0; index < 128; index++) {
+                svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "path"));
+            }
+            fixture.appendChild(svg);
+            deferredContainer.remove();
+            fixture.appendChild(deferredContainer);
+            document.dispatchEvent(new Event("DOMContentLoaded"));
+            await task();
+            assert(held.starts === 1, "pending rescans start exactly one fetch");
+            held.response.resolve(new Response(redBlob));
+            const deferredValues = await deadline(
+                Promise.all([deferredEvents.event, deferredDecode, rescannedDecode]),
+                "deferred markup completion");
+            assert(deferredValues[0] === "load", "deferred markup load event");
+            await task();
+            await task();
+            pixels(deferredImage, redColour, "deferred markup");
+            deferredContainer.remove();
+            fixture.appendChild(deferredContainer);
+            document.dispatchEvent(new Event("DOMContentLoaded"));
+            await task();
+            await task();
+            assert(held.starts === 1 && deferredEvents.loads === 1 && deferredEvents.errors === 0,
+                "completed rescans and reinsertion do not reload markup");
+            deferredEvents.stop();
+
+            for (const mode of ["open", "closed"]) {
+                const host = document.createElement("section");
+                const root = host.attachShadow({ mode });
+                const nestedHost = document.createElement("section");
+                root.appendChild(nestedHost);
+                const nestedRoot = nestedHost.attachShadow({ mode: "closed" });
+                nestedRoot.innerHTML = '<img alt="Nested shadow image" src="' + red + '">';
+                const shadowImage = nestedRoot.querySelector("img");
+                const shadowEvents = await loaded(shadowImage, () => fixture.appendChild(host),
+                    mode + " nested shadow connection", redColour, true);
+                host.remove();
+                fixture.appendChild(host);
+                document.dispatchEvent(new Event("DOMContentLoaded"));
+                await task();
+                await task();
+                assert(shadowEvents.loads === 1 && shadowEvents.errors === 0,
+                    mode + " nested shadow rescans do not reload");
+                shadowEvents.stop();
+            }
+
             const changing = document.createElement("img");
             fixture.appendChild(changing);
-            held = { started: deferred(), response: deferred(), signal: null };
+            held = { started: deferred(), response: deferred(), signal: null, starts: 0 };
             changing.src = heldUrl;
             let superseded = false;
             const previousDecode = changing.decode().then(() => {
@@ -339,7 +435,7 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
             pixels(changing, greenColour, "late older response preserves replacement pixels");
             changeEvents.stop();
 
-            held = { started: deferred(), response: deferred(), signal: null };
+            held = { started: deferred(), response: deferred(), signal: null, starts: 0 };
             const removed = document.createElement("img");
             fixture.appendChild(removed);
             const removedEvents = track(removed);
@@ -364,9 +460,11 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
             await failed(outerImage, () => outerImage.setAttribute("src", ""),
                 "empty src");
             assert(proof.errors === 0, "automatic markup images have no errors");
+            automaticEvents();
             result.textContent = "READY: IMGSHIM PASS";
         } catch (error) {
             result.textContent = "FAIL: IMGSHIM " + error.message;
+            console.error("IMGSHIM failure: " + (error && error.stack));
         } finally {
             globalThis.fetch = actualFetch;
             if (held && redBlob) held.response.resolve(new Response(redBlob));
@@ -376,3 +474,4 @@ __imgshimProof.beforeLate = document.getElementById("late") === null;
 </script>
 </body>
 </html>
+
