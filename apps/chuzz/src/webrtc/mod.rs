@@ -1,9 +1,15 @@
-//! Synchronous WebRTC protocol foundations.
+//! Synchronous WebRTC protocols with page-owned nagoya transports.
 
 pub mod crypto;
+mod gather;
+mod host;
+mod pcmu;
 mod qa;
+mod sdp;
+mod transport;
 
 pub(crate) fn install(document: &mut blitz_script::ScriptDocument) {
     qa::install(document);
+    host::install(document);
 }
 

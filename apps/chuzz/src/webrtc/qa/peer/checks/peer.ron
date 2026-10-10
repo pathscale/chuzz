@@ -1,0 +1,23 @@
+[
+    (
+        id: "peer-all",
+        group: "webrtc-peer",
+        what: "Browser peers negotiate fake microphone audio, exchange host candidates, authenticate DTLS over real loopback UDP and release transport ownership",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: peer PASS",
+        expect: PaintsNamed,
+        covers: [
+            "READY: peer PASS",
+            "PASS: audio SDP, stable slots and atomic malformed-SDP rejection",
+            "PASS: gathered host candidates, trickle exchange and final null events",
+            "PASS: real UDP and authenticated DTLS 1.2 on both peers",
+            "PASS: shared MediaStreamTrack identity and received microphone PCM",
+            "PASS: property handlers and EventTarget state listeners",
+            "PASS: closed peers release sockets and preserve local capture",
+        ],
+        outcome_timeout_ms: 30000,
+    ),
+]
+

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebRTC peer QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    button { padding: 12px 20px; font: inherit; }
+    p { max-width: 960px; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC peers over loopback UDP</h1>
+  <button id="run" type="button">Run</button>
+  <p id="sdp">SDP pending</p>
+  <p id="candidates">Candidates pending</p>
+  <p id="transport">Transport pending</p>
+  <p id="tracks">Tracks pending</p>
+  <p id="events">Events pending</p>
+  <p id="close">Close pending</p>
+  <p id="result" role="status">Peer pending</p>
+  <script src="./src/peer.ts"></script>
+</body>
+</html>
+
