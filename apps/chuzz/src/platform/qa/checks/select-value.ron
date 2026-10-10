@@ -1,0 +1,15 @@
+[
+    (
+        id: "select-set-value-phantom",
+        group: "select-value",
+        what: "setting a native select's value selects the matching option and fires input then change, as a picked option does",
+        open: None,
+        hover: None,
+        click: None,
+        type_into: Some("#skin"),
+        text: Some("phantom"),
+        subject: "Picked phantom (Phantom, index 1, input then change)",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]

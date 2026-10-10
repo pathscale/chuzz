@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Select value QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    select { font: inherit; font-size: 1rem; padding: 6px; }
+  </style>
+</head>
+<body>
+  <label for="skin">Ship skin</label>
+  <select id="skin">
+    <option value="ghost" selected>Ghost</option>
+    <option value="phantom">Phantom</option>
+    <option value="gridrunner">Gridrunner</option>
+  </select>
+  <p id="picked" role="status">Picked ghost</p>
+  <script>
+    var events = [];
+    var skin = document.getElementById("skin");
+    skin.addEventListener("input", function () { events.push("input"); });
+    skin.addEventListener("change", function () {
+      events.push("change");
+      var option = skin.options[skin.selectedIndex];
+      document.getElementById("picked").textContent = "Picked " + skin.value + " (" + option.textContent +
+        ", index " + skin.selectedIndex + ", " + events.join(" then ") + ")";
+    });
+  </script>
+</body>
+</html>
