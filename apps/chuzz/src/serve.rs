@@ -1794,9 +1794,13 @@ fn serve_page(target: &str) -> Result<(), String> {
             .set_shell_provider(Arc::clone(&clipboard) as _);
         // The loader already ran and pumped the page's scripts. This settles
         // what the viewport change queued, rather than sleeping for a fixed
-        // interval before announcing the socket.
+        // interval before announcing the socket. A slow first layout is not a
+        // dead page: the load already finished inside its own budget, and a
+        // large document (YouTube's) can take longer than one control
+        // request's settle budget to lay out. Say so and serve it; requests
+        // keep their own deadlines.
         if let Err(failure) = settle_immediate(&mut document, &animation_clock, settle_deadline) {
-            return Err(failure.error.message);
+            trace(&failure.error.message);
         }
         Ok(document)
     };
