@@ -1286,31 +1286,28 @@ impl RequestBudget {
 /// Delayed outcomes are polled by `ps-qa` against the exact declared verdict,
 /// so sleeping here only makes fast controls slow and duplicates the caller's
 /// timeout.
-struct SettleFailure {
-    error: DebugError,
-    painted: bool,
-}
-
+///
+/// The deadline is a work budget, not a verdict. Past it the loop stops
+/// draining script, resolves what the page has, and answers; the remaining
+/// work runs on later host ticks. A slow layout (a large SVG map after a
+/// route change) is a slow page, not a dead one: reporting it as
+/// `pageUnresponsive` made the supervisor tear the session down. Hangs are
+/// still caught by the control request and Poll deadlines.
 fn settle_immediate(
     document: &mut ScriptDocument,
     clock: &std::time::Instant,
     deadline: std::time::Duration,
-) -> Result<bool, SettleFailure> {
+) -> bool {
     let before = document.inner().paint_damage().generation;
     let started = std::time::Instant::now();
     let mut iterations = 0_u32;
     loop {
         if started.elapsed() >= deadline {
-            return Err(SettleFailure {
-                painted: document.inner().paint_damage().generation != before,
-                error: DebugError {
-                    code: "pageUnresponsive".into(),
-                    message: format!(
-                        "the document did not settle after {iterations} iterations and {}ms",
-                        deadline.as_millis()
-                    ),
-                },
-            });
+            verbose(&format!(
+                "settle budget of {}ms spent after {iterations} iterations; answering with pending work",
+                deadline.as_millis()
+            ));
+            break;
         }
         let progressed = {
             let _turn = supervisor::operation(supervisor::Operation::Poll);
@@ -1337,18 +1334,13 @@ fn settle_immediate(
         document.inner_mut().resolve(clock.elapsed().as_secs_f64());
     }
     if started.elapsed() >= deadline {
-        return Err(SettleFailure {
-            painted: document.inner().paint_damage().generation != before,
-            error: DebugError {
-                code: "pageUnresponsive".into(),
-                message: format!(
-                    "the document exceeded its {}ms settle deadline while resolving layout",
-                    deadline.as_millis()
-                ),
-            },
-        });
+        verbose(&format!(
+            "settle took {}ms against a {}ms budget",
+            started.elapsed().as_millis(),
+            deadline.as_millis()
+        ));
     }
-    Ok(document.inner().paint_damage().generation != before)
+    document.inner().paint_damage().generation != before
 }
 
 /// How long the loop waits for a request before letting the page run.
@@ -1401,20 +1393,8 @@ fn settle_response(
     deadline: std::time::Duration,
     painted: &mut bool,
 ) -> DebugResponse {
-    match settle_immediate(document, clock, deadline) {
-        Ok(did_paint) => {
-            *painted = did_paint;
-            DebugResponse::Ack
-        }
-        Err(mut failure) => {
-            *painted = failure.painted;
-            failure.error.message.push_str(
-                "; the action was applied before settling failed, so do not retry it automatically",
-            );
-            verbose(&failure.error.message);
-            DebugResponse::Error(failure.error)
-        }
-    }
+    *painted = settle_immediate(document, clock, deadline);
+    DebugResponse::Ack
 }
 
 /// Where a link click asks to go.
@@ -1802,9 +1782,7 @@ fn serve_page(target: &str) -> Result<(), String> {
         // large document (YouTube's) can take longer than one control
         // request's settle budget to lay out. Say so and serve it; requests
         // keep their own deadlines.
-        if let Err(failure) = settle_immediate(&mut document, &animation_clock, settle_deadline) {
-            trace(&failure.error.message);
-        }
+        settle_immediate(&mut document, &animation_clock, settle_deadline);
         Ok(document)
     };
 
