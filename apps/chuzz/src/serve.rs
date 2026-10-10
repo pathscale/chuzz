@@ -1812,6 +1812,15 @@ fn serve_page(target: &str) -> Result<(), String> {
     let mut document = load(url, None)?;
     let mut origin = document.inner().url().origin().ascii_serialization();
     trace("document ready");
+    // Debugging aid for real sites: CHUZZ_DEBUG_EVAL names a script file that
+    // runs once in the page after load. It can schedule its own timers and
+    // report through console; nothing runs unless the variable is set.
+    if let Some(path) = std::env::var_os("CHUZZ_DEBUG_EVAL") {
+        match std::fs::read_to_string(&path) {
+            Ok(script) => document.eval(&script),
+            Err(error) => trace(&format!("CHUZZ_DEBUG_EVAL unreadable: {error}")),
+        }
+    }
 
     supervisor::ready(document.inner().url());
     let render_events = Latest::new();
