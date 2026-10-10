@@ -737,17 +737,12 @@ impl Engine {
         }
     }
 
-    fn audio(&mut self, peer: &Peer, now: Instant) -> Result<(), String> {
-        if !self.connected || self.signaling != "stable" || now < self.audio_deadline {
-            return Ok(());
+    fn playout(&mut self, peer: &Peer, now: Instant) -> Result<Option<Instant>, String> {
+        if !self.connected || self.signaling != "stable" {
+            return Ok(None);
         }
-        // Skip capture debt instead of producing a burst of late packets.
-        self.audio_deadline = now + AUDIO_QUANTUM;
-        let elapsed = now.saturating_duration_since(self.epoch);
-        // Capture and RTP use the same integer 20 ms clock. Scheduler jitter
-        // must not create fractional-frame gaps in the receiver's RTP clock.
-        let start = Duration::from_millis((elapsed.as_millis() / 20) as u64 * 20);
         let generation = self.cancellation.generation();
+        let mut deadline = None;
         for slot in &mut self.slots {
             if slot.current.as_deref().is_some_and(sdp::receives)
                 && let (Some(receive), Some(output), Some(receiver)) =
@@ -763,7 +758,27 @@ impl Engine {
                     peer,
                 };
                 receive.render(now, self.epoch, |decoded| sink.push(decoded))?;
+                if let Some(due) = receive.deadline() {
+                    deadline = Some(deadline.map_or(due, |value: Instant| value.min(due)));
+                }
             }
+        }
+        Ok(deadline)
+    }
+
+    fn audio(&mut self, peer: &Peer, now: Instant) -> Result<(), String> {
+        if !self.connected || self.signaling != "stable" || now < self.audio_deadline {
+            return Ok(());
+        }
+        let elapsed = now.saturating_duration_since(self.epoch);
+        // Capture and RTP use the same integer 20 ms clock. Scheduler jitter
+        // must not create fractional-frame gaps in the receiver's RTP clock.
+        let start = Duration::from_millis((elapsed.as_millis() / 20) as u64 * 20);
+        // Skip genuine capture debt, but keep ordinary wakes on the epoch's
+        // clock. Resetting to now + 20 ms accumulates scheduler delay and
+        // creates artificial missing RTP frames.
+        self.audio_deadline = self.epoch + start + AUDIO_QUANTUM;
+        for slot in &mut self.slots {
             if !slot.active
                 || !slot.current.as_deref().is_some_and(sdp::sends)
                 || slot.track.as_ref().is_none_or(|track| track.is_stopped())
@@ -1014,12 +1029,19 @@ async fn drive(
                 Output::Event(event) => engine.event(event, peer)?,
             }
         }
+        // Ingest available MediaData before deciding a packet missed its
+        // decode deadline. Receive playout has its own reactive wakeup and
+        // must not wait for the next capture tick.
+        let playout_deadline = engine.playout(peer, Instant::now())?;
         let Some(mut deadline) = protocol_deadline else {
             nagoya::yield_now().await;
             continue;
         };
         if engine.connected && engine.signaling == "stable" {
             deadline = deadline.min(engine.audio_deadline);
+            if let Some(playout_deadline) = playout_deadline {
+                deadline = deadline.min(playout_deadline);
+            }
         }
         let mut sleep = Box::pin(nagoya::sleep(
             deadline.saturating_duration_since(Instant::now()),

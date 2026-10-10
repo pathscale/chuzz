@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rusty_opus::repacketizer::{Repacketizer, samples_per_frame};
 use rusty_opus::{Application, OpusDecoder, OpusEncoder, SignalType};
 
 use crate::audio::pcm::Track;
@@ -22,7 +23,10 @@ const MAX_PACKET: usize = 1275 * 48 + 2;
 const PACKETS: usize = 12;
 const BUFFERS: usize = 72;
 const MAX_LOSS: usize = FRAME * 10;
-const LOOKAHEAD: Duration = Duration::from_millis(20);
+// Decode before presentation, while retaining the rest of PLAYOUT for
+// successor arrival and FEC. Transport wakes on this deadline independently
+// of its capture clock.
+const DECODE_LEAD: Duration = Duration::from_millis(20);
 pub(super) const PLAYOUT: Duration = Duration::from_millis(80);
 
 fn failure(error: rusty_opus::Error) -> String {
@@ -137,6 +141,8 @@ pub(super) struct Decoded {
 
 pub(super) struct Receiver {
     decoder: OpusDecoder,
+    repacketizer: Repacketizer,
+    fec_packet: [u8; 1276],
     packets: VecDeque<Packet>,
     buffers: VecDeque<Arc<[f32]>>,
     expected: Option<u64>,
@@ -151,6 +157,8 @@ impl Receiver {
     pub(super) fn new(fec: bool, position: u64) -> Result<Self, String> {
         Ok(Self {
             decoder: OpusDecoder::new(RATE as i32, CHANNELS).map_err(failure)?,
+            repacketizer: Repacketizer::new(),
+            fec_packet: [0; 1276],
             packets: VecDeque::with_capacity(PACKETS),
             buffers: VecDeque::with_capacity(BUFFERS),
             expected: None,
@@ -185,6 +193,10 @@ impl Receiver {
         Ok(())
     }
 
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.due
+    }
+
     fn buffer(&mut self, samples: usize) -> Arc<[f32]> {
         if let Some(index) = self
             .buffers
@@ -212,11 +224,18 @@ impl Receiver {
             self.decoder = OpusDecoder::new(RATE as i32, CHANNELS).map_err(failure)?;
             self.expected = Some(first.timestamp);
             self.frame = first.frames;
-            self.due = Some(now + LOOKAHEAD);
             let position = ((now.saturating_duration_since(epoch) + PLAYOUT)
                 .as_secs_f64()
                 * f64::from(RATE)) as u64;
             self.position = self.position.max(position);
+            // The decode deadline belongs to the same sample clock as the
+            // PCM position. Do not conceal 60 ms ahead of presentation and
+            // then discard a successor that arrived within the playout budget.
+            self.due = Some(
+                epoch
+                    + Duration::from_secs_f64(self.position as f64 / f64::from(RATE))
+                    - DECODE_LEAD,
+            );
             self.lost = 0;
         }
 
@@ -238,27 +257,34 @@ impl Receiver {
             {
                 self.packets.pop_front();
             }
-            if self.lost >= MAX_LOSS {
-                // A paused sender must not create unlimited synthetic audio.
-                // A later packet starts a new bounded playout anchor.
-                self.expected = None;
-                self.due = None;
-                break;
-            }
 
             let normal = self
                 .packets
                 .front()
                 .is_some_and(|packet| packet.timestamp == expected);
+            if !normal && self.lost >= MAX_LOSS {
+                // A paused sender must not create unlimited synthetic audio.
+                // A later packet starts a new bounded playout anchor. A ready
+                // packet at the expected timestamp can still resume this one.
+                self.expected = None;
+                self.due = None;
+                break;
+            }
+
             let (frames, bytes, fec) = if normal {
                 let packet = self.packets.pop_front().expect("ready Opus packet");
                 (packet.frames, packet.bytes, false)
             } else if let Some(next) = self.packets.front() {
                 let gap = next.timestamp - expected;
-                let frames = self.frame.min(gap.min(MAX_FRAMES as u64) as usize);
+                let frames = self.frame.min(FRAME).min(gap.min(MAX_FRAMES as u64) as usize);
+                // Only the immediately preceding frame can use this packet's
+                // LBRR. Older missing frames advance the decoder through PLC.
+                // The fork's LBRR entry point is mono; stereo loss uses PLC.
                 let fec = self.fec
                     && (480..=FRAME).contains(&frames)
-                    && gap == frames as u64;
+                    && gap == frames as u64
+                    && next.bytes[0] & 4 == 0
+                    && samples_per_frame(next.bytes[0], RATE as i32) as usize == frames;
                 (frames, Arc::clone(&next.bytes), fec)
             } else {
                 (self.frame.min(FRAME), Arc::from([]), false)
@@ -275,9 +301,21 @@ impl Receiver {
             let result = if normal {
                 self.decoder.decode(&bytes, frames, output)
             } else if fec {
-                // This API uses LBRR when present and PLC otherwise. Calling
-                // it does not prove the packet actually contained redundancy.
-                self.decoder.decode_fec(&bytes, frames, output)
+                // CBR SILK commonly carries one frame with code-3 padding.
+                // decode_fec accepts only code 0, so strip framing through
+                // the codec's validated repacketizer before attempting LBRR.
+                // The successor remains queued for normal decoding.
+                self.repacketizer.reset();
+                self.repacketizer
+                    .cat(&bytes)
+                    .and_then(|()| {
+                        self.repacketizer.out_range_into(0, 1, &mut self.fec_packet)
+                    })
+                    .and_then(|length| {
+                        // This API uses LBRR when present and PLC otherwise.
+                        // An attempt does not prove redundancy was present.
+                        self.decoder.decode_fec(&self.fec_packet[..length], frames, output)
+                    })
             } else {
                 self.decoder.decode(&[], frames, output)
             };
