@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>site ink</title>
+  <link rel="stylesheet" href="./missing.css">
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    html, body {
+      margin: 0;
+      color: #000;
+      font: 32px "Fira Sans";
+    }
+    #ink { margin: 24px; }
+  </style>
+</head>
+<body>
+  <noscript><style>#ink { display: none !important; }</style></noscript>
+  <p id="ink">pending</p>
+  <script>
+    function fail() { throw 1; }
+    var i = 0;
+    while (i < 30000) {
+      try { fail(); } catch (e) {}
+      i = i + 1;
+    }
+    document.getElementById("ink").textContent = "READY: INK";
+  </script>
+</body>
+</html>

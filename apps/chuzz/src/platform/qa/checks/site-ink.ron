@@ -1,0 +1,15 @@
+[
+    (
+        id: "sites-ink",
+        group: "site-ink",
+        what: "A missing head stylesheet must not block paint, a noscript style must not hide the page, a transparent root must paint on white, and a loop of caught throws must still reach the ready line",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: INK",
+        expect: PaintsNamed,
+        covers: ["READY: INK"],
+        outcome_timeout_ms: 20000,
+    ),
+]
+
