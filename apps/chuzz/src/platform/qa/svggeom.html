@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SVG geometry QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      margin: 24px;
+      font-family: Fixture;
+      background: #f5f7fa;
+      color: #182436;
+    }
+    button { font: inherit; padding: 10px 18px; }
+    #scroller { width: 520px; height: 260px; overflow: auto; }
+    #drawing { display: block; margin: 10px; width: 480px; height: 240px; }
+    #spacer { height: 80px; }
+    #result, #status, #hover-status { font-size: 18px; }
+    svg a:hover { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>SVG geometry</h1>
+  <button id="run" type="button">Check geometry</button>
+  <p id="result" role="status">SVGGEOM ready</p>
+  <div id="scroller">
+    <svg id="drawing" xmlns="http://www.w3.org/2000/svg"
+      xmlns:xlink="http://www.w3.org/1999/xlink"
+      viewBox="0 0 240 120" preserveAspectRatio="none"
+      aria-label="Geometry drawing">
+      <g id="parts" transform="translate(10 5)">
+        <a id="hull" href="#unexpected-navigation" aria-label="Hull panel">
+          <rect id="hull-shape" x="10" y="10" width="80" height="20" fill="#2459a6"/>
+        </a>
+        <a id="engine" xlink:href="#unexpected-navigation" aria-label="Engine panel">
+          <path id="engine-shape" d="M110 10H180V30H110Z" fill="#268451"/>
+          <path d="M113 13H130V17H113Z" fill="#e8f5ec"/>
+        </a>
+        <circle id="orb" cx="50" cy="70" r="12" fill="#b04a26"
+          role="button" aria-label="Circle action"/>
+      </g>
+      <rect id="overlay" x="0" y="0" width="240" height="120"
+        fill="#ffffff" opacity="0.03" pointer-events="none"/>
+    </svg>
+    <div id="spacer"></div>
+  </div>
+  <p id="status" role="status">Waiting for SVG click</p>
+  <p id="hover-status" role="status">Waiting for SVG hover</p>
+  <div id="aspect-fixture"></div>
+  <script>
+    function element(id) { return document.getElementById(id); }
+
+    function assert(value, message) {
+      if (!value) throw new Error(message);
+    }
+
+    function near(actual, expected, message) {
+      assert(Number.isFinite(actual) && Math.abs(actual - expected) <= 1,
+        message + ": " + actual + " expected " + expected);
+    }
+
+    function box(id, x, y, width, height) {
+      var root = element("drawing").getBoundingClientRect();
+      var rect = element(id).getBoundingClientRect();
+      near(rect.left, root.left + x, id + " left");
+      near(rect.top, root.top + y, id + " top");
+      near(rect.width, width, id + " width");
+      near(rect.height, height, id + " height");
+      var fragments = element(id).getClientRects();
+      assert(fragments.length === 1, id + " client rect count");
+      near(fragments[0].width, width, id + " fragment width");
+    }
+
+    function hit(id) {
+      var rect = element(id).getBoundingClientRect();
+      return document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2
+      );
+    }
+
+    function normalGeometry() {
+      box("hull", 40, 30, 160, 40);
+      box("hull-shape", 40, 30, 160, 40);
+      box("engine", 240, 30, 140, 40);
+      box("engine-shape", 240, 30, 140, 40);
+      box("orb", 96, 126, 48, 48);
+      assert(hit("hull") === element("hull-shape"), "hull hit target");
+      assert(hit("engine") === element("engine-shape"), "engine hit target");
+      assert(hit("orb") === element("orb"), "circle ignores overlay");
+    }
+
+    async function checkGeometry() {
+      var result = element("result");
+      var shape = element("hull-shape");
+      var parts = element("parts");
+      var drawing = element("drawing");
+      var scroller = element("scroller");
+      try {
+        await document.fonts.ready;
+        normalGeometry();
+
+        var local = shape.getBBox();
+        near(local.x, 10, "getBBox x");
+        near(local.y, 10, "getBBox y");
+        near(local.width, 80, "getBBox width");
+        near(local.height, 20, "getBBox height");
+        var circle = element("orb").getBBox();
+        near(circle.x, 38, "circle getBBox x");
+        near(circle.width, 24, "circle getBBox width");
+
+        shape.setAttribute("x", "15");
+        box("hull", 50, 30, 160, 40);
+        near(shape.getBBox().x, 15, "getBBox after attribute mutation");
+        shape.setAttribute("x", "10");
+
+        parts.setAttribute("transform", "translate(12 6)");
+        box("hull", 44, 32, 160, 40);
+        parts.setAttribute("transform", "translate(10 5)");
+
+        drawing.style.width = "360px";
+        drawing.style.height = "180px";
+        box("hull", 30, 22.5, 120, 30);
+        drawing.style.width = "480px";
+        drawing.style.height = "240px";
+
+        var before = shape.getBoundingClientRect();
+        scroller.scrollTop = 12;
+        var after = shape.getBoundingClientRect();
+        near(after.top, before.top - 12, "ancestor scroll");
+        normalGeometry();
+        scroller.scrollTop = 0;
+
+        before = shape.getBoundingClientRect();
+        scroller.style.transform = "translate(7px, 9px)";
+        after = shape.getBoundingClientRect();
+        near(after.left, before.left + 7, "CSS ancestor transform x");
+        near(after.top, before.top + 9, "CSS ancestor transform y");
+        assert(hit("hull") === shape, "CSS transform hit target");
+        scroller.style.transform = "";
+
+        var added = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        added.setAttribute("x", "195");
+        added.setAttribute("y", "10");
+        added.setAttribute("width", "10");
+        added.setAttribute("height", "10");
+        added.setAttribute("fill", "#592f91");
+        parts.appendChild(added);
+        var inserted = added.getBoundingClientRect();
+        near(inserted.width, 20, "inserted anonymous graphics element");
+        parts.removeChild(added);
+        near(added.getBoundingClientRect().width, 0, "removed geometry");
+
+        element("aspect-fixture").innerHTML =
+          '<svg xmlns="http://www.w3.org/2000/svg" id="aspect-svg" ' +
+          'viewBox="0 0 100 100" preserveAspectRatio="xMaxYMin meet" ' +
+          'style="display:block;width:300px;height:100px">' +
+          '<rect id="aspect-shape" x="10" y="20" width="20" height="30" fill="#592f91"/>' +
+          '</svg>';
+        var viewport = element("aspect-svg").getBoundingClientRect();
+        var aspect = element("aspect-shape").getBoundingClientRect();
+        near(aspect.left, viewport.left + 210, "meet alignment");
+        near(aspect.top, viewport.top + 20, "meet y");
+        near(aspect.width, 20, "meet width");
+
+        element("aspect-svg").setAttribute("preserveAspectRatio", "none");
+        aspect = element("aspect-shape").getBoundingClientRect();
+        near(aspect.left, viewport.left + 30, "none alignment");
+        near(aspect.width, 60, "none width");
+        element("aspect-fixture").textContent = "";
+
+        normalGeometry();
+        result.textContent = "SVGGEOM GEOMETRY PASS";
+      } catch (error) {
+        result.textContent = "SVGGEOM FAIL: " + error.message;
+      } finally {
+        shape.setAttribute("x", "10");
+        parts.setAttribute("transform", "translate(10 5)");
+        drawing.style.width = "480px";
+        drawing.style.height = "240px";
+        scroller.scrollTop = 0;
+        scroller.style.transform = "";
+        element("aspect-fixture").textContent = "";
+      }
+    }
+
+    element("run").addEventListener("click", checkGeometry);
+
+    function linkClick(event, label) {
+      event.preventDefault();
+      var href = location.href;
+      var status = element("status");
+      try {
+        assert(event.currentTarget === element(label), "SVG ancestor receives click");
+        assert(hit(label) === element(label + "-shape"), "link geometry target");
+        assert(event.defaultPrevented, "link cancellation");
+        setTimeout(function () {
+          status.textContent = location.href === href
+            ? "SVGGEOM " + label.toUpperCase() + " CLICK PASS"
+            : "SVGGEOM FAIL: cancelled link navigated";
+        }, 30);
+      } catch (error) {
+        status.textContent = "SVGGEOM FAIL: " + error.message;
+      }
+    }
+
+    element("hull").addEventListener("click", function (event) {
+      linkClick(event, "hull");
+    });
+    element("engine").addEventListener("click", function (event) {
+      linkClick(event, "engine");
+    });
+    element("orb").addEventListener("click", function (event) {
+      element("status").textContent =
+        event.target === element("orb") && hit("orb") === element("orb")
+          ? "SVGGEOM CIRCLE CLICK PASS"
+          : "SVGGEOM FAIL: circle target";
+    });
+    element("overlay").addEventListener("click", function () {
+      element("status").textContent = "SVGGEOM FAIL: overlay received click";
+    });
+    element("hull").addEventListener("mouseenter", function () {
+      setTimeout(function () {
+        element("hover-status").textContent =
+          getComputedStyle(element("hull")).cursor === "pointer"
+            ? "SVGGEOM HOVER PASS"
+            : "SVGGEOM FAIL: hover style";
+      }, 0);
+    });
+  </script>
+</body>
+</html>
+
