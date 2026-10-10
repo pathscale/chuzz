@@ -1,0 +1,15 @@
+[
+    (
+        id: "location-timing",
+        group: "location-timing",
+        what: "location stringifies to its href, and performance.timing reports navigationStart and fetchStart",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: location-timing PASS",
+        expect: PaintsNamed,
+        covers: ["READY: location-timing PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

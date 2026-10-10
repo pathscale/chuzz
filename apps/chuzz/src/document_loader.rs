@@ -504,6 +504,69 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   if (typeof globalThis.performance.clearResourceTimings !== 'function') {
     globalThis.performance.clearResourceTimings = function () {};
   }
+  /*
+   * `performance.timing` (Navigation Timing Level 1).
+   *
+   * Callers treat `performance.timing.navigationStart + performance.now()` as
+   * the current wall clock, and subtract `navigationStart` from
+   * `performance.timing.fetchStart`. The property has to be an object:
+   * reading a field off null or undefined throws
+   * "cannot convert 'null' or 'undefined' to object" at bundle top-level.
+   *
+   * `navigationStart` follows `timeOrigin`. The page bootstrap publishes
+   * `timeOrigin` and rebases `performance.now()` onto that same instant, and
+   * it runs after this shim, so a number captured here would disagree with
+   * `now()` by the process age. `fetchStart` is the same instant: there is
+   * no separate fetch clock, and 0 would make `fetchStart - navigationStart`
+   * a multi-decade negative. Every other attribute stays 0, the spec's
+   * "not available" value: no previous document, no redirect, no measured load.
+   */
+  if (globalThis.performance && globalThis.performance.timing == null) {
+    var timingOrigin = function () {
+      var performance = globalThis.performance;
+      var origin = performance.timeOrigin;
+      if (typeof origin !== 'number' || !isFinite(origin)) {
+        var elapsed = typeof performance.now === 'function' ? performance.now() : 0;
+        origin = Date.now() - elapsed;
+      }
+      return origin > 0 ? Math.floor(origin) : 0;
+    };
+    var timingUnavailable = function () { return 0; };
+    var timing = {};
+    var defineTiming = function (name, read) {
+      Object.defineProperty(timing, name, {
+        configurable: true,
+        enumerable: true,
+        get: read
+      });
+    };
+    defineTiming('navigationStart', timingOrigin);
+    defineTiming('fetchStart', timingOrigin);
+    var timingZeros = [
+      'unloadEventStart', 'unloadEventEnd', 'redirectStart', 'redirectEnd',
+      'domainLookupStart', 'domainLookupEnd', 'connectStart', 'connectEnd',
+      'secureConnectionStart', 'requestStart', 'responseStart', 'responseEnd',
+      'domLoading', 'domInteractive', 'domContentLoadedEventStart',
+      'domContentLoadedEventEnd', 'domComplete', 'loadEventStart', 'loadEventEnd'
+    ];
+    for (var timingIndex = 0; timingIndex < timingZeros.length; timingIndex++) {
+      defineTiming(timingZeros[timingIndex], timingUnavailable);
+    }
+    var timingNames = ['navigationStart', 'fetchStart'].concat(timingZeros);
+    Object.defineProperty(timing, 'toJSON', {
+      configurable: true,
+      value: function () {
+        var out = {};
+        for (var timingNameIndex = 0; timingNameIndex < timingNames.length; timingNameIndex++) {
+          out[timingNames[timingNameIndex]] = timing[timingNames[timingNameIndex]];
+        }
+        return out;
+      }
+    });
+    try {
+      globalThis.performance.timing = timing;
+    } catch (error) {}
+  }
   if (globalThis.location && typeof globalThis.location.origin === 'undefined') {
     var originMatch = String(globalThis.location.href)
       .match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/?#]+)/);

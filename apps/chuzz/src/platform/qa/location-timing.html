@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Location timing QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    button { padding: 12px 20px; font: inherit; }
+  </style>
+</head>
+<body>
+  <h1>Location timing QA</h1>
+  <button id="run" type="button">Run</button>
+  <p id="result" role="status">Location timing pending</p>
+  <script>
+    document.getElementById("run").addEventListener("click", function () {
+      var result = document.getElementById("result");
+      try {
+        var href = location.href;
+        var asString = String(location);
+        var viaCall = location.toString();
+        var relative = new URL("weberr/asset.js", location);
+        var relativeFromHref = new URL("weberr/asset.js", href);
+        var rooted = new URL("/weberr/asset.js", location);
+        var timing = performance.timing;
+        var navigationStart = timing.navigationStart;
+        var fetchStart = timing.fetchStart;
+        var wall = navigationStart + performance.now();
+        var skew = Math.abs(wall - Date.now());
+        var dumped = timing.toJSON();
+        var absolute = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(asString);
+        var ok = absolute
+          && asString === href
+          && viaCall === href
+          && relative.href === relativeFromHref.href
+          && rooted.pathname === "/weberr/asset.js"
+          && timing !== null
+          && typeof timing === "object"
+          && typeof navigationStart === "number"
+          && navigationStart === navigationStart
+          && navigationStart > 1e11
+          && fetchStart === navigationStart
+          && skew < 2500
+          && dumped.navigationStart === navigationStart
+          && dumped.fetchStart === fetchStart
+          && timing.unloadEventStart === 0
+          && timing.redirectStart === 0
+          && timing.domComplete === 0
+          && timing.loadEventEnd === 0;
+        result.textContent = ok
+          ? "READY: location-timing PASS"
+          : "FAIL: location-timing "
+            + [asString === href, viaCall === href, relative.href, rooted.pathname,
+               navigationStart, fetchStart, skew].join(" ");
+      } catch (error) {
+        result.textContent = "FAIL: location-timing " + (error && error.message ? error.message : error);
+      }
+    });
+  </script>
+</body>
+</html>
+
