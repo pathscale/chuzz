@@ -67,6 +67,9 @@ wasm = ["dep:blitz-wasm", "dep:wasmi"]
 # page parses to an empty mount point and paints nothing.
 javascript = [
   "dep:blitz-script",
+  # Real sites format dates, numbers and plurals through Intl before they
+  # render anything; without it their bundles throw "Intl is not defined".
+  "blitz-script/intl",
   "dep:mp4parse",
   "dep:ps-rust_h264",
   "dep:symphonia",

@@ -1,0 +1,14 @@
+[
+    (
+        id: "intl-all",
+        group: "intl",
+        what: "Intl formats dates, numbers, plurals and collation the way browsers do",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: intl PASS",
+        expect: PaintsNamed,
+        covers: ["READY: intl PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
