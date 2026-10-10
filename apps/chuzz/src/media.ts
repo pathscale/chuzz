@@ -47,8 +47,7 @@
   Target.prototype.removeEventListener = function (type, callback, options) {
     var capture = typeof options === 'boolean' ? options : !!(options && options.capture);
     var map = listeners.get(this);
-    var entries = map.get(String(type)) || [];
-    map.set(String(type), entries.filter(function (entry) {
+    map.set(String(type), (map.get(String(type)) || []).filter(function (entry) {
       return entry.callback !== callback || entry.capture !== capture;
     }));
   };
@@ -295,6 +294,21 @@
     }
   };
 
+  Object.defineProperty(g, '__chuzzMediaCreateVideoStream', {
+    value: function (metadata) {
+      if (!metadata || !metadata.video || metadata.video.kind !== 'video'
+          || !Number.isSafeInteger(metadata.video.handle) || metadata.video.handle <= 0) {
+        throw new TypeError('invalid remote video metadata');
+      }
+      var track = new MediaStreamTrack(secret, metadata.video);
+      try {
+        return new MediaStream([track]);
+      } catch (error) {
+        track.stop();
+        throw error;
+      }
+    }
+  });
   Object.defineProperty(g, '__chuzzMediaCreateAudioStream', {
     value: function (metadata) {
       if (!metadata || !Number.isSafeInteger(metadata.track) || metadata.track <= 0) {
@@ -339,7 +353,6 @@
   InputDeviceInfo.prototype.constructor = InputDeviceInfo;
   InputDeviceInfo.prototype.getCapabilities = function () {
     var data = deviceState.get(this);
-    if (!data) throw new TypeError('expected an InputDeviceInfo');
     return copy(data.capabilities || {});
   };
 

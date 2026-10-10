@@ -274,6 +274,8 @@
       }, 'PCMU fallback did not deliver the remote microphone tone');
       text('fallback', 'PASS: PCMU fallback delivers the remote microphone tone');
 
+      await __chuzzPeerVideoQA();
+
       await until(function () {
         return events.every(function (count) { return count > 0; })
           && propertyEvents.every(function (count) { return count > 0; });

@@ -2,7 +2,7 @@
     (
         id: "peer-all",
         group: "webrtc-peer",
-        what: "Browser peers negotiate Opus, analyse the received fake microphone tone, conceal forced RTP loss, retain PCMU fallback and release transport ownership",
+        what: "Browser peers negotiate Opus and H.264, analyse remote microphone tone, paint remote camera motion, recover forced RTP loss, obey video budgets, retain PCMU fallback and release transport ownership",
         open: None,
         hover: None,
         click: Some("#run"),
@@ -18,9 +18,13 @@
             "PASS: forced RTP loss uses FEC and PLC without a silence gap over 20 ms",
             "PASS: PCMU fallback delivers the remote microphone tone",
             "PASS: property handlers and EventTarget state listeners",
+            "PASS: H.264 mode 1, matching SPS profile and stable remote video track",
+            "PASS: decoded remote camera paints changing pixels with matching colors",
+            "PASS: forced video RTP loss recovers on the next keyframe",
+            "PASS: measured video bitrate, frame rate and dimensions follow sender caps",
             "PASS: closed peers release sockets and preserve local capture",
         ],
-        outcome_timeout_ms: 30000,
+        outcome_timeout_ms: 60000,
     ),
 ]
 

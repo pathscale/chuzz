@@ -21,6 +21,7 @@ pub(super) struct Description {
 pub(super) struct AudioCodec {
     pub payload_type: u8,
     pub opus: bool,
+    pub h264: bool,
     pub stereo: bool,
     pub fec: bool,
     pub cbr: bool,
@@ -30,10 +31,24 @@ pub(super) struct AudioCodec {
 
 impl AudioCodec {
     pub(super) fn name(&self) -> &'static str {
-        if self.opus { "opus" } else { "pcmu" }
+        if self.h264 {
+            "h264"
+        } else if self.opus {
+            "opus"
+        } else {
+            "pcmu"
+        }
     }
 
     pub(super) fn parameters(&self) -> Value {
+        if self.h264 {
+            return json!({
+                "payloadType": self.payload_type,
+                "mimeType": "video/H264",
+                "clockRate": 90000,
+                "sdpFmtpLine": self.fmtp
+            });
+        }
         json!({
             "payloadType": self.payload_type,
             "mimeType": if self.opus { "audio/opus" } else { "audio/PCMU" },
@@ -46,6 +61,7 @@ impl AudioCodec {
 
 #[derive(Clone, Debug)]
 pub(super) struct Section {
+    pub kind: &'static str,
     pub mid: String,
     pub direction: String,
     pub stream: Option<String>,
@@ -114,6 +130,7 @@ fn audio_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
         let mut codec = AudioCodec {
             payload_type: number,
             opus,
+            h264: false,
             stereo: false,
             fec: false,
             cbr: false,
@@ -180,6 +197,61 @@ fn audio_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
     Ok(codecs)
 }
 
+fn video_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
+    let mut codecs = Vec::new();
+    for number in mapping.payloads {
+        if !mapping
+            .names
+            .get(&number)
+            .is_some_and(|name| name.eq_ignore_ascii_case("H264/90000"))
+        {
+            continue;
+        }
+        let fmtp = mapping.formats.get(&number).cloned().unwrap_or_default();
+        let mut parameters = BTreeMap::new();
+        for entry in fmtp.split(';').map(str::trim).filter(|entry| !entry.is_empty()) {
+            let (key, value) = entry
+                .split_once('=')
+                .ok_or("OperationError: incomplete H.264 format parameter")?;
+            if parameters
+                .insert(key.trim().to_ascii_lowercase(), value.trim().to_owned())
+                .is_some()
+            {
+                return Err("OperationError: duplicate H.264 format parameter".into());
+            }
+        }
+        if parameters.get("packetization-mode").map(String::as_str) != Some("1")
+            || !parameters
+                .get("profile-level-id")
+                .is_some_and(|profile| profile.eq_ignore_ascii_case(super::encode::PROFILE))
+        {
+            continue;
+        }
+        if parameters
+            .get("level-asymmetry-allowed")
+            .is_some_and(|value| !matches!(value.as_str(), "0" | "1"))
+        {
+            return Err("OperationError: invalid H.264 level asymmetry parameter".into());
+        }
+        codecs.push(AudioCodec {
+            payload_type: number,
+            opus: false,
+            h264: true,
+            stereo: false,
+            fec: false,
+            cbr: false,
+            bitrate: None,
+            fmtp,
+        });
+    }
+    if codecs.is_empty() {
+        return Err(
+            "NotSupportedError: video requires H.264 mode 1 constrained baseline level 3.1".into(),
+        );
+    }
+    Ok(codecs)
+}
+
 pub(super) fn direction(value: &str) -> Result<Direction, String> {
     match value {
         "sendrecv" => Ok(Direction::SendRecv),
@@ -236,7 +308,7 @@ fn attributes(section: &mut Section, line: &str) -> Result<(), String> {
     } else if let Some(value) = line.strip_prefix("a=msid:") {
         let fields: Vec<_> = value.split_whitespace().collect();
         if fields.len() != 2 || section.track.is_some() {
-            return Err("NotSupportedError: one MSID per audio section is supported".into());
+            return Err("NotSupportedError: one MSID per media section is supported".into());
         }
         section.stream = (fields[0] != "-").then(|| fields[0].to_owned());
         section.track = Some(fields[1].to_owned());
@@ -257,6 +329,7 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
     }
 
     let mut defaults = Section {
+        kind: "audio",
         mid: String::new(),
         direction: "sendrecv".into(),
         stream: None,
@@ -281,11 +354,11 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
         } else if line.starts_with("m=") {
             let fields: Vec<_> = line.split_whitespace().collect();
             if fields.len() < 4
-                || fields[0] != "m=audio"
+                || !matches!(fields[0], "m=audio" | "m=video")
                 || fields[1] == "0"
                 || fields[2] != "UDP/TLS/RTP/SAVPF"
             {
-                return Err("NotSupportedError: active DTLS audio sections are required".into());
+                return Err("NotSupportedError: active DTLS audio or video sections are required".into());
             }
             if sections.len() == SLOT_LIMIT {
                 return Err("OperationError: too many SDP sections".into());
@@ -301,7 +374,9 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
                 payloads,
                 ..Mapping::default()
             });
-            sections.push(defaults.clone());
+            let mut section = defaults.clone();
+            section.kind = if fields[0] == "m=video" { "video" } else { "audio" };
+            sections.push(section);
         } else {
             attributes(sections.last_mut().unwrap_or(&mut defaults), line)?;
             if let Some(mapping) = mappings.last_mut() {
@@ -314,10 +389,14 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
     }
 
     if sections.is_empty() {
-        return Err("OperationError: SDP has no audio sections".into());
+        return Err("OperationError: SDP has no media sections".into());
     }
     for (section, mapping) in sections.iter_mut().zip(mappings) {
-        section.codecs = audio_codecs(mapping)?;
+        section.codecs = if section.kind == "video" {
+            video_codecs(mapping)?
+        } else {
+            audio_codecs(mapping)?
+        };
     }
     let mut mids = BTreeSet::new();
     for section in &sections {
@@ -401,7 +480,7 @@ pub(super) fn local(
         })
         .collect();
     if selected.iter().any(Vec::is_empty) {
-        return Err("NotSupportedError: codec preferences have no negotiated audio codec".into());
+        return Err("NotSupportedError: codec preferences have no negotiated media codec".into());
     }
     let mut result = String::with_capacity(description.sdp.len() + sections.len() * 64);
     let mut index = None;
@@ -411,7 +490,7 @@ pub(super) fn local(
             index = Some(index.map_or(0, |value: usize| value + 1));
             let fields: Vec<_> = line.split_whitespace().collect();
             result.push_str(&fields[..3].join(" "));
-            for codec in &selected[index.expect("audio section")] {
+            for codec in &selected[index.expect("media section")] {
                 result.push(' ');
                 result.push_str(&codec.payload_type.to_string());
             }
@@ -494,3 +573,4 @@ pub(super) fn answer(original: &str, entries: &[(&str, Option<&str>, Option<&str
     }
     result
 }
+

@@ -13,6 +13,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::audio::pcm::Track as AudioTrack;
+use crate::media::source::remote::Video;
 use crate::media::track::{Kind, Track};
 
 use super::{gather, sdp, transport};
@@ -56,6 +57,23 @@ pub(super) struct Metrics {
     pub codec_errors: u64,
     pub max_silence_frames: u64,
     pub max_playout_gap_frames: u64,
+    pub frames_encoded: u64,
+    pub frames_decoded: u64,
+    pub keyframes_sent: u64,
+    pub keyframes_decoded: u64,
+    pub video_bytes_sent: u64,
+    pub video_packets_sent: u64,
+    pub video_max_datagram_bytes: usize,
+    pub video_access_unit_bytes: u64,
+    pub capture_frames_dropped: u64,
+    pub video_dropped: u64,
+    pub video_decode_errors: u64,
+    pub video_recoveries: u64,
+    pub video_lost_timestamp: Option<u32>,
+    pub last_video_timestamp: Option<u32>,
+    pub video_width: u32,
+    pub video_height: u32,
+    pub video_profile: Option<&'static str>,
 }
 
 pub(super) struct Job {
@@ -79,6 +97,7 @@ pub(super) struct Peer {
     closed: AtomicBool,
     inbox: Mutex<Inbox>,
     outputs: Mutex<Vec<Arc<AudioTrack>>>,
+    videos: Mutex<Vec<Arc<Video>>>,
     metrics: Mutex<Metrics>,
 }
 
@@ -135,6 +154,9 @@ impl Peer {
         };
         for output in lock(&self.outputs).drain(..) {
             output.end_source();
+        }
+        for video in lock(&self.videos).drain(..) {
+            video.end();
         }
         if let Some(reader) = reader {
             reader.wake();
@@ -255,6 +277,7 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
             closed: AtomicBool::new(false),
             inbox: Mutex::new(Inbox::default()),
             outputs: Mutex::new(Vec::new()),
+            videos: Mutex::new(Vec::new()),
             metrics: Mutex::new(Metrics {
                 running: true,
                 ..Metrics::default()
@@ -280,6 +303,22 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
         return Err("InvalidStateError: peer is closed".into());
     }
     if op == "receiver" {
+        if data["kind"] == "video" {
+            let mut videos = lock(&peer.videos);
+            if videos.len() >= sdp::SLOT_LIMIT {
+                return Err("OperationError: receiver limit reached".into());
+            }
+            let video = Arc::new(Video::default());
+            let descriptor = crate::media::host(context)
+                .map_err(|error| error.to_string())?
+                .video_receiver(Arc::clone(&video))
+                .map_err(|error| format!("{}: {}", error.name, error.message))?;
+            videos.push(video);
+            return Ok(json!({"video": descriptor}));
+        }
+        if data["kind"].as_str().is_some_and(|kind| kind != "audio") {
+            return Err("TypeError: invalid receiver kind".into());
+        }
         let mut outputs = lock(&peer.outputs);
         if outputs.len() >= sdp::SLOT_LIMIT {
             return Err("OperationError: receiver limit reached".into());
@@ -307,10 +346,12 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
                 .map_err(|error| error.to_string())?
                 .track(handle)
                 .map_err(|error| format!("{}: {}", error.name, error.message))?;
-            if leased.source.kind != Kind::Audio || leased.is_stopped() {
-                return Err("InvalidAccessError: a live audio track is required".into());
+            if leased.is_stopped() {
+                return Err("InvalidAccessError: a live media track is required".into());
             }
-            input = Some(AudioTrack::from_media(&leased)?);
+            if leased.source.kind == Kind::Audio {
+                input = Some(AudioTrack::from_media(&leased)?);
+            }
             track = Some(leased);
         }
     }
@@ -327,15 +368,33 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
         let leased = media
             .track(integer(&data, "receiverHandle")?)
             .map_err(|error| format!("{}: {}", error.name, error.message))?;
-        let audio = crate::audio::registered_track(context, integer(&data, "audio")?)
-            .map_err(|error| error.to_string())?;
-        if leased.source.kind != Kind::Audio
-            || !leased
+        if leased.source.kind == Kind::Video {
+            let Some(video) = leased.source.remote_video() else {
+                return Err("InvalidAccessError: receiver is not remote video".into());
+            };
+            if !lock(&peer.videos).iter().any(|owned| Arc::ptr_eq(owned, video)) {
+                return Err("InvalidAccessError: video receiver belongs to another peer".into());
+            }
+        } else {
+            let audio = crate::audio::registered_track(context, integer(&data, "audio")?)
+                .map_err(|error| error.to_string())?;
+            if !leased
                 .source
                 .audio()
                 .is_some_and(|source| Arc::ptr_eq(source, &audio))
+                || !lock(&peer.outputs).iter().any(|owned| Arc::ptr_eq(owned, &audio))
+            {
+                return Err("InvalidAccessError: receiver PCM registration does not match".into());
+            }
+            output = Some(audio);
+        }
+        if op == "add"
+            && (data["kind"].as_str() != Some(leased.source.kind.name())
+                || track
+                    .as_ref()
+                    .is_some_and(|track| track.source.kind != leased.source.kind))
         {
-            return Err("InvalidAccessError: receiver PCM registration does not match".into());
+            return Err("InvalidAccessError: transceiver media kinds do not match".into());
         }
         leased.source.muted.store(true, Ordering::Release);
         updates.push(
@@ -343,7 +402,6 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
                 .descriptor()
                 .map_err(|error| format!("{}: {}", error.name, error.message))?,
         );
-        output = Some(audio);
         receiver = Some(leased);
     }
 
@@ -420,3 +478,4 @@ pub(super) fn install(document: &mut ScriptDocument) {
         true
     });
 }
+

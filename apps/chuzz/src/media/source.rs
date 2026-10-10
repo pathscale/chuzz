@@ -11,11 +11,15 @@ use super::frame::{Generation, VideoFrame};
 use super::pcm::{MAX_BLOCK_FRAMES, Pcm};
 use super::track::{Kind, Settings};
 use super::{Error, allocate};
+
+pub mod remote;
+
 use crate::audio::pcm::Track as AudioTrack;
 
 enum Input {
     Capture(fake::Source),
     Audio(Arc<AudioTrack>),
+    Video(Arc<remote::Video>),
 }
 
 pub struct Source {
@@ -54,9 +58,34 @@ impl Source {
         })
     }
 
+    pub fn from_video(video: Arc<remote::Video>, origin: Instant) -> Result<Self, Error> {
+        if video.ended() {
+            return Err(Error::state("the remote video source has ended"));
+        }
+        Ok(Self {
+            id: allocate()?,
+            kind: Kind::Video,
+            seed: 0,
+            muted: AtomicBool::new(true),
+            origin,
+            input: Input::Video(video),
+        })
+    }
+
+    pub fn remote_video(&self) -> Option<&Arc<remote::Video>> {
+        match &self.input {
+            Input::Video(video) => Some(video),
+            _ => None,
+        }
+    }
+
+    pub fn video_ready(&self) -> bool {
+        self.remote_video().is_none_or(|video| video.ready())
+    }
+
     pub fn audio(&self) -> Option<&Arc<AudioTrack>> {
         match &self.input {
-            Input::Capture(_) => None,
+            Input::Capture(_) | Input::Video(_) => None,
             Input::Audio(track) => Some(track),
         }
     }
@@ -67,6 +96,7 @@ impl Source {
 
     pub fn ended(&self) -> bool {
         self.audio().is_some_and(|track| track.ended())
+            || self.remote_video().is_some_and(|video| video.ended())
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -80,6 +110,8 @@ impl Source {
     pub fn label(&self) -> &'static str {
         if self.is_capture() {
             self.kind.label()
+        } else if self.remote_video().is_some() {
+            "Remote WebRTC video"
         } else {
             "Web Audio destination"
         }
@@ -92,6 +124,13 @@ impl Source {
                 "sampleSize": 32,
                 "channelCount": track.channels(),
                 "latency": 128.0 / f64::from(track.sample_rate())
+            })
+        } else if let Some(video) = self.remote_video() {
+            let [width, height] = video.dimensions().unwrap_or([0, 0]);
+            json!({
+                "width": width,
+                "height": height,
+                "aspectRatio": if height == 0 { 0.0 } else { f64::from(width) / f64::from(height) }
             })
         } else {
             settings.json()
@@ -109,6 +148,11 @@ impl Source {
                 "channelCount": {"min": channels, "max": channels},
                 "latency": {"min": latency, "max": latency}
             })
+        } else if self.remote_video().is_some() {
+            json!({
+                "width": {"min": 2, "max": 1920},
+                "height": {"min": 2, "max": 1080}
+            })
         } else {
             self.kind.capabilities()
         }
@@ -123,6 +167,7 @@ impl Source {
     ) -> Result<VideoFrame, Error> {
         match &self.input {
             Input::Capture(capture) => capture.video(settings, at, silent, generation),
+            Input::Video(video) => video.frame(generation, silent),
             Input::Audio(_) => Err(Error::state("a graph audio source cannot produce video")),
         }
     }
@@ -139,6 +184,7 @@ impl Source {
             Input::Capture(capture) => {
                 capture.pcm(settings, first_frame, frames, silent, generation)
             }
+            Input::Video(_) => Err(Error::state("a remote video source cannot produce PCM")),
             Input::Audio(track) => {
                 if frames == 0 || frames > MAX_BLOCK_FRAMES {
                     return Err(Error::state("graph PCM request exceeds the block limit"));
@@ -173,3 +219,4 @@ impl Source {
         }
     }
 }
+

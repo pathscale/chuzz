@@ -26,7 +26,7 @@ use crate::media::track::Track;
 use super::gather::{self, Config, Socket};
 use super::host::{Job, Peer};
 use super::sdp::{self, Description, Section};
-use super::{opus, pcmu};
+use super::{encode, opus, pcmu, receive};
 
 const AUDIO_QUANTUM: Duration = Duration::from_millis(20);
 const OUTPUTS: usize = 128;
@@ -34,6 +34,7 @@ const TRANSMITS: usize = 256;
 
 struct Slot {
     id: u64,
+    kind: &'static str,
     mid: Option<Mid>,
     direction: String,
     current: Option<String>,
@@ -50,6 +51,8 @@ struct Slot {
     codecs: Vec<sdp::AudioCodec>,
     send: opus::Sender,
     receive: Option<Box<opus::Receiver>>,
+    video_send: encode::Sender,
+    video_receive: receive::Receiver,
 }
 
 struct Sink<'a> {
@@ -127,6 +130,9 @@ struct Engine {
     epoch: Instant,
     audio_deadline: Instant,
     audio_drop: u64,
+    video_drop: bool,
+    video_lost: Option<(u32, Instant)>,
+    video_recovery: bool,
     cancellation: Cancellation,
 }
 
@@ -136,6 +142,8 @@ fn rtc(certificate: DtlsCert) -> Rtc {
         .clear_codecs()
         .enable_opus(true, false)
         .enable_pcmu(true, false)
+        .enable_h264(true)
+        .set_reordering_size_video(0)
         // Receiver owns timestamp reordering and the 80 ms playout budget.
         // str0m's default 15-packet wait after loss exceeds that budget
         // and releases more packets than the 12-packet lookahead can hold.
@@ -212,7 +220,7 @@ impl Engine {
                         .codecs
                         .iter()
                         .find(|remote| {
-                            remote.payload_type == codec.payload_type && remote.opus == codec.opus
+                            remote.payload_type == codec.payload_type && remote.name() == codec.name()
                         })
                         .cloned()
                         .unwrap_or(codec)
@@ -247,6 +255,7 @@ impl Engine {
                 });
                 json!({
                     "slot": slot.id,
+                    "kind": slot.kind,
                     "mid": slot.mid.map(|mid| mid.to_string()),
                     "direction": slot.direction,
                     "currentDirection": slot.current,
@@ -307,7 +316,7 @@ impl Engine {
                 || previous
                     .iter()
                     .zip(&sections)
-                    .any(|(old, new)| old.mid != new.mid)
+                    .any(|(old, new)| old.mid != new.mid || old.kind != new.kind)
             {
                 return Err(
                     "OperationError: established MID identity and m-line order are immutable"
@@ -336,7 +345,7 @@ impl Engine {
             return Err("InvalidStateError: cannot create an offer in this signaling state".into());
         }
         if self.slots.is_empty() {
-            return Err("OperationError: add an audio transceiver before creating an offer".into());
+            return Err("OperationError: add a media transceiver before creating an offer".into());
         }
         let mut changes = self.rtc.sdp_api();
         if let Some(pending) = self.pending.take() {
@@ -349,7 +358,11 @@ impl Engine {
             } else {
                 slot.mid = Some(
                     changes.add_media(
-                        MediaKind::Audio,
+                        if slot.kind == "video" {
+                            MediaKind::Video
+                        } else {
+                            MediaKind::Audio
+                        },
                         direction,
                         slot.stream.clone(),
                         slot.track
@@ -501,7 +514,11 @@ impl Engine {
                         .or_else(|| {
                             self.slots
                                 .iter()
-                                .find(|slot| slot.mid.is_none() && !used.contains(&slot.id))
+                                .find(|slot| {
+                                    slot.mid.is_none()
+                                        && slot.kind == section.kind
+                                        && !used.contains(&slot.id)
+                                })
                         });
                     let id = existing.map(|slot| slot.id).unwrap_or_else(|| {
                         self.slots.len() as u64
@@ -530,8 +547,10 @@ impl Engine {
                 for (section, id) in assignments {
                     let mid = section.mid.as_str().into();
                     if !self.slots.iter().any(|slot| slot.id == id) {
+                        let kind = section.kind;
                         self.slots.push(Slot {
                             id,
+                            kind,
                             mid: Some(mid),
                             direction: "recvonly".into(),
                             current: None,
@@ -544,10 +563,16 @@ impl Engine {
                             active: true,
                             rx_next: 0,
                             silence_run: 0,
-                            preferences: vec!["opus".into(), "pcmu".into()],
+                            preferences: if kind == "video" {
+                                vec!["h264".into()]
+                            } else {
+                                vec!["opus".into(), "pcmu".into()]
+                            },
                             codecs: Vec::new(),
                             send: opus::Sender::new(),
                             receive: None,
+                            video_send: encode::Sender::new(),
+                            video_receive: receive::Receiver::new(),
                         });
                     } else {
                         let slot = self.slot(id)?;
@@ -572,10 +597,11 @@ impl Engine {
                 if sections.len() != offered.len()
                     || sections.iter().zip(&offered).any(|(answer, offer)| {
                         answer.mid != offer.mid
+                            || answer.kind != offer.kind
                             || answer.codecs.iter().any(|codec| {
                                 !offer.codecs.iter().any(|offered| {
                                     offered.payload_type == codec.payload_type
-                                        && offered.opus == codec.opus
+                                        && offered.name() == codec.name()
                                 })
                             })
                             || (sdp::sends(&answer.direction) && !sdp::receives(&offer.direction))
@@ -632,8 +658,14 @@ impl Engine {
                 {
                     return Err("InvalidAccessError: duplicate or excessive transceiver".into());
                 }
+                let kind = match job.data["kind"].as_str() {
+                    Some("audio") => "audio",
+                    Some("video") => "video",
+                    _ => return Err("TypeError: invalid transceiver kind".into()),
+                };
                 self.slots.push(Slot {
                     id,
+                    kind,
                     mid: None,
                     direction: job.data["direction"].as_str().unwrap_or("sendrecv").into(),
                     current: None,
@@ -646,15 +678,28 @@ impl Engine {
                     active: true,
                     rx_next: 0,
                     silence_run: 0,
-                    preferences: vec!["opus".into(), "pcmu".into()],
+                    preferences: if kind == "video" {
+                        vec!["h264".into()]
+                    } else {
+                        vec!["opus".into(), "pcmu".into()]
+                    },
                     codecs: Vec::new(),
                     send: opus::Sender::new(),
                     receive: None,
+                    video_send: encode::Sender::new(),
+                    video_receive: receive::Receiver::new(),
                 });
                 Ok(Value::Null)
             }
             "bind" => {
                 let slot = self.slot(slot_id(&job.data)?)?;
+                if job
+                    .receiver
+                    .as_ref()
+                    .is_none_or(|receiver| receiver.source.kind.name() != slot.kind)
+                {
+                    return Err("InvalidAccessError: receiver kind does not match its slot".into());
+                }
                 slot.output = job.output;
                 slot.receiver = job.receiver;
                 Ok(Value::Null)
@@ -668,6 +713,14 @@ impl Engine {
             }
             "replace" => {
                 let slot = self.slot(slot_id(&job.data)?)?;
+                if job
+                    .track
+                    .as_ref()
+                    .is_some_and(|track| track.source.kind.name() != slot.kind)
+                {
+                    return Err("InvalidModificationError: replacement track kind changed".into());
+                }
+                slot.video_send.clear();
                 slot.track = job.track;
                 slot.input = job.input;
                 Ok(Value::Null)
@@ -679,19 +732,38 @@ impl Engine {
                 Ok(Value::Null)
             }
             "parameters" => {
-                let bitrate = job.data["maxBitrate"]
-                    .as_u64()
-                    .filter(|bitrate| (6000..=510_000).contains(bitrate))
-                    .ok_or("RangeError: Opus bitrate must be between 6000 and 510000")?;
-                let cbr = job.data["cbr"]
-                    .as_bool()
-                    .ok_or("TypeError: cbr must be boolean")?;
+                let slot = self.slot(slot_id(&job.data)?)?;
                 let active = job.data["active"]
                     .as_bool()
                     .ok_or("TypeError: active must be boolean")?;
-                let slot = self.slot(slot_id(&job.data)?)?;
-                slot.send.bitrate = bitrate as u32;
-                slot.send.cbr = cbr;
+                if slot.kind == "video" {
+                    let bitrate = job.data["maxBitrate"]
+                        .as_u64()
+                        .filter(|bitrate| (6000..=1_000_000).contains(bitrate))
+                        .ok_or("RangeError: video bitrate must be between 6000 and 1000000")?;
+                    let frame_rate = job.data["maxFramerate"]
+                        .as_f64()
+                        .filter(|rate| rate.is_finite() && (0.25..=30.0).contains(rate))
+                        .ok_or("RangeError: video frame rate must be between 0.25 and 30")?;
+                    let scale = job.data["scaleResolutionDownBy"]
+                        .as_f64()
+                        .filter(|scale| scale.is_finite() && (1.0..=32.0).contains(scale))
+                        .ok_or("RangeError: video scale must be between 1 and 32")?;
+                    slot.video_send.bitrate = bitrate as u32;
+                    slot.video_send.max_frame_rate = frame_rate;
+                    slot.video_send.scale = scale;
+                    slot.video_send.clear();
+                } else {
+                    let bitrate = job.data["maxBitrate"]
+                        .as_u64()
+                        .filter(|bitrate| (6000..=510_000).contains(bitrate))
+                        .ok_or("RangeError: Opus bitrate must be between 6000 and 510000")?;
+                    let cbr = job.data["cbr"]
+                        .as_bool()
+                        .ok_or("TypeError: cbr must be boolean")?;
+                    slot.send.bitrate = bitrate as u32;
+                    slot.send.cbr = cbr;
+                }
                 slot.active = active;
                 Ok(Value::Null)
             }
@@ -704,22 +776,35 @@ impl Engine {
                 let values = job.data["codecs"]
                     .as_array()
                     .ok_or("TypeError: codec preferences must be an array")?;
+                let kind = self.slot(slot_id(&job.data)?)?.kind;
                 let mut preferences = Vec::new();
                 for value in values {
                     let name = value
                         .as_str()
                         .ok_or("TypeError: invalid codec preference")?;
-                    if !matches!(name, "opus" | "pcmu")
-                        || preferences.iter().any(|value| value == name)
-                    {
-                        return Err("NotSupportedError: invalid audio codec preference".into());
+                    let supported = if kind == "video" {
+                        name == "h264"
+                    } else {
+                        matches!(name, "opus" | "pcmu")
+                    };
+                    if !supported || preferences.iter().any(|value| value == name) {
+                        return Err("NotSupportedError: invalid media codec preference".into());
                     }
                     preferences.push(name.to_owned());
                 }
                 if preferences.is_empty() {
-                    preferences = vec!["opus".into(), "pcmu".into()];
+                    preferences = if kind == "video" {
+                        vec!["h264".into()]
+                    } else {
+                        vec!["opus".into(), "pcmu".into()]
+                    };
                 }
                 self.slot(slot_id(&job.data)?)?.preferences = preferences;
+                Ok(Value::Null)
+            }
+            "dropVideo" => {
+                self.video_drop = true;
+                self.video_lost = None;
                 Ok(Value::Null)
             }
             "dropAudio" => {
@@ -826,7 +911,8 @@ impl Engine {
         // creates artificial missing RTP frames.
         self.audio_deadline = self.epoch + start + AUDIO_QUANTUM;
         for slot in &mut self.slots {
-            if !slot.active
+            if slot.kind != "audio"
+                || !slot.active
                 || !slot.current.as_deref().is_some_and(sdp::sends)
                 || slot.track.as_ref().is_none_or(|track| track.is_stopped())
             {
@@ -889,6 +975,79 @@ impl Engine {
         Ok(())
     }
 
+    fn video(&mut self, peer: &Peer, now: Instant) -> Result<Option<Instant>, String> {
+        if !self.connected || self.signaling != "stable" {
+            return Ok(None);
+        }
+        let mut deadline = None;
+        for slot in &mut self.slots {
+            if slot.kind != "video"
+                || !slot.active
+                || !slot.current.as_deref().is_some_and(sdp::sends)
+            {
+                slot.video_send.clear();
+                continue;
+            }
+            let (Some(track), Some(mid), Some(codec)) =
+                (&slot.track, slot.mid, slot.codecs.first())
+            else {
+                continue;
+            };
+            if track.is_stopped() || !track.source.video_ready() || !codec.h264 {
+                slot.video_send.clear();
+                continue;
+            }
+            let Some(writer) = self.rtc.writer(mid) else {
+                continue;
+            };
+            let Some(pt) = writer
+                .payload_params()
+                .find(|params| {
+                    params.pt() == codec.payload_type.into()
+                        && params.spec().codec == Codec::H264
+                })
+                .map(|params| params.pt())
+            else {
+                continue;
+            };
+            let (encoded, due, dropped) = slot.video_send.tick(track, self.epoch, now)?;
+            deadline = Some(deadline.map_or(due, |value: Instant| value.min(due)));
+            peer.metrics(|metrics| metrics.capture_frames_dropped += dropped);
+            if let Some(encoded) = encoded {
+                let length = encoded.bytes.len();
+                writer
+                    .write(
+                        pt,
+                        now,
+                        MediaTime::from_millis(encoded.timestamp_ms),
+                        encoded.bytes,
+                    )
+                    .map_err(|error| format!("OperationError: {error}"))?;
+                peer.metrics(|metrics| {
+                    metrics.frames_encoded += 1;
+                    metrics.keyframes_sent += 1;
+                    metrics.video_access_unit_bytes += length as u64;
+                    metrics.video_width = encoded.width;
+                    metrics.video_height = encoded.height;
+                    metrics.video_profile = Some(encode::PROFILE);
+                });
+            }
+        }
+        Ok(deadline)
+    }
+
+    fn is_video_rtp(&self, bytes: &[u8]) -> bool {
+        bytes.len() >= 12
+            && bytes[0] & 0xc0 == 0x80
+            && !(192..=223).contains(&bytes[1])
+            && self.slots.iter().any(|slot| {
+                slot.kind == "video"
+                    && slot.codecs.iter().any(|codec| {
+                        codec.h264 && codec.payload_type == bytes[1] & 0x7f
+                    })
+            })
+    }
+
     fn event(&mut self, event: Event, peer: &Peer) -> Result<(), String> {
         match event {
             Event::Connected => {
@@ -915,6 +1074,75 @@ impl Engine {
                     peer.post(json!({"type": "connection", "state": "disconnected"}));
                 } else if self.connected && matches!(state.as_str(), "connected" | "completed") {
                     peer.post(json!({"type": "connection", "state": "connected"}));
+                }
+            }
+            Event::MediaData(data) if data.params.spec().codec == Codec::H264 => {
+                let Some(slot) = self
+                    .slots
+                    .iter_mut()
+                    .find(|slot| slot.mid == Some(data.mid) && slot.kind == "video")
+                else {
+                    return Ok(());
+                };
+                if !slot.current.as_deref().is_some_and(sdp::receives)
+                    || !slot.codecs.iter().any(|codec| {
+                        codec.h264 && data.params.pt() == codec.payload_type.into()
+                    })
+                {
+                    return Ok(());
+                }
+                let Some(receiver) = &slot.receiver else {
+                    return Ok(());
+                };
+                if receiver.is_stopped() {
+                    return Ok(());
+                }
+                let Some(video) = receiver.source.remote_video() else {
+                    return Ok(());
+                };
+                let timestamp = data
+                    .time
+                    .rebase(str0m::media::Frequency::NINETY_KHZ)
+                    .numer();
+                let decoded = match slot.video_receive.decode(
+                    &data.data,
+                    receiver.source.id,
+                    timestamp,
+                    self.cancellation.generation(),
+                ) {
+                    Ok(decoded) => decoded,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        slot.video_receive = receive::Receiver::new();
+                        peer.metrics(|metrics| metrics.video_decode_errors += 1);
+                        return Ok(());
+                    }
+                };
+                for frame in decoded.frames {
+                    let width = frame.width;
+                    let height = frame.height;
+                    video
+                        .publish(frame)
+                        .map_err(|error| format!("{}: {}", error.name, error.message))?;
+                    receiver.source.muted.store(false, Ordering::Release);
+                    let recovered = decoded.keyframe
+                        && self.video_recovery
+                        && self.video_lost.is_some_and(|(lost, _)| {
+                            let distance = (timestamp as u32).wrapping_sub(lost);
+                            distance > 0 && distance < 0x8000_0000
+                        });
+                    if recovered {
+                        self.video_recovery = false;
+                    }
+                    peer.metrics(|metrics| {
+                        metrics.frames_decoded += 1;
+                        metrics.keyframes_decoded += u64::from(decoded.keyframe);
+                        metrics.video_recoveries += u64::from(recovered);
+                        metrics.last_video_timestamp = Some(timestamp as u32);
+                        metrics.video_width = width;
+                        metrics.video_height = height;
+                        metrics.video_profile = Some(encode::PROFILE);
+                    });
                 }
             }
             Event::MediaData(data)
@@ -1044,6 +1272,9 @@ async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String
         epoch,
         audio_deadline: Instant::now(),
         audio_drop: 0,
+        video_drop: false,
+        video_lost: None,
+        video_recovery: false,
         cancellation: Cancellation::default(),
     };
     let mut transmits: VecDeque<Transmit> = VecDeque::new();
@@ -1074,6 +1305,7 @@ async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String
         }
         let now = Instant::now();
         engine.audio(peer, now)?;
+        let video_deadline = engine.video(peer, now)?;
         engine
             .rtc
             .handle_input(Input::Timeout(now))
@@ -1111,6 +1343,9 @@ async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String
         };
         if engine.connected && engine.signaling == "stable" {
             deadline = deadline.min(engine.audio_deadline);
+            if let Some(video_deadline) = video_deadline {
+                deadline = deadline.min(video_deadline);
+            }
             if let Some(playout_deadline) = playout_deadline {
                 deadline = deadline.min(playout_deadline);
             }
@@ -1139,10 +1374,17 @@ async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String
                     gather::address(packet.destination),
                 ) {
                     Poll::Ready(Ok(length)) if length == packet.contents.len() => {
+                        let video = engine.is_video_rtp(&packet.contents);
                         peer.metrics(|metrics| {
                             metrics.udp_sent += 1;
                             metrics.bytes_sent += length as u64;
                             metrics.dtls_sent += u64::from(dtls(&packet.contents));
+                            if video {
+                                metrics.video_packets_sent += 1;
+                                metrics.video_bytes_sent += length as u64;
+                                metrics.video_max_datagram_bytes =
+                                    metrics.video_max_datagram_bytes.max(length);
+                            }
                         });
                         transmits.pop_front();
                         return Poll::Ready(Ok(Wake::Sent));
@@ -1193,9 +1435,35 @@ async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String
                     metrics.bytes_received += length as u64;
                     metrics.dtls_received += u64::from(dtls(&buffer[..length]));
                 });
+                // Video loss removes one entire timestamp before SRTP.
+                // Repeated packets with that timestamp remain suppressed for
+                // two seconds; recovery must use a newer keyframe.
+                let video = engine.is_video_rtp(&buffer[..length]);
+                if video && engine.connected {
+                    let timestamp = u32::from_be_bytes([
+                        buffer[4], buffer[5], buffer[6], buffer[7],
+                    ]);
+                    let now = Instant::now();
+                    if engine.video_drop {
+                        engine.video_drop = false;
+                        engine.video_lost = Some((timestamp, now + Duration::from_secs(2)));
+                        engine.video_recovery = true;
+                        peer.metrics(|metrics| {
+                            metrics.video_lost_timestamp = Some(timestamp);
+                        });
+                    }
+                    if engine
+                        .video_lost
+                        .is_some_and(|(lost, until)| lost == timestamp && now < until)
+                    {
+                        peer.metrics(|metrics| metrics.video_dropped += 1);
+                        continue;
+                    }
+                }
                 // Fixture loss occurs before SRTP ingestion. STUN, DTLS and
                 // RTCP remain intact, so the test exercises actual RTP gaps.
                 if engine.audio_drop > 0
+                    && !video
                     && engine.connected
                     && length >= 12
                     && buffer[0] & 0xc0 == 0x80

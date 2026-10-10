@@ -8,6 +8,7 @@
     body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
     button { padding: 12px 20px; font: inherit; }
     p { max-width: 960px; }
+    video, canvas { width: 192px; height: 144px; image-rendering: pixelated; }
   </style>
 </head>
 <body>
@@ -21,8 +22,17 @@
   <p id="loss">Loss pending</p>
   <p id="fallback">Fallback pending</p>
   <p id="events">Events pending</p>
+  <p id="video-sdp">Video SDP pending</p>
+  <p id="video-motion">Video motion pending</p>
+  <p id="video-loss">Video loss pending</p>
+  <p id="video-budget">Video budget pending</p>
+  <p id="video-measured">Video measurements pending</p>
+  <video id="video-local" muted playsinline></video>
+  <video id="video-remote" muted playsinline></video>
+  <canvas id="video-canvas" width="64" height="48"></canvas>
   <p id="close">Close pending</p>
   <p id="result" role="status">Peer pending</p>
+  <script src="./src/video.ts"></script>
   <script src="./src/peer.ts"></script>
 </body>
 </html>

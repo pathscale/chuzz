@@ -378,6 +378,7 @@ impl Entry {
             .iter()
             .find(|track| !self.audio_only && track.source.kind == Kind::Video);
         if let Some(track) = video
+            && track.source.video_ready()
             && (!self.paused || self.frame_key.is_none())
         {
             let frame = track

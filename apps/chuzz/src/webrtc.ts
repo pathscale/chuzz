@@ -41,8 +41,8 @@
     if (!(track instanceof g.MediaStreamTrack)) {
       throw new TypeError('expected a MediaStreamTrack');
     }
-    if (track.kind !== 'audio') {
-      throw error('NotSupportedError: video encoding is not enabled');
+    if (!['audio', 'video'].includes(track.kind)) {
+      throw error('NotSupportedError: unsupported media kind');
     }
     if (track.readyState !== 'live') {
       throw error('InvalidStateError: track has ended');
@@ -194,7 +194,13 @@
   };
 
   function capabilities(kind) {
-    if (kind === 'video') return { codecs: [], headerExtensions: [] };
+    if (kind === 'video') return {
+      codecs: [{
+        mimeType: 'video/H264', clockRate: 90000,
+        sdpFmtpLine: 'packetization-mode=1;profile-level-id=42e01f;level-asymmetry-allowed=1'
+      }],
+      headerExtensions: []
+    };
     if (kind !== 'audio') return null;
     return {
       codecs: [
@@ -208,11 +214,12 @@
     };
   }
 
-  function RTCRtpSender(token, pc, slot, track) {
+  function RTCRtpSender(token, pc, slot, track, kind) {
     if (token !== secret) throw new TypeError('Illegal constructor');
     senders.set(this, {
-      pc: pc, slot: slot, track: track, active: true, transaction: 0,
-      maxBitrate: 32000, cbr: false, codecs: []
+      pc: pc, slot: slot, track: track, kind: kind, active: true, transaction: 0,
+      maxBitrate: kind === 'video' ? 750000 : 32000,
+      maxFramerate: 10, scaleResolutionDownBy: 1, cbr: false, codecs: []
     });
   }
   RTCRtpSender.getCapabilities = capabilities;
@@ -225,6 +232,9 @@
     if (!data) return Promise.reject(new TypeError('expected an RTCRtpSender'));
     return queued(data.pc, function () {
       var handle = track == null ? null : trackHandle(track);
+      if (track != null && track.kind !== data.kind) {
+        throw error('InvalidModificationError: replacement track kind changed');
+      }
       return request(data.pc, 'replace', { slot: data.slot, handle: handle }).then(function () {
         data.track = track == null ? null : track;
       });
@@ -237,7 +247,10 @@
       codecs: copy(data.codecs),
       headerExtensions: [],
       rtcp: { reducedSize: true },
-      encodings: [{ active: data.active, maxBitrate: data.maxBitrate, cbr: data.cbr }]
+      encodings: [data.kind === 'video' ? {
+        active: data.active, maxBitrate: data.maxBitrate,
+        maxFramerate: data.maxFramerate, scaleResolutionDownBy: data.scaleResolutionDownBy
+      } : { active: data.active, maxBitrate: data.maxBitrate, cbr: data.cbr }]
     };
   };
   RTCRtpSender.prototype.setParameters = function (parameters) {
@@ -249,19 +262,32 @@
         throw error('InvalidModificationError: parameters do not match the sender transaction');
       }
       var encoding = parameters.encodings[0];
-      if (Object.keys(encoding).some(function (key) {
-        return !['active', 'maxBitrate', 'cbr'].includes(key);
-      })) {
-        throw error('NotSupportedError: unsupported audio encoding parameter');
+      var video = data.kind === 'video';
+      var allowed = video
+        ? ['active', 'maxBitrate', 'maxFramerate', 'scaleResolutionDownBy']
+        : ['active', 'maxBitrate', 'cbr'];
+      if (Object.keys(encoding).some(function (key) { return !allowed.includes(key); })) {
+        throw error('NotSupportedError: unsupported media encoding parameter');
       }
-      var maxBitrate = encoding.maxBitrate === undefined ? 32000 : Number(encoding.maxBitrate);
-      if (!Number.isInteger(maxBitrate) || maxBitrate < 6000 || maxBitrate > 510000) {
-        throw new RangeError('Opus bitrate must be between 6000 and 510000');
+      var maxBitrate = encoding.maxBitrate === undefined
+        ? (video ? 750000 : 32000) : Number(encoding.maxBitrate);
+      if (!Number.isInteger(maxBitrate) || maxBitrate < 6000
+          || maxBitrate > (video ? 1000000 : 510000)) {
+        throw new RangeError(video
+          ? 'video bitrate must be between 6000 and 1000000'
+          : 'Opus bitrate must be between 6000 and 510000');
       }
       if (encoding.cbr !== undefined && typeof encoding.cbr !== 'boolean') {
         throw new TypeError('cbr must be boolean');
       }
       var cbr = encoding.cbr === undefined ? false : encoding.cbr;
+      var maxFramerate = encoding.maxFramerate === undefined ? 10 : Number(encoding.maxFramerate);
+      var scale = encoding.scaleResolutionDownBy === undefined
+        ? 1 : Number(encoding.scaleResolutionDownBy);
+      if (video && (!Number.isFinite(maxFramerate) || maxFramerate < 0.25 || maxFramerate > 30
+          || !Number.isFinite(scale) || scale < 1 || scale > 32)) {
+        throw new RangeError('video frame rate must be 0.25 to 30 and scale must be 1 to 32');
+      }
       var current = self.getParameters();
       ['codecs', 'headerExtensions', 'rtcp'].forEach(function (key) {
         if (JSON.stringify(parameters[key]) !== JSON.stringify(current[key])) {
@@ -270,22 +296,28 @@
       });
       var active = encoding.active === undefined ? true : Boolean(encoding.active);
       return request(data.pc, 'parameters', {
-        slot: data.slot, active: active, maxBitrate: maxBitrate, cbr: cbr
+        slot: data.slot, active: active, maxBitrate: maxBitrate, cbr: cbr,
+        maxFramerate: maxFramerate, scaleResolutionDownBy: scale
       }).then(function () {
         data.active = active;
         data.maxBitrate = maxBitrate;
         data.cbr = cbr;
+        data.maxFramerate = maxFramerate;
+        data.scaleResolutionDownBy = scale;
         data.transaction++;
       });
     });
   };
 
-  function RTCRtpReceiver(token, pc, slot) {
+  function RTCRtpReceiver(token, pc, slot, kind) {
     if (token !== secret) throw new TypeError('Illegal constructor');
-    var metadata = native('receiver', { peer: open(pc).id });
-    var stream = g.__chuzzMediaCreateAudioStream(metadata);
-    var track = stream.getAudioTracks()[0];
-    Object.defineProperty(track, 'label', { value: 'Remote WebRTC audio', enumerable: true });
+    var metadata = native('receiver', { peer: open(pc).id, kind: kind });
+    var stream = kind === 'video'
+      ? g.__chuzzMediaCreateVideoStream(metadata) : g.__chuzzMediaCreateAudioStream(metadata);
+    var track = stream.getTracks()[0];
+    Object.defineProperty(track, 'label', {
+      value: 'Remote WebRTC ' + kind, enumerable: true
+    });
     receivers.set(this, {
       pc: pc, slot: slot, track: track, audio: metadata.track,
       handle: g.__chuzzFakeMedia.handle(track), streams: [], announced: false, codecs: []
@@ -302,12 +334,12 @@
     };
   };
 
-  function RTCRtpTransceiver(token, pc, slot, direction, track) {
+  function RTCRtpTransceiver(token, pc, slot, direction, track, kind) {
     if (token !== secret) throw new TypeError('Illegal constructor');
-    var sender = new RTCRtpSender(secret, pc, slot, track || null);
-    var receiver = new RTCRtpReceiver(secret, pc, slot);
+    var sender = new RTCRtpSender(secret, pc, slot, track || null, kind);
+    var receiver = new RTCRtpReceiver(secret, pc, slot, kind);
     transceivers.set(this, {
-      pc: pc, slot: slot, mid: null, direction: direction,
+      pc: pc, slot: slot, kind: kind, mid: null, direction: direction,
       currentDirection: null, sender: sender, receiver: receiver
     });
   }
@@ -335,11 +367,16 @@
     }
     var names = Array.from(codecs).map(function (codec) {
       var name = String(codec.mimeType).toLowerCase();
-      if (name === 'audio/opus' && codec.clockRate === 48000
-          && (codec.channels === undefined || codec.channels === 2)) return 'opus';
-      if (name === 'audio/pcmu' && codec.clockRate === 8000
-          && (codec.channels === undefined || codec.channels === 1)) return 'pcmu';
-      throw error('NotSupportedError: only Opus and PCMU audio are enabled');
+      if (data.kind === 'video') {
+        if (name === 'video/h264' && codec.clockRate === 90000
+            && codec.sdpFmtpLine === capabilities('video').codecs[0].sdpFmtpLine) return 'h264';
+      } else {
+        if (name === 'audio/opus' && codec.clockRate === 48000
+            && (codec.channels === undefined || codec.channels === 2)) return 'opus';
+        if (name === 'audio/pcmu' && codec.clockRate === 8000
+            && (codec.channels === undefined || codec.channels === 1)) return 'pcmu';
+      }
+      throw error('NotSupportedError: codec does not match the transceiver kind');
     });
     if (new Set(names).size !== names.length) {
       throw error('InvalidAccessError: duplicate codec preference');
@@ -424,8 +461,8 @@
     init = init || {};
     var track = typeof kindOrTrack === 'string' ? null : kindOrTrack;
     var kind = track ? track.kind : kindOrTrack;
-    if (kind !== 'audio') {
-      throw error('NotSupportedError: video encoding is not enabled');
+    if (!['audio', 'video'].includes(kind)) {
+      throw error('NotSupportedError: unsupported transceiver kind');
     }
     var handle = track ? trackHandle(track) : null;
     var direction = init.direction === undefined ? 'sendrecv' : init.direction;
@@ -442,10 +479,11 @@
     }
     if (data.slots.length >= 32) throw error('OperationError: transceiver limit reached');
     var slot = data.nextSlot + 1;
-    var transceiver = new RTCRtpTransceiver(secret, this, slot, direction, track);
+    var transceiver = new RTCRtpTransceiver(secret, this, slot, direction, track, kind);
     try {
       var updates = native('add', Object.assign(receiverFields(transceiver), {
-        direction: direction, handle: handle, stream: streams.length ? streams[0].id : null
+        kind: kind, direction: direction, handle: handle,
+        stream: streams.length ? streams[0].id : null
       }));
       g.__chuzzMediaUpdate(updates);
     } catch (caught) {
@@ -588,7 +626,7 @@
         return transceivers.get(transceiver).slot === entry.slot;
       });
       if (!transceiver) {
-        transceiver = new RTCRtpTransceiver(secret, pc, entry.slot, entry.direction, null);
+        transceiver = new RTCRtpTransceiver(secret, pc, entry.slot, entry.direction, null, entry.kind);
         var updates = native('bind', receiverFields(transceiver));
         g.__chuzzMediaUpdate(updates);
         data.slots.push(transceiver);
@@ -673,6 +711,13 @@
   });
   Object.defineProperty(g, '__chuzzWebrtcInspect', {
     value: function (pc) { return native('inspect', { peer: state(pc).id }); }
+  });
+  Object.defineProperty(g, '__chuzzWebrtcDropVideo', {
+    value: function (pc) {
+      return queued(pc, function () {
+        return request(pc, 'dropVideo').then(function () {});
+      });
+    }
   });
   Object.defineProperty(g, '__chuzzWebrtcDropAudio', {
     value: function (pc, count) {
