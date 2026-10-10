@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WEBGPUWIRE transport QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { margin: 20px; background: #182335; color: white; font-family: Fixture; }
+    button { font-family: Fixture; padding: 8px 16px; }
+    canvas { display: block; width: 256px; height: 256px; margin-top: 16px; }
+    #validation { max-width: 900px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>WEBGPUWIRE transport QA</h1>
+  <button id="run" type="button">Run 60 frames</button>
+  <p id="result" role="status">Ready</p>
+  <p id="validation">Validation scope has not run</p>
+  <canvas id="stage" width="64" height="64" aria-label="WEBGPUWIRE green triangle"></canvas>
+  <script type="module">
+    const result = document.getElementById("result");
+    const validation = document.getElementById("validation");
+    const stage = document.getElementById("stage");
+    const button = document.getElementById("run");
+    function assert(value, message) { if (!value) { throw new Error(message); } }
+    button.onclick = async () => {
+      button.disabled = true;
+      let elapsed = null;
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        assert(adapter, "no WebGPU adapter");
+        const device = await adapter.requestDevice();
+        const uncaptured = [];
+        device.addEventListener("uncapturederror", event => uncaptured.push(event.error.message));
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        const context = stage.getContext("webgpu");
+        context.configure({ device, format, alphaMode: "opaque" });
+        const module = device.createShaderModule({ label: "WEBGPUWIRE shader", code: `
+          @group(0) @binding(0) var<uniform> tint: vec4f;
+          @vertex fn vs(@location(0) p: vec2f) -> @builtin(position) vec4f {
+            return vec4f(p, 0.0, 1.0);
+          }
+          @fragment fn fs() -> @location(0) vec4f { return tint; }
+        ` });
+        const pipeline = await device.createRenderPipelineAsync({
+          label: "WEBGPUWIRE pipeline", layout: "auto",
+          vertex: { module, entryPoint: "vs", buffers: [{
+            arrayStride: 8,
+            attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }]
+          }] },
+          fragment: { module, entryPoint: "fs", targets: [{ format }] },
+          primitive: { topology: "triangle-list" }
+        });
+        const vertices = device.createBuffer({
+          label: "WEBGPUWIRE vertices", size: 24,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(vertices, 0, new Float32Array([
+          -0.75, -0.75, 0.75, -0.75, 0, 0.75
+        ]));
+        const uniform = device.createBuffer({
+          label: "WEBGPUWIRE upload", size: 65536,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        const group = device.createBindGroup({
+          label: "WEBGPUWIRE binding", layout: pipeline.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: { buffer: uniform, offset: 0, size: 16 } }]
+        });
+
+        // Finish an invalid recorded draw while nested validation scopes are
+        // open. Its error must be captured before the following native pop.
+        const target = device.createTexture({
+          size: [64, 64], format, usage: GPUTextureUsage.RENDER_ATTACHMENT
+        });
+        device.pushErrorScope("validation");
+        const invalid = device.createCommandEncoder({ label: "WEBGPUWIRE invalid encoder" });
+        const badPass = invalid.beginRenderPass({
+          label: "WEBGPUWIRE invalid pass",
+          colorAttachments: [{ view: target.createView(), loadOp: "clear", storeOp: "store",
+            clearValue: [0, 0, 0, 1] }]
+        });
+        device.pushErrorScope("validation");
+        badPass.draw(3); // Deliberately missing a pipeline.
+        badPass.end();
+        invalid.finish({ label: "WEBGPUWIRE invalid draw" });
+        const captured = await device.popErrorScope();
+        assert(captured instanceof GPUValidationError && captured.message.length > 0,
+          "invalid draw did not reach its validation scope");
+        assert(await device.popErrorScope() === null, "inner error leaked to outer scope");
+        validation.textContent = "VALIDATION: WEBGPUWIRE CAPTURED\n" + captured.message;
+        target.destroy();
+
+        const storage = new ArrayBuffer(65568);
+        const values = new Float32Array(storage, 16, 16384);
+        const bytes = new Uint8Array(storage, 8, 65544);
+        const floats = new Float32Array(storage);
+        const dataView = new DataView(storage, 16, 65536);
+        function frame(index, draws) {
+          values[0] = 0.1; values[1] = 0.8; values[2] = 0.3; values[3] = 1;
+          // Each variant uploads exactly 64 KiB from byte offset 16. Mutating
+          // immediately afterward proves the synchronous snapshot contract.
+          if (index % 3 === 0) {
+            device.queue.writeBuffer(uniform, 0, bytes, 8, 65536);
+          } else if (index % 3 === 1) {
+            device.queue.writeBuffer(uniform, 0, floats, 4, 16384);
+          } else {
+            device.queue.writeBuffer(uniform, 0, dataView, 0, 65536);
+          }
+          values.fill(0);
+          const encoder = device.createCommandEncoder({ label: "WEBGPUWIRE frame " + index });
+          const pass = encoder.beginRenderPass({
+            label: "WEBGPUWIRE frame pass " + index,
+            colorAttachments: [{ view: context.getCurrentTexture().createView(),
+              loadOp: "clear", storeOp: "store", clearValue: [0.02, 0.03, 0.08, 1] }]
+          });
+          for (let draw = 0; draw < draws; draw++) {
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, group);
+            pass.setVertexBuffer(0, vertices);
+            pass.draw(3);
+          }
+          pass.end();
+          device.queue.submit([encoder.finish()]);
+        }
+        // Warm up the native pipeline outside the timed 60-frame run.
+        device.pushErrorScope("validation");
+        frame(0, 1);
+        await device.queue.onSubmittedWorkDone();
+        assert(await device.popErrorScope() === null, "warmup validation failure");
+        device.pushErrorScope("validation");
+        const start = performance.now();
+        for (let index = 0; index < 60; index++) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          frame(index, 2000);
+          await device.queue.onSubmittedWorkDone();
+        }
+        elapsed = performance.now() - start;
+        const timedError = await device.popErrorScope();
+        assert(timedError === null, "timed validation: " + (timedError && timedError.message));
+        assert(elapsed < 6000, "60 frames exceeded 6000 ms");
+
+        const probe = document.createElement("canvas");
+        probe.width = 64; probe.height = 64;
+        const painter = probe.getContext("2d");
+        let pixel;
+        let painted = false;
+        for (let attempt = 0; attempt < 40; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+          painter.drawImage(stage, 0, 0);
+          pixel = Array.from(painter.getImageData(32, 32, 1, 1).data);
+          painted = pixel[0] < 50 && pixel[1] > 180 && pixel[2] > 50 && pixel[2] < 110;
+          if (painted) { break; }
+        }
+        assert(painted, "upload snapshot or canvas paint failure: " + pixel.join(","));
+        assert(uncaptured.length === 0, "uncaptured: " + uncaptured.join("; "));
+        result.textContent = "READY: WEBGPUWIRE PASS " + elapsed.toFixed(1) + " ms";
+      } catch (error) {
+        result.textContent = "FAIL: WEBGPUWIRE " +
+          (elapsed === null ? "" : elapsed.toFixed(1) + " ms ") + error.message;
+      }
+    };
+  </script>
+</body>
+</html>

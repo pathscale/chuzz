@@ -40,6 +40,7 @@ impl Drop for StartupSlot {
 pub(super) struct Flight {
     deadline: Instant,
     device: Option<u64>,
+    fire_device: Option<u64>,
     startup: bool,
 }
 
@@ -81,7 +82,8 @@ impl Bridge {
                         "ok": false,
                         "error": "WebGPU request limit reached in chuzz",
                         "kind": "internal",
-                        "reported": false
+                        "reported": false,
+                        "fireDevice": request.fire_device()
                     }),
                 ));
                 return;
@@ -91,6 +93,7 @@ impl Bridge {
                 Flight {
                     deadline: Instant::now() + if startup { STARTUP_DEADLINE } else { DEADLINE },
                     device: request.error_device(),
+                    fire_device: request.fire_device(),
                     startup,
                 },
             );
@@ -208,19 +211,33 @@ impl Bridge {
             Err(GpuError::internal("WebGPU request timed out in chuzz"))
         };
         let payload = match result {
-            Ok(value) => json!({"ok": true, "value": value}),
+            Ok(value) => {
+                if flight.fire_device.is_some() {
+                    // Fire commands have no JS continuation. Avoid a reply,
+                    // JSON serialization and document.eval on success.
+                    self.release_reply(&value);
+                    return;
+                }
+                json!({"ok": true, "value": value})
+            }
             Err(error) => {
                 let device = flight
                     .device
                     .and_then(|id| self.state().devices.get(&id).cloned());
                 if let Some(device) = &device {
+                    // The single ordered worker reports before the next
+                    // push/pop operation, including a failed finish batch.
                     device.report(&error);
+                    if flight.fire_device.is_some() {
+                        return;
+                    }
                 }
                 json!({
                     "ok": false,
                     "error": error.message,
                     "kind": error.kind,
-                    "reported": device.is_some()
+                    "reported": device.is_some(),
+                    "fireDevice": flight.fire_device
                 })
             }
         };

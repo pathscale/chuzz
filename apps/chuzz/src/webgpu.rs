@@ -148,6 +148,8 @@ enum Request {
         id: u64,
         device: u64,
         command: Command,
+        #[serde(default)]
+        fire: bool,
         #[serde(skip)]
         bytes: binary::Lease,
     },
@@ -174,6 +176,15 @@ impl Request {
     fn reject_readback(&self, message: &str) {
         if let Self::Readback { completion, .. } = self {
             completion.finish(Err(GpuError::internal(message)));
+        }
+    }
+
+    fn fire_device(&self) -> Option<u64> {
+        match self {
+            Self::Command {
+                device, fire: true, ..
+            } => Some(*device),
+            _ => None,
         }
     }
 
@@ -374,9 +385,12 @@ impl Bridge {
                             "ok": false,
                             "error": error.message,
                             "kind": error.kind,
-                            "reported": false
+                            "reported": false,
+                            "fireDevice": request.fire_device()
                         }),
                     ));
+                    let wake = self.state().wake.clone();
+                    wake.wake();
                     return true;
                 }
             }
@@ -391,7 +405,8 @@ impl Bridge {
                     "ok": false,
                     "error": "WebGPU request limit reached in chuzz",
                     "kind": "internal",
-                    "reported": false
+                    "reported": false,
+                    "fireDevice": request.fire_device()
                 }),
             ));
         } else {
@@ -467,6 +482,7 @@ impl Bridge {
                 device,
                 command,
                 bytes,
+                ..
             } => {
                 let _bytes = bytes;
                 // Image operations use the same ordered, bounded worker as

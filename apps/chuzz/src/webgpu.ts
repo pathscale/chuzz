@@ -98,30 +98,73 @@
     return state;
   }
 
+  function uploadBytes(data, uploads) {
+    var view = byteView(data);
+    var token = putBytes(view.buffer, view.byteOffset, view.byteLength);
+    uploads.push(token);
+    return token;
+  }
+
+  function wireFields(fields, uploads) {
+    var command = fields.command;
+    if (!command) { return fields; }
+    var args = command.args;
+    // Keep these byte positions in sync with binary::Table::claim. In
+    // particular, finish's nested command lists contain no byte payloads.
+    // Copy only the dictionaries containing bytes, never the byte storage.
+    switch (command.op) {
+      case "writeBuffer":
+      case "writeTexture":
+        args = Object.assign({}, args, { data: uploadBytes(args.data, uploads) });
+        break;
+      case "unmap":
+        args = Object.assign({}, args, {
+          ranges: args.ranges.map(function (range) {
+            return { offset: range.offset, data: uploadBytes(range.data, uploads) };
+          })
+        });
+        break;
+      case "createImageBitmap":
+      case "copyExternalImageToTexture":
+      case "paintImage":
+        if (args.source && (args.source.kind === "pixels" || args.source.kind === "encoded")) {
+          args = Object.assign({}, args, {
+            source: Object.assign({}, args.source, {
+              data: uploadBytes(args.source.data, uploads)
+            })
+          });
+        }
+        break;
+    }
+    if (args !== command.args) {
+      fields.command = { op: command.op, handle: command.handle, args: args };
+    }
+    return fields;
+  }
+
+  function transmit(operation, id, fields) {
+    fields.webgpu = operation;
+    fields.id = id;
+    var uploads = [];
+    try {
+      // Admission snapshots the selected byte views synchronously, before
+      // writeBuffer/writeTexture return or unmap detaches mapped ranges.
+      sendNative(JSON.stringify(wireFields(fields, uploads)), uploads);
+    } catch (error) {
+      uploads.forEach(function (token) { releaseBytes(token); });
+      throw error;
+    }
+  }
+
   function send(operation, fields) {
     return new Promise(function (resolve, reject) {
       var id = nextId++;
-      // The host poll loop owns request deadlines. A page timer here becomes
-      // script-pump work and can hold document load while host replies wait
-      // for that same document to poll.
+      // Only operations with a return value need a Promise and a pending
+      // entry. The host still owns all request deadlines and admission.
       pending[id] = { resolve: resolve, reject: reject };
-      fields.webgpu = operation;
-      fields.id = id;
-      var uploads = [];
       try {
-        var message = JSON.stringify(fields, function (key, value) {
-          if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-            var view = byteView(value);
-            var token = putBytes(view.buffer, view.byteOffset, view.byteLength);
-            uploads.push(token);
-            return token;
-          }
-          return value;
-        });
-        // Registration and command admission run synchronously in this context.
-        sendNative(message, uploads);
+        transmit(operation, id, fields);
       } catch (error) {
-        uploads.forEach(function (token) { releaseBytes(token); });
         delete pending[id];
         reject(error);
       }
@@ -130,7 +173,13 @@
 
   globalThis.__chuzzGpuResolve = function (id, result) {
     var entry = pending[id];
-    if (!entry) { return; }
+    if (!entry) {
+      var device = devices[result.fireDevice];
+      if (device && !result.ok && !result.reported) {
+        transportError(device, result.error);
+      }
+      return;
+    }
     delete pending[id];
     if (result.ok) {
       try {
@@ -163,16 +212,30 @@
     });
   }
 
-  function fire(device, op, handle, args) {
-    command(device, op, handle, args).catch(function (error) {
-      // Native validation was already routed to the matching page scope.
-      // Transport failures have no native event and must be observable.
-      if (!error.reported) {
-        dispatch(device, new GPUUncapturedErrorEvent("uncapturederror", {
-          error: new GPUInternalError(error.message)
-        }));
-      }
+  function transportError(device, message) {
+    // Preserve asynchronous delivery on the exceptional path. Successful
+    // fire commands allocate neither a Promise nor a JS pending entry.
+    Promise.resolve().then(function () {
+      dispatch(device, new GPUUncapturedErrorEvent("uncapturederror", {
+        error: new GPUInternalError(message)
+      }));
     });
+  }
+
+  function fire(device, op, handle, args) {
+    try {
+      transmit("command", nextId++, {
+        device: device.handle,
+        fire: true,
+        command: {
+          op: op,
+          handle: handle || 0,
+          args: args === undefined ? null : args
+        }
+      });
+    } catch (error) {
+      transportError(device, error.message);
+    }
   }
 
   function GPU() { throw new TypeError("Illegal constructor: GPU"); }
