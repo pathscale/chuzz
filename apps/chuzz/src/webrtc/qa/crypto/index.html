@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebRTC crypto QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    button { padding: 12px 20px; font: inherit; }
+    li { margin: 8px 0; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+    [data-status="fail"] { color: #ffb8b8; }
+    [data-status="pass"] { color: #a8f0bc; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC crypto QA</h1>
+  <p>Two synchronous native peers exchange authenticated packets. One DTLS packet is dropped before the handshake completes.</p>
+  <button id="run" type="button">Run</button>
+  <p id="result" role="status" data-status="pending">Crypto pending</p>
+  <ul>
+    <li id="certificates" data-status="pending">Certificates pending</li>
+    <li id="dtls" data-status="pending">DTLS pending</li>
+    <li id="retransmission" data-status="pending">Retransmission pending</li>
+    <li id="srtp" data-status="pending">SRTP pending</li>
+    <li id="srtcp" data-status="pending">SRTCP pending</li>
+    <li id="fingerprints" data-status="pending">Fingerprint rejection pending</li>
+    <li id="tamper" data-status="pending">Tamper rejection pending</li>
+    <li id="replay" data-status="pending">SRTP replay rejection pending</li>
+    <li id="rollover" data-status="pending">SRTP rollover pending</li>
+  </ul>
+  <pre id="evidence">No native evidence yet</pre>
+  <script src="./src/crypto.ts"></script>
+</body>
+</html>
+

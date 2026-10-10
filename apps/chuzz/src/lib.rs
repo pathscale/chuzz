@@ -68,6 +68,8 @@ mod video;
 mod webapi;
 pub mod webgpu;
 #[cfg(feature = "javascript")]
+pub mod webrtc;
+#[cfg(feature = "javascript")]
 mod workers;
 pub mod ws_bridge;
 // Loading a page needs the rasteriser for a visual assertion and the script
@@ -79,3 +81,4 @@ pub mod serve;
 // guest-built page cannot render one way in a tab and another in a capture.
 #[cfg(feature = "wasm")]
 pub mod wasm_page;
+

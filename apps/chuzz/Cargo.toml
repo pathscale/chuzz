@@ -79,6 +79,10 @@ javascript = [
   "dep:peniko",
   "dep:parley",
   "dep:skrifa",
+  "dep:str0m",
+  "dep:ps-str0m-rust-crypto",
+  "dep:p256",
+  "dep:x509-cert",
 ]
 # Opt in for rendered QA as well as GUI builds. A minimal headless embedder
 # can still omit font discovery and provide its own faces.
@@ -183,6 +187,12 @@ mp4parse = { version = "^0.17", optional = true }
 # The VIDEORUST brief explicitly selects this synchronous local fork.
 ps-rust_h264 = { package = "rust_h264", version = "^0.4", path = "../../../ps-rust_h264", optional = true }
 symphonia = { version = "^0.5.5", default-features = false, features = ["aac"], optional = true }
+# WebRTC has no implicit crypto provider or example server dependencies.
+str0m = { version = "^0.24.1", default-features = false, optional = true }
+ps-str0m-rust-crypto = { version = "^0.1.1", default-features = false, optional = true }
+# Certificate verification in the native crypto QA fixture.
+p256 = { version = "^0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"], optional = true }
+x509-cert = { version = "^0.2.5", default-features = false, features = ["std"], optional = true }
 # The headless painter is CPU-only, so page WebGPU must also be able to open
 # a device without the GUI renderer. Match ps-blitz's published wgpu range.
 wgpu = { version = "^29", default-features = false, features = [

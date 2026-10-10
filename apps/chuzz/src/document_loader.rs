@@ -1762,6 +1762,7 @@ pub(crate) fn install_web_api_shim(
     crate::workers::install(document, Arc::new(net_provider.clone()));
     crate::webapi::install(document);
     crate::audio::install(document);
+    crate::webrtc::install(document);
 }
 
 /// Load a page outside the browser, for headless capture.

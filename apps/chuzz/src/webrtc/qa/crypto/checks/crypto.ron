@@ -1,0 +1,15 @@
+[
+    (
+        id: "crypto-all",
+        group: "webrtc-crypto",
+        what: "Native RustCrypto peers verify P-256 certificates, DTLS retransmission, SRTP rollover, authenticated SRTCP, wrong fingerprints, tampering and SRTP replay rejection",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: crypto PASS",
+        expect: PaintsNamed,
+        covers: ["READY: crypto PASS"],
+        outcome_timeout_ms: 30000,
+    ),
+]
+
