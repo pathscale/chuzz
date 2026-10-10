@@ -384,11 +384,19 @@
     }
   });
 
-  Object.defineProperty(prototype, 'load', {
+  // One load for every media element, as in browsers: video goes through this
+  // host, audio keeps the engine's device-free load.
+  var mediaPrototype = typeof HTMLMediaElement === 'function' ? HTMLMediaElement.prototype : prototype;
+  var nativeLoad = mediaPrototype.load;
+  Object.defineProperty(mediaPrototype, 'load', {
     configurable: true,
     writable: true,
-    value: function () { sync(stateFor(this), true); }
+    value: function () {
+      if (this.tagName === 'VIDEO' || typeof nativeLoad !== 'function') sync(stateFor(this), true);
+      else nativeLoad.call(this);
+    }
   });
+  if (mediaPrototype !== prototype) delete prototype.load;
   Object.defineProperty(prototype, 'play', {
     configurable: true,
     writable: true,
