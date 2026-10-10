@@ -111,10 +111,10 @@
         'initial MID mismatch');
       api.assert(primary.currentDirection === 'sendrecv'
         && helperInitial.slots[0].currentDirection === 'sendrecv', 'echo is not duplex');
-      if (codec === 'opus' && peer.native) {
-        api.assert(primary.sender.getParameters().codecs[0].mimeType === 'audio/opus'
-          && receiver.getParameters().codecs[0].mimeType === 'audio/opus',
-        'Opus was not negotiated');
+      if (peer.native) {
+        api.assert(primary.sender.getParameters().codecs[0].mimeType.toLowerCase() === 'audio/' + codec
+          && receiver.getParameters().codecs[0].mimeType.toLowerCase() === 'audio/' + codec,
+        label + ': primary codec was not negotiated');
       }
 
       var mutedBefore = api.received(initial);
@@ -139,10 +139,23 @@
       var extra = peer.pc.addTransceiver(clone, {
         direction: 'sendonly', streams: [stream]
       });
+      // Codec preferences belong to each transceiver. The helper's primary
+      // preference does not constrain this new m-line.
+      extra.setCodecPreferences(
+        RTCRtpSender.getCapabilities('audio').codecs.filter(function (value) {
+          return value.mimeType.toLowerCase() === 'audio/' + codec;
+        })
+      );
       await peer.offer('add');
       await settled('add');
       var added = await advancing(monitor.node, api.received(unmuted));
       var helperAdded = await probe('add-report');
+      api.transport(helperAdded.report, codec);
+      if (peer.native) {
+        api.assert(primary.sender.getParameters().codecs[0].mimeType.toLowerCase() === 'audio/' + codec
+          && extra.sender.getParameters().codecs[0].mimeType.toLowerCase() === 'audio/' + codec,
+        label + ': added m-line changed the negotiated codec');
+      }
       api.assert(peer.pc.getTransceivers().length === 2
         && helperAdded.slots.length === 2, 'additional audio slot was not negotiated');
       api.assert(extra.mid !== null && extra.currentDirection === 'sendonly'
