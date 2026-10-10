@@ -486,6 +486,105 @@ fn cookie_set(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
     cookie_get(&JsValue::undefined(), &[], context)
 }
 
+/// Scroll operations posted by the JavaScript shim for the document thread.
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScrollMode {
+    To,
+    By,
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScrollCommand {
+    mode: ScrollMode,
+    #[serde(default)]
+    left: Option<f64>,
+    #[serde(default)]
+    top: Option<f64>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScrollEnvelope {
+    #[serde(rename = "__chuzz_scroll")]
+    command: ScrollCommand,
+}
+
+#[derive(Clone, Default)]
+struct ScrollMailbox(Arc<Mutex<Vec<ScrollCommand>>>);
+
+impl ScrollMailbox {
+    fn post(&self, command: ScrollCommand) {
+        if let Ok(mut queue) = self.0.lock() {
+            queue.push(command);
+        }
+    }
+
+    fn drain(&self) -> Vec<ScrollCommand> {
+        match self.0.lock() {
+            Ok(mut queue) => std::mem::take(&mut *queue),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+/// Apply one request to the native root scrollport, then expose that real
+/// position and its resulting scroll events to JavaScript.
+fn apply_viewport_scroll(
+    document: &mut blitz_script::ScriptDocument,
+    command: ScrollCommand,
+) -> bool {
+    let mut events = Vec::new();
+    let changed = {
+        let mut inner = document.inner_mut();
+        let current = inner.viewport_scroll();
+        let (left, top) = match command.mode {
+            ScrollMode::To => (
+                command.left.unwrap_or(current.x),
+                command.top.unwrap_or(current.y),
+            ),
+            ScrollMode::By => (
+                current.x + command.left.unwrap_or(0.0),
+                current.y + command.top.unwrap_or(0.0),
+            ),
+        };
+        // Blitz's scroll methods subtract their arguments from the native
+        // offset, so current-minus-target expresses a target position.
+        let dx = current.x - left;
+        let dy = current.y - top;
+        if let Some(root) = inner.try_root_element().map(|element| element.id) {
+            inner.scroll_node_by_has_changed(root, dx, dy, |event| {
+                events.push(event);
+            })
+        } else {
+            inner.scroll_viewport_by_has_changed(dx, dy)
+        }
+    };
+
+    if changed {
+        refresh_script_scroll(document);
+        for event in events {
+            document.dispatch_dom_event(event);
+        }
+        // Scroll events on the root element are non-bubbling in Blitz. The
+        // viewport's browser-facing event is targeted at Window, so dispatch
+        // it separately after updating the getters from native state.
+        document.eval(
+            "if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.Event === 'function') globalThis.dispatchEvent(new Event('scroll'));",
+        );
+    }
+    changed
+}
+
+fn refresh_script_scroll(document: &mut blitz_script::ScriptDocument) {
+    let position = document.inner().viewport_scroll();
+    let position = serde_json::json!({ "x": position.x, "y": position.y });
+    document.eval(&format!(
+        "if (globalThis.__chuzzScrollRefresh) globalThis.__chuzzScrollRefresh({position});"
+    ));
+}
+
 pub fn install(
     document: &mut blitz_script::ScriptDocument,
     net: Arc<NetProvider>,
@@ -549,9 +648,19 @@ pub fn install(
     let sockets = crate::ws_bridge::Bridge::new(wake.clone());
     let handler_sockets = sockets.clone();
     let handler_gpu = gpu.clone();
+    let scroll_mailbox = ScrollMailbox::default();
+    let handler_scroll_mailbox = scroll_mailbox.clone();
+    let handler_wake = wake.clone();
+    let initial_scroll = document.inner().viewport_scroll();
+    let mut last_scroll = (initial_scroll.x, initial_scroll.y);
 
     document.set_ipc_handler(move |message| {
         if handler_sockets.handle(&message) || handler_gpu.handle(&message) {
+            return;
+        }
+        if let Ok(request) = serde_json::from_str::<ScrollEnvelope>(&message) {
+            handler_scroll_mailbox.post(request.command);
+            handler_wake.wake();
             return;
         }
         let Ok(request) = serde_json::from_str::<NetRequest>(&message) else {
@@ -574,6 +683,25 @@ pub fn install(
                 "globalThis.__chuzzNetResolve({}, {});",
                 delivery.id, delivery.payload
             ));
+            changed = true;
+        }
+        for command in scroll_mailbox.drain() {
+            if apply_viewport_scroll(document, command) {
+                let position = document.inner().viewport_scroll();
+                last_scroll = (position.x, position.y);
+                changed = true;
+            }
+        }
+        // Wheel, keyboard and automation actions can also move the native
+        // viewport. Mirror those positions and notify Window listeners when
+        // the movement did not originate in the shim queue above.
+        let position = document.inner().viewport_scroll();
+        if (position.x, position.y) != last_scroll {
+            refresh_script_scroll(document);
+            document.eval(
+                "if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.Event === 'function') globalThis.dispatchEvent(new Event('scroll'));",
+            );
+            last_scroll = (position.x, position.y);
             changed = true;
         }
         changed
