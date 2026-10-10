@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Details QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    summary { cursor: pointer; }
+    button { font: inherit; padding: 6px 12px; }
+  </style>
+</head>
+<body>
+  <details id="plates">
+    <summary id="plates-toggle">Plate tuning</summary>
+    <p id="plates-body">Plate tuning body</p>
+    <button id="plates-apply" type="button">Apply plates</button>
+  </details>
+  <p id="toggles" role="status">No toggle yet</p>
+
+  <details id="linked">
+    <summary id="linked-toggle">Linked <a id="linked-link" href="#nowhere">help</a></summary>
+    <p>Linked body</p>
+  </details>
+  <details id="prevented">
+    <summary id="prevented-toggle">Prevented</summary>
+    <p>Prevented body</p>
+  </details>
+  <details id="scripted">
+    <summary>Scripted</summary>
+    <p>Scripted body</p>
+  </details>
+
+  <button id="run" type="button">Run scripted checks</button>
+  <p id="result" role="status">Details waiting</p>
+  <script>
+    // A click on the details' first summary toggles details.open and queues a "toggle" ToggleEvent (oldState and
+    // newState, not bubbling). The page's own toggle listener renders what it saw, the way an app renders the body.
+    var plates = document.getElementById("plates");
+    var log = [];
+    plates.addEventListener("toggle", function (event) {
+      log.push(event.type + ":" + event.oldState + ">" + event.newState + ":" + plates.open);
+      document.getElementById("toggles").textContent = "Toggles " + log.join(", ");
+    });
+    document.getElementById("prevented-toggle").addEventListener("click", function (event) { event.preventDefault(); });
+    document.getElementById("linked-link").addEventListener("click", function (event) { event.preventDefault(); });
+
+    function fail(reason) { throw new Error(reason); }
+    function nextTask() { return new Promise(function (resolve) { setTimeout(resolve, 50); }); }
+
+    document.getElementById("run").addEventListener("click", function () {
+      var result = document.getElementById("result");
+      var scripted = document.getElementById("scripted");
+      var events = [];
+      scripted.addEventListener("toggle", function (event) {
+        if (event.bubbles) events.push("bubbled");
+        events.push(event.oldState + ">" + event.newState);
+      });
+      Promise.resolve().then(function () {
+        if (!("open" in scripted)) fail("open property missing");
+        if (scripted.open !== false) fail("starts closed");
+        if (typeof ToggleEvent !== "function") fail("ToggleEvent missing");
+        scripted.open = true;
+        if (!scripted.hasAttribute("open")) fail("open reflects to the attribute");
+        // Two changes in one task coalesce into one event with the latest newState.
+        scripted.open = false;
+        scripted.open = true;
+        return nextTask();
+      }).then(function () {
+        if (events.join(",") !== "closed>open") fail("coalesced toggle, saw " + events.join(","));
+        document.getElementById("linked-link").click();
+        document.getElementById("prevented-toggle").click();
+        return nextTask();
+      }).then(function () {
+        if (document.getElementById("linked").open) fail("a link inside the summary toggled it");
+        if (document.getElementById("prevented").open) fail("a prevented click toggled it");
+        document.getElementById("prevented").removeAttribute("open");
+        scripted.removeAttribute("open");
+        return nextTask();
+      }).then(function () {
+        if (events.join(",") !== "closed>open,open>closed") fail("attribute removal toggle, saw " + events.join(","));
+        result.textContent = "READY: DETAILS PASS";
+      }).catch(function (error) {
+        result.textContent = "FAIL: DETAILS " + error.message;
+      });
+    });
+  </script>
+</body>
+</html>
