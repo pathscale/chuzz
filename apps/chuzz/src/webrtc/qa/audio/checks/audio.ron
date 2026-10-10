@@ -1,0 +1,14 @@
+[
+    (
+        id: "audio-graph",
+        group: "webrtc-audio",
+        what: "Native Web Audio renders analyser-only graphs, mixed stream destinations, automation, cloned tracks and resampled near-silent audio",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: Web Audio graph PASS",
+        expect: PaintsNamed,
+        covers: ["READY: Web Audio graph PASS"],
+        outcome_timeout_ms: 15000,
+    ),
+]

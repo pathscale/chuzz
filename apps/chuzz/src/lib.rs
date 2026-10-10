@@ -8,7 +8,7 @@
 //! "compiles as a second binary" and "compiles at all" different questions.
 //!
 //! More importantly, sharing is the design and not an optimisation. The
-//! headless host used to be a separate crate in another repository with its own
+//! headless host used to be a separate crate in another repository, with its own
 //! document builder, and the web-API shim that lets a routed page reach its
 //! first render lived only here. A gap closed for the browser stayed open for
 //! the harness, so the harness measured a browser nobody ships. There is one
@@ -31,6 +31,8 @@ pub fn install_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
+#[cfg(feature = "javascript")]
+pub mod audio;
 // The window and its izumo command surface. Behind `gui` because `izumo` is,
 // and because a headless build has no window to drive.
 #[cfg(feature = "gui")]

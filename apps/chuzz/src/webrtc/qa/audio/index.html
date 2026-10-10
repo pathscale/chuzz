@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Web Audio QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    button { padding: 12px 20px; font: inherit; }
+    pre { white-space: pre-wrap; font-family: "Fira Sans", sans-serif; }
+  </style>
+</head>
+<body>
+  <h1>Web Audio QA</h1>
+  <button id="run" type="button">Run</button>
+  <p id="result" role="status">Web Audio pending</p>
+  <pre id="measurements"></pre>
+  <script src="./src/audio.ts"></script>
+</body>
+</html>
