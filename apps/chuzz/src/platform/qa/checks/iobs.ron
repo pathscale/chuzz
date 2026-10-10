@@ -1,0 +1,15 @@
+[
+    (
+        id: "iobs-all",
+        group: "iobs",
+        what: "IntersectionObserver reports threshold crossings, root margins, clipped geometry, and record delivery",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: IOBS PASS",
+        expect: PaintsNamed,
+        covers: ["READY: IOBS PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

@@ -682,35 +682,575 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     };
   }
   if (typeof globalThis.IntersectionObserver === 'undefined') {
-    // Reports everything as visible, once, instead of never reporting at all.
-    //
-    // A no-op observer is the obvious shim and the wrong one: the common use is
-    // a lazy loader that shows an image or a section when it scrolls into view,
-    // and an observer that never fires leaves that content permanently hidden.
-    // Answering "yes, visible" once is wrong for anything below the fold but
-    // renders the page; answering nothing renders a skeleton.
-    globalThis.IntersectionObserver = function (callback) {
-      var self = this;
-      this.root = null;
-      this.rootMargin = '0px';
-      this.thresholds = [0];
-      this.observe = function (target) {
-        setTimeout(function () {
-          callback([{
-            target: target,
-            isIntersecting: true,
-            intersectionRatio: 1,
-            time: 0,
-            boundingClientRect: null,
-            intersectionRect: null,
-            rootBounds: null
-          }], self);
-        }, 0);
-      };
-      this.unobserve = function () {};
-      this.disconnect = function () {};
-      this.takeRecords = function () { return []; };
+    /*
+     * A real observer. The previous one answered "visible" once and handed
+     * back null rectangles, then never looked again.
+     *
+     * The null is the crash, not a missing detail: Wikipedia destructures
+     * `boundingClientRect` / `rootBounds` / `intersectionRect` and throws
+     * "cannot convert 'null' or 'undefined' to object" on that first entry.
+     * A lazy loader that trusted the one-shot "yes" also paints content that
+     * is still below the fold, and an infinite scroller never asks for the
+     * next page. Entries carry the boxes `getBoundingClientRect` reports,
+     * clipped by overflow and expanded by the root margin, and a later entry
+     * is queued only when the crossed threshold or `isIntersecting` changes.
+     *
+     * One animation frame serves every observer, and only while one of them
+     * still has a target, so an idle page does not keep a frame loop alive.
+     */
+    var ioSlots = typeof WeakMap === 'function' ? new WeakMap() : null;
+    var ioSlotList = [];
+    var ioActive = [];
+    var ioFrame = false;
+    var ioDelivery = false;
+    var ioNextFrame = typeof globalThis.requestAnimationFrame === 'function'
+      ? function (run) { globalThis.requestAnimationFrame(run); }
+      : function (run) { setTimeout(run, 16); };
+
+    var ioSlotGet = function (observer) {
+      if (ioSlots) return ioSlots.get(observer) || null;
+      for (var i = 0; i < ioSlotList.length; i++) {
+        if (ioSlotList[i].observer === observer) return ioSlotList[i].record;
+      }
+      return null;
     };
+    var ioSlotSet = function (observer, record) {
+      if (ioSlots) { ioSlots.set(observer, record); return; }
+      ioSlotList.push({ observer: observer, record: record });
+    };
+    var ioReport = function (error) {
+      try {
+        if (typeof globalThis.reportError === 'function') {
+          globalThis.reportError(error);
+          return;
+        }
+      } catch (ignored) {}
+      try {
+        if (globalThis.console && typeof globalThis.console.error === 'function') {
+          globalThis.console.error(error);
+        }
+      } catch (ignored) {}
+    };
+    var ioNow = function () {
+      try {
+        if (globalThis.performance && typeof globalThis.performance.now === 'function') {
+          var value = Number(globalThis.performance.now());
+          if (isFinite(value)) return value;
+        }
+      } catch (error) {}
+      return Date.now();
+    };
+    var ioDefine = function (object, name, value) {
+      try {
+        Object.defineProperty(object, name, {
+          configurable: true,
+          enumerable: true,
+          get: function () { return value; }
+        });
+      } catch (error) {
+        object[name] = value;
+      }
+    };
+    var ioNum = function (value) {
+      var number = Number(value);
+      return isFinite(number) ? number : 0;
+    };
+    var ioBox = function (x, y, width, height) {
+      return {
+        x: x,
+        y: y,
+        width: width,
+        height: height,
+        left: x,
+        top: y,
+        right: x + width,
+        bottom: y + height
+      };
+    };
+    var ioReadBox = function (source) {
+      if (!source) return ioBox(0, 0, 0, 0);
+      return ioBox(ioNum(source.x), ioNum(source.y), ioNum(source.width), ioNum(source.height));
+    };
+    var ioDomRect = function (x, y, width, height) {
+      if (!(width > 0)) width = 0;
+      if (!(height > 0)) height = 0;
+      if (typeof globalThis.DOMRectReadOnly === 'function') {
+        try { return new globalThis.DOMRectReadOnly(x, y, width, height); } catch (error) {}
+      }
+      return {
+        x: x, y: y, width: width, height: height,
+        left: x, top: y, right: x + width, bottom: y + height
+      };
+    };
+    var ioZero = function () { return ioDomRect(0, 0, 0, 0); };
+    var ioPublish = function (box) {
+      return ioDomRect(box.x, box.y, box.width, box.height);
+    };
+    var ioFormatEdge = function (edge) {
+      var value = edge.value === 0 ? 0 : edge.value;
+      return String(value) + edge.unit;
+    };
+    var ioParseMargin = function (input) {
+      var text = input == null ? '0px' : String(input);
+      text = text.replace(/^\s+|\s+$/g, '');
+      if (!text) {
+        throw new SyntaxError("Failed to construct 'IntersectionObserver': rootMargin must be specified in pixels or percent");
+      }
+      var parts = text.split(/\s+/);
+      if (parts.length > 4) {
+        throw new SyntaxError("Failed to construct 'IntersectionObserver': rootMargin must be specified in pixels or percent");
+      }
+      var number = /^([+-]?(?:\d+\.\d+|\d+|\.\d+))(px|%)$/i;
+      var zero = /^[+-]?0+(?:\.0+)?$/;
+      var edges = [];
+      for (var i = 0; i < parts.length; i++) {
+        var match = number.exec(parts[i]);
+        if (match) {
+          var parsed = Number(match[1]);
+          edges.push({ value: parsed === 0 ? 0 : parsed, unit: match[2].toLowerCase() });
+          continue;
+        }
+        if (zero.test(parts[i])) {
+          edges.push({ value: 0, unit: 'px' });
+          continue;
+        }
+        throw new SyntaxError("Failed to construct 'IntersectionObserver': rootMargin must be specified in pixels or percent");
+      }
+      var top;
+      var right;
+      var bottom;
+      var left;
+      if (edges.length === 1) {
+        top = right = bottom = left = edges[0];
+      } else if (edges.length === 2) {
+        top = bottom = edges[0];
+        right = left = edges[1];
+      } else if (edges.length === 3) {
+        top = edges[0];
+        right = left = edges[1];
+        bottom = edges[2];
+      } else {
+        top = edges[0];
+        right = edges[1];
+        bottom = edges[2];
+        left = edges[3];
+      }
+      return {
+        top: top,
+        right: right,
+        bottom: bottom,
+        left: left,
+        css: ioFormatEdge(top) + ' ' + ioFormatEdge(right) + ' ' + ioFormatEdge(bottom) + ' ' + ioFormatEdge(left)
+      };
+    };
+    var ioParseThresholds = function (value) {
+      var source;
+      if (value == null) {
+        source = [0];
+      } else if (typeof value === 'number') {
+        source = [value];
+      } else if (Object.prototype.toString.call(value) === '[object Array]') {
+        source = [];
+        for (var i = 0; i < value.length; i++) source.push(Number(value[i]));
+        if (!source.length) source = [0];
+      } else {
+        throw new TypeError("Failed to construct 'IntersectionObserver': threshold is not a number or a list of numbers");
+      }
+      var list = [];
+      for (var j = 0; j < source.length; j++) {
+        var number = source[j];
+        if (!isFinite(number) || number < 0 || number > 1) {
+          throw new RangeError("Failed to construct 'IntersectionObserver': threshold must be between 0 and 1");
+        }
+        list.push(number);
+      }
+      list.sort(function (a, b) { return a - b; });
+      return Object.freeze(list);
+    };
+    var ioStyle = function (element) {
+      try {
+        if (typeof globalThis.getComputedStyle === 'function') return globalThis.getComputedStyle(element);
+      } catch (error) {}
+      return null;
+    };
+    var ioCss = function (style, kebab, camelName) {
+      if (!style) return '';
+      var value = '';
+      try {
+        if (typeof style.getPropertyValue === 'function') value = style.getPropertyValue(kebab);
+      } catch (error) {}
+      if (!value) {
+        try { value = style[camelName]; } catch (error) {}
+      }
+      return value == null ? '' : String(value).toLowerCase();
+    };
+    var ioOverflow = function (style, axis) {
+      var longhand = ioCss(
+        style,
+        axis === 'x' ? 'overflow-x' : 'overflow-y',
+        axis === 'x' ? 'overflowX' : 'overflowY'
+      );
+      if (longhand) return longhand;
+      var shorthand = ioCss(style, 'overflow', 'overflow');
+      if (!shorthand) return 'visible';
+      var parts = shorthand.split(/\s+/);
+      if (parts.length === 1) return parts[0];
+      return axis === 'x' ? parts[0] : parts[parts.length - 1];
+    };
+    var ioClips = function (value) {
+      return !!value && value !== 'visible';
+    };
+    var ioParent = function (node) {
+      if (!node) return null;
+      return node.parentElement || node.parentNode || null;
+    };
+    var ioRendered = function (element) {
+      if (!element || element.nodeType !== 1) return false;
+      if (element.isConnected === false) return false;
+      var doc = element.ownerDocument || globalThis.document;
+      if (element.isConnected !== true) {
+        if (!doc || typeof doc.contains !== 'function' || !doc.contains(element)) return false;
+      }
+      var node = element;
+      for (var guard = 0; node && node.nodeType === 1 && guard < 64; guard++) {
+        var display = ioCss(ioStyle(node), 'display', 'display');
+        if (display === 'none') return false;
+        var next = ioParent(node);
+        if (!next || next === node) break;
+        node = next;
+      }
+      return true;
+    };
+    var ioContains = function (root, target) {
+      if (!root || root.nodeType === 9) {
+        var doc = root && root.nodeType === 9 ? root : (target.ownerDocument || globalThis.document);
+        return !!(doc && typeof doc.contains === 'function' && doc.contains(target));
+      }
+      return typeof root.contains === 'function' && root.contains(target);
+    };
+    var ioViewport = function () {
+      var width = Number(globalThis.innerWidth);
+      var height = Number(globalThis.innerHeight);
+      if (!isFinite(width) || width < 0) width = 0;
+      if (!isFinite(height) || height < 0) height = 0;
+      return ioBox(0, 0, width, height);
+    };
+    var ioRootBox = function (record) {
+      var root = record.root;
+      if (root && root.nodeType === 1) {
+        try { return ioReadBox(root.getBoundingClientRect()); } catch (error) {}
+        return ioBox(0, 0, 0, 0);
+      }
+      return ioViewport();
+    };
+    var ioExpand = function (box, margin) {
+      var top = margin.top.unit === '%' ? box.height * margin.top.value / 100 : margin.top.value;
+      var right = margin.right.unit === '%' ? box.width * margin.right.value / 100 : margin.right.value;
+      var bottom = margin.bottom.unit === '%' ? box.height * margin.bottom.value / 100 : margin.bottom.value;
+      var left = margin.left.unit === '%' ? box.width * margin.left.value / 100 : margin.left.value;
+      return ioBox(box.x - left, box.y - top, box.width + left + right, box.height + top + bottom);
+    };
+    var ioClip = function (box, clip, clipX, clipY) {
+      var left = box.left;
+      var right = box.right;
+      var top = box.top;
+      var bottom = box.bottom;
+      if (clipX) {
+        if (clip.left > left) left = clip.left;
+        if (clip.right < right) right = clip.right;
+      }
+      if (clipY) {
+        if (clip.top > top) top = clip.top;
+        if (clip.bottom < bottom) bottom = clip.bottom;
+      }
+      var width = right - left;
+      var height = bottom - top;
+      if (!(width > 0) || !(height > 0)) return null;
+      return ioBox(left, top, width, height);
+    };
+    var ioTouches = function (box, clip, clipX, clipY) {
+      var xOk = !clipX || (box.right >= clip.left && box.left <= clip.right);
+      var yOk = !clipY || (box.bottom >= clip.top && box.top <= clip.bottom);
+      return xOk && yOk;
+    };
+    var ioGeometry = function (record, target, rootBounds) {
+      var rendered = ioRendered(target);
+      var bounds = ioBox(0, 0, 0, 0);
+      if (rendered) {
+        try { bounds = ioReadBox(target.getBoundingClientRect()); } catch (error) { rendered = false; }
+      }
+      var rootRect = ioPublish(rootBounds);
+      if (!rendered || !ioContains(record.root, target)) {
+        return {
+          rootBounds: rootRect,
+          bounding: ioPublish(bounds),
+          intersection: ioZero(),
+          intersecting: false,
+          ratio: 0
+        };
+      }
+      var expanded = ioExpand(rootBounds, record.margin);
+      var positive = bounds.width > 0 && bounds.height > 0;
+      var region = positive ? bounds : null;
+      var contained = !positive;
+      var parent = ioParent(target);
+      var stop = record.root && record.root.nodeType === 1 ? record.root : null;
+      for (var guard = 0; parent && parent !== stop && guard < 64; guard++) {
+        if (parent.nodeType === 9) break;
+        if (parent.nodeType === 1) {
+          var style = ioStyle(parent);
+          var clipX = ioClips(ioOverflow(style, 'x'));
+          var clipY = ioClips(ioOverflow(style, 'y'));
+          if (clipX || clipY) {
+            var parentBox = ioBox(0, 0, 0, 0);
+            try { parentBox = ioReadBox(parent.getBoundingClientRect()); } catch (error) {}
+            if (positive) {
+              region = region ? ioClip(region, parentBox, clipX, clipY) : null;
+            } else if (!ioTouches(bounds, parentBox, clipX, clipY)) {
+              contained = false;
+            }
+          }
+        }
+        var next = ioParent(parent);
+        if (!next || next === parent) break;
+        parent = next;
+      }
+      if (positive) {
+        region = region ? ioClip(region, expanded, true, true) : null;
+      } else if (contained) {
+        contained = ioTouches(bounds, expanded, true, true);
+      }
+      var intersecting = false;
+      var ratio = 0;
+      var intersection = ioZero();
+      if (positive && region) {
+        intersecting = true;
+        intersection = ioPublish(region);
+        ratio = (region.width * region.height) / (bounds.width * bounds.height);
+        if (ratio < 0) ratio = 0;
+        if (ratio > 1) ratio = 1;
+        if (ratio > 1 - 1e-6) ratio = 1;
+      } else if (!positive && contained) {
+        intersecting = true;
+        ratio = 1;
+        intersection = ioDomRect(bounds.x, bounds.y, 0, 0);
+      }
+      return {
+        rootBounds: rootRect,
+        bounding: ioPublish(bounds),
+        intersection: intersection,
+        intersecting: intersecting,
+        ratio: ratio
+      };
+    };
+    var ioIndex = function (thresholds, ratio, intersecting) {
+      if (!intersecting) return -1;
+      var index = -1;
+      for (var i = 0; i < thresholds.length; i++) {
+        if (ratio + 1e-6 >= thresholds[i]) index = i;
+      }
+      return index;
+    };
+    var ioUpdate = function (record, time) {
+      if (!record.targets.length) return false;
+      var rootBounds;
+      try {
+        rootBounds = ioRootBox(record);
+      } catch (error) {
+        ioReport(error);
+        return false;
+      }
+      var queued = false;
+      for (var i = 0; i < record.targets.length; i++) {
+        var observation = record.targets[i];
+        var geometry;
+        try {
+          geometry = ioGeometry(record, observation.target, rootBounds);
+        } catch (error) {
+          ioReport(error);
+          continue;
+        }
+        var index = ioIndex(record.thresholds, geometry.ratio, geometry.intersecting);
+        if (!observation.seen || index !== observation.index || geometry.intersecting !== observation.intersecting) {
+          observation.seen = true;
+          observation.index = index;
+          observation.intersecting = geometry.intersecting;
+          record.queue.push(new IntersectionObserverEntry({
+            time: time,
+            rootBounds: geometry.rootBounds,
+            boundingClientRect: geometry.bounding,
+            intersectionRect: geometry.intersection,
+            isIntersecting: geometry.intersecting,
+            intersectionRatio: geometry.ratio,
+            target: observation.target
+          }));
+          queued = true;
+        }
+      }
+      return queued;
+    };
+    var ioAnyTargets = function () {
+      for (var i = 0; i < ioActive.length; i++) {
+        if (ioActive[i].targets.length) return true;
+      }
+      return false;
+    };
+    var ioDeliver = function () {
+      var pending = ioActive.slice();
+      for (var i = 0; i < pending.length; i++) {
+        var record = pending[i];
+        if (!record.queue.length) continue;
+        var entries = record.queue.slice();
+        record.queue = [];
+        try {
+          record.callback.call(record.observer, entries, record.observer);
+        } catch (error) {
+          ioReport(error);
+        }
+      }
+    };
+    var ioScheduleDelivery = function () {
+      if (ioDelivery) return;
+      ioDelivery = true;
+      setTimeout(function () {
+        ioDelivery = false;
+        ioDeliver();
+      }, 0);
+    };
+    var ioRunFrame = function () {
+      ioFrame = false;
+      var time = ioNow();
+      var pending = ioActive.slice();
+      var queued = false;
+      for (var i = 0; i < pending.length; i++) {
+        if (ioUpdate(pending[i], time)) queued = true;
+      }
+      if (queued) ioScheduleDelivery();
+      if (ioAnyTargets()) ioSchedule();
+    };
+    var ioSchedule = function () {
+      if (ioFrame) return;
+      if (!ioAnyTargets()) return;
+      ioFrame = true;
+      ioNextFrame(ioRunFrame);
+    };
+    var ioRetain = function (record) {
+      var index = -1;
+      for (var i = 0; i < ioActive.length; i++) {
+        if (ioActive[i] === record) { index = i; break; }
+      }
+      if (record.targets.length) {
+        if (index < 0) ioActive.push(record);
+        ioSchedule();
+      } else if (index >= 0) {
+        ioActive.splice(index, 1);
+      }
+    };
+    var ioDropQueued = function (record, target) {
+      var next = [];
+      for (var i = 0; i < record.queue.length; i++) {
+        if (record.queue[i].target !== target) next.push(record.queue[i]);
+      }
+      record.queue = next;
+    };
+
+    var IntersectionObserverEntry = function IntersectionObserverEntry(init) {
+      if (!(this instanceof IntersectionObserverEntry)) {
+        throw new TypeError("Failed to construct 'IntersectionObserverEntry': Please use the 'new' operator, this DOM object constructor cannot be called as a function.");
+      }
+      if (!init || typeof init !== 'object') {
+        throw new TypeError("Failed to construct 'IntersectionObserverEntry': 1 argument required, but only 0 present.");
+      }
+      var time = Number(init.time);
+      if (!isFinite(time)) time = 0;
+      var ratio = Number(init.intersectionRatio);
+      if (!isFinite(ratio)) ratio = 0;
+      ioDefine(this, 'time', time);
+      ioDefine(this, 'rootBounds', init.rootBounds == null ? null : init.rootBounds);
+      ioDefine(this, 'boundingClientRect', init.boundingClientRect || ioZero());
+      ioDefine(this, 'intersectionRect', init.intersectionRect || ioZero());
+      ioDefine(this, 'isIntersecting', !!init.isIntersecting);
+      ioDefine(this, 'intersectionRatio', ratio);
+      ioDefine(this, 'target', init.target);
+    };
+
+    var IntersectionObserver = function IntersectionObserver(callback, options) {
+      if (!(this instanceof IntersectionObserver)) {
+        throw new TypeError("Failed to construct 'IntersectionObserver': Please use the 'new' operator, this DOM object constructor cannot be called as a function.");
+      }
+      if (typeof callback !== 'function') {
+        throw new TypeError("Failed to construct 'IntersectionObserver': The callback provided as parameter 1 is not a function.");
+      }
+      if (options == null) options = {};
+      if (typeof options !== 'object') {
+        throw new TypeError("Failed to construct 'IntersectionObserver': The provided value is not of type 'IntersectionObserverInit'.");
+      }
+      var root = options.root;
+      if (root === undefined) root = null;
+      if (root !== null && root.nodeType !== 1 && root.nodeType !== 9) {
+        throw new TypeError("Failed to construct 'IntersectionObserver': root must be an Element, a Document, or null.");
+      }
+      var margin = ioParseMargin(options.rootMargin);
+      var thresholds = ioParseThresholds(options.threshold);
+      var record = {
+        observer: this,
+        callback: callback,
+        root: root,
+        rootMargin: margin.css,
+        margin: margin,
+        thresholds: thresholds,
+        targets: [],
+        queue: []
+      };
+      ioSlotSet(this, record);
+      ioDefine(this, 'root', root);
+      ioDefine(this, 'rootMargin', margin.css);
+      ioDefine(this, 'thresholds', thresholds);
+    };
+
+    IntersectionObserver.prototype.observe = function (target) {
+      var record = ioSlotGet(this);
+      if (!record) throw new TypeError("Illegal invocation");
+      if (!target || target.nodeType !== 1) {
+        throw new TypeError("Failed to execute 'observe' on 'IntersectionObserver': parameter 1 is not of type 'Element'.");
+      }
+      for (var i = 0; i < record.targets.length; i++) {
+        if (record.targets[i].target === target) return;
+      }
+      record.targets.push({ target: target, index: -1, intersecting: false, seen: false });
+      ioRetain(record);
+    };
+    IntersectionObserver.prototype.unobserve = function (target) {
+      var record = ioSlotGet(this);
+      if (!record) throw new TypeError("Illegal invocation");
+      if (!target || target.nodeType !== 1) {
+        throw new TypeError("Failed to execute 'unobserve' on 'IntersectionObserver': parameter 1 is not of type 'Element'.");
+      }
+      var next = [];
+      for (var i = 0; i < record.targets.length; i++) {
+        if (record.targets[i].target !== target) next.push(record.targets[i]);
+      }
+      record.targets = next;
+      ioDropQueued(record, target);
+      ioRetain(record);
+    };
+    IntersectionObserver.prototype.disconnect = function () {
+      var record = ioSlotGet(this);
+      if (!record) throw new TypeError("Illegal invocation");
+      record.targets = [];
+      record.queue = [];
+      ioRetain(record);
+    };
+    IntersectionObserver.prototype.takeRecords = function () {
+      var record = ioSlotGet(this);
+      if (!record) throw new TypeError("Illegal invocation");
+      var entries = record.queue.slice();
+      record.queue = [];
+      return entries;
+    };
+
+    globalThis.IntersectionObserver = IntersectionObserver;
+    globalThis.IntersectionObserverEntry = IntersectionObserverEntry;
   }
   /*
    * The viewport size, and the single source of truth for it.

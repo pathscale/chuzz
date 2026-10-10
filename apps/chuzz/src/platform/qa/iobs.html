@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>IOBS</title>
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    html, body { margin: 0; padding: 0; }
+    body { font-family: "Fira Sans"; background: #f5f7fa; color: #18212b; }
+    button { font-family: "Fira Sans"; padding: 12px 24px; }
+    #result { font-size: 24px; }
+    #marker { width: 30px; height: 30px; margin: 0; background: #888; }
+    #clipper { width: 100px; height: 40px; margin: 0; padding: 0; border: 0; overflow: hidden; }
+    #clipped { width: 100px; height: 80px; margin: 0; background: #b04a26; }
+    #scroller {
+      width: 200px;
+      height: 200px;
+      margin: 16px 0;
+      padding: 0;
+      border: 0;
+      overflow: auto;
+    }
+    #pad { height: 400px; margin: 0; }
+    #target { width: 100px; height: 100px; margin: 0; background: #2459a6; }
+    #after { height: 600px; margin: 0; }
+    #fold-spacer { height: 3000px; }
+    #fold { width: 80px; height: 80px; margin: 0; background: #268451; }
+  </style>
+</head>
+<body>
+  <button id="run" type="button">Run</button>
+  <p id="result" role="status">IOBS ready</p>
+  <div id="marker"></div>
+  <div id="clipper"><div id="clipped"></div></div>
+  <div id="scroller">
+    <div id="pad"></div>
+    <div id="target"></div>
+    <div id="after"></div>
+  </div>
+  <div id="fold-spacer"></div>
+  <div id="fold"></div>
+  <script>
+    var finished = false;
+    var live = [];
+
+    function byId(id) { return document.getElementById(id); }
+
+    function shutdown() {
+      for (var i = 0; i < live.length; i++) {
+        try { live[i].disconnect(); } catch (error) {}
+      }
+    }
+
+    function fail(error) {
+      if (finished) return;
+      finished = true;
+      shutdown();
+      var reason = error && error.message ? error.message : String(error);
+      byId("result").textContent = "FAIL: IOBS " + reason;
+    }
+
+    function pass() {
+      if (finished) return;
+      finished = true;
+      shutdown();
+      byId("result").textContent = "READY: IOBS PASS";
+    }
+
+    function track(observer) {
+      live.push(observer);
+      return observer;
+    }
+
+    function later(fn) {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          setTimeout(function () {
+            try { fn(); } catch (error) { fail(error); }
+          }, 0);
+        });
+      });
+    }
+
+    function assert(value, message) {
+      if (!value) throw new Error(message);
+    }
+
+    function near(actual, expected, label) {
+      if (!(Math.abs(actual - expected) <= 1)) {
+        throw new Error(label + " " + actual + " expected " + expected);
+      }
+    }
+
+    function rectOf(source) {
+      var rect = source.getBoundingClientRect ? source.getBoundingClientRect() : source;
+      return {
+        x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+        left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom
+      };
+    }
+
+    function sameRect(actual, expected, label) {
+      assert(actual, label + " missing");
+      near(actual.x, expected.x, label + " x");
+      near(actual.y, expected.y, label + " y");
+      near(actual.width, expected.width, label + " width");
+      near(actual.height, expected.height, label + " height");
+      near(actual.left, expected.left, label + " left");
+      near(actual.top, expected.top, label + " top");
+      near(actual.right, expected.right, label + " right");
+      near(actual.bottom, expected.bottom, label + " bottom");
+    }
+
+    function zeroRect() {
+      return { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0, right: 0, bottom: 0 };
+    }
+
+    function overlap(a, b) {
+      if (!a || !b) return null;
+      var left = Math.max(a.left, b.left);
+      var top = Math.max(a.top, b.top);
+      var right = Math.min(a.right, b.right);
+      var bottom = Math.min(a.bottom, b.bottom);
+      var width = right - left;
+      var height = bottom - top;
+      if (!(width > 0) || !(height > 0)) return null;
+      return { x: left, y: top, width: width, height: height, left: left, top: top, right: right, bottom: bottom };
+    }
+
+    function expand(rect, margin) {
+      return {
+        x: rect.x - margin,
+        y: rect.y - margin,
+        width: rect.width + margin * 2,
+        height: rect.height + margin * 2,
+        left: rect.left - margin,
+        top: rect.top - margin,
+        right: rect.right + margin,
+        bottom: rect.bottom + margin
+      };
+    }
+
+    function viewportRect() {
+      return {
+        x: 0, y: 0, width: innerWidth, height: innerHeight,
+        left: 0, top: 0, right: innerWidth, bottom: innerHeight
+      };
+    }
+
+    function indexOf(ratio, intersecting) {
+      if (!intersecting) return -1;
+      var thresholds = [0, 0.5, 1];
+      var index = -1;
+      for (var i = 0; i < thresholds.length; i++) {
+        if (ratio + 1e-6 >= thresholds[i]) index = i;
+      }
+      return index;
+    }
+
+    function throws(kind, fn) {
+      try {
+        fn();
+      } catch (error) {
+        return error instanceof kind || error.name === kind.name;
+      }
+      return false;
+    }
+
+    function syncChecks() {
+      assert(typeof IntersectionObserver === "function", "missing IntersectionObserver");
+      assert(typeof IntersectionObserverEntry === "function", "missing IntersectionObserverEntry");
+      assert(throws(TypeError, function () { IntersectionObserver(function () {}); }), "requires new");
+      assert(throws(TypeError, function () { new IntersectionObserver("nope"); }), "callback type");
+      assert(throws(TypeError, function () {
+        new IntersectionObserver(function () {}, { root: document.createTextNode("x") });
+      }), "text root");
+      assert(throws(RangeError, function () { new IntersectionObserver(function () {}, { threshold: 1.01 }); }), "threshold high");
+      assert(throws(RangeError, function () { new IntersectionObserver(function () {}, { threshold: -0.01 }); }), "threshold low");
+      assert(throws(RangeError, function () { new IntersectionObserver(function () {}, { threshold: 0 / 0 }); }), "threshold nan");
+      assert(throws(RangeError, function () { new IntersectionObserver(function () {}, { threshold: [0, 2] }); }), "threshold list");
+      assert(throws(TypeError, function () { new IntersectionObserver(function () {}, { threshold: "0.5" }); }), "threshold string");
+      assert(throws(SyntaxError, function () { new IntersectionObserver(function () {}, { rootMargin: "" }); }), "empty margin");
+      assert(throws(SyntaxError, function () { new IntersectionObserver(function () {}, { rootMargin: "10" }); }), "unitless margin");
+      assert(throws(SyntaxError, function () { new IntersectionObserver(function () {}, { rootMargin: "10em" }); }), "em margin");
+      assert(throws(SyntaxError, function () { new IntersectionObserver(function () {}, { rootMargin: "1px 2px 3px 4px 5px" }); }), "five margins");
+      assert(throws(SyntaxError, function () { new IntersectionObserver(function () {}, { rootMargin: "10 px" }); }), "spaced unit");
+
+      var plain = new IntersectionObserver(function () {});
+      assert(plain.root === null, "default root");
+      assert(plain.rootMargin === "0px 0px 0px 0px", "default margin " + plain.rootMargin);
+      assert(plain.thresholds.length === 1 && plain.thresholds[0] === 0, "default threshold");
+      assert(Object.isFrozen(plain.thresholds), "default frozen");
+      plain.disconnect();
+
+      var empty = new IntersectionObserver(function () {}, { threshold: [] });
+      assert(empty.thresholds.length === 1 && empty.thresholds[0] === 0, "empty threshold list");
+      empty.disconnect();
+
+      var shorthand = new IntersectionObserver(function () {}, { rootMargin: "10% 20px" });
+      assert(shorthand.rootMargin === "10% 20px 10% 20px", "two-value margin " + shorthand.rootMargin);
+      shorthand.disconnect();
+      var three = new IntersectionObserver(function () {}, { rootMargin: "1px 2% 3px" });
+      assert(three.rootMargin === "1px 2% 3px 2%", "three-value margin " + three.rootMargin);
+      three.disconnect();
+      var four = new IntersectionObserver(function () {}, { rootMargin: "4px 5px 6px 7%" });
+      assert(four.rootMargin === "4px 5px 6px 7%", "four-value margin " + four.rootMargin);
+      four.disconnect();
+      var zero = new IntersectionObserver(function () {}, { rootMargin: "0" });
+      assert(zero.rootMargin === "0px 0px 0px 0px", "unitless zero " + zero.rootMargin);
+      zero.disconnect();
+      var upper = new IntersectionObserver(function () {}, { rootMargin: "10PX" });
+      assert(upper.rootMargin === "10px 10px 10px 10px", "unit case " + upper.rootMargin);
+      upper.disconnect();
+
+      var docRoot = new IntersectionObserver(function () {}, { root: document });
+      assert(docRoot.root === document, "document root");
+      docRoot.disconnect();
+
+      var marker = byId("marker");
+      var sample = new IntersectionObserverEntry({
+        time: 12,
+        rootBounds: null,
+        boundingClientRect: marker.getBoundingClientRect(),
+        intersectionRect: marker.getBoundingClientRect(),
+        isIntersecting: true,
+        intersectionRatio: 1,
+        target: marker
+      });
+      assert(sample.time === 12, "entry time");
+      assert(sample.target === marker, "entry target");
+      assert(sample.rootBounds === null, "entry null root");
+      assert(sample.isIntersecting === true, "entry intersecting");
+      assert(sample.intersectionRatio === 1, "entry ratio");
+      assert(typeof sample.boundingClientRect.top === "number", "entry rect");
+      assert(typeof sample.boundingClientRect.x === "number", "entry x");
+      assert(typeof sample.intersectionRect.width === "number", "entry width");
+
+      var probe = new IntersectionObserver(function () {});
+      assert(throws(TypeError, function () { probe.observe(document.createTextNode("x")); }), "observe text");
+      assert(throws(TypeError, function () { probe.unobserve(null); }), "unobserve null");
+      probe.disconnect();
+    }
+
+    function place(el, scroller, top) {
+      var origin = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      var next = origin - top;
+      if (next < 0) next = 0;
+      scroller.scrollTop = next;
+      if (Math.abs(scroller.scrollTop - next) > 1) {
+        throw new Error("scrollTop stuck " + scroller.scrollTop + " wanted " + next);
+      }
+    }
+
+    function expectScroll(entry, margin, plannedIndex, label, marginOnly) {
+      var target = byId("target");
+      var scroller = byId("scroller");
+      var targetBox = rectOf(target);
+      var rootBox = rectOf(scroller);
+      var hit = overlap(targetBox, expand(rootBox, margin));
+      var raw = overlap(targetBox, rootBox);
+      if (marginOnly) {
+        assert(!raw, label + " overlaps the root without margin");
+        assert(hit, label + " misses the margin");
+      }
+      sameRect(entry.boundingClientRect, targetBox, label + " bounds");
+      sameRect(entry.rootBounds, rootBox, label + " root");
+      assert(entry.target === target, label + " target");
+      assert(isFinite(entry.time) && entry.time >= 0 && entry.time <= performance.now() + 50, label + " time");
+      var intersecting = !!hit;
+      var ratio = 0;
+      if (!hit) {
+        sameRect(entry.intersectionRect, zeroRect(), label + " empty");
+      } else {
+        ratio = (hit.width * hit.height) / (targetBox.width * targetBox.height);
+        if (ratio > 1) ratio = 1;
+        sameRect(entry.intersectionRect, hit, label + " hit");
+      }
+      assert(entry.isIntersecting === intersecting, label + " intersecting " + entry.isIntersecting);
+      var ratioGap = Math.abs(entry.intersectionRatio - ratio);
+      assert(ratioGap <= 0.03 || (ratio >= 0.98 && entry.intersectionRatio >= 0.98),
+        label + " ratio " + entry.intersectionRatio + " expected " + ratio);
+      var layoutIndex = indexOf(ratio, intersecting);
+      var actualIndex = indexOf(entry.intersectionRatio, entry.isIntersecting);
+      assert(layoutIndex === plannedIndex, label + " layout index " + layoutIndex + " wanted " + plannedIndex);
+      assert(actualIndex === plannedIndex, label + " index " + actualIndex + " wanted " + plannedIndex);
+    }
+
+    function checkClip(entry) {
+      var child = rectOf(byId("clipped"));
+      var clip = rectOf(byId("clipper"));
+      var hit = overlap(overlap(child, clip), viewportRect());
+      assert(hit, "clip miss");
+      assert(entry.isIntersecting === true, "clip not intersecting");
+      assert(entry.target === byId("clipped"), "clip target");
+      sameRect(entry.boundingClientRect, child, "clip bounds");
+      sameRect(entry.intersectionRect, hit, "clip hit");
+      sameRect(entry.rootBounds, viewportRect(), "clip root");
+      near(entry.boundingClientRect.height, 80, "clip target height");
+      near(entry.intersectionRect.height, 40, "clip intersection height");
+      var ratio = (hit.width * hit.height) / (child.width * child.height);
+      assert(Math.abs(entry.intersectionRatio - ratio) <= 0.03, "clip ratio " + entry.intersectionRatio);
+    }
+
+    function checkHidden(entry, label) {
+      assert(entry.isIntersecting === false, label + " intersecting");
+      assert(entry.intersectionRatio === 0, label + " ratio");
+      sameRect(entry.boundingClientRect, zeroRect(), label + " bounds");
+      sameRect(entry.intersectionRect, zeroRect(), label + " intersection");
+      sameRect(entry.rootBounds, viewportRect(), label + " root");
+    }
+
+    function start() {
+      syncChecks();
+      var scroller = byId("scroller");
+      var target = byId("target");
+      var height = scroller.getBoundingClientRect().height;
+      var targetHeight = target.getBoundingClientRect().height;
+      assert(Math.abs(height - 200) <= 1, "scroller height " + height);
+      assert(Math.abs(targetHeight - 100) <= 1, "target height " + targetHeight);
+      assert(Math.abs(byId("clipper").getBoundingClientRect().height - 40) <= 1, "clipper height");
+
+      var scrollEntries = [];
+      var scrollObs = track(new IntersectionObserver(function (list, obs) {
+        assert(this === scrollObs && obs === scrollObs, "scroller this");
+        for (var i = 0; i < list.length; i++) scrollEntries.push(list[i]);
+      }, { root: scroller, rootMargin: "50px", threshold: [1, 0, 0.5] }));
+      assert(scrollObs.root === scroller, "scroll root");
+      assert(scrollObs.rootMargin === "50px 50px 50px 50px", "normalized margin " + scrollObs.rootMargin);
+      assert(scrollObs.thresholds === scrollObs.thresholds, "thresholds identity");
+      assert(Object.isFrozen(scrollObs.thresholds), "thresholds frozen");
+      assert(scrollObs.thresholds.length === 3
+        && scrollObs.thresholds[0] === 0
+        && scrollObs.thresholds[1] === 0.5
+        && scrollObs.thresholds[2] === 1, "thresholds sorted");
+      var heldMargin = scrollObs.rootMargin;
+      try { scrollObs.rootMargin = "9px"; } catch (error) {}
+      assert(scrollObs.rootMargin === heldMargin, "rootMargin writable");
+
+      var clipEntries = [];
+      var clipObs = track(new IntersectionObserver(function (list) {
+        for (var i = 0; i < list.length; i++) clipEntries.push(list[i]);
+      }, { root: null, threshold: [0, 0.5, 1] }));
+
+      var foldEntries = [];
+      var fold = byId("fold");
+      var foldObs = track(new IntersectionObserver(function (list) {
+        for (var i = 0; i < list.length; i++) foldEntries.push(list[i]);
+      }, { threshold: [0, 0.5, 1] }));
+
+      var hidden = document.createElement("div");
+      hidden.style.width = "100px";
+      hidden.style.height = "80px";
+      hidden.style.display = "none";
+      document.body.appendChild(hidden);
+      var hiddenEntries = [];
+      track(new IntersectionObserver(function (list) {
+        for (var i = 0; i < list.length; i++) hiddenEntries.push(list[i]);
+      })).observe(hidden);
+
+      var detached = document.createElement("div");
+      detached.style.width = "40px";
+      detached.style.height = "40px";
+      var detachedEntries = [];
+      track(new IntersectionObserver(function (list) {
+        for (var i = 0; i < list.length; i++) detachedEntries.push(list[i]);
+      })).observe(detached);
+
+      var outsideEntries = [];
+      track(new IntersectionObserver(function (list) {
+        for (var i = 0; i < list.length; i++) outsideEntries.push(list[i]);
+      }, { root: scroller, rootMargin: "50px", threshold: [0] })).observe(byId("marker"));
+
+      var missed = 0;
+      var early = track(new IntersectionObserver(function () { missed++; }));
+      early.observe(byId("marker"));
+      early.unobserve(byId("marker"));
+      var earlyCut = track(new IntersectionObserver(function () { missed++; }));
+      earlyCut.observe(byId("marker"));
+      earlyCut.disconnect();
+
+      var bCount = 0;
+      var drained = null;
+      var recordB = track(new IntersectionObserver(function () { bCount++; }));
+      var recordA = track(new IntersectionObserver(function () {
+        drained = recordB.takeRecords();
+      }));
+      recordA.observe(byId("marker"));
+      recordB.observe(byId("clipped"));
+
+      scrollObs.observe(target);
+      clipObs.observe(byId("clipped"));
+      foldObs.observe(fold);
+
+      var plan = [
+        { top: height + 25, index: 0, margin: true, label: "margin" },
+        { top: height - 25, index: 1, margin: false, label: "half" },
+        { top: 40, index: 2, margin: false, label: "full" },
+        { top: -75, index: 1, margin: false, label: "leave-half" },
+        { top: -125, index: 0, margin: true, label: "leave-margin" },
+        { top: -180, index: -1, margin: false, label: "above" }
+      ];
+
+      later(function () {
+        var initial = scrollEntries.length;
+        scrollObs.observe(target);
+        later(function () {
+          assert(scrollEntries.length === initial, "reobserve queued " + scrollEntries.length);
+          assert(scrollEntries.length === 1, "initial entries " + scrollEntries.length);
+          assert(missed === 0, "stopped observer delivered");
+          assert(drained && drained.length === 1, "takeRecords " + (drained && drained.length));
+          assert(drained[0].target === byId("clipped"), "takeRecords target");
+          assert(bCount === 0, "takeRecords did not drain");
+          assert(recordB.takeRecords().length === 0, "takeRecords second");
+          expectScroll(scrollEntries[0], 50, -1, "initial", false);
+          assert(rectOf(target).top > rectOf(scroller).bottom, "initial target not below the root");
+          assert(clipEntries.length === 1, "clip entries " + clipEntries.length);
+          checkClip(clipEntries[0]);
+          assert(foldEntries.length === 1, "fold entries " + foldEntries.length);
+          assert(foldEntries[0].isIntersecting === false, "fold started visible");
+          assert(foldEntries[0].boundingClientRect.top > innerHeight, "fold not below the fold");
+          sameRect(foldEntries[0].intersectionRect, zeroRect(), "fold empty");
+          assert(hiddenEntries.length === 1, "hidden entries");
+          checkHidden(hiddenEntries[0], "hidden");
+          assert(detachedEntries.length === 1, "detached entries");
+          checkHidden(detachedEntries[0], "detached");
+          assert(outsideEntries.length === 1, "outside entries");
+          assert(outsideEntries[0].isIntersecting === false, "outside intersecting");
+          sameRect(outsideEntries[0].boundingClientRect, rectOf(byId("marker")), "outside bounds");
+          sameRect(outsideEntries[0].intersectionRect, zeroRect(), "outside intersection");
+
+          var step = 0;
+          function nextStep() {
+            if (step >= plan.length) {
+              afterSteps();
+              return;
+            }
+            var spec = plan[step];
+            step++;
+            var before = scrollEntries.length;
+            place(target, scroller, spec.top);
+            later(function () {
+              assert(scrollEntries.length === before + 1,
+                spec.label + " entries " + scrollEntries.length + " from " + before);
+              expectScroll(scrollEntries[scrollEntries.length - 1], 50, spec.index, spec.label, spec.margin);
+              nextStep();
+            });
+          }
+
+          function afterSteps() {
+            var before = scrollEntries.length;
+            scrollObs.unobserve(target);
+            place(target, scroller, 40);
+            later(function () {
+              assert(scrollEntries.length === before, "unobserve delivered");
+              var late = [];
+              var lateObs = track(new IntersectionObserver(function (list) {
+                for (var i = 0; i < list.length; i++) late.push(list[i]);
+              }, { root: scroller, rootMargin: "50px", threshold: [0, 0.5, 1] }));
+              lateObs.observe(target);
+              later(function () {
+                assert(late.length === 1, "disconnect setup " + late.length);
+                lateObs.disconnect();
+                place(target, scroller, -180);
+                later(function () {
+                  assert(late.length === 1, "disconnect delivered");
+                  var moved = fold.getBoundingClientRect().top;
+                  fold.scrollIntoView();
+                  var revealed = fold.getBoundingClientRect();
+                  assert(revealed.top <= innerHeight, "scrollIntoView left the fold at " + revealed.top + " from " + moved);
+                  later(function () {
+                    assert(foldEntries.length >= 2, "fold did not update");
+                    var entry = foldEntries[foldEntries.length - 1];
+                    var box = rectOf(fold);
+                    var hit = overlap(box, viewportRect());
+                    assert(entry.isIntersecting === true && hit, "fold still hidden");
+                    sameRect(entry.boundingClientRect, box, "fold bounds");
+                    sameRect(entry.intersectionRect, hit, "fold hit");
+                    sameRect(entry.rootBounds, viewportRect(), "fold root");
+                    pass();
+                  });
+                });
+              });
+            });
+          }
+
+          nextStep();
+        });
+      });
+    }
+
+    byId("run").addEventListener("click", function () {
+      if (finished) return;
+      try { start(); } catch (error) { fail(error); }
+    });
+  </script>
+</body>
+</html>
+
