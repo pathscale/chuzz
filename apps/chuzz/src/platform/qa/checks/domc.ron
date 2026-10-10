@@ -1,0 +1,15 @@
+[
+    (
+        id: "domc-all",
+        group: "domc",
+        what: "computed styles, CSS parsing, media listeners, document lifecycle, live collections, sheets, adoption and hit testing have observable behavior",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: DOMC PASS",
+        expect: PaintsNamed,
+        covers: ["READY: DOMC PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

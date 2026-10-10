@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DOMC platform proof</title>
+<style>
+@font-face {
+    font-family: "Fira Sans";
+    src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+}
+body {
+    font-family: "Fira Sans";
+    margin: 20px;
+    color: #102030;
+    background: #ffffff;
+}
+button { font: inherit; padding: 8px 20px; }
+#result { font-size: 20px; }
+#probe { letter-spacing: 7px; --DomcCase: CaseValue; }
+#probe::before { content: "before"; display: inline-block; letter-spacing: 3px; }
+#back, #front {
+    position: fixed;
+    left: 20px;
+    top: 220px;
+    width: 100px;
+    height: 80px;
+}
+#back { z-index: 10; background: #225588; }
+#front { z-index: 20; background: #88bbdd; }
+#media-result { margin-top: 140px; }
+</style>
+<script id="boot">
+globalThis.__domcProof = {
+    order: ["loading:" + document.readyState],
+    classic: document.currentScript && document.currentScript.id,
+    microtask: false,
+    module: false,
+    deferred: false
+};
+document.addEventListener("readystatechange", function (event) {
+    __domcProof.order.push(document.readyState);
+    if (event.bubbles) __domcProof.order.push("unexpected bubbling");
+});
+document.addEventListener("DOMContentLoaded", function () {
+    __domcProof.order.push("DOMContentLoaded:" + document.readyState);
+});
+window.addEventListener("load", function () {
+    __domcProof.order.push("load:" + document.readyState);
+});
+Promise.resolve().then(function () {
+    __domcProof.microtask = document.currentScript === null;
+});
+</script>
+<script id="suite" src="./src/domc.ts" defer></script>
+<script type="module">
+globalThis.__domcProof.module = document.currentScript === null &&
+    document.readyState === "interactive";
+</script>
+</head>
+<body>
+<h1>DOMC platform proof</h1>
+<button id="run">Run</button>
+<p id="result" role="status">READY: DOMC awaiting run</p>
+<div id="probe">Computed style probe <span id="inline-probe">inline</span></div>
+<div id="back"></div>
+<div id="front"></div>
+<p id="media-result" role="status">Resize across 900 CSS pixels to verify a native media change.</p>
+</body>
+</html>
