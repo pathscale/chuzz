@@ -2,7 +2,7 @@
     (
         id: "domb-all",
         group: "domb",
-        what: "native DOM interfaces, live collections, HTML reflection, rendered text, synthetic activation and geometry behave correctly",
+        what: "native DOM interfaces, document doctype, cross-origin image Referer, live collections, HTML reflection, rendered text, synthetic activation and geometry behave correctly",
         open: None,
         hover: None,
         click: Some("#run"),

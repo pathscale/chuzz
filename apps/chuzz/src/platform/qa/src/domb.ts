@@ -19,8 +19,19 @@
             constructor.name + " rejects direct construction");
     }
 
-    function run() {
+    async function run() {
         sandbox.textContent = "";
+
+        const doctype = document.doctype;
+        assert(doctype && doctype.nodeType === 10
+            && doctype.name === "html" && doctype.publicId === "" && doctype.systemId === "",
+            "live document doctype fields");
+        const root = document.documentElement;
+        const documentChildren = Array.from(document.childNodes);
+        assert(root && root.localName === "html" && doctype.parentNode === document
+            && documentChildren.indexOf(doctype) !== -1
+            && documentChildren.indexOf(doctype) < documentChildren.indexOf(root),
+            "doctype is a document child before documentElement");
 
         const tags = {
             a: "HTMLAnchorElement", area: "HTMLAreaElement", audio: "HTMLAudioElement",
@@ -315,15 +326,32 @@
         assert(meta.content === "width=device-width"
             && meta.getAttribute("content") === "width=device-width", "meta content reflection");
         assert(document.createElement("template").content instanceof DocumentFragment, "template content");
+
+        const image = new Image();
+        image.alt = "Referer probe";
+        sandbox.appendChild(image);
+        const imageLoaded = new Promise(function (resolve, reject) {
+            image.addEventListener("load", resolve, { once: true });
+            image.addEventListener("error", function () {
+                reject(new Error("Referer probe image failed to load"));
+            }, { once: true });
+        });
+        // The fixture host is another origin than the page server, so the policy
+        // (strict-origin-when-cross-origin) must send only the page origin.
+        image.src = "http://127.0.0.1:49123/referer.png?run=" + Date.now();
+        await imageLoaded;
+
+        const response = await fetch("http://127.0.0.1:49123/api/image-referer?run=" + Date.now());
+        const referer = await response.text();
+        assert(referer === location.origin + "/", "cross-origin image Referer is the page origin");
     }
 
-    document.getElementById("run").addEventListener("click", function () {
+    document.getElementById("run").addEventListener("click", async function () {
         try {
-            run();
+            await run();
             result.textContent = "READY: domb PASS";
         } catch (error) {
             result.textContent = "FAIL: " + error.message;
         }
     });
 }());
-

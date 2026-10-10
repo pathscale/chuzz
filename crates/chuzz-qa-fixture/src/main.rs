@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod udp;
@@ -10,12 +11,9 @@ const SECOND_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-sit
 const SECOND_JS: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/second.js");
 const SITES_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/sites.html");
 const SITES_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/src/sites.ts");
-const FONT: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/video/qa/fonts/FiraSans-Regular.woff2");
-const UDP_HTML: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/index.html");
-const UDP_SCRIPT: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/src/udp.ts");
+const FONT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/fonts/FiraSans-Regular.woff2");
+const UDP_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/index.html");
+const UDP_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/src/udp.ts");
 const PIXEL: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0,
     0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100, 248, 15, 0, 1, 5, 1, 1,
@@ -42,11 +40,13 @@ fn main() -> std::io::Result<()> {
 
     let runtime = nagoya::runtime::Runtime::new(4);
     let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let image_referer = Arc::new(Mutex::new(None));
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
+                let image_referer = Arc::clone(&image_referer);
                 runtime.executor().submit(move || {
-                    if let Err(error) = serve(stream) {
+                    if let Err(error) = serve(stream, image_referer) {
                         eprintln!("fixture request failed: {error}");
                     }
                 });
@@ -61,7 +61,7 @@ fn delay(duration: Duration) {
     nagoya::block_on(nagoya::sleep(duration));
 }
 
-fn serve(mut stream: TcpStream) -> std::io::Result<()> {
+fn serve(mut stream: TcpStream, image_referer: Arc<Mutex<Option<String>>>) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -75,17 +75,32 @@ fn serve(mut stream: TcpStream) -> std::io::Result<()> {
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
-            return respond(&mut stream, "400 Bad Request", "text/plain", b"incomplete request");
+            return respond(
+                &mut stream,
+                "400 Bad Request",
+                "text/plain",
+                b"incomplete request",
+            );
         }
         size += line.len();
         if size > 16_384 {
-            return respond(&mut stream, "431 Request Header Fields Too Large", "text/plain", b"headers");
+            return respond(
+                &mut stream,
+                "431 Request Header Fields Too Large",
+                "text/plain",
+                b"headers",
+            );
         }
         if line == "\r\n" {
             break;
         }
         let Some((name, value)) = line.split_once(':') else {
-            return respond(&mut stream, "400 Bad Request", "text/plain", b"invalid header");
+            return respond(
+                &mut stream,
+                "400 Bad Request",
+                "text/plain",
+                b"invalid header",
+            );
         };
         headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
     }
@@ -120,6 +135,24 @@ fn serve(mut stream: TcpStream) -> std::io::Result<()> {
         "/udp/" | "/udp/index.html" => ("text/html; charset=utf-8", UDP_HTML.to_vec()),
         "/udp/src/udp.ts" => ("text/javascript; charset=utf-8", UDP_SCRIPT.to_vec()),
         "/udp/fonts/FiraSans-Regular.woff2" => ("font/woff2", FONT.to_vec()),
+        "/referer.png" => {
+            if let Ok(mut recorded) = image_referer.lock() {
+                *recorded = Some(header("referer").to_owned());
+            }
+            ("image/png", PIXEL.to_vec())
+        }
+        "/api/image-referer" => {
+            let referer = image_referer
+                .lock()
+                .map(|recorded| recorded.clone().unwrap_or_default())
+                .unwrap_or_default();
+            return respond(
+                &mut stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                referer.as_bytes(),
+            );
+        }
         "/api/udp" => {
             if method != "POST" {
                 return respond(
@@ -131,12 +164,7 @@ fn serve(mut stream: TcpStream) -> std::io::Result<()> {
             }
             match udp::run() {
                 Ok(report) => {
-                    return respond(
-                        &mut stream,
-                        "200 OK",
-                        "application/json",
-                        report.as_bytes(),
-                    );
+                    return respond(&mut stream, "200 OK", "application/json", report.as_bytes());
                 }
                 Err(error) => {
                     return respond(
@@ -219,9 +247,8 @@ fn respond(
 ) -> std::io::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Fixture: received\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nX-Fixture: received\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)
 }
-
