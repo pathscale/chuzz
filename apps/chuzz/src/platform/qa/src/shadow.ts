@@ -6,10 +6,108 @@
     };
     const fixture = document.getElementById("fixture");
     const result = document.getElementById("result");
+    const parsedApp = document.getElementById("parsed-app");
+    const parsedMasthead = document.getElementById("parsed-masthead");
+    const parsedLogo = document.getElementById("parsed-logo");
+    const parsedSearch = document.getElementById("parsed-search");
+    const parsedIcons = document.getElementById("parsed-icons");
+    const appTemplate = document.getElementById("parsed-app-template");
+    const mastheadTemplate = document.getElementById("parsed-masthead-template");
+    const parsedConstructors = [];
+
+    class MastheadApp extends HTMLElement {
+        constructor() {
+            super();
+            parsedConstructors.push(this);
+            this.parserChildren = Array.from(this.children);
+            const root = this.attachShadow({ mode: "open" });
+            // Resolve the empty root before inserting the cloned named slot.
+            // Insertion must dirty a host whose children already exist.
+            this.getBoundingClientRect();
+            root.appendChild(appTemplate.content.cloneNode(true));
+        }
+    }
+
+    class Masthead extends HTMLElement {
+        constructor() {
+            super();
+            parsedConstructors.push(this);
+            this.parserChildren = Array.from(this.children);
+            const root = this.attachShadow({ mode: "open" });
+            this.getBoundingClientRect();
+            root.appendChild(mastheadTemplate.content.cloneNode(true));
+        }
+    }
+
+    const checkParsedMasthead = label => {
+        // Style and layout reads must distribute without an assignment read
+        // first. Keep these nodes identical to the original parsed markup.
+        check(getComputedStyle(parsedMasthead).backgroundColor === "rgb(30, 55, 75)",
+            label + ": parsed nested host stylesheet");
+        for (const [node, color] of [
+            [parsedLogo, "rgb(150, 210, 240)"],
+            [parsedSearch, "rgb(255, 210, 80)"],
+            [parsedIcons, "rgb(150, 210, 240)"]
+        ]) {
+            check(getComputedStyle(node).color === color,
+                label + ": named slotted descendant style: " + node.id);
+            const box = node.getBoundingClientRect();
+            check(box.height >= 32 && box.width > 0,
+                label + ": named slotted descendant layout: " + node.id);
+        }
+        check(parsedMasthead.getBoundingClientRect().height >= 56,
+            label + ": parsed nested host layout");
+
+        const appSlot = parsedApp.shadowRoot.querySelector('slot[name="masthead"]');
+        check(appSlot.assignedElements().length === 1
+            && appSlot.assignedElements()[0] === parsedMasthead
+            && parsedMasthead.assignedSlot === appSlot,
+            label + ": parsed masthead assignment");
+        for (const [name, node] of [
+            ["logo", parsedLogo],
+            ["search", parsedSearch],
+            ["icons", parsedIcons]
+        ]) {
+            const slot = parsedMasthead.shadowRoot.querySelector('slot[name="' + name + '"]');
+            check(slot.assignedElements().length === 1
+                && slot.assignedElements()[0] === node
+                && node.assignedSlot === slot,
+                label + ": nested named slot assignment: " + name);
+        }
+        check(parsedMasthead.parentNode === parsedApp
+            && parsedLogo.parentNode === parsedMasthead
+            && parsedSearch.parentNode === parsedMasthead
+            && parsedIcons.parentNode === parsedMasthead,
+            label + ": composition changed parsed DOM parents");
+    };
 
     document.getElementById("run").addEventListener("click", async () => {
         try {
             fixture.replaceChildren();
+            if (!customElements.get("qa-masthead-app")) {
+                check(parsedApp.shadowRoot === null && parsedMasthead.shadowRoot === null,
+                    "Parsed hosts upgraded before their definitions");
+                check(parsedMasthead.slot === "masthead"
+                    && parsedLogo.slot === "logo"
+                    && parsedSearch.slot === "search"
+                    && parsedIcons.slot === "icons",
+                    "Parser-created slot attributes");
+                customElements.define("qa-masthead-app", MastheadApp);
+                customElements.define("qa-masthead", Masthead);
+            }
+            check(parsedApp instanceof MastheadApp && parsedMasthead instanceof Masthead
+                && parsedConstructors.length === 2
+                && parsedConstructors[0] === parsedApp
+                && parsedConstructors[1] === parsedMasthead,
+                "Late parsed upgrade constructor identity");
+            check(parsedApp.parserChildren[0] === parsedMasthead
+                && parsedMasthead.parserChildren.length === 3
+                && parsedMasthead.parserChildren[0] === parsedLogo
+                && parsedMasthead.parserChildren[1] === parsedSearch
+                && parsedMasthead.parserChildren[2] === parsedIcons,
+                "Late constructors did not receive parser-created children");
+            checkParsedMasthead("Cloned parsed templates");
+
             const host = document.createElement("div");
             host.id = "styled-host";
             host.className = "card";
@@ -209,6 +307,55 @@
                 && nestedLabel.getBoundingClientRect().height >= 20,
                 "Nested root did not style parents before assigned descendants");
             probe.remove();
+
+            const donor = document.createElement("div");
+            const witness = document.createElement("span");
+            witness.slot = "masthead";
+            witness.textContent = "Moved slot witness";
+            donor.appendChild(witness);
+            fixture.appendChild(donor);
+            const donorRoot = donor.attachShadow({ mode: "open" });
+            donorRoot.appendChild(appTemplate.content.cloneNode(true));
+            const checkWitness = label => {
+                check(getComputedStyle(witness).color === "rgb(150, 210, 240)"
+                    && witness.getBoundingClientRect().height >= 32,
+                    label + ": moved slot witness style and layout");
+                const slot = donorRoot.querySelector('slot[name="masthead"]');
+                check(slot.assignedElements().includes(witness)
+                    && witness.assignedSlot === slot,
+                    label + ": moved slot witness assignment");
+            };
+            checkWitness("Before slot-container swap");
+            checkParsedMasthead("Before slot-container swap");
+
+            // Both roots have assigned children. Swapping their slot
+            // containers makes cleanup by either previous owner observable,
+            // regardless of the order dirty hosts are recomputed.
+            const appContainer = parsedApp.shadowRoot.querySelector("#masthead-container");
+            const donorContainer = donorRoot.querySelector("#masthead-container");
+            donorRoot.appendChild(appContainer);
+            parsedApp.shadowRoot.appendChild(donorContainer);
+            checkParsedMasthead("After slot-container swap");
+            checkWitness("After slot-container swap");
+            parsedApp.shadowRoot.appendChild(appContainer);
+            donorRoot.appendChild(donorContainer);
+            checkParsedMasthead("After slot-container restoration");
+            checkWitness("After slot-container restoration");
+
+            // Moving the nested host must also replace its reverse assignment
+            // without the previous host clearing the newly assignedSlot.
+            donor.appendChild(parsedMasthead);
+            check(parsedMasthead.getBoundingClientRect().height >= 56,
+                "Moved nested host layout");
+            const donorSlot = donorRoot.querySelector('slot[name="masthead"]');
+            check(donorSlot.assignedElements().includes(parsedMasthead)
+                && parsedMasthead.assignedSlot === donorSlot,
+                "Moved nested host reverse assignment");
+            parsedApp.appendChild(parsedMasthead);
+            checkParsedMasthead("After nested-host restoration");
+            donor.remove();
+            await new Promise(resolve => setTimeout(resolve, 0));
+            checkParsedMasthead("After mutation checkpoint");
 
             inside.addEventListener("click", () => {
                 result.textContent = "PASS: shadow button interaction";

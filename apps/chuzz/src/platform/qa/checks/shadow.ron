@@ -2,13 +2,13 @@
     (
         id: "sites-shadow",
         group: "shadow",
-        what: "native roots, scoped styles, slots, constructable sheets and composed event boundaries work",
+        what: "native roots, scoped styles, slots, constructable sheets and composed event boundaries work, including late parsed upgrades and moved named slots",
         open: None,
         hover: None,
         click: Some("#run"),
         subject: "PASS: shadow",
         expect: PaintsNamed,
-        covers: ["Shadow button", "Slotted label"],
+        covers: ["Shadow button", "Slotted label", "Parsed logo", "Parsed search", "Parsed masthead icons"],
         outcome_timeout_ms: 10000,
     ),
     (

@@ -24,6 +24,53 @@
   <h1>Shadow DOM QA</h1>
   <button id="run" type="button">Run shadow DOM</button>
   <p id="result" role="status">Ready</p>
+  <div id="parsed-fixture">
+    <qa-masthead-app id="parsed-app">
+      <qa-masthead id="parsed-masthead" slot="masthead">
+        <span id="parsed-logo" slot="logo">Parsed logo</span>
+        <span id="parsed-search" slot="search">Parsed search</span>
+        <span id="parsed-icons" slot="icons">Parsed masthead icons</span>
+      </qa-masthead>
+    </qa-masthead-app>
+  </div>
+  <template id="parsed-app-template">
+    <style>
+      :host { display: block; }
+      #masthead-container { display: flex; min-height: 56px; }
+      slot { display: contents; --masthead-ink: rgb(150, 210, 240); }
+      ::slotted(qa-masthead) { display: block; flex: 1; }
+      ::slotted(span) {
+        display: block;
+        min-height: 32px;
+        color: var(--masthead-ink);
+      }
+    </style>
+    <div id="masthead-container"><slot name="masthead"></slot></div>
+  </template>
+  <template id="parsed-masthead-template">
+    <style>
+      :host {
+        display: block;
+        min-height: 56px;
+        background: rgb(30, 55, 75);
+      }
+      #masthead-band { display: flex; align-items: center; min-height: 56px; }
+      slot { display: contents; }
+      slot[name="search"] { --masthead-ink: rgb(255, 210, 80); }
+      ::slotted(span) {
+        display: block;
+        min-height: 32px;
+        padding: 8px;
+        box-sizing: border-box;
+        color: var(--masthead-ink);
+      }
+    </style>
+    <div id="masthead-band">
+      <slot name="logo"></slot>
+      <slot name="search"></slot>
+      <slot name="icons"></slot>
+    </div>
+  </template>
   <div id="fixture"></div>
   <script src="./src/shadow.ts"></script>
 </body>
