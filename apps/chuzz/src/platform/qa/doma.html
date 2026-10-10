@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DOMA platform checks</title>
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      margin: 32px;
+      font-family: "Fira Sans";
+      color: #182331;
+      background: #f4f7fa;
+    }
+    button {
+      padding: 12px 24px;
+      font: inherit;
+      color: white;
+      background: #174ea6;
+      border: 0;
+      border-radius: 6px;
+    }
+    #result {
+      padding: 16px;
+      background: white;
+      border: 1px solid #c4cdd8;
+    }
+    #proof {
+      padding: 16px;
+      background: white;
+    }
+  </style>
+</head>
+<body>
+  <h1>DOMA platform checks</h1>
+  <button id="run">Run</button>
+  <p id="result" role="status">Run the DOMA checks.</p>
+  <div id="proof"></div>
+  <template id="parsed-template"><span id="parsed-child">Parsed template</span><template><b>Nested template</b></template></template>
+  <script src="./src/doma.ts"></script>
+</body>
+</html>
+

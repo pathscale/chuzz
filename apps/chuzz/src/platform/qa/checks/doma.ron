@@ -1,0 +1,14 @@
+[
+    (
+        id: "doma-all",
+        group: "doma",
+        what: "Attr identities, live NamedNodeMap, namespace attributes, navigation, tree mutations, Node algorithms, fragment queries, and template parsing and cloning",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: doma PASS",
+        expect: PaintsNamed,
+        covers: ["READY: doma PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
