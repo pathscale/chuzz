@@ -1760,6 +1760,7 @@ fn serve_page(target: &str) -> Result<(), String> {
             blitz_traits::net::Request::get(url.clone()),
             Arc::clone(&net_provider),
             &prelude,
+            Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
         ))
         .map_err(|error| {
             if policy.bot_child {

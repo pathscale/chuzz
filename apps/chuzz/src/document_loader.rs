@@ -1718,6 +1718,7 @@ pub async fn load_for_capture(
     request: Request,
     net_provider: Arc<NetProvider>,
     prelude: &str,
+    viewport: Option<blitz_traits::shell::Viewport>,
 ) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
     use blitz_dom::Document as _;
 
@@ -1766,6 +1767,9 @@ pub async fn load_for_capture(
         base_url: Some(resolved_url.to_string()),
         net_provider: Some(Arc::clone(&net_provider) as _),
         html_parser_provider: Some(Arc::new(HtmlProvider)),
+        // The host's viewport, before any script runs: a page that reads
+        // innerWidth or matchMedia during load must see the size it renders at.
+        viewport,
         ..Default::default()
     };
 
