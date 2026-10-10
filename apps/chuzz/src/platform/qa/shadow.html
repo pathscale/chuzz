@@ -24,6 +24,14 @@
   <h1>Shadow DOM QA</h1>
   <button id="run" type="button">Run shadow DOM</button>
   <p id="result" role="status">Ready</p>
+  <button id="run-masthead2" type="button">Run cloned masthead</button>
+  <p id="masthead2-result" role="status">Ready</p>
+  <div id="masthead2-fixture"></div>
+  <svg style="display: none" aria-hidden="true">
+    <defs>
+      <path id="qa-masthead2-shape" d="M0 0H24V24H0Z" fill="none"></path>
+    </defs>
+  </svg>
   <div id="parsed-fixture">
     <qa-masthead-app id="parsed-app">
       <qa-masthead id="parsed-masthead" slot="masthead">
@@ -71,8 +79,87 @@
       <slot name="icons"></slot>
     </div>
   </template>
+  <template id="masthead2-icon-template">
+    <style>
+      :host {
+        display: block;
+        width: 40px;
+        height: 40px;
+        color: var(--icon-ink);
+      }
+      .icon-source { display: none; }
+    </style>
+    <svg class="icon-source" xmlns:xlink="http://www.w3.org/1999/xlink">
+      <defs>
+        <path id="qa-masthead2-shape" fill="currentColor"
+          d="M2 4H22V7H2ZM2 11H22V14H2ZM2 18H22V21H2Z"></path>
+        <g id="qa-masthead2-alias">
+          <use xlink:href="#qa-masthead2-shape"></use>
+        </g>
+        <g id="qa-masthead2-glyph">
+          <use href="#qa-masthead2-alias"></use>
+        </g>
+      </defs>
+    </svg>
+  </template>
+  <template id="masthead2-search-template">
+    <style>
+      :host { display: block; width: 260px; height: 40px; }
+      slot { display: contents; }
+      ::slotted(input) {
+        display: block;
+        box-sizing: border-box;
+        width: 260px;
+        height: 40px;
+        padding: 8px;
+        border: 2px solid rgb(255, 210, 80);
+        background: rgb(255, 255, 255);
+        color: rgb(20, 30, 40);
+        font: inherit;
+      }
+    </style>
+    <slot id="input-slot" name="search-input"></slot>
+  </template>
+  <template id="masthead2-band-template">
+    <style>
+      :host {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        min-height: 56px;
+        padding: 8px;
+        background: rgb(30, 55, 75);
+      }
+      .logo { --icon-ink: rgb(150, 210, 240); }
+      .guide { --icon-ink: rgb(255, 210, 80); }
+      #guide {
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }
+      .sign-in {
+        height: 40px;
+        padding: 8px 16px;
+        background: rgb(0, 110, 145);
+        color: white;
+        font: inherit;
+      }
+    </style>
+    <qa-masthead2-icon class="logo" data-label="Cloned masthead logo"></qa-masthead2-icon>
+    <button id="guide" type="button" aria-label="Cloned masthead guide">
+      <qa-masthead2-icon class="guide" data-label="Cloned masthead hamburger"></qa-masthead2-icon>
+    </button>
+    <qa-masthead2-search>
+      <input id="masthead2-input" slot="search-input"
+        aria-label="Cloned masthead search" placeholder="Cloned masthead search">
+    </qa-masthead2-search>
+    <template id="masthead2-if" is="qa-masthead2-if" data-open>
+      <button class="sign-in" type="button">Cloned masthead Sign in</button>
+    </template>
+  </template>
   <div id="fixture"></div>
   <script src="./src/shadow.ts"></script>
 </body>
 </html>
-

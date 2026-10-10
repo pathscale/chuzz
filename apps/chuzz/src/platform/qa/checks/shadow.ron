@@ -22,5 +22,17 @@
         expect: PaintsNamed,
         outcome_timeout_ms: 10000,
     ),
+    (
+        id: "sites-shadow-cloned-masthead",
+        group: "shadow",
+        what: "imported nested roots style and lay out cloned SVG icons, a named search input and conditional Sign in content; icon references use each shadow root's definitions",
+        open: None,
+        hover: None,
+        click: Some("#run-masthead2"),
+        subject: "PASS: cloned masthead",
+        expect: PaintsNamed,
+        covers: ["Cloned masthead logo", "Cloned masthead hamburger", "Cloned masthead search", "Cloned masthead Sign in"],
+        outcome_timeout_ms: 10000,
+    ),
 ]
 

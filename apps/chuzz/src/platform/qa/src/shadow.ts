@@ -368,3 +368,173 @@
     });
 })();
 
+(() => {
+    "use strict";
+
+    const check = (condition, message) => {
+        if (!condition) throw new Error(message);
+    };
+    const iconTemplate = document.getElementById("masthead2-icon-template");
+    const searchTemplate = document.getElementById("masthead2-search-template");
+    const bandTemplate = document.getElementById("masthead2-band-template");
+    const fixture = document.getElementById("masthead2-fixture");
+    const result = document.getElementById("masthead2-result");
+    const svgNamespace = "http://www.w3.org/2000/svg";
+
+    class Icon extends HTMLElement {
+        constructor() {
+            super();
+            const root = this.attachShadow({ mode: "open" });
+            this.getBoundingClientRect();
+            root.appendChild(document.importNode(iconTemplate.content, true));
+        }
+
+        connectedCallback() {
+            if (this.shadowRoot.querySelector('svg[role="img"]')) return;
+            const original = this.shadowRoot.getElementById("qa-masthead2-glyph");
+            const glyph = original.cloneNode(true);
+            const svg = document.createElementNS(svgNamespace, "svg");
+            svg.setAttribute("viewBox", "0 0 24 24");
+            svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+            svg.setAttribute("role", "img");
+            svg.setAttribute("aria-label", this.getAttribute("data-label"));
+            svg.style.cssText =
+                "pointer-events: none; display: block; width: 100%; height: 100%;";
+            svg.appendChild(glyph).removeAttribute("id");
+            this.shadowRoot.appendChild(svg);
+            check(original.id === "qa-masthead2-glyph" && glyph !== original,
+                "Icon cloning changed the source definition");
+        }
+    }
+
+    class Search extends HTMLElement {
+        constructor() {
+            super();
+            const root = this.attachShadow({ mode: "open" });
+            this.getBoundingClientRect();
+            root.appendChild(document.importNode(searchTemplate.content, true));
+        }
+    }
+
+    class Conditional extends HTMLTemplateElement {
+        constructor() {
+            super();
+            this.rendered = null;
+        }
+
+        static get observedAttributes() { return ["data-open"]; }
+
+        connectedCallback() { this.render(); }
+
+        attributeChangedCallback() {
+            if (this.isConnected) this.render();
+        }
+
+        render() {
+            if (this.rendered) {
+                this.rendered.remove();
+                this.rendered = null;
+            }
+            if (!this.hasAttribute("data-open")) return;
+            const fragment = document.importNode(this.content, true);
+            this.rendered = fragment.querySelector(".sign-in");
+            this.parentNode.insertBefore(fragment, this);
+        }
+    }
+
+    class Band extends HTMLElement {
+        constructor() {
+            super();
+            const root = this.attachShadow({ mode: "open" });
+            this.getBoundingClientRect();
+            root.appendChild(document.importNode(bandTemplate.content, true));
+        }
+    }
+
+    customElements.define("qa-masthead2-icon", Icon);
+    customElements.define("qa-masthead2-search", Search);
+    customElements.define("qa-masthead2-if", Conditional, { extends: "template" });
+    customElements.define("qa-masthead2-band", Band);
+
+    document.getElementById("run-masthead2").addEventListener("click", async () => {
+        try {
+            const band = document.createElement("qa-masthead2-band");
+            fixture.replaceChildren(band);
+            const root = band.shadowRoot;
+            check(band.getBoundingClientRect().height >= 56, "Cloned masthead band layout");
+
+            const icons = Array.from(root.querySelectorAll("qa-masthead2-icon"));
+            check(icons.length === 2 && icons.every(icon => icon instanceof Icon),
+                "Imported nested icon upgrades");
+            const localDefinitions = [];
+            for (const [index, icon] of icons.entries()) {
+                const svg = icon.shadowRoot.querySelector('svg[role="img"]');
+                const color = index === 0 ? "rgb(150, 210, 240)" : "rgb(255, 210, 80)";
+                check(svg && svg.namespaceURI === svgNamespace
+                    && svg.firstElementChild.namespaceURI === svgNamespace,
+                    "Cloned SVG namespace and insertion");
+                check(svg.getAttribute("viewBox") === "0 0 24 24",
+                    "Cloned SVG viewBox spelling");
+                check(getComputedStyle(svg).color === color
+                    && getComputedStyle(svg).display === "block",
+                    "Nested cloned SVG computed style");
+                const box = svg.getBoundingClientRect();
+                check(box.width >= 39 && box.height >= 39, "Nested cloned SVG layout");
+                const definition = icon.shadowRoot.getElementById("qa-masthead2-shape");
+                check(definition.getRootNode() === icon.shadowRoot
+                    && definition !== document.getElementById("qa-masthead2-shape"),
+                    "Icon definitions remain scoped to their root");
+                localDefinitions.push(definition);
+                check(svg.querySelector("use").getAttribute("href") === "#qa-masthead2-alias",
+                    "Cloned icon retained its sibling-definition reference");
+                check(icon.shadowRoot.getElementById("qa-masthead2-alias")
+                    .firstElementChild.getAttributeNS(
+                        "http://www.w3.org/1999/xlink", "href"
+                    ) === "#qa-masthead2-shape", "Imported xlink reference");
+            }
+            check(localDefinitions[0] !== localDefinitions[1],
+                "Icon roots share a source definition");
+
+            const search = root.querySelector("qa-masthead2-search");
+            const input = search.querySelector("input");
+            check(search instanceof Search && input.slot === "search-input",
+                "Imported search upgrade and named light input");
+            check(getComputedStyle(input).backgroundColor === "rgb(255, 255, 255)"
+                && getComputedStyle(input).borderTopWidth === "2px",
+                "Imported slotted search computed style");
+            const inputBox = input.getBoundingClientRect();
+            check(inputBox.width >= 259 && inputBox.height >= 39,
+                "Imported slotted search layout");
+            const slot = search.shadowRoot.getElementById("input-slot");
+            check(getComputedStyle(slot).display === "contents"
+                && slot.assignedElements()[0] === input
+                && input.assignedSlot === slot, "Search contents slot assignment");
+
+            const conditional = root.getElementById("masthead2-if");
+            check(conditional instanceof Conditional
+                && conditional.content.querySelector(".sign-in"),
+                "Imported customized template and content");
+            const checkSignIn = () => {
+                const button = root.querySelector(".sign-in");
+                check(button && button === conditional.rendered
+                    && getComputedStyle(button).backgroundColor === "rgb(0, 110, 145)",
+                    "Conditional Sign in style");
+                const box = button.getBoundingClientRect();
+                check(box.height >= 39 && box.width > 40, "Conditional Sign in layout");
+            };
+            checkSignIn();
+            conditional.removeAttribute("data-open");
+            check(root.querySelector(".sign-in") === null, "Conditional removal");
+            conditional.setAttribute("data-open", "");
+            checkSignIn();
+            check(bandTemplate.content.querySelector("#masthead2-if")
+                .hasAttribute("data-open"), "Stamping changed the source template");
+            await new Promise(resolve => setTimeout(resolve, 0));
+            checkSignIn();
+            result.textContent = "PASS: cloned masthead";
+        } catch (error) {
+            result.textContent = "FAIL: cloned masthead: " + error.message;
+            console.error(error);
+        }
+    });
+})();
