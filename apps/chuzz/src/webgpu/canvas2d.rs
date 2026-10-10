@@ -1,11 +1,11 @@
 //! Document-owned CPU canvases. Descriptors cross JSON; pixels cross native
-//! ArrayBuffers. The canonical straight RGBA allocation stays in Rust.
+//! ArrayBuffers. Native premultiplied tiles stay in Rust; straight RGBA is lazy.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyrender::{Paint, PaintScene};
-use anyrender_vello_cpu::{ImageCache, VelloCpuScenePainter};
+use anyrender_vello_cpu::ImageCache;
 use blitz_dom::kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use blitz_dom::node::RasterImageData;
 use blitz_script::boa_engine::object::builtins::{
@@ -23,6 +23,7 @@ use serde::Deserialize;
 
 use super::{Bridge, lock};
 
+mod backing;
 mod paths;
 mod text;
 
@@ -474,10 +475,9 @@ struct Clip {
 struct Canvas {
     width: u32,
     height: u32,
-    pixels: Arc<Vec<u8>>,
+    backing: backing::Backing,
     image: Option<ImageData>,
     image_cache: Arc<Mutex<ImageCache>>,
-    painter: Option<VelloCpuScenePainter>,
     path: paths::Path,
     clips: Vec<Clip>,
     saves: Vec<usize>,
@@ -491,13 +491,13 @@ impl Drop for Canvas {
 
 impl Canvas {
     fn new(width: u32, height: u32, image_cache: Arc<Mutex<ImageCache>>) -> Result<Self> {
+        byte_count(width, height)?;
         Ok(Self {
             width,
             height,
-            pixels: Arc::new(vec![0; byte_count(width, height)?]),
+            backing: backing::Backing::new(width, height),
             image: None,
             image_cache,
-            painter: None,
             path: paths::Path::default(),
             clips: Vec::new(),
             saves: Vec::new(),
@@ -512,9 +512,10 @@ impl Canvas {
 
     fn source_image(&mut self) -> ImageData {
         self.flush();
+        let pixels = self.backing.snapshot();
         self.image
             .get_or_insert_with(|| ImageData {
-                data: Blob::new(Arc::clone(&self.pixels) as Arc<dyn AsRef<[u8]> + Send + Sync>),
+                data: Blob::new(pixels as Arc<dyn AsRef<[u8]> + Send + Sync>),
                 format: ImageFormat::Rgba8,
                 alpha_type: ImageAlphaType::Alpha,
                 width: self.width,
@@ -523,43 +524,8 @@ impl Canvas {
             .clone()
     }
 
-    fn painter(&mut self) -> Option<&mut VelloCpuScenePainter> {
-        if self.width == 0 || self.height == 0 {
-            return None;
-        }
-        if self.painter.is_none() {
-            let base = self.source_image();
-            let mut painter = VelloCpuScenePainter::new(self.width as u16, self.height as u16)
-                .with_image_cache(Arc::clone(&self.image_cache));
-            painter.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                image_brush(base, false, Extend::Pad, Extend::Pad).as_ref(),
-                None,
-                &Rect::new(0.0, 0.0, self.width as f64, self.height as f64),
-            );
-            self.painter = Some(painter);
-        }
-        self.painter.as_mut()
-    }
-
     fn flush(&mut self) {
-        if let Some(painter) = self.painter.take() {
-            let pixmap = painter.finish();
-            let mut bytes = pixmap.data_as_u8_slice().to_vec();
-            for pixel in bytes.chunks_exact_mut(4) {
-                let alpha = u32::from(pixel[3]);
-                for channel in &mut pixel[..3] {
-                    *channel = if alpha == 0 {
-                        0
-                    } else {
-                        ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
-                    };
-                }
-            }
-            self.invalidate();
-            self.pixels = Arc::new(bytes);
-        }
+        self.backing.flush();
     }
 
     fn draw(
@@ -613,49 +579,69 @@ impl Canvas {
         let shape = transform.inverse() * path.clone();
         let clips = self.clips.clone();
         let bounds = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
-        let Some(painter) = self.painter() else {
-            return Ok(());
-        };
-        // The composition layer encloses the clip layers. Destination-out
-        // therefore acts on the existing canvas, rather than an empty clip group.
-        painter.push_layer(
-            blend,
-            if clear { 1.0 } else { state.alpha },
-            Affine::IDENTITY,
-            &bounds,
-            None,
-            None,
-        );
+        let mut area = path.bounding_box().inflate(1.0, 1.0);
+        if stroke {
+            // Include caps, joins, miters and nonuniform transforms. The
+            // extra pixel covers antialiasing and path flattening tolerance.
+            let matrix = transform.as_coeffs();
+            let radius = state.width * state.miter.max(2.0);
+            area = area.inflate(
+                radius * (matrix[0].abs() + matrix[2].abs()),
+                radius * (matrix[1].abs() + matrix[3].abs()),
+            );
+        }
         for clip in &clips {
-            painter.render_ctx.set_fill_rule(clip.rule);
-            painter.push_clip_layer(Affine::IDENTITY, clip.path.as_ref());
+            area = area.intersect(clip.path.bounding_box().inflate(1.0, 1.0));
         }
         if let Some(clip) = &extra_clip {
-            painter.render_ctx.set_fill_rule(Fill::NonZero);
-            painter.push_clip_layer(Affine::IDENTITY, clip);
+            area = area.intersect(clip.bounding_box().inflate(1.0, 1.0));
         }
-        if stroke {
-            painter.stroke(
-                &style,
-                transform,
-                paint.as_ref(),
-                Some(transform.inverse() * paint_transform),
-                &shape,
-            );
-        } else {
-            painter.fill(
-                fill,
-                transform,
-                paint.as_ref(),
-                Some(paint_transform),
-                &shape,
-            );
+        let drawn = self
+            .backing
+            .paint(area, &self.image_cache, |offset, painter| {
+                // The composition layer encloses the clip layers.
+                // Destination-out acts on the tile's existing canvas pixels.
+                painter.push_layer(
+                    blend,
+                    if clear { 1.0 } else { state.alpha },
+                    offset,
+                    &bounds,
+                    None,
+                    None,
+                );
+                for clip in &clips {
+                    painter.render_ctx.set_fill_rule(clip.rule);
+                    painter.push_clip_layer(offset, clip.path.as_ref());
+                }
+                if let Some(clip) = &extra_clip {
+                    painter.render_ctx.set_fill_rule(Fill::NonZero);
+                    painter.push_clip_layer(offset, clip);
+                }
+                if stroke {
+                    painter.stroke(
+                        &style,
+                        offset * transform,
+                        paint.as_ref(),
+                        Some(transform.inverse() * paint_transform),
+                        &shape,
+                    );
+                } else {
+                    painter.fill(
+                        fill,
+                        offset * transform,
+                        paint.as_ref(),
+                        Some(paint_transform),
+                        &shape,
+                    );
+                }
+                for _ in 0..clips.len() + usize::from(extra_clip.is_some()) {
+                    painter.pop_layer();
+                }
+                painter.pop_layer();
+            });
+        if drawn {
+            self.invalidate();
         }
-        for _ in 0..clips.len() + usize::from(extra_clip.is_some()) {
-            painter.pop_layer();
-        }
-        painter.pop_layer();
-        self.invalidate();
         Ok(())
     }
 
@@ -676,7 +662,6 @@ impl Canvas {
         let dy = n[1].trunc() as i64;
         self.flush();
         self.invalidate();
-        let target = Arc::make_mut(&mut self.pixels);
         for y in y0.max(-dy)..y1.min(self.height as i64 - dy) {
             let left = x0.max(-dx);
             let right = x1.min(self.width as i64 - dx);
@@ -684,9 +669,12 @@ impl Canvas {
                 continue;
             }
             let from = ((y * source.width as i64 + left) * 4) as usize;
-            let to = (((y + dy) * self.width as i64 + left + dx) * 4) as usize;
             let count = ((right - left) * 4) as usize;
-            target[to..to + count].copy_from_slice(&image.data.data()[from..from + count]);
+            self.backing.write_row(
+                (left + dx) as u32,
+                (y + dy) as u32,
+                &image.data.data()[from..from + count],
+            );
         }
         Ok(())
     }
@@ -854,10 +842,13 @@ impl Canvas {
             if right <= left {
                 continue;
             }
-            let from = ((source_y * self.width as i64 + x + left) * 4) as usize;
             let to = ((row * width as i64 + left) * 4) as usize;
             let count = ((right - left) * 4) as usize;
-            output[to..to + count].copy_from_slice(&self.pixels[from..from + count]);
+            self.backing.read_row(
+                (x + left) as u32,
+                source_y as u32,
+                &mut output[to..to + count],
+            );
         }
         Ok(output)
     }
@@ -1082,10 +1073,10 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
         let mut canvases = lock(&host.canvases);
         let previous = canvases
             .get(&request.id)
-            .map_or(0, |canvas| canvas.pixels.len());
+            .map_or(0, |canvas| canvas.backing.byte_len());
         let allocated = canvases
             .values()
-            .map(|canvas| canvas.pixels.len())
+            .map(|canvas| canvas.backing.byte_len())
             .sum::<usize>();
         if request.id == 0
             || request.id > 9_007_199_254_740_991
@@ -1131,8 +1122,8 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
         match request.action.as_str() {
             "reset" | "submit" => Ok(JsValue::undefined()),
             "snapshot" => {
-                canvas.flush();
-                JsUint8ClampedArray::from_iter(canvas.pixels.iter().copied(), context)
+                let pixels = canvas.backing.snapshot();
+                JsUint8ClampedArray::from_iter(pixels.iter().copied(), context)
                     .map(Into::into)
                     .map_err(|error| error.to_string())
             }
@@ -1143,12 +1134,8 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
                     .map_err(|error| error.to_string())
             }
             "paint" => {
-                canvas.flush();
-                let image = Arc::new(RasterImageData::new(
-                    canvas.width,
-                    canvas.height,
-                    Arc::clone(&canvas.pixels),
-                ));
+                let pixels = canvas.backing.snapshot();
+                let image = Arc::new(RasterImageData::new(canvas.width, canvas.height, pixels));
                 host.bridge.state().images.paint.insert(request.id, image);
                 Ok(JsValue::undefined())
             }

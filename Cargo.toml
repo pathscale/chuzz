@@ -79,7 +79,7 @@ anyrender = { package = "ps-anyrender", version = "^0.13" }
 # every backdrop inside a layer, which is every backdrop on a real page; the
 # revision below closes the stack, snapshots, and reopens it, so glass renders
 # in the CPU paths as well as on the GPU.
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.2", features = ["filters"] }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.3", features = ["filters"] }
 blitz-paint = { package = "ps-blitz-paint", version = "^0.5" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,

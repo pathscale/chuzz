@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CANVASFLUSH incremental rendering QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; background: white; image-rendering: pixelated; }
+    #source { width: 256px; height: 256px; }
+    #target { width: 512px; height: 256px; }
+    #boundaries { width: 260px; height: 196px; }
+  </style>
+</head>
+<body>
+  <h1>CANVASFLUSH incremental rendering QA</h1>
+  <button id="run" type="button">Run incremental flush checks</button>
+  <p id="result" role="status">Ready</p>
+  <p>Budget: 3000 ms</p>
+  <canvas id="source" width="1024" height="1024" aria-label="CANVASFLUSH source colour samples"></canvas>
+  <canvas id="target" width="256" height="128" aria-label="CANVASFLUSH copied colour samples"></canvas>
+  <canvas id="boundaries" width="130" height="98" aria-label="CANVASFLUSH tile boundary samples"></canvas>
+  <script>
+    (function () {
+      var result = document.getElementById("result");
+      var colours = ["#ff0000", "#00ff00", "#0000ff", "#ffff00"];
+      var rgba = [[255, 0, 0, 255], [0, 255, 0, 255],
+                  [0, 0, 255, 255], [255, 255, 0, 255]];
+      function assert(value, message) { if (!value) { throw new Error(message); } }
+      function equal(actual, expected, label, tolerance) {
+        assert(expected.every(function (value, index) {
+          return Math.abs(actual[index] - value) <= (tolerance || 0);
+        }), label + ": " + Array.from(actual).join(","));
+      }
+      function near(context, x, y, expected, label) {
+        equal(context.getImageData(x, y, 1, 1).data, expected, label, 2);
+      }
+      function stats() {
+        return JSON.parse(globalThis.__chuzzCanvas2D(JSON.stringify({ action: "stats" }), []));
+      }
+      function position(index) {
+        return [8 + (index % 126) * 8, 8 + Math.floor(index / 126) * 8];
+      }
+      function boundaries() {
+        var canvas = document.getElementById("boundaries");
+        var context = canvas.getContext("2d");
+        context.imageSmoothingEnabled = false;
+        context.fillStyle = "#ff0000";
+        context.fillRect(60, 20, 12, 12);
+        near(context, 63, 24, rgba[0], "left of tile seam");
+        near(context, 64, 24, rgba[0], "right of tile seam");
+
+        context.save();
+        context.beginPath();
+        context.rect(62, 22, 6, 6);
+        context.clip();
+        context.globalAlpha = 0.5;
+        context.fillStyle = "#0000ff";
+        context.fillRect(58, 18, 18, 18);
+        near(context, 63, 24, [127, 0, 128, 255], "clipped alpha left");
+        near(context, 64, 24, [127, 0, 128, 255], "clipped alpha right");
+        near(context, 69, 24, rgba[0], "outside clip");
+        context.globalCompositeOperation = "destination-out";
+        context.fillRect(58, 18, 18, 18);
+        near(context, 64, 24, [127, 0, 128, 128], "clipped destination-out");
+        context.restore();
+
+        context.fillStyle = "#808080";
+        context.fillRect(60, 4, 12, 8);
+        near(context, 64, 8, [128, 128, 128, 255], "multiply base");
+        context.globalCompositeOperation = "multiply";
+        context.fillRect(60, 4, 12, 8);
+        near(context, 64, 8, [64, 64, 64, 255], "multiply across flush");
+        context.globalCompositeOperation = "lighter";
+        context.fillStyle = "#202020";
+        context.fillRect(60, 4, 12, 8);
+        near(context, 64, 8, [96, 96, 96, 255], "lighter across flush");
+        context.globalCompositeOperation = "source-over";
+
+        var gradient = context.createLinearGradient(60, 0, 72, 0);
+        gradient.addColorStop(0, "#ff0000");
+        gradient.addColorStop(1, "#0000ff");
+        context.fillStyle = gradient;
+        context.fillRect(60, 52, 12, 4);
+        var left = context.getImageData(63, 53, 1, 1).data;
+        var right = context.getImageData(64, 53, 1, 1).data;
+        assert(left[0] > right[0] && left[2] < right[2], "gradient transform at seam");
+        assert(Math.abs(left[0] - right[0]) < 30, "gradient seam discontinuity");
+
+        context.save();
+        context.translate(64, 64);
+        context.scale(2, 1);
+        context.strokeStyle = "#00ff00";
+        context.lineWidth = 4;
+        context.lineCap = "square";
+        context.beginPath();
+        context.moveTo(-8, 0);
+        context.lineTo(8, 0);
+        context.stroke();
+        context.restore();
+        near(context, 63, 64, rgba[1], "transformed stroke left");
+        near(context, 64, 64, rgba[1], "transformed stroke right");
+
+        var bytes = new Uint8ClampedArray([
+          51, 102, 153, 85, 51, 102, 153, 85
+        ]);
+        context.putImageData(new ImageData(bytes, 2, 1), 63, 80);
+        bytes.fill(0);
+        near(context, 63, 80, [51, 102, 153, 85], "putImageData left");
+        near(context, 64, 80, [51, 102, 153, 85], "putImageData right");
+        context.fillStyle = "#ffffff";
+        context.fillRect(62, 84, 6, 2);
+        near(context, 63, 80, [51, 102, 153, 85], "native alpha round trip left");
+        near(context, 64, 80, [51, 102, 153, 85], "native alpha round trip right");
+
+        context.fillStyle = "#ff00ff";
+        context.fillRect(60, 40, 8, 2);
+        context.drawImage(canvas, 60, 40, 8, 2, 64, 40, 8, 2);
+        context.clearRect(60, 40, 4, 2);
+        near(context, 63, 40, [0, 0, 0, 0], "clearRect");
+        near(context, 64, 40, [255, 0, 255, 255], "overlapping self-draw");
+        near(context, 71, 40, [255, 0, 255, 255], "self-draw retains old source");
+        context.fillStyle = "#00ffff";
+        context.fillRect(128, 96, 2, 2);
+        near(context, 129, 97, [0, 255, 255, 255], "partial edge tile");
+        equal(context.getImageData(129, 97, 2, 1).data,
+              [0, 255, 255, 255, 0, 0, 0, 0], "outside readback");
+
+        canvas.width = 130;
+        near(context, 64, 24, [0, 0, 0, 0], "same-size resize");
+        context.fillStyle = "#00ff00";
+        context.fillRect(60, 20, 12, 12);
+        near(context, 64, 24, rgba[1], "draw after resize");
+      }
+      document.getElementById("run").addEventListener("click", function () {
+        this.disabled = true;
+        var elapsed = 0;
+        try {
+          var source = document.getElementById("source");
+          var sourceContext = source.getContext("2d");
+          var targetContext = document.getElementById("target").getContext("2d");
+          targetContext.imageSmoothingEnabled = false;
+          sourceContext.fillStyle = "#102030";
+          sourceContext.fillRect(0, 0, 2, 2);
+          near(sourceContext, 0, 0, [16, 32, 48, 255], "initial marker");
+          var before = stats();
+          var start = performance.now();
+          for (var index = 0; index < 2000; index++) {
+            var point = position(index);
+            sourceContext.fillStyle = colours[index % colours.length];
+            sourceContext.fillRect(point[0], point[1], 4, 4);
+            equal(sourceContext.getImageData(0, 0, 1, 1).data,
+                  [16, 32, 48, 255], "interleaved read " + index);
+          }
+          for (var draw = 0; draw < 200; draw++) {
+            var sample = draw * 10 + 9;
+            var from = position(sample);
+            var x = (draw % 20) * 12;
+            var y = Math.floor(draw / 20) * 12;
+            targetContext.drawImage(source, from[0], from[1], 4, 4, x, y, 10, 10);
+            equal(targetContext.getImageData(x + 4, y + 4, 1, 1).data,
+                  rgba[sample % rgba.length], "copied sample " + draw);
+          }
+          elapsed = performance.now() - start;
+          var after = stats();
+          assert(after.transferredBytes === before.transferredBytes, "native source transferred pixels");
+          assert(after.cacheMisses - before.cacheMisses <= 1, "unchanged canvas converted repeatedly");
+          assert(after.cacheHits - before.cacheHits >= 199, "unchanged source conversion not reused");
+          assert(after.cacheBytes <= after.cacheLimit, "conversion cache exceeded budget");
+          [0, 125, 126, 511, 999, 1500, 1999].forEach(function (sample) {
+            var point = position(sample);
+            equal(sourceContext.getImageData(point[0] + 1, point[1] + 1, 1, 1).data,
+                  rgba[sample % rgba.length], "retained source sample " + sample);
+          });
+          boundaries();
+          result.textContent = (elapsed < 3000 ? "READY: CANVASFLUSH PASS " : "FAIL: CANVASFLUSH ")
+            + elapsed.toFixed(1) + " ms";
+        } catch (error) {
+          result.textContent = "FAIL: CANVASFLUSH " + elapsed.toFixed(1) + " ms: " + String(error);
+          console.error(error);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

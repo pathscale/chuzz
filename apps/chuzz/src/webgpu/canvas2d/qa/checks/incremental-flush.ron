@@ -1,0 +1,37 @@
+[
+    (
+        id: "canvasflush-incremental",
+        group: "canvasflush",
+        what: "2000 small draws on a 1024-square canvas each force a one-pixel read, then 200 canvas copies force destination reads; sampled pixels, native source reuse, blends, clips, strokes, seams, self-draw and resize remain correct within 3000 ms",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CANVASFLUSH PASS",
+        expect: PaintsNamed,
+        covers: ["Budget: 3000 ms"],
+        outcome_timeout_ms: 60000,
+    ),
+    (
+        id: "canvasflush-copies-paint",
+        group: "canvasflush",
+        what: "the second canvas presents the pixel-checked copies",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "CANVASFLUSH copied colour samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 60000,
+    ),
+    (
+        id: "canvasflush-boundaries-paint",
+        group: "canvasflush",
+        what: "the canvas presents ink after its same-size resize",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "CANVASFLUSH tile boundary samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 60000,
+    ),
+]
+
