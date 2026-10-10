@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Declarative shadow DOM</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      margin: 24px;
+      background: #ffffff;
+      color: #102030;
+      font-family: Fixture, sans-serif;
+      font-size: 24px;
+    }
+    dsd-card, #open-host > span { display: block; }
+    #result { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">FAIL: DSD script did not run</p>
+  <dsd-card id="open-host">
+    <template shadowrootmode="open" shadowrootdelegatesfocus shadowrootclonable shadowrootserializable>
+      <style>
+        @font-face {
+          font-family: Fixture;
+          src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+        }
+        :host { display: block; }
+        h1 {
+          font-family: Fixture, sans-serif;
+          font-size: 32px;
+          color: #102030;
+          margin: 0 0 8px;
+        }
+      </style>
+      <h1>DSD heading</h1>
+      <div id="nested">
+        <template shadowrootmode="open">
+          <span>DSD nested</span>
+        </template>
+      </div>
+      <slot></slot>
+    </template>
+    <span>DSD slotted</span>
+  </dsd-card>
+  <div id="closed-host">
+    <template shadowrootmode="closed">
+      <span>DSD closed</span>
+    </template>
+  </div>
+  <div id="twice">
+    <template shadowrootmode="open"><span>DSD twice</span></template>
+    <template id="twice-template" shadowrootmode="open"><span>DSD second</span></template>
+  </div>
+  <div id="bad-mode">
+    <template id="bad-template" shadowrootmode="hidden"><span>DSD hidden</span></template>
+  </div>
+  <div id="reattach">
+    <template shadowrootmode="open"><span>DSD reattach</span></template>
+  </div>
+  <script>
+    var result = document.getElementById("result");
+    function fail(reason) {
+      result.textContent = "FAIL: DSD " + reason;
+      throw new Error(reason);
+    }
+    try {
+      var host = document.getElementById("open-host");
+      var root = host.shadowRoot;
+      if (!root) fail("open shadow missing");
+      if (root.mode !== "open") fail("mode");
+      if (root.host !== host) fail("host identity");
+      if (root.delegatesFocus !== true) fail("delegatesFocus");
+      if (root.clonable !== true) fail("clonable");
+      if (root.serializable !== true) fail("serializable");
+      var heading = root.querySelector("h1");
+      if (!heading || heading.textContent !== "DSD heading") fail("heading");
+      var nestedHost = root.querySelector("#nested");
+      if (!nestedHost || !nestedHost.shadowRoot) fail("nested");
+      var nestedText = nestedHost.shadowRoot.querySelector("span");
+      if (!nestedText || nestedText.textContent !== "DSD nested") fail("nested text");
+      var slotted = host.querySelector("span");
+      if (!slotted || slotted.textContent !== "DSD slotted") fail("slotted");
+      var closed = document.getElementById("closed-host");
+      if (closed.shadowRoot !== null) fail("closed exposed");
+      if (closed.querySelector("template")) fail("closed template left");
+      var twice = document.getElementById("twice");
+      if (!twice.shadowRoot) fail("twice missing root");
+      var second = document.getElementById("twice-template");
+      if (!second || !second.content || second.content.childNodes.length === 0) fail("second template");
+      if (document.getElementById("bad-mode").shadowRoot) fail("bad mode attached");
+      if (!document.getElementById("bad-template")) fail("bad template missing");
+      var box = document.createElement("div");
+      box.innerHTML = '<div id="via-inner"><template shadowrootmode="open"><span>inner</span></template></div>';
+      var viaInner = box.querySelector("#via-inner");
+      if (!viaInner || viaInner.shadowRoot || !viaInner.querySelector("template")) fail("innerHTML");
+      var parsed = new DOMParser().parseFromString('<div id="via-parser"><template shadowrootmode="open"><span>parser</span></template></div>', "text/html");
+      var viaParser = parsed.querySelector("#via-parser");
+      if (!viaParser || viaParser.shadowRoot || !viaParser.querySelector("template")) fail("DOMParser");
+      var unsafeDoc = Document.parseHTMLUnsafe('<div id="via-unsafe"><template shadowrootmode="open"><span>unsafe</span></template></div>');
+      var viaUnsafe = unsafeDoc.querySelector("#via-unsafe");
+      if (!viaUnsafe || !viaUnsafe.shadowRoot || viaUnsafe.shadowRoot.mode !== "open") fail("parseHTMLUnsafe");
+      var unsafeText = viaUnsafe.shadowRoot.querySelector("span");
+      if (!unsafeText || unsafeText.textContent !== "unsafe") fail("parseHTMLUnsafe text");
+      var direct = document.createElement("div");
+      direct.setHTMLUnsafe('<template shadowrootmode="closed"><span>closed-unsafe</span></template>');
+      if (direct.shadowRoot !== null) fail("setHTMLUnsafe closed exposed");
+      if (direct.querySelector("template")) fail("setHTMLUnsafe closed template left");
+      var nestedUnsafe = document.createElement("div");
+      nestedUnsafe.setHTMLUnsafe('<section><template shadowrootmode="open"><span>nested-unsafe</span></template></section>');
+      var section = nestedUnsafe.querySelector("section");
+      if (!section || !section.shadowRoot) fail("setHTMLUnsafe nested");
+      var sectionText = section.shadowRoot.querySelector("span");
+      if (!sectionText || sectionText.textContent !== "nested-unsafe") fail("setHTMLUnsafe nested text");
+      var adj = document.createElement("div");
+      document.body.appendChild(adj);
+      adj.insertAdjacentHTML("beforeend", '<div id="via-adj"><template shadowrootmode="open"><span>adj</span></template></div>');
+      var viaAdj = document.getElementById("via-adj");
+      if (!viaAdj || viaAdj.shadowRoot || !viaAdj.querySelector("template")) fail("insertAdjacentHTML");
+      class DsdCard extends HTMLElement {
+        constructor() {
+          super();
+          this.setAttribute("data-upgraded", "yes");
+        }
+      }
+      customElements.define("dsd-card", DsdCard);
+      if (host.getAttribute("data-upgraded") !== "yes") fail("upgrade");
+      if (!host.shadowRoot || !host.shadowRoot.querySelector("h1")) fail("upgrade wiped");
+      if (host.shadowRoot.querySelector("h1").textContent !== "DSD heading") fail("upgrade text");
+      var reattach = document.getElementById("reattach");
+      var reRoot = reattach.shadowRoot;
+      if (!reRoot) fail("reattach missing");
+      var again = reattach.attachShadow({ mode: "open" });
+      if (again !== reRoot) fail("reattach identity");
+      if (reRoot.childNodes.length !== 0) fail("reattach not emptied");
+      var mismatch = false;
+      try {
+        reattach.attachShadow({ mode: "closed" });
+      } catch (error) {
+        mismatch = error.name === "NotSupportedError";
+      }
+      if (!mismatch) fail("mode mismatch");
+      var clone = host.cloneNode(true);
+      if (!clone.shadowRoot || !clone.shadowRoot.querySelector("h1")) fail("clone");
+      if (clone.shadowRoot.querySelector("h1").textContent !== "DSD heading") fail("clone text");
+      result.textContent = "READY: DSD PASS";
+    } catch (error) {
+      if (result.textContent.indexOf("FAIL:") !== 0) {
+        result.textContent = "FAIL: DSD " + (error && error.message ? error.message : error);
+      }
+    }
+  </script>
+</body>
+</html>

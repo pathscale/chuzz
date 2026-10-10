@@ -1,0 +1,37 @@
+[
+    (
+        id: "dsd-heading",
+        group: "dsd",
+        what: "an open declarative shadow root paints its styled heading",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "DSD heading",
+        expect: PaintsNamed,
+        covers: ["DSD slotted"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "dsd-slotted",
+        group: "dsd",
+        what: "light DOM assigned to a declarative slot paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "DSD slotted",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "dsd-ready",
+        group: "dsd",
+        what: "declarative roots survive upgrade, closed roots stay hidden, and innerHTML leaves shadowrootmode inert",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: DSD PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]
+
