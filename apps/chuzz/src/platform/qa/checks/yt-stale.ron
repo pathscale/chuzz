@@ -1,0 +1,14 @@
+[
+    (
+        id: "sites-yt-stale",
+        group: "yt-stale",
+        what: "A parser-upgraded custom element stamps light DOM and moves parsed children inside a fixed masthead; reconstructing the root preserves the painted icon and text",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "YTSTALE masthead",
+        expect: PaintsNamed,
+        covers: ["YTSTALE green guide", "PASS: YTSTALE setup"],
+        outcome_timeout_ms: 10000,
+    ),
+]

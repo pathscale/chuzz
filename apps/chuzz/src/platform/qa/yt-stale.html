@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en" data-yt-stale-reconstruct>
+<head>
+  <meta charset="utf-8">
+  <title>YTSTALE streaming layout QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    html, body { margin: 0; }
+    body {
+      background: rgb(10, 20, 30);
+      color: white;
+      font: 20px Fixture;
+    }
+    #masthead-container {
+      position: fixed;
+      z-index: 2020;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 56px;
+      background: rgb(24, 48, 55);
+    }
+    qa-stream-masthead { display: block; height: 56px; }
+    .band {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      height: 56px;
+      padding: 0 16px;
+      box-sizing: border-box;
+    }
+    #guide-button {
+      display: block;
+      flex: none;
+      width: 40px;
+      height: 40px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: rgb(0, 180, 80);
+    }
+    #masthead-label {
+      display: block;
+      color: white;
+      font: 20px/40px Fixture;
+      white-space: nowrap;
+    }
+    main { padding: 80px 16px 16px; }
+    h1, p { margin: 0 0 12px; font: inherit; }
+  </style>
+  <script>
+    (() => {
+      "use strict";
+      const template = document.createElement("template");
+      template.innerHTML = '<div class="band"></div>';
+      const state = { constructors: 0, connections: 0, parsedMoves: 0 };
+      globalThis.__ytStale = state;
+
+      customElements.define("qa-stream-masthead", class extends HTMLElement {
+        constructor() {
+          super();
+          state.constructors++;
+          this.stamped = false;
+        }
+
+        connectedCallback() {
+          state.connections++;
+          if (this.stamped) return;
+          const guide = this.querySelector("#guide-button");
+          const label = this.querySelector("#masthead-label");
+          if (!guide || !label) {
+            throw new Error("Parsed masthead children were unavailable during upgrade");
+          }
+
+          const fragment = template.content.cloneNode(true);
+          const band = fragment.querySelector(".band");
+          band.appendChild(guide);
+          band.appendChild(label);
+          this.appendChild(fragment);
+          this.stamped = true;
+          state.parsedMoves += 2;
+
+          // Construct the light-DOM boxes before another parser batch runs.
+          this.getBoundingClientRect();
+
+          // Reuse the same parsed node through removeChild and insertBefore.
+          band.removeChild(guide);
+          band.insertBefore(guide, label);
+          this.getBoundingClientRect();
+        }
+      });
+    })();
+  </script>
+</head>
+<body data-feature="yt-stale">
+  <div id="authored-parent">
+    <div id="masthead-container">
+      <qa-stream-masthead id="masthead">
+        <button id="guide-button" type="button" aria-label="YTSTALE green guide"></button>
+        <span id="masthead-label">YTSTALE masthead</span>
+      </qa-stream-masthead>
+    </div>
+  </div>
+  <main>
+    <h1>Streaming fixed masthead</h1>
+    <p id="result" role="status">Waiting for parser and bundled font</p>
+  </main>
+  <script>
+    document.addEventListener("DOMContentLoaded", async () => {
+      "use strict";
+      const check = (condition, message) => {
+        if (!condition) throw new Error(message);
+      };
+
+      try {
+        await document.fonts.ready;
+        const state = globalThis.__ytStale;
+        const masthead = document.getElementById("masthead");
+        const guide = document.getElementById("guide-button");
+        const label = document.getElementById("masthead-label");
+        check(state.constructors === 1 && state.connections === 1,
+          "The markup must upgrade exactly once during parsing");
+        check(state.parsedMoves === 2 && masthead.stamped,
+          "The connected callback must stamp and move parsed light-DOM children");
+        check(guide.parentNode === label.parentNode
+          && guide.nextSibling === label
+          && guide.parentNode.parentNode === masthead,
+          "The parsed children must remain inside the stamped container");
+
+        // Publish status before the failure trigger. Changing body text after
+        // the trigger would reconstruct the authored parent and mask the bug.
+        document.getElementById("result").textContent = "PASS: YTSTALE setup";
+        const before = guide.getBoundingClientRect();
+        check(before.x === 16 && before.y === 8
+          && before.width === 40 && before.height === 40,
+          "The initial fixed guide must occupy its expected box");
+
+        // Attribute removal requests construction on html. The authored
+        // parent is unchanged and retains the cache from which hoisting
+        // removed the fixed masthead. Rebuilding html must preserve that edge.
+        document.documentElement.removeAttribute("data-yt-stale-reconstruct");
+        const after = guide.getBoundingClientRect();
+        check(after.x === 16 && after.y === 8
+          && after.width === 40 && after.height === 40,
+          "The guide geometry must survive root reconstruction");
+        check(getComputedStyle(document.getElementById("masthead-container")).position === "fixed",
+          "The masthead must remain fixed");
+        check(document.elementFromPoint(36, 28) === guide,
+          "The painted tree must still expose the guide to hit testing");
+
+        // No DOM writes follow the trigger. ps-qa checks the named painted
+        // nodes, and yt_stale_pixels checks the actual icon and glyph pixels.
+        state.complete = true;
+      } catch (error) {
+        console.error("YTSTALE: " + error.message);
+      }
+    }, { once: true });
+  </script>
+</body>
+</html>
