@@ -14,8 +14,8 @@ use blitz_script::boa_engine::{
 };
 use parley::fontique::{Collection, CollectionOptions, SourceCache};
 use peniko::{
-    BlendMode, Blob, Color, Compose, Extend, Fill, Gradient, ImageAlphaType, ImageBrush,
-    ImageData, ImageFormat, ImageQuality, ImageSampler, Mix,
+    BlendMode, Blob, Color, Compose, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData,
+    ImageFormat, ImageQuality, ImageSampler, Mix,
 };
 use serde::Deserialize;
 
@@ -56,7 +56,11 @@ fn byte_count(width: u32, height: u32) -> Result<usize> {
 }
 
 fn rule(value: f64) -> Fill {
-    if value == 1.0 { Fill::EvenOdd } else { Fill::NonZero }
+    if value == 1.0 {
+        Fill::EvenOdd
+    } else {
+        Fill::NonZero
+    }
 }
 
 fn color(value: &str) -> Result<Color> {
@@ -168,10 +172,18 @@ struct DrawState {
 impl DrawState {
     fn stroke(&self) -> Result<Stroke> {
         numbers(&self.matrix, 6)?;
-        if !self.width.is_finite() || self.width <= 0.0 || self.width > 1.0e7
-            || !self.miter.is_finite() || self.miter <= 0.0 || self.miter > 1.0e7
-            || !self.dash_offset.is_finite() || self.dash.len() > 1024
-            || self.dash.iter().any(|n| !n.is_finite() || *n < 0.0 || *n > 1.0e7)
+        if !self.width.is_finite()
+            || self.width <= 0.0
+            || self.width > 1.0e7
+            || !self.miter.is_finite()
+            || self.miter <= 0.0
+            || self.miter > 1.0e7
+            || !self.dash_offset.is_finite()
+            || self.dash.len() > 1024
+            || self
+                .dash
+                .iter()
+                .any(|n| !n.is_finite() || *n < 0.0 || *n > 1.0e7)
         {
             return Err("invalid canvas stroke".to_owned());
         }
@@ -187,8 +199,10 @@ impl DrawState {
             "miter" => Join::Miter,
             _ => return Err("invalid canvas lineJoin".to_owned()),
         };
-        let mut stroke = Stroke::new(self.width).with_caps(cap)
-            .with_join(join).with_miter_limit(self.miter);
+        let mut stroke = Stroke::new(self.width)
+            .with_caps(cap)
+            .with_join(join)
+            .with_miter_limit(self.miter);
         if self.dash.iter().any(|n| *n > 0.0) {
             stroke = stroke.with_dashes(self.dash_offset, &self.dash);
         }
@@ -227,9 +241,16 @@ fn image_data(source: &Image, inputs: &[Arc<Vec<u8>>]) -> Result<ImageData> {
     if source.length != byte_count(source.width, source.height)? {
         return Err("invalid canvas image length".to_owned());
     }
-    let bytes = inputs.get(source.index).ok_or("invalid canvas image buffer")?;
-    let end = source.offset.checked_add(source.length).ok_or("canvas image range overflow")?;
-    let view = bytes.get(source.offset..end).ok_or("invalid canvas image range")?;
+    let bytes = inputs
+        .get(source.index)
+        .ok_or("invalid canvas image buffer")?;
+    let end = source
+        .offset
+        .checked_add(source.length)
+        .ok_or("canvas image range overflow")?;
+    let view = bytes
+        .get(source.offset..end)
+        .ok_or("invalid canvas image range")?;
     let data = if source.offset == 0 && end == bytes.len() {
         Arc::clone(bytes)
     } else {
@@ -250,7 +271,11 @@ fn image_brush(data: ImageData, smoothing: bool, x: Extend, y: Extend) -> Paint 
         sampler: ImageSampler {
             x_extend: x,
             y_extend: y,
-            quality: if smoothing { ImageQuality::Medium } else { ImageQuality::Low },
+            quality: if smoothing {
+                ImageQuality::Medium
+            } else {
+                ImageQuality::Low
+            },
             alpha: 1.0,
         },
     })
@@ -275,12 +300,16 @@ fn resolve_brush(
             if brush.stops.is_empty() {
                 return Ok((Paint::Solid(Color::TRANSPARENT), transform, None));
             }
-            let mut stops = brush.stops.iter().map(|(offset, value)| {
-                if !offset.is_finite() || !(0.0..=1.0).contains(offset) {
-                    return Err("invalid canvas gradient stop".to_owned());
-                }
-                Ok((*offset, color(value)?))
-            }).collect::<Result<Vec<_>>>()?;
+            let mut stops = brush
+                .stops
+                .iter()
+                .map(|(offset, value)| {
+                    if !offset.is_finite() || !(0.0..=1.0).contains(offset) {
+                        return Err("invalid canvas gradient stop".to_owned());
+                    }
+                    Ok((*offset, color(value)?))
+                })
+                .collect::<Result<Vec<_>>>()?;
             stops.sort_by(|a, b| a.0.total_cmp(&b.0));
             let n = &brush.n;
             let gradient = if brush.kind == "linear" {
@@ -295,14 +324,15 @@ fn resolve_brush(
                 if n[0] == n[3] && n[1] == n[4] && n[2] == n[5] {
                     return Ok((Paint::Solid(Color::TRANSPARENT), transform, None));
                 }
-                Gradient::new_two_point_radial(
-                    (n[0], n[1]), n[2] as f32, (n[3], n[4]), n[5] as f32,
-                )
+                Gradient::new_two_point_radial((n[0], n[1]), n[2] as f32, (n[3], n[4]), n[5] as f32)
             };
             Paint::Gradient(gradient.with_stops(stops.as_slice()))
         }
         "pattern" => {
-            let source = brush.image.as_ref().ok_or("canvas pattern requires pixels")?;
+            let source = brush
+                .image
+                .as_ref()
+                .ok_or("canvas pattern requires pixels")?;
             let data = image_data(source, inputs)?;
             let (repeat_x, repeat_y) = match brush.repetition.as_str() {
                 "repeat" => (true, true),
@@ -316,15 +346,27 @@ fn resolve_brush(
                     if repeat_x { -1.0e7 } else { 0.0 },
                     if repeat_y { -1.0e7 } else { 0.0 },
                     if repeat_x { 1.0e7 } else { source.width as f64 },
-                    if repeat_y { 1.0e7 } else { source.height as f64 },
+                    if repeat_y {
+                        1.0e7
+                    } else {
+                        source.height as f64
+                    },
                 );
                 clip = Some(transform * rect.to_path(0.1));
             }
             image_brush(
                 data,
                 smoothing,
-                if repeat_x { Extend::Repeat } else { Extend::Pad },
-                if repeat_y { Extend::Repeat } else { Extend::Pad },
+                if repeat_x {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                },
+                if repeat_y {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                },
             )
         }
         _ => return Err(missing("fillStyle")),
@@ -419,7 +461,10 @@ impl Canvas {
             return Err("invalid canvas globalAlpha".to_owned());
         }
         if path.elements().is_empty()
-            || self.clips.iter().any(|clip| clip.path.elements().is_empty())
+            || self
+                .clips
+                .iter()
+                .any(|clip| clip.path.elements().is_empty())
         {
             return Ok(());
         }
@@ -432,22 +477,38 @@ impl Canvas {
                 "lighter" => BlendMode::new(Mix::Normal, Compose::Plus),
                 "multiply" => BlendMode::new(Mix::Multiply, Compose::SrcOver),
                 "destination-out" => BlendMode::new(Mix::Normal, Compose::DestOut),
-                _ => return Err(missing(&format!("globalCompositeOperation.{}", state.composite))),
+                _ => {
+                    return Err(missing(&format!(
+                        "globalCompositeOperation.{}",
+                        state.composite
+                    )));
+                }
             }
         };
-        let transform = if stroke { Affine::new(state.matrix) } else { Affine::IDENTITY };
-        if transform.determinant().abs() < 1.0e-20 || paint_transform.determinant().abs() < 1.0e-20 {
+        let transform = if stroke {
+            Affine::new(state.matrix)
+        } else {
+            Affine::IDENTITY
+        };
+        if transform.determinant().abs() < 1.0e-20 || paint_transform.determinant().abs() < 1.0e-20
+        {
             return Ok(());
         }
         let shape = transform.inverse() * path.clone();
         let clips = self.clips.clone();
         let bounds = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
-        let Some(painter) = self.painter() else { return Ok(()); };
+        let Some(painter) = self.painter() else {
+            return Ok(());
+        };
         // The composition layer encloses the clip layers. Destination-out
         // therefore acts on the existing canvas, rather than an empty clip group.
         painter.push_layer(
-            blend, if clear { 1.0 } else { state.alpha },
-            Affine::IDENTITY, &bounds, None, None,
+            blend,
+            if clear { 1.0 } else { state.alpha },
+            Affine::IDENTITY,
+            &bounds,
+            None,
+            None,
         );
         for clip in &clips {
             painter.render_ctx.set_fill_rule(clip.rule);
@@ -459,11 +520,20 @@ impl Canvas {
         }
         if stroke {
             painter.stroke(
-                &style, transform, paint.as_ref(),
-                Some(transform.inverse() * paint_transform), &shape,
+                &style,
+                transform,
+                paint.as_ref(),
+                Some(transform.inverse() * paint_transform),
+                &shape,
             );
         } else {
-            painter.fill(fill, transform, paint.as_ref(), Some(paint_transform), &shape);
+            painter.fill(
+                fill,
+                transform,
+                paint.as_ref(),
+                Some(paint_transform),
+                &shape,
+            );
         }
         for _ in 0..clips.len() + usize::from(extra_clip.is_some()) {
             painter.pop_layer();
@@ -474,7 +544,10 @@ impl Canvas {
 
     fn put(&mut self, command: &Command, inputs: &[Arc<Vec<u8>>]) -> Result<()> {
         numbers(&command.n, 6)?;
-        let source = command.brush.as_ref().and_then(|brush| brush.image.as_ref())
+        let source = command
+            .brush
+            .as_ref()
+            .and_then(|brush| brush.image.as_ref())
             .ok_or("putImageData requires pixels")?;
         let image = image_data(source, inputs)?;
         let n = &command.n;
@@ -500,14 +573,12 @@ impl Canvas {
         Ok(())
     }
 
-    fn execute(
-        &mut self,
-        command: &Command,
-        inputs: &[Arc<Vec<u8>>],
-        fonts: &Fonts,
-    ) -> Result<()> {
+    fn execute(&mut self, command: &Command, inputs: &[Arc<Vec<u8>>], fonts: &Fonts) -> Result<()> {
         numbers(&command.matrix, 6)?;
-        if self.path.command(&command.op, &command.n, Affine::new(command.matrix))? {
+        if self
+            .path
+            .command(&command.op, &command.n, Affine::new(command.matrix))?
+        {
             if self.path.path.elements().len() > PATH_LIMIT {
                 return Err("canvas path limit reached in chuzz".to_owned());
             }
@@ -541,8 +612,14 @@ impl Canvas {
             "putImageData" => return self.put(command, inputs),
             _ => {}
         }
-        let state = command.state.as_ref().ok_or("canvas drawing requires state")?;
-        let brush = command.brush.as_ref().ok_or("canvas drawing requires a brush")?;
+        let state = command
+            .state
+            .as_ref()
+            .ok_or("canvas drawing requires state")?;
+        let brush = command
+            .brush
+            .as_ref()
+            .ok_or("canvas drawing requires a brush")?;
         let matrix = Affine::new(state.matrix);
         let mut fill = Fill::NonZero;
         let mut stroke = false;
@@ -571,11 +648,15 @@ impl Canvas {
                 let shaped = text::shape(&command.text, &state.font, &fonts.0)?;
                 let scale = if command.n[2] > 0.0 && shaped.width > command.n[2] {
                     command.n[2] / shaped.width
-                } else { 1.0 };
+                } else {
+                    1.0
+                };
                 let offset = shaped.offset(state)?;
-                matrix * Affine::translate((command.n[0], command.n[1]))
+                matrix
+                    * Affine::translate((command.n[0], command.n[1]))
                     * Affine::scale_non_uniform(scale, 1.0)
-                    * Affine::translate(offset) * shaped.path
+                    * Affine::translate(offset)
+                    * shaped.path
             }
             "drawImage" => {
                 numbers(&command.n, 8)?;
@@ -591,7 +672,8 @@ impl Canvas {
                 if x1 <= x0 || y1 <= y0 {
                     return Ok(());
                 }
-                let image_matrix = matrix * Affine::translate((n[4], n[5]))
+                let image_matrix = matrix
+                    * Affine::translate((n[4], n[5]))
                     * Affine::scale_non_uniform(n[6] / n[2], n[7] / n[3])
                     * Affine::translate((-n[0], -n[1]));
                 let mut actual = Brush {
@@ -601,8 +683,11 @@ impl Canvas {
                     matrix: image_matrix.as_coeffs(),
                     stops: Vec::new(),
                     image: Some(Image {
-                        index: source.index, width: source.width, height: source.height,
-                        offset: source.offset, length: source.length,
+                        index: source.index,
+                        width: source.width,
+                        height: source.height,
+                        offset: source.offset,
+                        length: source.length,
                     }),
                     repetition: "no-repeat".to_owned(),
                 };
@@ -613,14 +698,26 @@ impl Canvas {
             member => return Err(missing(member)),
         };
         let clear_brush = Brush {
-            kind: "color".to_owned(), color: "#ffffff".to_owned(),
-            n: Vec::new(), matrix: identity(), stops: Vec::new(),
-            image: None, repetition: String::new(),
+            kind: "color".to_owned(),
+            color: "#ffffff".to_owned(),
+            n: Vec::new(),
+            matrix: identity(),
+            stops: Vec::new(),
+            image: None,
+            repetition: String::new(),
         };
         self.draw(
-            &path, state,
-            if clear { &clear_brush } else { image_paint.as_ref().unwrap_or(brush) },
-            inputs, stroke, fill, clear,
+            &path,
+            state,
+            if clear {
+                &clear_brush
+            } else {
+                image_paint.as_ref().unwrap_or(brush)
+            },
+            inputs,
+            stroke,
+            fill,
+            clear,
         )
     }
 
@@ -652,12 +749,20 @@ impl Canvas {
 }
 
 fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let host = context.get_data::<Host>().cloned()
+    let host = context
+        .get_data::<Host>()
+        .cloned()
         .ok_or_else(|| JsNativeError::typ().with_message("canvas host is unavailable"))?;
-    let json = args.first().cloned().unwrap_or_default()
-        .to_string(context)?.to_std_string_escaped();
+    let json = args
+        .first()
+        .cloned()
+        .unwrap_or_default()
+        .to_string(context)?
+        .to_std_string_escaped();
     if json.len() > 8 * 1024 * 1024 {
-        return Err(JsNativeError::typ().with_message("canvas descriptor limit reached in chuzz").into());
+        return Err(JsNativeError::typ()
+            .with_message("canvas descriptor limit reached in chuzz")
+            .into());
     }
     let request: Request = serde_json::from_str(&json)
         .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
@@ -669,34 +774,48 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
             .map_err(|error| JsNativeError::typ().with_message(error))?;
         return Ok(JsString::from(font).into());
     }
-    let array = args.get(1).and_then(JsValue::as_object)
+    let array = args
+        .get(1)
+        .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("expected canvas byte buffers"))?;
     let array = JsArray::from_object(array)?;
     let count = array.length(context)?;
     if count > 1024 || request.commands.len() > COMMAND_LIMIT {
-        return Err(JsNativeError::typ().with_message("canvas command limit reached in chuzz").into());
+        return Err(JsNativeError::typ()
+            .with_message("canvas command limit reached in chuzz")
+            .into());
     }
     let mut inputs = Vec::with_capacity(count as usize);
     let mut input_size = 0usize;
     for index in 0..count {
         let value = array.get(index, context)?;
-        let object = value.as_object()
+        let object = value
+            .as_object()
             .ok_or_else(|| JsNativeError::typ().with_message("expected canvas ArrayBuffer"))?;
         let buffer = JsArrayBuffer::from_object(object)?;
-        let bytes = buffer.data()
+        let bytes = buffer
+            .data()
             .ok_or_else(|| JsNativeError::typ().with_message("detached canvas image"))?;
         input_size = input_size.saturating_add(bytes.len());
         if input_size > IMAGE_LIMIT {
-            return Err(JsNativeError::typ().with_message("canvas transfer limit reached in chuzz").into());
+            return Err(JsNativeError::typ()
+                .with_message("canvas transfer limit reached in chuzz")
+                .into());
         }
         inputs.push(Arc::new(bytes.to_vec()));
     }
     let result = (|| -> Result<JsValue> {
         let size = byte_count(request.width, request.height)?;
         let mut canvases = lock(&host.canvases);
-        let previous = canvases.get(&request.id).map_or(0, |canvas| canvas.pixels.len());
-        let allocated = canvases.values().map(|canvas| canvas.pixels.len()).sum::<usize>();
-        if request.id == 0 || request.id > 9_007_199_254_740_991
+        let previous = canvases
+            .get(&request.id)
+            .map_or(0, |canvas| canvas.pixels.len());
+        let allocated = canvases
+            .values()
+            .map(|canvas| canvas.pixels.len())
+            .sum::<usize>();
+        if request.id == 0
+            || request.id > 9_007_199_254_740_991
             || (!canvases.contains_key(&request.id) && canvases.len() >= 8192)
             || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
         {
@@ -718,17 +837,21 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
             "snapshot" => {
                 canvas.flush();
                 JsUint8ClampedArray::from_iter(canvas.pixels.iter().copied(), context)
-                    .map(Into::into).map_err(|error| error.to_string())
+                    .map(Into::into)
+                    .map_err(|error| error.to_string())
             }
             "read" => {
                 let bytes = canvas.read(&request.n)?;
                 JsUint8ClampedArray::from_iter(bytes, context)
-                    .map(Into::into).map_err(|error| error.to_string())
+                    .map(Into::into)
+                    .map_err(|error| error.to_string())
             }
             "paint" => {
                 canvas.flush();
                 let image = Arc::new(RasterImageData::new(
-                    canvas.width, canvas.height, Arc::clone(&canvas.pixels),
+                    canvas.width,
+                    canvas.height,
+                    Arc::clone(&canvas.pixels),
                 ));
                 host.bridge.state().images.paint.insert(request.id, image);
                 Ok(JsValue::undefined())
@@ -738,7 +861,8 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
                 let shaped = text::shape(&request.text, &state.font, &host.fonts.0)?;
                 let metrics = shaped.metrics(state)?;
                 serde_json::to_string(&metrics)
-                    .map(|value| JsString::from(value).into()).map_err(|error| error.to_string())
+                    .map(|value| JsString::from(value).into())
+                    .map_err(|error| error.to_string())
             }
             member => Err(missing(member)),
         }
@@ -748,16 +872,21 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
 
 pub(super) fn install(document: &mut blitz_script::ScriptDocument, bridge: Bridge) {
     document.with_js_context(|context| {
-        let fonts = context.get_data::<Fonts>().cloned()
+        let fonts = context
+            .get_data::<Fonts>()
+            .cloned()
             .unwrap_or_else(|| Fonts(Arc::new(Mutex::new(default_fonts()))));
         context.insert_data(Host {
             canvases: Arc::new(Mutex::new(HashMap::new())),
             fonts,
             bridge,
         });
-        context.register_global_builtin_callable(
-            JsString::from("__chuzzCanvas2D"), 2, NativeFunction::from_fn_ptr(native),
-        ).expect("canvas command bridge");
+        context
+            .register_global_builtin_callable(
+                JsString::from("__chuzzCanvas2D"),
+                2,
+                NativeFunction::from_fn_ptr(native),
+            )
+            .expect("canvas command bridge");
     });
 }
-

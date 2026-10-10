@@ -18,8 +18,12 @@ pub(super) struct Images {
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub(super) enum Source {
-    Bitmap { handle: u64 },
-    Element { handle: u64 },
+    Bitmap {
+        handle: u64,
+    },
+    Element {
+        handle: u64,
+    },
     Encoded {
         data: u64,
         #[serde(default)]
@@ -94,10 +98,7 @@ fn marker_matches(element: &blitz_dom::node::ElementData, marker: &str) -> bool 
     })
 }
 
-fn snapshot(
-    document: &blitz_script::ScriptDocument,
-    marker: u64,
-) -> Option<Arc<RasterImageData>> {
+fn snapshot(document: &blitz_script::ScriptDocument, marker: u64) -> Option<Arc<RasterImageData>> {
     let marker = marker.to_string();
     let document = document.inner();
     document.tree().iter().find_map(|(_, node)| {
@@ -128,8 +129,7 @@ fn paint(
     let Some(element) = node.element_data_mut() else {
         return false;
     };
-    element.special_data =
-        SpecialElementData::Image(Box::new(ImageData::Raster((*image).clone())));
+    element.special_data = SpecialElementData::Image(Box::new(ImageData::Raster((*image).clone())));
     node.cache_mut().clear();
     if let Some(damage) = node.damage() {
         node.insert_damage(damage.union(damage.complement()));
@@ -140,13 +140,13 @@ fn paint(
 }
 
 impl Bridge {
-    pub(super) fn prepare_images(
-        &self,
-        document: &mut blitz_script::ScriptDocument,
-    ) -> bool {
+    pub(super) fn prepare_images(&self, document: &mut blitz_script::ScriptDocument) -> bool {
         let (incoming, images) = {
             let mut state = self.state();
-            let live = state.in_flight.keys().copied()
+            let live = state
+                .in_flight
+                .keys()
+                .copied()
                 .collect::<std::collections::HashSet<_>>();
             state.images.snapshots.retain(|id, _| live.contains(id));
             (
@@ -204,13 +204,29 @@ impl Bridge {
         self.enqueue(request);
     }
 
-    pub(super) async fn resolve_source(&self, source: Source) -> Result<Arc<RasterImageData>, GpuError> {
+    pub(super) async fn resolve_source(
+        &self,
+        source: Source,
+    ) -> Result<Arc<RasterImageData>, GpuError> {
         match source {
-            Source::Bitmap { handle } => self.state().images.bitmaps.get(&handle).cloned()
+            Source::Bitmap { handle } => self
+                .state()
+                .images
+                .bitmaps
+                .get(&handle)
+                .cloned()
                 .ok_or_else(|| GpuError::validation("ImageBitmap is closed or invalid")),
-            Source::Element { handle } => self.state().images.snapshots.remove(&handle)
+            Source::Element { handle } => self
+                .state()
+                .images
+                .snapshots
+                .remove(&handle)
                 .ok_or_else(|| GpuError::validation("image source has no decoded pixels")),
-            Source::Pixels { width, height, data } => {
+            Source::Pixels {
+                width,
+                height,
+                data,
+            } => {
                 let data = self.byte_table().take_input(data)?;
                 if data.len() != byte_count(width, height)? {
                     return Err(GpuError::validation("invalid ImageData byte length"));
@@ -228,42 +244,63 @@ impl Bridge {
                         .with_guessed_format()
                         .map_err(|error| GpuError::validation(error.to_string()))
                 };
-                let (width, height) = make_reader()?.into_dimensions()
+                let (width, height) = make_reader()?
+                    .into_dimensions()
                     .map_err(|error| GpuError::validation(error.to_string()))?;
                 byte_count(width, height)?;
                 let mut reader = make_reader()?;
                 let mut limits = image::Limits::default();
                 limits.max_alloc = Some(ALLOCATION_LIMIT);
                 reader.limits(limits);
-                let rgba = reader.decode()
+                let rgba = reader
+                    .decode()
                     .map_err(|error| GpuError::validation(error.to_string()))?
                     .into_rgba8();
                 Ok(Arc::new(RasterImageData::new(
-                    rgba.width(), rgba.height(), Arc::new(rgba.into_raw()),
+                    rgba.width(),
+                    rgba.height(),
+                    Arc::new(rgba.into_raw()),
                 )))
             }
-            Source::Canvas { canvas, generation, width, height } => {
-                let image = self.state().images.canvases.get(&canvas)
+            Source::Canvas {
+                canvas,
+                generation,
+                width,
+                height,
+            } => {
+                let image = self
+                    .state()
+                    .images
+                    .canvases
+                    .get(&canvas)
                     .filter(|(current, image)| {
                         *current == generation && image.width == width && image.height == height
                     })
                     .map(|(_, image)| Arc::clone(image))
-                    .ok_or_else(|| GpuError::validation("canvas image is unavailable or resized"))?;
+                    .ok_or_else(|| {
+                        GpuError::validation("canvas image is unavailable or resized")
+                    })?;
                 Ok(image)
             }
-            Source::Texture { device, texture, premultiplied_alpha } => {
-                let device = self.state().devices.get(&device).cloned()
+            Source::Texture {
+                device,
+                texture,
+                premultiplied_alpha,
+            } => {
+                let device = self
+                    .state()
+                    .devices
+                    .get(&device)
+                    .cloned()
                     .ok_or_else(|| GpuError::validation("invalid canvas GPUDevice"))?;
-                device.read_external_texture(texture, premultiplied_alpha).await
+                device
+                    .read_external_texture(texture, premultiplied_alpha)
+                    .await
             }
         }
     }
 
-    pub(super) async fn execute_image(
-        &self,
-        id: u64,
-        command: Command,
-    ) -> Result<Value, GpuError> {
+    pub(super) async fn execute_image(&self, id: u64, command: Command) -> Result<Value, GpuError> {
         match command.op.as_str() {
             "closeImage" => {
                 self.state().images.bitmaps.remove(&command.handle);
@@ -277,7 +314,9 @@ impl Bridge {
             }
             "createImageBitmap" => {
                 let mut options: BitmapOptions = decode(command.args)?;
-                let source = options.source.take()
+                let source = options
+                    .source
+                    .take()
                     .ok_or_else(|| GpuError::validation("createImageBitmap requires a source"))?;
                 let source = self.resolve_source(source).await?;
                 let image = bitmap(source, &options)?;
@@ -285,17 +324,25 @@ impl Bridge {
                 if !state.in_flight.get(&id).is_some_and(host::Flight::live) {
                     return Err(GpuError::internal("image request expired in chuzz"));
                 }
-                let bytes = state.images.bitmaps.values()
-                    .map(|image| image.data.len() as u64).sum::<u64>();
+                let bytes = state
+                    .images
+                    .bitmaps
+                    .values()
+                    .map(|image| image.data.len() as u64)
+                    .sum::<u64>();
                 if command.handle == 0
                     || state.images.bitmaps.contains_key(&command.handle)
                     || state.images.bitmaps.len() >= 8192
                     || bytes.saturating_add(image.data.len() as u64) > 512 * 1024 * 1024
                 {
-                    return Err(GpuError::validation("ImageBitmap allocation limit reached in chuzz"));
+                    return Err(GpuError::validation(
+                        "ImageBitmap allocation limit reached in chuzz",
+                    ));
                 }
                 let data = if options.read_pixels {
-                    let id = state.bytes.insert(binary::Block::Image(Arc::clone(&image)), false)?;
+                    let id = state
+                        .bytes
+                        .insert(binary::Block::Image(Arc::clone(&image)), false)?;
                     json!({"byteId": id})
                 } else {
                     Value::Null
@@ -309,7 +356,9 @@ impl Bridge {
                 state.images.bitmaps.insert(command.handle, image);
                 Ok(value)
             }
-            member => Err(GpuError::validation(format!("not implemented in chuzz: {member}"))),
+            member => Err(GpuError::validation(format!(
+                "not implemented in chuzz: {member}"
+            ))),
         }
     }
 }
@@ -319,17 +368,26 @@ fn bitmap(
     options: &BitmapOptions,
 ) -> Result<Arc<RasterImageData>, GpuError> {
     let [mut x, mut y, mut width, mut height] = options.crop.unwrap_or([
-        0, 0,
+        0,
+        0,
         i32::try_from(source.width).map_err(|_| GpuError::validation("image width overflow"))?,
         i32::try_from(source.height).map_err(|_| GpuError::validation("image height overflow"))?,
     ]);
     if width < 0 {
-        x = x.checked_add(width).ok_or_else(|| GpuError::validation("image crop overflow"))?;
-        width = width.checked_neg().ok_or_else(|| GpuError::validation("image crop overflow"))?;
+        x = x
+            .checked_add(width)
+            .ok_or_else(|| GpuError::validation("image crop overflow"))?;
+        width = width
+            .checked_neg()
+            .ok_or_else(|| GpuError::validation("image crop overflow"))?;
     }
     if height < 0 {
-        y = y.checked_add(height).ok_or_else(|| GpuError::validation("image crop overflow"))?;
-        height = height.checked_neg().ok_or_else(|| GpuError::validation("image crop overflow"))?;
+        y = y
+            .checked_add(height)
+            .ok_or_else(|| GpuError::validation("image crop overflow"))?;
+        height = height
+            .checked_neg()
+            .ok_or_else(|| GpuError::validation("image crop overflow"))?;
     }
     let width = u32::try_from(width).map_err(|_| GpuError::validation("invalid image crop"))?;
     let height = u32::try_from(height).map_err(|_| GpuError::validation("invalid image crop"))?;
@@ -352,17 +410,30 @@ fn bitmap(
         "low" => image::imageops::FilterType::Triangle,
         "medium" => image::imageops::FilterType::CatmullRom,
         "high" => image::imageops::FilterType::Lanczos3,
-        _ => return Err(GpuError::validation("invalid ImageBitmapOptions.resizeQuality")),
+        _ => {
+            return Err(GpuError::validation(
+                "invalid ImageBitmapOptions.resizeQuality",
+            ));
+        }
     };
-    if x == 0 && y == 0 && width == source.width && height == source.height
-        && target_width == width && target_height == height && !options.flip_y
+    if x == 0
+        && y == 0
+        && width == source.width
+        && height == source.height
+        && target_width == width
+        && target_height == height
+        && !options.flip_y
     {
         return Ok(source);
     }
     let mut data = vec![0; byte_count(width, height)?];
     for row in 0..height {
         let source_y = i64::from(y)
-            + i64::from(if options.flip_y { height - row - 1 } else { row });
+            + i64::from(if options.flip_y {
+                height - row - 1
+            } else {
+                row
+            });
         if source_y < 0 || source_y >= i64::from(source.height) {
             continue;
         }
@@ -381,7 +452,11 @@ fn bitmap(
             .ok_or_else(|| GpuError::validation("invalid bitmap storage"))?;
         data = image::imageops::resize(&image, target_width, target_height, filter).into_raw();
     }
-    Ok(Arc::new(RasterImageData::new(target_width, target_height, Arc::new(data))))
+    Ok(Arc::new(RasterImageData::new(
+        target_width,
+        target_height,
+        Arc::new(data),
+    )))
 }
 
 impl DeviceConnection {
@@ -392,16 +467,22 @@ impl DeviceConnection {
     ) -> Result<Arc<RasterImageData>, GpuError> {
         let texture = {
             let resources = self.resources();
-            Arc::clone(&resources.textures.get(&handle)
-                .ok_or_else(|| GpuError::validation("canvas current texture is unavailable"))?
-                .texture)
+            Arc::clone(
+                &resources
+                    .textures
+                    .get(&handle)
+                    .ok_or_else(|| GpuError::validation("canvas current texture is unavailable"))?
+                    .texture,
+            )
         };
         let bgra = match texture.format() {
             wgpu::TextureFormat::Rgba8Unorm => false,
             wgpu::TextureFormat::Bgra8Unorm => true,
-            _ => return Err(GpuError::validation(
-                "not implemented in chuzz: external canvas texture format",
-            )),
+            _ => {
+                return Err(GpuError::validation(
+                    "not implemented in chuzz: external canvas texture format",
+                ));
+            }
         };
         if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
             return Err(GpuError::validation("canvas texture lacks COPY_SRC"));
@@ -410,11 +491,13 @@ impl DeviceConnection {
         let height = texture.height();
         byte_count(width, height)?;
         let row = width * 4;
-        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let size = u64::from(padded) * u64::from(height);
         if size > ALLOCATION_LIMIT {
-            return Err(GpuError::validation("canvas readback limit reached in chuzz"));
+            return Err(GpuError::validation(
+                "canvas readback limit reached in chuzz",
+            ));
         }
         let buffer = checked(&self.device, || {
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -439,11 +522,16 @@ impl DeviceConnection {
                         rows_per_image: Some(height),
                     },
                 },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
             );
             self.queue.submit([encoder.finish()]);
             Arc::new(buffer)
-        }).await?;
+        })
+        .await?;
         let bytes = map_read(&self.device, Arc::clone(&buffer), 0..size).await?;
         buffer.unmap();
         let mut rgba = Vec::with_capacity(byte_count(width, height)?);
@@ -456,7 +544,9 @@ impl DeviceConnection {
                 if premultiplied {
                     let alpha = u32::from(pixel[3]);
                     for channel in &mut pixel[..3] {
-                        *channel = if alpha == 0 { 0 } else {
+                        *channel = if alpha == 0 {
+                            0
+                        } else {
                             ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
                         };
                     }
@@ -468,7 +558,11 @@ impl DeviceConnection {
                 rgba.extend_from_slice(&pixel);
             }
         }
-        Ok(Arc::new(RasterImageData::new(width, height, Arc::new(rgba))))
+        Ok(Arc::new(RasterImageData::new(
+            width,
+            height,
+            Arc::new(rgba),
+        )))
     }
 
     pub(super) async fn copy_external_image(&self, args: Value) -> Result<Value, GpuError> {
@@ -480,47 +574,65 @@ impl DeviceConnection {
             )));
         }
         if copy.aspect != "all" || copy.size[2] != 1 {
-            return Err(GpuError::validation("invalid external image aspect or depth"));
+            return Err(GpuError::validation(
+                "invalid external image aspect or depth",
+            ));
         }
-        let owner = self.owner.upgrade()
+        let owner = self
+            .owner
+            .upgrade()
             .ok_or_else(|| GpuError::internal("image document was destroyed"))?;
         let image = Bridge(owner).resolve_source(copy.source).await?;
         let [width, height, _] = copy.size;
         let [x, y] = copy.source_origin;
-        if x > image.width || y > image.height
-            || width > image.width - x || height > image.height - y
+        if x > image.width
+            || y > image.height
+            || width > image.width - x
+            || height > image.height - y
         {
-            return Err(GpuError::validation("external image source range is out of bounds"));
+            return Err(GpuError::validation(
+                "external image source range is out of bounds",
+            ));
         }
         let texture = {
             let resources = self.resources();
-            Arc::clone(&resources.textures.get(&copy.texture)
-                .ok_or_else(|| GpuError::validation("invalid or destroyed GPUTexture"))?
-                .texture)
+            Arc::clone(
+                &resources
+                    .textures
+                    .get(&copy.texture)
+                    .ok_or_else(|| GpuError::validation("invalid or destroyed GPUTexture"))?
+                    .texture,
+            )
         };
         let bgra = match texture.format() {
             wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => false,
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => true,
-            format => return Err(GpuError::validation(format!(
-                "not implemented in chuzz: GPUQueue.copyExternalImageToTexture.format.{format:?}",
-            ))),
+            format => {
+                return Err(GpuError::validation(format!(
+                    "not implemented in chuzz: GPUQueue.copyExternalImageToTexture.format.{format:?}",
+                )));
+            }
         };
-        if texture.dimension() != wgpu::TextureDimension::D2 || texture.sample_count() != 1
-            || !texture.usage().contains(
-                wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            )
+        if texture.dimension() != wgpu::TextureDimension::D2
+            || texture.sample_count() != 1
+            || !texture
+                .usage()
+                .contains(wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT)
             || copy.mip_level >= texture.mip_level_count()
         {
             return Err(GpuError::validation("invalid external image destination"));
         }
         let target_width = (texture.width() >> copy.mip_level).max(1);
         let target_height = (texture.height() >> copy.mip_level).max(1);
-        if copy.origin[0] > target_width || copy.origin[1] > target_height
+        if copy.origin[0] > target_width
+            || copy.origin[1] > target_height
             || width > target_width - copy.origin[0]
             || height > target_height - copy.origin[1]
             || copy.origin[2] >= texture.depth_or_array_layers()
         {
-            return Err(GpuError::validation("external image destination range is out of bounds"));
+            return Err(GpuError::validation(
+                "external image destination range is out of bounds",
+            ));
         }
         if width == 0 || height == 0 {
             return Ok(Value::Null);
@@ -564,7 +676,9 @@ impl DeviceConnection {
                     texture: &texture,
                     mip_level: copy.mip_level,
                     origin: wgpu::Origin3d {
-                        x: copy.origin[0], y: copy.origin[1], z: copy.origin[2],
+                        x: copy.origin[0],
+                        y: copy.origin[1],
+                        z: copy.origin[2],
                     },
                     aspect: wgpu::TextureAspect::All,
                 },
@@ -574,11 +688,15 @@ impl DeviceConnection {
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(height),
                 },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
             );
             self.queue.submit([]);
-        }).await?;
+        })
+        .await?;
         Ok(Value::Null)
     }
 }
-

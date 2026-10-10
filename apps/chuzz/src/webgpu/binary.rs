@@ -68,22 +68,28 @@ impl Table {
         let mut entries = lock(&self.0);
         let id = Self::reserve(&mut entries, bytes.len())?;
         // Snapshot only the selected view. The page retains its allocation.
-        entries.values.insert(id, Entry {
-            block: Block::Buffer(Arc::new(bytes.to_vec())),
-            input: true,
-            claimed: false,
-        });
+        entries.values.insert(
+            id,
+            Entry {
+                block: Block::Buffer(Arc::new(bytes.to_vec())),
+                input: true,
+                claimed: false,
+            },
+        );
         Ok(id)
     }
 
     pub(super) fn insert(&self, block: Block, input: bool) -> Result<u64, GpuError> {
         let mut entries = lock(&self.0);
         let id = Self::reserve(&mut entries, block.data().len())?;
-        entries.values.insert(id, Entry {
-            block,
-            input,
-            claimed: false,
-        });
+        entries.values.insert(
+            id,
+            Entry {
+                block,
+                input,
+                claimed: false,
+            },
+        );
         Ok(id)
     }
 
@@ -126,7 +132,10 @@ impl Table {
             }
             "createImageBitmap" | "copyExternalImageToTexture" | "paintImage" => {
                 if let Some(source) = command.args.get("source")
-                    && matches!(source.get("kind").and_then(Value::as_str), Some("pixels" | "encoded"))
+                    && matches!(
+                        source.get("kind").and_then(Value::as_str),
+                        Some("pixels" | "encoded")
+                    )
                 {
                     collect(source.get("data"));
                 }
@@ -137,11 +146,18 @@ impl Table {
         let mut unique = std::collections::HashSet::new();
         let valid = ids.iter().all(|id| {
             unique.insert(*id)
-                && entries.values.get(id).is_some_and(|entry| entry.input && !entry.claimed)
+                && entries
+                    .values
+                    .get(id)
+                    .is_some_and(|entry| entry.input && !entry.claimed)
         });
         if !valid {
             for id in &ids {
-                if entries.values.get(id).is_some_and(|entry| entry.input && !entry.claimed) {
+                if entries
+                    .values
+                    .get(id)
+                    .is_some_and(|entry| entry.input && !entry.claimed)
+                {
                     Self::remove(&mut entries, *id);
                 }
             }
@@ -152,15 +168,26 @@ impl Table {
                 entry.claimed = true;
             }
         }
-        Ok(Lease { table: Arc::downgrade(self), ids })
+        Ok(Lease {
+            table: Arc::downgrade(self),
+            ids,
+        })
     }
 
     pub(super) fn take_input(&self, id: u64) -> Result<Arc<Vec<u8>>, GpuError> {
         let mut entries = lock(&self.0);
-        if !entries.values.get(&id).is_some_and(|entry| entry.input && entry.claimed) {
-            return Err(GpuError::validation("invalid or consumed WebGPU byte handle"));
+        if !entries
+            .values
+            .get(&id)
+            .is_some_and(|entry| entry.input && entry.claimed)
+        {
+            return Err(GpuError::validation(
+                "invalid or consumed WebGPU byte handle",
+            ));
         }
-        let entry = entries.values.remove(&id)
+        let entry = entries
+            .values
+            .remove(&id)
             .ok_or_else(|| GpuError::validation("invalid WebGPU upload"))?;
         let size = entry.block.data().len() as u64;
         let Block::Buffer(bytes) = entry.block else {
@@ -225,15 +252,26 @@ fn native_error(error: GpuError) -> blitz_script::boa_engine::JsError {
 }
 
 fn table(context: &Context) -> JsResult<Arc<Table>> {
-    context.get_data::<NativeHost>()
+    context
+        .get_data::<NativeHost>()
         .map(|host| Arc::clone(&host.table))
-        .ok_or_else(|| JsNativeError::typ().with_message("WebGPU byte host is unavailable").into())
+        .ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("WebGPU byte host is unavailable")
+                .into()
+        })
 }
 
 fn integer(args: &[JsValue], index: usize, context: &mut Context) -> JsResult<u64> {
-    let value = args.get(index).cloned().unwrap_or_default().to_number(context)?;
+    let value = args
+        .get(index)
+        .cloned()
+        .unwrap_or_default()
+        .to_number(context)?;
     if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > MAX_ID as f64 {
-        return Err(JsNativeError::typ().with_message("invalid WebGPU byte range").into());
+        return Err(JsNativeError::typ()
+            .with_message("invalid WebGPU byte range")
+            .into());
     }
     Ok(value as u64)
 }
@@ -242,15 +280,21 @@ fn put(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue
     let table = table(context)?;
     let offset = integer(args, 1, context)?;
     let length = integer(args, 2, context)?;
-    let object = args.first().and_then(JsValue::as_object)
+    let object = args
+        .first()
+        .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("expected an ArrayBuffer"))?;
     let buffer = JsArrayBuffer::from_object(object)?;
-    let data = buffer.data()
+    let data = buffer
+        .data()
         .ok_or_else(|| JsNativeError::typ().with_message("detached WebGPU upload"))?;
-    let end = offset.checked_add(length)
+    let end = offset
+        .checked_add(length)
         .filter(|end| *end <= data.len() as u64)
         .ok_or_else(|| JsNativeError::typ().with_message("WebGPU data range is out of bounds"))?;
-    let id = table.upload(&data[offset as usize..end as usize]).map_err(native_error)?;
+    let id = table
+        .upload(&data[offset as usize..end as usize])
+        .map_err(native_error)?;
     Ok(JsValue::from(id as f64))
 }
 
@@ -270,24 +314,33 @@ fn release(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
 }
 
 fn send(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let bridge = context.get_data::<NativeHost>()
+    let bridge = context
+        .get_data::<NativeHost>()
         .map(|host| host.bridge.clone())
         .ok_or_else(|| JsNativeError::typ().with_message("WebGPU byte host is unavailable"))?;
     let table = table(context)?;
-    let object = args.get(1).and_then(JsValue::as_object)
+    let object = args
+        .get(1)
+        .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("expected byte handles"))?;
     let uploads = JsArray::from_object(object)?;
     let count = uploads.length(context)?;
     if count > RESOURCE_LIMIT as u64 {
-        return Err(JsNativeError::typ().with_message("too many byte handles").into());
+        return Err(JsNativeError::typ()
+            .with_message("too many byte handles")
+            .into());
     }
     let mut ids = Vec::with_capacity(count as usize);
     for index in 0..count {
         let value = uploads.get(index, context)?;
         ids.push(integer(&[value], 0, context)?);
     }
-    let message = args.first().cloned().unwrap_or_default()
-        .to_string(context)?.to_std_string_escaped();
+    let message = args
+        .first()
+        .cloned()
+        .unwrap_or_default()
+        .to_string(context)?
+        .to_std_string_escaped();
     let handled = bridge.handle(&message);
     // Unknown descriptor fields and rejected admission cannot leave uploads
     // behind. Claimed handles are released by their command lease instead.
@@ -295,7 +348,9 @@ fn send(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValu
         table.release_staged(id);
     }
     if !handled {
-        return Err(JsNativeError::typ().with_message("invalid WebGPU command").into());
+        return Err(JsNativeError::typ()
+            .with_message("invalid WebGPU command")
+            .into());
     }
     Ok(JsValue::undefined())
 }
@@ -319,21 +374,27 @@ impl Bridge {
                 ("__chuzzGpuSend", 2, send),
             ];
             for (name, length, function) in functions {
-                context.register_global_builtin_callable(
-                    JsString::from(name),
-                    length,
-                    NativeFunction::from_fn_ptr(function),
-                ).expect("WebGPU byte bridge");
+                context
+                    .register_global_builtin_callable(
+                        JsString::from(name),
+                        length,
+                        NativeFunction::from_fn_ptr(function),
+                    )
+                    .expect("WebGPU byte bridge");
             }
         });
     }
 
     pub(super) fn export_bytes(&self, block: Block) -> Result<Value, GpuError> {
-        self.byte_table().insert(block, false).map(|id| json!({"byteId": id}))
+        self.byte_table()
+            .insert(block, false)
+            .map(|id| json!({"byteId": id}))
     }
 
     pub(super) fn release_reply(&self, value: &Value) {
-        let id = value.get("byteId").and_then(Value::as_u64)
+        let id = value
+            .get("byteId")
+            .and_then(Value::as_u64)
             .or_else(|| value.get("data")?.get("byteId")?.as_u64());
         if let Some(id) = id {
             self.byte_table().discard(id);
@@ -343,15 +404,18 @@ impl Bridge {
 
 impl DeviceConnection {
     pub(super) fn input_bytes(&self, id: u64) -> Result<Arc<Vec<u8>>, GpuError> {
-        let owner = self.owner.upgrade()
+        let owner = self
+            .owner
+            .upgrade()
             .ok_or_else(|| GpuError::internal("byte document was destroyed"))?;
         Bridge(owner).byte_table().take_input(id)
     }
 
     pub(super) fn export_bytes(&self, block: Block) -> Result<Value, GpuError> {
-        let owner = self.owner.upgrade()
+        let owner = self
+            .owner
+            .upgrade()
             .ok_or_else(|| GpuError::internal("byte document was destroyed"))?;
         Bridge(owner).export_bytes(block)
     }
 }
-

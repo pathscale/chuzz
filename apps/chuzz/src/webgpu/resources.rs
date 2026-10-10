@@ -142,7 +142,10 @@ impl Resources {
             .textures
             .iter()
             .filter_map(|(&handle, entry)| {
-                entry.canvas.is_some_and(|(id, _)| id == canvas).then_some(handle)
+                entry
+                    .canvas
+                    .is_some_and(|(id, _)| id == canvas)
+                    .then_some(handle)
             })
             .collect();
         for handle in handles {
@@ -168,7 +171,8 @@ impl DeviceConnection {
         let options: QueryOptions = decode(args)?;
         if options.kind != "occlusion" {
             return Err(GpuError::validation(format!(
-                "not implemented in chuzz: GPUQuerySet.type.{}", options.kind,
+                "not implemented in chuzz: GPUQuerySet.type.{}",
+                options.kind,
             )));
         }
         if options.count == 0 || options.count > 4096 {
@@ -181,8 +185,11 @@ impl DeviceConnection {
                 ty: wgpu::QueryType::Occlusion,
                 count: options.count,
             })
-        }).await?;
-        self.resources().queries.insert(handle, (Arc::new(query), options.count));
+        })
+        .await?;
+        self.resources()
+            .queries
+            .insert(handle, (Arc::new(query), options.count));
         Ok(Value::Null)
     }
 
@@ -227,11 +234,8 @@ impl DeviceConnection {
             | "finishRenderBundle"
             | "finish"
             | "submit"
-            | "onSubmittedWorkDone" => {
-                self.execute_encoding(&op, handle, args).await
-            }
+            | "onSubmittedWorkDone" => self.execute_encoding(&op, handle, args).await,
             _ => self.execute_pipeline(&op, handle, args).await,
         }
     }
 }
-

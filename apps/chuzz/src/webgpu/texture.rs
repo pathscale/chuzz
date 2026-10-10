@@ -407,4 +407,3 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
-

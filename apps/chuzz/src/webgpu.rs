@@ -81,8 +81,14 @@ const LIMIT_NAMES: &[&str] = &[
 // as WebGPU feature names or accepted in a device descriptor.
 const FEATURE_NAMES: &[(&str, wgpu::Features)] = &[
     ("depth-clip-control", wgpu::Features::DEPTH_CLIP_CONTROL),
-    ("depth32float-stencil8", wgpu::Features::DEPTH32FLOAT_STENCIL8),
-    ("texture-compression-bc", wgpu::Features::TEXTURE_COMPRESSION_BC),
+    (
+        "depth32float-stencil8",
+        wgpu::Features::DEPTH32FLOAT_STENCIL8,
+    ),
+    (
+        "texture-compression-bc",
+        wgpu::Features::TEXTURE_COMPRESSION_BC,
+    ),
     (
         "texture-compression-etc2",
         wgpu::Features::TEXTURE_COMPRESSION_ETC2,
@@ -92,7 +98,10 @@ const FEATURE_NAMES: &[(&str, wgpu::Features)] = &[
         wgpu::Features::TEXTURE_COMPRESSION_ASTC,
     ),
     // Do not advertise timestamps until timestampWrites can be replayed.
-    ("indirect-first-instance", wgpu::Features::INDIRECT_FIRST_INSTANCE),
+    (
+        "indirect-first-instance",
+        wgpu::Features::INDIRECT_FIRST_INSTANCE,
+    ),
     ("shader-f16", wgpu::Features::SHADER_F16),
     (
         "rg11b10ufloat-renderable",
@@ -125,10 +134,7 @@ struct DeviceOptions {
 #[serde(tag = "webgpu", deny_unknown_fields)]
 enum Request {
     #[serde(rename = "requestAdapter")]
-    Adapter {
-        id: u64,
-        options: AdapterOptions,
-    },
+    Adapter { id: u64, options: AdapterOptions },
     #[serde(rename = "requestDevice")]
     Device {
         id: u64,
@@ -181,7 +187,10 @@ impl Request {
                     | "getCompilationInfo"
                     | "createRenderPipelineAsync"
                     | "createComputePipelineAsync"
-            ) => Some(*device),
+            ) =>
+            {
+                Some(*device)
+            }
             _ => None,
         }
     }
@@ -246,9 +255,10 @@ impl DeviceConnection {
                 Ok(Value::Null)
             }
             "pushErrorScope" => {
-                let filter = command.args.as_str().ok_or_else(|| {
-                    GpuError::validation("invalid GPUErrorFilter")
-                })?;
+                let filter = command
+                    .args
+                    .as_str()
+                    .ok_or_else(|| GpuError::validation("invalid GPUErrorFilter"))?;
                 if !matches!(filter, "validation" | "out-of-memory" | "internal") {
                     return Err(GpuError::validation("invalid GPUErrorFilter"));
                 }
@@ -411,18 +421,14 @@ impl Bridge {
         let mut changed = images_changed || !ready.is_empty() || !events.is_empty();
         // Install newly requested JS devices before delivering their events.
         for (id, payload) in ready {
-            document.eval(&format!(
-                "globalThis.__chuzzGpuResolve({id}, {payload});"
-            ));
+            document.eval(&format!("globalThis.__chuzzGpuResolve({id}, {payload});"));
             // A missing or throwing resolver must not retain a readback.
             if let Some(value) = payload.get("value") {
                 self.release_reply(value);
             }
         }
         for (id, payload) in events {
-            document.eval(&format!(
-                "globalThis.__chuzzGpuEvent({id}, {payload});"
-            ));
+            document.eval(&format!("globalThis.__chuzzGpuEvent({id}, {payload});"));
         }
         for frame in frames.into_values() {
             changed |= frame.paint(document);
@@ -536,11 +542,10 @@ impl Bridge {
     ) -> Result<Value, String> {
         // Consume the adapter before awaiting. wgpu warns that a second
         // request_device on the same adapter can panic.
-        let adapter = self
-            .state()
-            .adapters
-            .remove(&adapter_id)
-            .ok_or_else(|| "GPUAdapter is invalid or has already requested a device".to_owned())?;
+        let adapter =
+            self.state().adapters.remove(&adapter_id).ok_or_else(|| {
+                "GPUAdapter is invalid or has already requested a device".to_owned()
+            })?;
 
         let mut features = wgpu::Features::empty();
         for name in &options.required_features {
@@ -562,7 +567,10 @@ impl Bridge {
                     "not implemented in chuzz: GPUDeviceDescriptor.requiredLimits.{name}"
                 ));
             }
-            if value.as_u64().is_none_or(|value| value > 9_007_199_254_740_991) {
+            if value
+                .as_u64()
+                .is_none_or(|value| value > 9_007_199_254_740_991)
+            {
                 return Err(format!("invalid WebGPU limit: {name}"));
             }
         }
@@ -603,19 +611,23 @@ impl Bridge {
 
         let owner = connection.owner.clone();
         let lost = Arc::clone(&connection.lost);
-        connection.device.set_device_lost_callback(move |reason, message| {
-            let reason = match reason {
-                wgpu::DeviceLostReason::Destroyed => "destroyed",
-                wgpu::DeviceLostReason::Unknown => "unknown",
-            };
-            post_loss(&owner, id, &lost, reason, message);
-        });
+        connection
+            .device
+            .set_device_lost_callback(move |reason, message| {
+                let reason = match reason {
+                    wgpu::DeviceLostReason::Destroyed => "destroyed",
+                    wgpu::DeviceLostReason::Unknown => "unknown",
+                };
+                post_loss(&owner, id, &lost, reason, message);
+            });
         let weak = Arc::downgrade(&connection);
-        connection.device.on_uncaptured_error(Arc::new(move |error| {
-            if let Some(connection) = weak.upgrade() {
-                connection.report(&GpuError::from(error));
-            }
-        }));
+        connection
+            .device
+            .on_uncaptured_error(Arc::new(move |error| {
+                if let Some(connection) = weak.upgrade() {
+                    connection.report(&GpuError::from(error));
+                }
+            }));
 
         let mut state = self.state();
         if !state.in_flight.get(&id).is_some_and(host::Flight::live) {
@@ -657,4 +669,3 @@ fn limits_value(limits: &wgpu::Limits) -> Result<Value, String> {
     }
     Ok(Value::Object(public))
 }
-

@@ -698,13 +698,12 @@ impl Browser {
                         // there is no way to tell the two apart afterwards.
                         // Parsing the same bytes again is the only way to be
                         // certain the document is exactly what the page said.
-                        let mut page =
-                            crate::webgpu::script_document(&html, make_config())
-                                .with_fetcher(crate::script_fetch::PageScripts::new(
-                                    scripts,
-                                    Arc::clone(&net),
-                                    WINDOW_SCRIPT_DEADLINE,
-                                ));
+                        let mut page = crate::webgpu::script_document(&html, make_config())
+                            .with_fetcher(crate::script_fetch::PageScripts::new(
+                                scripts,
+                                Arc::clone(&net),
+                                WINDOW_SCRIPT_DEADLINE,
+                            ));
                         install_web_api_shim(&mut page, &net);
                         crate::net_bridge::install(
                             &mut page,

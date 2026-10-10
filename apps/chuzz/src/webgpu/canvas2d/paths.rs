@@ -49,12 +49,22 @@ impl Path {
             [n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]];
         let mut sweep = end - start;
         if ccw == 0.0 {
-            sweep = if sweep >= TAU { TAU } else { sweep.rem_euclid(TAU) };
+            sweep = if sweep >= TAU {
+                TAU
+            } else {
+                sweep.rem_euclid(TAU)
+            };
         } else {
-            sweep = if sweep <= -TAU { -TAU } else { -(-sweep).rem_euclid(TAU) };
+            sweep = if sweep <= -TAU {
+                -TAU
+            } else {
+                -(-sweep).rem_euclid(TAU)
+            };
         }
         let origin = start.rem_euclid(TAU);
-        let matrix = transform * Affine::translate((x, y)) * Affine::rotate(rotation)
+        let matrix = transform
+            * Affine::translate((x, y))
+            * Affine::rotate(rotation)
             * Affine::scale_non_uniform(rx, ry);
         let first = matrix * Point::new(origin.cos(), origin.sin());
         self.line_to(first);
@@ -108,17 +118,23 @@ impl Path {
         let first = (t1.y - center.y).atan2(t1.x - center.x);
         let last = (t2.y - center.y).atan2(t2.x - center.x);
         self.ellipse(
-            &[center.x, center.y, radius, radius, 0.0, first, last,
-                if cross > 0.0 { 1.0 } else { 0.0 }],
+            &[
+                center.x,
+                center.y,
+                radius,
+                radius,
+                0.0,
+                first,
+                last,
+                if cross > 0.0 { 1.0 } else { 0.0 },
+            ],
             transform,
         );
     }
 
     fn round_rect(&mut self, n: &[f64], transform: Affine) {
         let (x, y, w, h) = (n[0], n[1], n[2], n[3]);
-        let radii = [
-            (n[4], n[5]), (n[6], n[7]), (n[8], n[9]), (n[10], n[11]),
-        ];
+        let radii = [(n[4], n[5]), (n[6], n[7]), (n[8], n[9]), (n[10], n[11])];
         let ratios = [
             w / (radii[0].0 + radii[1].0),
             w / (radii[3].0 + radii[2].0),
@@ -134,14 +150,20 @@ impl Path {
             (x + w - radii[2].0, y + h - radii[2].1, 0.0),
             (x + radii[3].0, y + h - radii[3].1, FRAC_PI_2),
             (x + radii[0].0, y + radii[0].1, PI),
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let corner = (index + 1) % 4;
             let (rx, ry) = radii[corner];
             if rx == 0.0 || ry == 0.0 {
                 let end = start + FRAC_PI_2;
                 self.line_to(transform * Point::new(cx + rx * end.cos(), cy + ry * end.sin()));
             } else {
-                self.ellipse(&[cx, cy, rx, ry, 0.0, start, start + FRAC_PI_2, 0.0], transform);
+                self.ellipse(
+                    &[cx, cy, rx, ry, 0.0, start, start + FRAC_PI_2, 0.0],
+                    transform,
+                );
             }
             let next = match index {
                 0 => Point::new(x + w, y + h - radii[2].1),
@@ -173,12 +195,16 @@ impl Path {
             "moveTo" => self.move_to(point(0)),
             "lineTo" => self.line_to(point(0)),
             "quadraticCurveTo" => {
-                if self.current.is_none() { self.move_to(point(0)); }
+                if self.current.is_none() {
+                    self.move_to(point(0));
+                }
                 self.path.quad_to(point(0), point(2));
                 self.current = Some(point(2));
             }
             "bezierCurveTo" => {
-                if self.current.is_none() { self.move_to(point(0)); }
+                if self.current.is_none() {
+                    self.move_to(point(0));
+                }
                 self.path.curve_to(point(0), point(2), point(4));
                 self.current = Some(point(4));
             }
@@ -190,7 +216,9 @@ impl Path {
                 self.close();
             }
             "arc" => {
-                if n[2] < 0.0 { return Err("negative canvas arc radius".to_owned()); }
+                if n[2] < 0.0 {
+                    return Err("negative canvas arc radius".to_owned());
+                }
                 self.ellipse(&[n[0], n[1], n[2], n[2], 0.0, n[3], n[4], n[5]], transform);
             }
             "ellipse" => {
@@ -200,7 +228,9 @@ impl Path {
                 self.ellipse(n, transform);
             }
             "arcTo" => {
-                if n[4] < 0.0 { return Err("negative canvas arcTo radius".to_owned()); }
+                if n[4] < 0.0 {
+                    return Err("negative canvas arcTo radius".to_owned());
+                }
                 self.arc_to(n, transform);
             }
             "roundRect" => {
@@ -214,4 +244,3 @@ impl Path {
         Ok(true)
     }
 }
-

@@ -25,10 +25,7 @@ impl Objects {
     }
 
     pub(super) fn count(&self) -> usize {
-        self.encoders.len()
-            + self.commands.len()
-            + self.bundle_encoders.len()
-            + self.bundles.len()
+        self.encoders.len() + self.commands.len() + self.bundle_encoders.len() + self.bundles.len()
     }
 }
 
@@ -158,7 +155,12 @@ struct DepthAttachment {
 }
 
 #[derive(serde::Deserialize)]
-#[serde(tag = "op", content = "args", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "op",
+    content = "args",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
 enum Operation {
     Render {
         label: String,
@@ -213,7 +215,12 @@ enum Operation {
 }
 
 #[derive(serde::Deserialize)]
-#[serde(tag = "op", content = "args", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "op",
+    content = "args",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
 enum PassCommand {
     Pipeline(u64),
     BindGroup {
@@ -269,14 +276,15 @@ enum PassCommand {
 }
 
 fn color(value: [f64; 4]) -> wgpu::Color {
-    wgpu::Color { r: value[0], g: value[1], b: value[2], a: value[3] }
+    wgpu::Color {
+        r: value[0],
+        g: value[1],
+        b: value[2],
+        a: value[3],
+    }
 }
 
-fn operations<T: Copy>(
-    load: &str,
-    store: &str,
-    clear: T,
-) -> Result<wgpu::Operations<T>, GpuError> {
+fn operations<T: Copy>(load: &str, store: &str, clear: T) -> Result<wgpu::Operations<T>, GpuError> {
     Ok(wgpu::Operations {
         load: match load {
             "load" => wgpu::LoadOp::Load,
@@ -299,19 +307,24 @@ fn attachment_ops<T: Copy>(
 ) -> Result<Option<wgpu::Operations<T>>, GpuError> {
     if read_only {
         if load.is_some() || store.is_some() {
-            return Err(GpuError::validation("read-only attachment cannot have load/store operations"));
+            return Err(GpuError::validation(
+                "read-only attachment cannot have load/store operations",
+            ));
         }
         return Ok(None);
     }
     match (load, store) {
         (None, None) => Ok(None),
         (Some(load), Some(store)) => operations(load, store, clear).map(Some),
-        _ => Err(GpuError::validation("attachment requires both loadOp and storeOp")),
+        _ => Err(GpuError::validation(
+            "attachment requires both loadOp and storeOp",
+        )),
     }
 }
 
 fn draw_range(first: u32, count: u32) -> Result<Range<u32>, GpuError> {
-    let end = first.checked_add(count)
+    let end = first
+        .checked_add(count)
         .ok_or_else(|| GpuError::validation("GPU draw range overflow"))?;
     Ok(first..end)
 }
@@ -327,7 +340,8 @@ fn buffer_range(
         return Err(GpuError::validation("GPUBuffer is mapped"));
     }
     let size = size.unwrap_or_else(|| buffer.size.saturating_sub(offset));
-    let end = offset.checked_add(size)
+    let end = offset
+        .checked_add(size)
         .filter(|end| *end <= buffer.size)
         .ok_or_else(|| GpuError::validation("GPUBuffer range is out of bounds"))?;
     Ok(offset..end)
@@ -343,7 +357,9 @@ fn buffer_slice(
     if range.is_empty() {
         return Err(GpuError::validation("empty GPUBuffer binding"));
     }
-    Ok(get(&resources.buffers, handle, "GPUBuffer")?.buffer.slice(range))
+    Ok(get(&resources.buffers, handle, "GPUBuffer")?
+        .buffer
+        .slice(range))
 }
 
 fn texture_copy<'a>(
@@ -392,7 +408,6 @@ fn extent(size: [u32; 3]) -> wgpu::Extent3d {
     }
 }
 
-
 impl DeviceConnection {
     pub(super) async fn execute_encoding(
         &self,
@@ -425,9 +440,12 @@ impl DeviceConnection {
         });
         loop {
             if self.lost.load(Ordering::Acquire) {
-                return Err(GpuError::internal("GPUDevice was lost while waiting for submitted work"));
+                return Err(GpuError::internal(
+                    "GPUDevice was lost while waiting for submitted work",
+                ));
             }
-            self.device.poll(wgpu::PollType::Poll)
+            self.device
+                .poll(wgpu::PollType::Poll)
                 .map_err(|error| GpuError::internal(format!("WebGPU poll failed: {error}")))?;
             if completed.load(Ordering::Acquire) {
                 return Ok(Value::Null);
@@ -442,9 +460,11 @@ impl DeviceConnection {
             "createCommandEncoder" => {
                 let options: EncoderOptions = decode(args)?;
                 resources.reserve(handle, 0)?;
-                let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some(&options.label),
-                });
+                let encoder = self
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some(&options.label),
+                    });
                 resources.encoding.encoders.insert(handle, encoder);
             }
             "createRenderBundleEncoder" => {
@@ -453,49 +473,78 @@ impl DeviceConnection {
                 if !matches!(descriptor.sample_count, 1 | 4) {
                     return Err(GpuError::validation("invalid render bundle sampleCount"));
                 }
-                if descriptor.color_formats.len() > self.device.limits().max_color_attachments as usize {
+                if descriptor.color_formats.len()
+                    > self.device.limits().max_color_attachments as usize
+                {
                     return Err(GpuError::validation("too many render bundle color formats"));
                 }
                 // Validate now, without retaining a non-Send native encoder.
-                drop(self.device.create_render_bundle_encoder(&descriptor.native()));
-                resources.encoding.bundle_encoders.insert(handle, descriptor);
+                drop(
+                    self.device
+                        .create_render_bundle_encoder(&descriptor.native()),
+                );
+                resources
+                    .encoding
+                    .bundle_encoders
+                    .insert(handle, descriptor);
             }
             "finishRenderBundle" => {
                 let finish: BundleFinish = decode(args)?;
-                let descriptor = resources.encoding.bundle_encoders.remove(&finish.encoder)
-                    .ok_or_else(|| GpuError::validation("invalid or finished GPURenderBundleEncoder"))?;
+                let descriptor = resources
+                    .encoding
+                    .bundle_encoders
+                    .remove(&finish.encoder)
+                    .ok_or_else(|| {
+                        GpuError::validation("invalid or finished GPURenderBundleEncoder")
+                    })?;
                 resources.reserve(handle, 0)?;
                 if finish.commands.len() > COMMAND_LIMIT {
-                    return Err(GpuError::validation("WebGPU command limit reached in chuzz"));
+                    return Err(GpuError::validation(
+                        "WebGPU command limit reached in chuzz",
+                    ));
                 }
-                let mut encoder = self.device.create_render_bundle_encoder(&descriptor.native());
+                let mut encoder = self
+                    .device
+                    .create_render_bundle_encoder(&descriptor.native());
                 replay_bundle(&resources, &mut encoder, &finish.commands)?;
                 let bundle = encoder.finish(&wgpu::RenderBundleDescriptor {
                     label: Some(&finish.label),
                 });
-                resources.encoding.bundles.insert(handle, Bundle {
-                    native: Arc::new(bundle),
-                    command_count: finish.commands.len(),
-                });
+                resources.encoding.bundles.insert(
+                    handle,
+                    Bundle {
+                        native: Arc::new(bundle),
+                        command_count: finish.commands.len(),
+                    },
+                );
             }
             "finish" => {
                 let finish: Finish = decode(args)?;
                 resources.reserve(handle, 0)?;
-                let count = finish.operations.iter().try_fold(0_usize, |count, operation| {
-                    let extra = match operation {
-                        Operation::Render { commands, .. } | Operation::Compute { commands, .. } => {
-                            commands.iter().try_fold(0_usize, |count, command| {
-                                command_budget(count, pass_command_cost(&resources, command)?)
-                            })?
-                        }
-                        _ => 0,
-                    };
-                    command_budget(count, extra + 1)
-                })?;
+                let count = finish
+                    .operations
+                    .iter()
+                    .try_fold(0_usize, |count, operation| {
+                        let extra = match operation {
+                            Operation::Render { commands, .. }
+                            | Operation::Compute { commands, .. } => {
+                                commands.iter().try_fold(0_usize, |count, command| {
+                                    command_budget(count, pass_command_cost(&resources, command)?)
+                                })?
+                            }
+                            _ => 0,
+                        };
+                        command_budget(count, extra + 1)
+                    })?;
                 if count > COMMAND_LIMIT {
-                    return Err(GpuError::validation("WebGPU command limit reached in chuzz"));
+                    return Err(GpuError::validation(
+                        "WebGPU command limit reached in chuzz",
+                    ));
                 }
-                let mut encoder = resources.encoding.encoders.remove(&finish.encoder)
+                let mut encoder = resources
+                    .encoding
+                    .encoders
+                    .remove(&finish.encoder)
                     .ok_or_else(|| GpuError::validation("invalid or finished GPUCommandEncoder"))?;
                 for operation in &finish.operations {
                     replay(&resources, &mut encoder, operation)?;
@@ -508,23 +557,34 @@ impl DeviceConnection {
             "submit" => {
                 let handles: Vec<u64> = decode(args)?;
                 if handles.len() > COMMAND_LIMIT {
-                    return Err(GpuError::validation("WebGPU command buffer limit reached in chuzz"));
+                    return Err(GpuError::validation(
+                        "WebGPU command buffer limit reached in chuzz",
+                    ));
                 }
                 let mut seen = std::collections::HashSet::with_capacity(handles.len());
                 for handle in &handles {
                     if !seen.insert(*handle) || !resources.encoding.commands.contains_key(handle) {
-                        return Err(GpuError::validation("invalid or already submitted GPUCommandBuffer"));
+                        return Err(GpuError::validation(
+                            "invalid or already submitted GPUCommandBuffer",
+                        ));
                     }
                 }
                 let mut commands = Vec::with_capacity(handles.len());
                 for handle in handles {
-                    let command = resources.encoding.commands.remove(&handle)
+                    let command = resources
+                        .encoding
+                        .commands
+                        .remove(&handle)
                         .ok_or_else(|| GpuError::validation("invalid GPUCommandBuffer"))?;
                     commands.push(command);
                 }
                 self.queue.submit(commands);
             }
-            _ => return Err(GpuError::validation(format!("not implemented in chuzz: {op}"))),
+            _ => {
+                return Err(GpuError::validation(format!(
+                    "not implemented in chuzz: {op}"
+                )));
+            }
         }
         Ok(Value::Null)
     }
@@ -537,40 +597,63 @@ fn replay(
 ) -> Result<(), GpuError> {
     match operation {
         Operation::Render {
-            label, color_attachments, depth_stencil_attachment, occlusion_query_set, commands,
+            label,
+            color_attachments,
+            depth_stencil_attachment,
+            occlusion_query_set,
+            commands,
         } => {
-            let colors = color_attachments.iter().map(|attachment| {
-                attachment.as_ref().map(|attachment| {
-                    Ok(wgpu::RenderPassColorAttachment {
-                        view: &get(&resources.views, attachment.view, "GPUTextureView")?.1,
-                        resolve_target: attachment.resolve_target.map(|handle| {
-                            get(&resources.views, handle, "GPUTextureView").map(|view| view.1.as_ref())
-                        }).transpose()?,
-                        depth_slice: attachment.depth_slice,
-                        ops: operations(&attachment.load_op, &attachment.store_op, color(attachment.clear_value))?,
-                    })
-                }).transpose()
-            }).collect::<Result<Vec<_>, GpuError>>()?;
-            let depth = depth_stencil_attachment.as_ref().map(|attachment| -> Result<_, GpuError> {
-                Ok(wgpu::RenderPassDepthStencilAttachment {
-                    view: &get(&resources.views, attachment.view, "GPUTextureView")?.1,
-                    depth_ops: attachment_ops(
-                        attachment.depth_load_op.as_deref(),
-                        attachment.depth_store_op.as_deref(),
-                        attachment.depth_clear_value,
-                        attachment.depth_read_only,
-                    )?,
-                    stencil_ops: attachment_ops(
-                        attachment.stencil_load_op.as_deref(),
-                        attachment.stencil_store_op.as_deref(),
-                        attachment.stencil_clear_value,
-                        attachment.stencil_read_only,
-                    )?,
+            let colors = color_attachments
+                .iter()
+                .map(|attachment| {
+                    attachment
+                        .as_ref()
+                        .map(|attachment| {
+                            Ok(wgpu::RenderPassColorAttachment {
+                                view: &get(&resources.views, attachment.view, "GPUTextureView")?.1,
+                                resolve_target: attachment
+                                    .resolve_target
+                                    .map(|handle| {
+                                        get(&resources.views, handle, "GPUTextureView")
+                                            .map(|view| view.1.as_ref())
+                                    })
+                                    .transpose()?,
+                                depth_slice: attachment.depth_slice,
+                                ops: operations(
+                                    &attachment.load_op,
+                                    &attachment.store_op,
+                                    color(attachment.clear_value),
+                                )?,
+                            })
+                        })
+                        .transpose()
                 })
-            }).transpose()?;
-            let queries = occlusion_query_set.map(|handle| {
-                get(&resources.queries, handle, "GPUQuerySet").map(|(set, _)| set.as_ref())
-            }).transpose()?;
+                .collect::<Result<Vec<_>, GpuError>>()?;
+            let depth = depth_stencil_attachment
+                .as_ref()
+                .map(|attachment| -> Result<_, GpuError> {
+                    Ok(wgpu::RenderPassDepthStencilAttachment {
+                        view: &get(&resources.views, attachment.view, "GPUTextureView")?.1,
+                        depth_ops: attachment_ops(
+                            attachment.depth_load_op.as_deref(),
+                            attachment.depth_store_op.as_deref(),
+                            attachment.depth_clear_value,
+                            attachment.depth_read_only,
+                        )?,
+                        stencil_ops: attachment_ops(
+                            attachment.stencil_load_op.as_deref(),
+                            attachment.stencil_store_op.as_deref(),
+                            attachment.stencil_clear_value,
+                            attachment.stencil_read_only,
+                        )?,
+                    })
+                })
+                .transpose()?;
+            let queries = occlusion_query_set
+                .map(|handle| {
+                    get(&resources.queries, handle, "GPUQuerySet").map(|(set, _)| set.as_ref())
+                })
+                .transpose()?;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &colors,
@@ -581,32 +664,82 @@ fn replay(
             for command in commands {
                 match command {
                     PassCommand::Pipeline(handle) => {
-                        pass.set_pipeline(get(&resources.pipelines.render, *handle, "GPURenderPipeline")?);
+                        pass.set_pipeline(get(
+                            &resources.pipelines.render,
+                            *handle,
+                            "GPURenderPipeline",
+                        )?);
                     }
-                    PassCommand::BindGroup { index, group, offsets } => {
-                        let group = group.map(|handle| {
-                            get(&resources.pipelines.groups, handle, "GPUBindGroup").map(Arc::as_ref)
-                        }).transpose()?;
+                    PassCommand::BindGroup {
+                        index,
+                        group,
+                        offsets,
+                    } => {
+                        let group = group
+                            .map(|handle| {
+                                get(&resources.pipelines.groups, handle, "GPUBindGroup")
+                                    .map(Arc::as_ref)
+                            })
+                            .transpose()?;
                         pass.set_bind_group(*index, group, offsets);
                     }
-                    PassCommand::VertexBuffer { slot, buffer, offset, size } => {
-                        pass.set_vertex_buffer(*slot, buffer_slice(resources, *buffer, *offset, *size)?);
+                    PassCommand::VertexBuffer {
+                        slot,
+                        buffer,
+                        offset,
+                        size,
+                    } => {
+                        pass.set_vertex_buffer(
+                            *slot,
+                            buffer_slice(resources, *buffer, *offset, *size)?,
+                        );
                     }
-                    PassCommand::IndexBuffer { buffer, format, offset, size } => {
-                        pass.set_index_buffer(buffer_slice(resources, *buffer, *offset, *size)?, *format);
+                    PassCommand::IndexBuffer {
+                        buffer,
+                        format,
+                        offset,
+                        size,
+                    } => {
+                        pass.set_index_buffer(
+                            buffer_slice(resources, *buffer, *offset, *size)?,
+                            *format,
+                        );
                     }
-                    PassCommand::Draw { count, instances, first, first_instance } => {
-                        pass.draw(draw_range(*first, *count)?, draw_range(*first_instance, *instances)?);
+                    PassCommand::Draw {
+                        count,
+                        instances,
+                        first,
+                        first_instance,
+                    } => {
+                        pass.draw(
+                            draw_range(*first, *count)?,
+                            draw_range(*first_instance, *instances)?,
+                        );
                     }
-                    PassCommand::DrawIndexed { count, instances, first, base_vertex, first_instance } => {
+                    PassCommand::DrawIndexed {
+                        count,
+                        instances,
+                        first,
+                        base_vertex,
+                        first_instance,
+                    } => {
                         pass.draw_indexed(
                             draw_range(*first, *count)?,
                             *base_vertex,
                             draw_range(*first_instance, *instances)?,
                         );
                     }
-                    PassCommand::DrawIndirect { buffer, offset, indexed } => {
-                        buffer_range(resources, *buffer, *offset, Some(if *indexed { 20 } else { 16 }))?;
+                    PassCommand::DrawIndirect {
+                        buffer,
+                        offset,
+                        indexed,
+                    } => {
+                        buffer_range(
+                            resources,
+                            *buffer,
+                            *offset,
+                            Some(if *indexed { 20 } else { 16 }),
+                        )?;
                         let buffer = &get(&resources.buffers, *buffer, "GPUBuffer")?.buffer;
                         if *indexed {
                             pass.draw_indexed_indirect(buffer, *offset);
@@ -615,10 +748,13 @@ fn replay(
                         }
                     }
                     PassCommand::ExecuteBundles(handles) => {
-                        let bundles = handles.iter().map(|handle| {
-                            get(&resources.encoding.bundles, *handle, "GPURenderBundle")
-                                .map(|bundle| bundle.native.as_ref())
-                        }).collect::<Result<Vec<_>, _>>()?;
+                        let bundles = handles
+                            .iter()
+                            .map(|handle| {
+                                get(&resources.encoding.bundles, *handle, "GPURenderBundle")
+                                    .map(|bundle| bundle.native.as_ref())
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
                         // wgpu also resets pipeline, bindings and vertex/index
                         // state after executing bundles, including an empty list.
                         pass.execute_bundles(bundles);
@@ -626,7 +762,9 @@ fn replay(
                     PassCommand::BeginOcclusionQuery(index) => pass.begin_occlusion_query(*index),
                     PassCommand::EndOcclusionQuery => pass.end_occlusion_query(),
                     PassCommand::Viewport(value) => {
-                        pass.set_viewport(value[0], value[1], value[2], value[3], value[4], value[5]);
+                        pass.set_viewport(
+                            value[0], value[1], value[2], value[3], value[4], value[5],
+                        );
                     }
                     PassCommand::Scissor(value) => {
                         pass.set_scissor_rect(value[0], value[1], value[2], value[3]);
@@ -634,7 +772,9 @@ fn replay(
                     PassCommand::BlendConstant(value) => pass.set_blend_constant(color(*value)),
                     PassCommand::StencilReference(value) => pass.set_stencil_reference(*value),
                     PassCommand::Dispatch(_) | PassCommand::DispatchIndirect { .. } => {
-                        return Err(GpuError::validation("dispatchWorkgroups requires a compute pass"));
+                        return Err(GpuError::validation(
+                            "dispatchWorkgroups requires a compute pass",
+                        ));
                     }
                 }
             }
@@ -647,41 +787,87 @@ fn replay(
             for command in commands {
                 match command {
                     PassCommand::Pipeline(handle) => {
-                        pass.set_pipeline(get(&resources.pipelines.compute, *handle, "GPUComputePipeline")?);
+                        pass.set_pipeline(get(
+                            &resources.pipelines.compute,
+                            *handle,
+                            "GPUComputePipeline",
+                        )?);
                     }
-                    PassCommand::BindGroup { index, group, offsets } => {
-                        let group = group.map(|handle| {
-                            get(&resources.pipelines.groups, handle, "GPUBindGroup").map(Arc::as_ref)
-                        }).transpose()?;
+                    PassCommand::BindGroup {
+                        index,
+                        group,
+                        offsets,
+                    } => {
+                        let group = group
+                            .map(|handle| {
+                                get(&resources.pipelines.groups, handle, "GPUBindGroup")
+                                    .map(Arc::as_ref)
+                            })
+                            .transpose()?;
                         pass.set_bind_group(*index, group, offsets);
                     }
-                    PassCommand::Dispatch(value) => pass.dispatch_workgroups(value[0], value[1], value[2]),
+                    PassCommand::Dispatch(value) => {
+                        pass.dispatch_workgroups(value[0], value[1], value[2])
+                    }
                     PassCommand::DispatchIndirect { buffer, offset } => {
                         buffer_range(resources, *buffer, *offset, Some(12))?;
                         pass.dispatch_workgroups_indirect(
-                            &get(&resources.buffers, *buffer, "GPUBuffer")?.buffer, *offset,
+                            &get(&resources.buffers, *buffer, "GPUBuffer")?.buffer,
+                            *offset,
                         );
                     }
-                    _ => return Err(GpuError::validation("render command requires a render pass")),
+                    _ => {
+                        return Err(GpuError::validation(
+                            "render command requires a render pass",
+                        ));
+                    }
                 }
             }
         }
-        Operation::ResolveQuerySet { query, first, count, destination, offset } => {
+        Operation::ResolveQuerySet {
+            query,
+            first,
+            count,
+            destination,
+            offset,
+        } => {
             let (query, query_count) = get(&resources.queries, *query, "GPUQuerySet")?;
-            let end = first.checked_add(*count)
+            let end = first
+                .checked_add(*count)
                 .filter(|end| end <= query_count)
                 .ok_or_else(|| GpuError::validation("query range is out of bounds"))?;
-            buffer_range(resources, *destination, *offset, Some(u64::from(*count) * 8))?;
+            buffer_range(
+                resources,
+                *destination,
+                *offset,
+                Some(u64::from(*count) * 8),
+            )?;
             encoder.resolve_query_set(
-                query, *first..end,
-                &get(&resources.buffers, *destination, "GPUBuffer")?.buffer, *offset,
+                query,
+                *first..end,
+                &get(&resources.buffers, *destination, "GPUBuffer")?.buffer,
+                *offset,
             );
         }
-        Operation::ClearBuffer { buffer, offset, size } => {
+        Operation::ClearBuffer {
+            buffer,
+            offset,
+            size,
+        } => {
             buffer_range(resources, *buffer, *offset, *size)?;
-            encoder.clear_buffer(&get(&resources.buffers, *buffer, "GPUBuffer")?.buffer, *offset, *size);
+            encoder.clear_buffer(
+                &get(&resources.buffers, *buffer, "GPUBuffer")?.buffer,
+                *offset,
+                *size,
+            );
         }
-        Operation::CopyBufferToBuffer { source, source_offset, destination, destination_offset, size } => {
+        Operation::CopyBufferToBuffer {
+            source,
+            source_offset,
+            destination,
+            destination_offset,
+            size,
+        } => {
             buffer_range(resources, *source, *source_offset, Some(*size))?;
             buffer_range(resources, *destination, *destination_offset, Some(*size))?;
             encoder.copy_buffer_to_buffer(
@@ -692,21 +878,33 @@ fn replay(
                 *size,
             );
         }
-        Operation::CopyBufferToTexture { source, destination, size } => {
+        Operation::CopyBufferToTexture {
+            source,
+            destination,
+            size,
+        } => {
             encoder.copy_buffer_to_texture(
                 buffer_copy(resources, source)?,
                 texture_copy(resources, destination)?,
                 extent(*size),
             );
         }
-        Operation::CopyTextureToBuffer { source, destination, size } => {
+        Operation::CopyTextureToBuffer {
+            source,
+            destination,
+            size,
+        } => {
             encoder.copy_texture_to_buffer(
                 texture_copy(resources, source)?,
                 buffer_copy(resources, destination)?,
                 extent(*size),
             );
         }
-        Operation::CopyTextureToTexture { source, destination, size } => {
+        Operation::CopyTextureToTexture {
+            source,
+            destination,
+            size,
+        } => {
             encoder.copy_texture_to_texture(
                 texture_copy(resources, source)?,
                 texture_copy(resources, destination)?,
@@ -717,9 +915,9 @@ fn replay(
     Ok(())
 }
 
-
 fn command_budget(count: usize, extra: usize) -> Result<usize, GpuError> {
-    count.checked_add(extra)
+    count
+        .checked_add(extra)
         .filter(|count| *count <= COMMAND_LIMIT)
         .ok_or_else(|| GpuError::validation("WebGPU command limit reached in chuzz"))
 }
@@ -744,32 +942,76 @@ fn replay_bundle<'a>(
     for command in commands {
         match command {
             PassCommand::Pipeline(handle) => {
-                encoder.set_pipeline(get(&resources.pipelines.render, *handle, "GPURenderPipeline")?);
+                encoder.set_pipeline(get(
+                    &resources.pipelines.render,
+                    *handle,
+                    "GPURenderPipeline",
+                )?);
             }
-            PassCommand::BindGroup { index, group, offsets } => {
-                let group = group.map(|handle| {
-                    get(&resources.pipelines.groups, handle, "GPUBindGroup").map(Arc::as_ref)
-                }).transpose()?;
+            PassCommand::BindGroup {
+                index,
+                group,
+                offsets,
+            } => {
+                let group = group
+                    .map(|handle| {
+                        get(&resources.pipelines.groups, handle, "GPUBindGroup").map(Arc::as_ref)
+                    })
+                    .transpose()?;
                 encoder.set_bind_group(*index, group, offsets);
             }
-            PassCommand::VertexBuffer { slot, buffer, offset, size } => {
+            PassCommand::VertexBuffer {
+                slot,
+                buffer,
+                offset,
+                size,
+            } => {
                 encoder.set_vertex_buffer(*slot, buffer_slice(resources, *buffer, *offset, *size)?);
             }
-            PassCommand::IndexBuffer { buffer, format, offset, size } => {
-                encoder.set_index_buffer(buffer_slice(resources, *buffer, *offset, *size)?, *format);
+            PassCommand::IndexBuffer {
+                buffer,
+                format,
+                offset,
+                size,
+            } => {
+                encoder
+                    .set_index_buffer(buffer_slice(resources, *buffer, *offset, *size)?, *format);
             }
-            PassCommand::Draw { count, instances, first, first_instance } => {
-                encoder.draw(draw_range(*first, *count)?, draw_range(*first_instance, *instances)?);
+            PassCommand::Draw {
+                count,
+                instances,
+                first,
+                first_instance,
+            } => {
+                encoder.draw(
+                    draw_range(*first, *count)?,
+                    draw_range(*first_instance, *instances)?,
+                );
             }
-            PassCommand::DrawIndexed { count, instances, first, base_vertex, first_instance } => {
+            PassCommand::DrawIndexed {
+                count,
+                instances,
+                first,
+                base_vertex,
+                first_instance,
+            } => {
                 encoder.draw_indexed(
                     draw_range(*first, *count)?,
                     *base_vertex,
                     draw_range(*first_instance, *instances)?,
                 );
             }
-            PassCommand::DrawIndirect { buffer, offset, indexed } => {
-                buffer_range(resources, *buffer, *offset, Some(if *indexed { 20 } else { 16 }))?;
+            PassCommand::DrawIndirect {
+                buffer,
+                offset,
+                indexed,
+            } => {
+                buffer_range(
+                    resources,
+                    *buffer,
+                    *offset,
+                    Some(if *indexed { 20 } else { 16 }),
+                )?;
                 let buffer = &get(&resources.buffers, *buffer, "GPUBuffer")?.buffer;
                 if *indexed {
                     encoder.draw_indexed_indirect(buffer, *offset);
@@ -777,9 +1019,11 @@ fn replay_bundle<'a>(
                     encoder.draw_indirect(buffer, *offset);
                 }
             }
-            _ => return Err(GpuError::validation(
-                "render pass command is not valid in GPURenderBundleEncoder",
-            )),
+            _ => {
+                return Err(GpuError::validation(
+                    "render pass command is not valid in GPURenderBundleEncoder",
+                ));
+            }
         }
     }
     Ok(())

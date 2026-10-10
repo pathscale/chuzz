@@ -221,12 +221,16 @@ impl DeviceConnection {
 
     pub(super) async fn unmap_buffer(&self, handle: u64, args: Value) -> Result<Value, GpuError> {
         let unmap: Unmap = decode(args)?;
-        let writes = unmap.ranges.into_iter().map(|write| {
-            Ok(Transfer {
-                offset: write.offset,
-                data: self.input_bytes(write.data)?,
+        let writes = unmap
+            .ranges
+            .into_iter()
+            .map(|write| {
+                Ok(Transfer {
+                    offset: write.offset,
+                    data: self.input_bytes(write.data)?,
+                })
             })
-        }).collect::<Result<Vec<_>, GpuError>>()?;
+            .collect::<Result<Vec<_>, GpuError>>()?;
         let (buffer, writable, mapped) = {
             let resources = self.resources();
             let entry = resources
@@ -290,4 +294,3 @@ impl DeviceConnection {
         Ok(Value::Null)
     }
 }
-

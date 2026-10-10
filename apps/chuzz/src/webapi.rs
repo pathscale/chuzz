@@ -72,7 +72,9 @@ struct Realm {
 impl Drop for Realm {
     fn drop(&mut self) {
         let mut process = lock(&PROCESS);
-        process.channels.retain(|_, channel| channel.owner != self.id);
+        process
+            .channels
+            .retain(|_, channel| channel.owner != self.id);
         process.leases.retain(|lease| lease.owner != self.id);
         process.grant();
     }
@@ -86,17 +88,28 @@ struct Host(Arc<Realm>);
 enum Operation {
     Info,
     Random,
-    BroadcastOpen { name: String },
-    BroadcastClose { id: u64 },
-    BroadcastPost { id: u64, wire: String },
+    BroadcastOpen {
+        name: String,
+    },
+    BroadcastClose {
+        id: u64,
+    },
+    BroadcastPost {
+        id: u64,
+        wire: String,
+    },
     BroadcastRead,
     LockRequest {
         name: String,
         shared: bool,
         available: bool,
     },
-    LockStatus { id: u64 },
-    LockRelease { id: u64 },
+    LockStatus {
+        id: u64,
+    },
+    LockRelease {
+        id: u64,
+    },
     LockQuery,
 }
 
@@ -110,7 +123,9 @@ fn text(args: &[JsValue], index: usize, context: &mut Context) -> JsResult<Strin
 }
 
 fn native_error(message: impl std::fmt::Display) -> blitz_script::boa_engine::JsError {
-    JsNativeError::typ().with_message(message.to_string()).into()
+    JsNativeError::typ()
+        .with_message(message.to_string())
+        .into()
 }
 
 fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -122,8 +137,7 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
     if description.len() > LIMIT {
         return Err(native_error("web API message exceeds the allocation limit"));
     }
-    let operation: Operation =
-        serde_json::from_str(&description).map_err(native_error)?;
+    let operation: Operation = serde_json::from_str(&description).map_err(native_error)?;
     let realm = &host.0;
     let result = match operation {
         Operation::Info => serde_json::json!({
@@ -165,7 +179,11 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
         }
         Operation::BroadcastClose { id } => {
             let mut process = lock(&PROCESS);
-            if process.channels.get(&id).is_some_and(|channel| channel.owner == realm.id) {
+            if process
+                .channels
+                .get(&id)
+                .is_some_and(|channel| channel.owner == realm.id)
+            {
                 process.channels.remove(&id);
             }
             serde_json::Value::Null
@@ -233,9 +251,12 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
         }
         Operation::LockStatus { id } => {
             let process = lock(&PROCESS);
-            serde_json::json!(process.leases.iter().any(|lease| {
-                lease.id == id && lease.owner == realm.id && lease.held
-            }))
+            serde_json::json!(
+                process
+                    .leases
+                    .iter()
+                    .any(|lease| { lease.id == id && lease.owner == realm.id && lease.held })
+            )
         }
         Operation::LockRelease { id } => {
             let mut process = lock(&PROCESS);
@@ -294,7 +315,9 @@ fn inflate(format: &str, input: &[u8]) -> std::io::Result<Vec<u8>> {
             .map_err(std::io::Error::other)?;
         let written = (decoder.total_out() - before_out) as usize;
         if output.len().saturating_add(written) > LIMIT {
-            return Err(std::io::Error::other("decompressed allocation limit exceeded"));
+            return Err(std::io::Error::other(
+                "decompressed allocation limit exceeded",
+            ));
         }
         output.extend_from_slice(&chunk[..written]);
         if status == flate2::Status::StreamEnd {
@@ -413,4 +436,3 @@ pub(crate) fn install(document: &mut blitz_script::ScriptDocument) {
         }
     });
 }
-

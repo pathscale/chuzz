@@ -117,7 +117,10 @@ impl Bridge {
             if let Some(owner) = owner.upgrade() {
                 let wake = {
                     let state = lock(&owner);
-                    state.in_flight.contains_key(&id).then(|| state.wake.clone())
+                    state
+                        .in_flight
+                        .contains_key(&id)
+                        .then(|| state.wake.clone())
                 };
                 if let Some(wake) = wake {
                     wake.wake();

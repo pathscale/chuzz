@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::time::Duration;
 
+use blitz_dom::Document as _;
 use blitz_script::boa_engine::{
     Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
 };
-use blitz_dom::Document as _;
 use blitz_traits::net::Url;
 use blitz_traits::platform::{
     FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse,
@@ -273,8 +273,8 @@ impl ScriptHost {
         }
         url.set_fragment(None);
 
-        let method = Method::from_bytes(request.method.as_bytes())
-            .map_err(|error| error.to_string())?;
+        let method =
+            Method::from_bytes(request.method.as_bytes()).map_err(|error| error.to_string())?;
         if matches!(method.as_str(), "CONNECT" | "TRACE" | "TRACK") {
             return Err("forbidden request method".to_owned());
         }
@@ -287,7 +287,8 @@ impl ScriptHost {
         let mut wire = FetchRequest::get(url.clone()).method(method.clone());
         let mut unsafe_headers = Vec::new();
         for (name, value) in request.headers {
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| error.to_string())?;
+            let name =
+                HeaderName::from_bytes(name.as_bytes()).map_err(|error| error.to_string())?;
             if forbidden_header(name.as_str()) {
                 continue;
             }
@@ -295,9 +296,10 @@ impl ScriptHost {
             let safelisted = match name.as_str() {
                 "accept" | "accept-language" | "content-language" => {
                     value.as_bytes().len() <= 128
-                        && !value.as_bytes().iter().any(|byte| {
-                            *byte < 0x20 && *byte != b'\t' || *byte == 0x7f
-                        })
+                        && !value
+                            .as_bytes()
+                            .iter()
+                            .any(|byte| *byte < 0x20 && *byte != b'\t' || *byte == 0x7f)
                 }
                 "content-type" => value.to_str().is_ok_and(|value| {
                     matches!(
@@ -416,12 +418,7 @@ impl ScriptHost {
                         || (request.credentials != "include"
                             && exposed.iter().any(|value| value == "*")))
             })
-            .filter_map(|(name, value)| {
-                value
-                    .to_str()
-                    .ok()
-                    .map(|value| (name.as_str(), value))
-            })
+            .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str(), value)))
             .collect::<Vec<_>>();
         Ok(serde_json::json!({
             "ok": true,
@@ -436,10 +433,11 @@ impl ScriptHost {
 }
 
 fn script_host(context: &Context) -> JsResult<ScriptHost> {
-    context
-        .get_data::<ScriptHost>()
-        .cloned()
-        .ok_or_else(|| JsNativeError::typ().with_message("page network host is unavailable").into())
+    context.get_data::<ScriptHost>().cloned().ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("page network host is unavailable")
+            .into()
+    })
 }
 
 fn argument_string(args: &[JsValue], context: &mut Context) -> JsResult<String> {
@@ -451,11 +449,7 @@ fn argument_string(args: &[JsValue], context: &mut Context) -> JsResult<String> 
         .to_std_string_escaped())
 }
 
-fn synchronous_request(
-    _: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn synchronous_request(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let host = script_host(context)?;
     let text = argument_string(args, context)?;
     let request = serde_json::from_str::<NetRequest>(&text)
@@ -517,8 +511,7 @@ pub fn install(
             (
                 "__chuzzNetSync",
                 1,
-                synchronous_request
-                    as fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+                synchronous_request as fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
             ),
             ("__chuzzCookieGet", 0, cookie_get),
             ("__chuzzCookieSet", 1, cookie_set),

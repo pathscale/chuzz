@@ -58,7 +58,10 @@ fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValu
     if !matches!(
         &source,
         // Texture: a WebGPU canvas read in the same task as its render(), before the frame is presented.
-        Source::Canvas { .. } | Source::Element { .. } | Source::Bitmap { .. } | Source::Texture { .. }
+        Source::Canvas { .. }
+            | Source::Element { .. }
+            | Source::Bitmap { .. }
+            | Source::Texture { .. }
     ) {
         return Err(JsNativeError::typ()
             .with_message("invalid synchronous canvas image source")
@@ -66,7 +69,9 @@ fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValu
     }
     let id = argument(args, 1).to_number(context)?;
     if !id.is_finite() || id.fract() != 0.0 || !(1.0..=9_007_199_254_740_991.0).contains(&id) {
-        return Err(JsNativeError::typ().with_message("invalid canvas readback handle").into());
+        return Err(JsNativeError::typ()
+            .with_message("invalid canvas readback handle")
+            .into());
     }
     let id = id as u64;
     let incoming = {
@@ -145,4 +150,3 @@ impl Bridge {
         });
     }
 }
-
