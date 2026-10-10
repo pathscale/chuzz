@@ -1,0 +1,15 @@
+[
+    (
+        id: "sites-custom-elements-perf",
+        group: "custom-elements-perf",
+        what: "20 indexed definitions on 5000 nodes and 1000 ordinary appends within the reported 2000 ms budget",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "PASS: custom-elements-perf",
+        expect: PaintsNamed,
+        covers: ["budget: 2000 ms"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

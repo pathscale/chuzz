@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Custom elements performance QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { font-family: Fixture; }
+    #fixture { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Custom elements performance QA</h1>
+  <button id="run" type="button">Run custom elements performance</button>
+  <p id="result" role="status">Ready</p>
+  <p id="timing" role="status">Budget: 2000 ms</p>
+  <div id="fixture"></div>
+  <script>
+    (() => {
+      "use strict";
+      const result = document.getElementById("result");
+      const timing = document.getElementById("timing");
+      const fixture = document.getElementById("fixture");
+      document.getElementById("run").addEventListener("click", () => {
+        document.getElementById("run").disabled = true;
+        const budget = 2000;
+        try {
+          const fragment = document.createDocumentFragment();
+          for (let i = 0; i < 5000; i++) {
+            fragment.appendChild(document.createElement(i < 20 ? "qa-perf-" + i : "div"));
+          }
+          fixture.appendChild(fragment);
+          let constructors = 0;
+          const defineStart = performance.now();
+          for (let i = 0; i < 20; i++) {
+            customElements.define("qa-perf-" + i, class extends HTMLElement {
+              constructor() { super(); constructors++; }
+            });
+          }
+          const defineMs = performance.now() - defineStart;
+          if (constructors !== 20) throw new Error("Expected exactly 20 upgrades");
+
+          const appendStart = performance.now();
+          for (let i = 0; i < 1000; i++) {
+            fixture.appendChild(document.createElement("div"));
+          }
+          const appendMs = performance.now() - appendStart;
+          const totalMs = defineMs + appendMs;
+          timing.textContent = "20 definitions on 5000 nodes: " + defineMs.toFixed(1)
+            + " ms; 1000 appends: " + appendMs.toFixed(1)
+            + " ms; total: " + totalMs.toFixed(1)
+            + " ms; budget: " + budget + " ms";
+          if (constructors !== 20) throw new Error("Ordinary appends reconstructed custom elements");
+          if (fixture.children.length !== 6000) throw new Error("Incorrect final node count");
+          if (totalMs > budget) throw new Error("Performance budget exceeded");
+          result.textContent = "PASS: custom-elements-perf";
+        } catch (error) {
+          result.textContent = "FAIL: custom-elements-perf: " + error.message;
+          console.error(error);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
+

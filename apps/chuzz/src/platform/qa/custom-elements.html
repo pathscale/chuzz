@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Custom elements QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { font-family: Fixture; }
+  </style>
+</head>
+<body data-feature="custom-elements">
+  <h1>Custom elements QA</h1>
+  <button id="run" type="button">Run custom elements</button>
+  <p id="result" role="status">Ready</p>
+  <div id="fixture"></div>
+  <script>
+    (() => {
+      "use strict";
+      const check = (condition, message) => {
+        if (!condition) throw new Error(message);
+      };
+      const fixture = document.getElementById("fixture");
+      const result = document.getElementById("result");
+      document.getElementById("run").addEventListener("click", async () => {
+        document.getElementById("run").disabled = true;
+        try {
+          const calls = [];
+          const waiting = customElements.whenDefined("qa-site-card");
+          check(waiting === customElements.whenDefined("qa-site-card"), "Pending promise identity");
+          class Card extends HTMLElement {
+            static get observedAttributes() { return ["label"]; }
+            constructor() {
+              super();
+              this.constructed = true;
+              calls.push("construct");
+            }
+            connectedCallback() {
+              calls.push("connect");
+              this.textContent = "Custom element rendered";
+            }
+            disconnectedCallback() { calls.push("disconnect"); }
+            attributeChangedCallback(name, oldValue, newValue) {
+              calls.push([name, oldValue, newValue].join(":"));
+            }
+          }
+          const first = document.createElement("qa-site-card");
+          first.setAttribute("label", "before");
+          fixture.appendChild(first);
+          customElements.define("qa-site-card", Card);
+          check(await waiting === Card, "whenDefined constructor");
+          check(first.constructed && first instanceof Card, "Existing constructor");
+          check(first.constructor === Card, "Constructor identity");
+          check(calls.join("|") === "construct|label::before|connect", "Upgrade reaction order");
+          first.setAttribute("label", "after");
+          check(calls[calls.length - 1] === "label:before:after", "Attribute reaction");
+          first.setAttribute("label", "after");
+          check(calls[calls.length - 1] === "label:after:after", "Equal-value attribute reaction");
+          first.remove();
+          check(calls[calls.length - 1] === "disconnect", "Disconnect reaction");
+          fixture.prepend(first);
+          check(calls[calls.length - 1] === "connect", "Reconnect reaction");
+          const second = new Card();
+          check(second.constructed && second.tagName === "QA-SITE-CARD", "Direct construction");
+          fixture.appendChild(second);
+          const count = calls.filter(call => call === "construct").length;
+          customElements.upgrade(fixture);
+          check(calls.filter(call => call === "construct").length === count, "Repeated upgrade");
+          check(customElements.get("qa-site-card") === Card, "Registry lookup");
+          check(customElements.getName(Card) === "qa-site-card", "Registry reverse lookup");
+          check(Object.getOwnPropertyDescriptor(Node.prototype, "parentNode").get instanceof Function,
+            "Native Node accessor");
+          check(typeof Element.prototype.getAttribute === "function", "Native Element methods");
+          check(!(document.createElement("div") instanceof Card), "Subclass instanceof matched ordinary element");
+
+          const created = document.createElement("qa-site-card");
+          check(created.constructed && created instanceof Card && !created.isConnected, "Synchronous creation");
+          const parsed = document.createElement("div");
+          parsed.innerHTML = '<qa-site-card label="parsed"></qa-site-card>';
+          check(parsed.firstChild.constructed && parsed.firstChild instanceof Card, "Synchronous innerHTML construction");
+          fixture.appendChild(parsed);
+
+          const detached = document.createElement("qa-upgrade-detached");
+          class Detached extends HTMLElement {
+            constructor() { super(); this.upgraded = true; }
+          }
+          customElements.define("qa-upgrade-detached", Detached);
+          check(!detached.upgraded, "Define upgraded detached candidate");
+          customElements.upgrade(detached);
+          check(detached.upgraded && detached instanceof Detached, "Explicit detached upgrade");
+
+          const ordered = [];
+          const orderRoot = document.createElement("div");
+          orderRoot.innerHTML = '<qa-tree-order id="qa-order-first"><qa-tree-order id="qa-order-child"></qa-tree-order></qa-tree-order><qa-tree-order id="qa-order-last"></qa-tree-order>';
+          fixture.appendChild(orderRoot);
+          class Ordered extends HTMLElement {
+            constructor() { super(); ordered.push(this.id); }
+          }
+          customElements.define("qa-tree-order", Ordered);
+          check(ordered.join("|") === "qa-order-first|qa-order-child|qa-order-last", "Definition tree order");
+
+          const nested = [];
+          class Nested extends HTMLElement {
+            static get observedAttributes() { return ["step"]; }
+            attributeChangedCallback(name, oldValue, value) {
+              nested.push(value);
+              if (value === "one") {
+                this.setAttribute("step", "two");
+                nested.push("returned");
+              }
+            }
+          }
+          customElements.define("qa-nested", Nested);
+          const nestedElement = document.createElement("qa-nested");
+          nestedElement.setAttribute("step", "one");
+          check(nested.join("|") === "one|two|returned", "Nested reaction stack");
+          Nested.prototype.attributeChangedCallback = () => { throw new Error("Late callback lookup"); };
+          nestedElement.setAttribute("step", "three");
+          check(nested[nested.length - 1] === "three", "Callback capture at define");
+
+          const moving = [];
+          class Moving extends HTMLElement {
+            connectedCallback() { moving.push("connect"); }
+            disconnectedCallback() { moving.push("disconnect"); }
+            adoptedCallback(oldDocument, newDocument) {
+              check(oldDocument === document, "Adoption old document");
+              check(newDocument === targetDocument, "Adoption new document");
+              moving.push("adopt");
+            }
+          }
+          customElements.define("qa-moving", Moving);
+          const movingRoot = document.createElement("div");
+          const movingElement = document.createElement("qa-moving");
+          movingRoot.appendChild(movingElement);
+          fixture.appendChild(movingRoot);
+          fixture.appendChild(movingRoot);
+          check(moving.join("|") === "connect|disconnect|connect", "Subtree move reactions");
+          const targetDocument = document.implementation.createHTMLDocument("");
+          targetDocument.adoptNode(movingRoot);
+          check(moving.join("|") === "connect|disconnect|connect|disconnect|adopt", "Adoption ordering");
+          check(movingElement.ownerDocument === targetDocument, "Adopted subtree ownership");
+
+          class Button extends HTMLButtonElement {
+            constructor() { super(); this.constructed = true; }
+          }
+          customElements.define("qa-button", Button, { extends: "button" });
+          const button = document.createElement("button", { is: "qa-button" });
+          check(button.constructed && button instanceof Button && button instanceof HTMLButtonElement,
+            "Customized button");
+          check(button.tagName === "BUTTON" && button.constructor === Button, "Customized button identity");
+          const directButton = new Button();
+          check(directButton.constructed && directButton.tagName === "BUTTON", "Direct customized construction");
+          const parsedButton = document.createElement("div");
+          parsedButton.innerHTML = '<button is="qa-button">Customized button rendered</button>';
+          check(parsedButton.firstChild.constructed, "Parsed customized button");
+          fixture.appendChild(parsedButton);
+
+          let attempts = 0;
+          const broken = document.createElement("qa-broken");
+          fixture.appendChild(broken);
+          class Broken extends HTMLElement {
+            constructor() { super(); attempts++; throw new Error("Expected fixture constructor failure"); }
+          }
+          customElements.define("qa-broken", Broken);
+          customElements.upgrade(broken);
+          check(attempts === 1, "Failed upgrade retried");
+
+          let invalid = false;
+          try { await customElements.whenDefined("invalid"); }
+          catch (error) { invalid = error.name === "SyntaxError"; }
+          check(invalid, "Invalid whenDefined rejection");
+          let duplicate = false;
+          try { customElements.define("qa-second-card", Card); }
+          catch (error) { duplicate = error.name === "NotSupportedError"; }
+          check(duplicate, "Duplicate constructor validation");
+          result.textContent = "PASS: custom-elements";
+        } catch (error) {
+          result.textContent = "FAIL: custom-elements: " + error.message;
+          console.error(error);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
+

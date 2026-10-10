@@ -1,0 +1,15 @@
+[
+    (
+        id: "sites-custom-elements",
+        group: "custom-elements",
+        what: "native constructors, captured callbacks, reaction ordering, customized buttons and adoption",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "PASS: custom-elements",
+        expect: PaintsNamed,
+        covers: ["Custom element rendered", "Customized button rendered"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+
