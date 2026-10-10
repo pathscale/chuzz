@@ -23,6 +23,13 @@ pub fn install_crypto_provider() {
     let _ = ps_rustls_rustcrypto::provider().install_default();
 }
 
+/// Set host policy before opening media. The device-audio feature is also
+/// required to open a physical output. Live stream QA uses native PCM output.
+#[cfg(feature = "javascript")]
+pub fn set_device_audio_enabled(enabled: bool) {
+    video::set_device_audio_enabled(enabled);
+}
+
 #[cfg(feature = "javascript")]
 pub mod audio;
 // The window and its izumo command surface. Behind `gui` because `izumo` is,

@@ -69,6 +69,8 @@
         generation: 0,
         element: element,
         requested: null,
+        srcObject: null,
+        trackSignature: '',
         selected: '',
         time: 0,
         duration: NaN,
@@ -82,6 +84,8 @@
         height: 0,
         hasFrame: false,
         frameInk: false,
+        totalFrames: 0,
+        sink: null,
         error: null,
         muted: false,
         mutedExplicit: false,
@@ -168,14 +172,38 @@
     catch (error) { return src; }
   }
 
+  function streamTracks(state) {
+    if (!state.srcObject) return null;
+    return state.srcObject.getTracks().filter(function (track) {
+      return track.readyState === 'live'
+        && (state.element.tagName !== 'AUDIO' || track.kind === 'audio');
+    }).map(function (track) {
+      return globalThis.__chuzzFakeMedia.handle(track);
+    });
+  }
+
   function sync(state, force) {
-    var src = resolvedSource(rawSource(state.element));
-    if (!force && src === state.requested) return;
+    var tracks = streamTracks(state);
+    var signature = tracks === null ? '' : tracks.join(',');
+    var src = tracks === null
+      ? resolvedSource(rawSource(state.element))
+      : 'stream:' + state.srcObject.id;
+    if (!force && src === state.requested) {
+      if (tracks !== null && signature !== state.trackSignature) {
+        state.trackSignature = signature;
+        send(state, 'tracks', {
+          tracks: tracks,
+          audio_only: state.element.tagName === 'AUDIO'
+        });
+      }
+      return;
+    }
     var previous = state.requested;
     rejectPending(state, exception('The media source changed', 'AbortError'));
     state.generation++;
     state.requested = src;
-    state.selected = src;
+    state.trackSignature = signature;
+    state.selected = tracks === null ? src : '';
     state.time = 0;
     state.duration = NaN;
     state.paused = true;
@@ -188,6 +216,8 @@
     state.height = 0;
     state.hasFrame = false;
     state.frameInk = false;
+    state.totalFrames = 0;
+    state.sink = null;
     state.error = null;
     state.buffered = [];
     state.seekable = [];
@@ -200,8 +230,12 @@
       later(state, 'abort');
       later(state, 'emptied');
     }
-    var load = { src: src, force: Boolean(force) };
-    if (globalThis.__chuzzMseAttach) {
+    var load = { src: tracks === null ? src : '', force: Boolean(force) };
+    if (tracks !== null) {
+      load.tracks = tracks;
+      load.audio_only = state.element.tagName === 'AUDIO';
+      if (globalThis.__chuzzMseDetach) globalThis.__chuzzMseDetach(state.element);
+    } else if (globalThis.__chuzzMseAttach) {
       var mediaSource = globalThis.__chuzzMseAttach(state.element, src, Boolean(force));
       if (mediaSource !== null) load.mse = mediaSource;
     }
@@ -290,6 +324,7 @@
     sync(state, false);
     var time = Number(value);
     if (!Number.isFinite(time)) throw new TypeError('currentTime must be finite');
+    if (state.srcObject) return;
     recordPlayed(state);
     state.playedStart = null;
     state.time = Number.isFinite(state.duration)
@@ -326,6 +361,9 @@
   function setRate(state, value, defaultValue) {
     var rate = Number(value);
     if (!Number.isFinite(rate)) throw new TypeError('playbackRate must be finite');
+    if (state.srcObject && rate !== 1) {
+      throw exception('Live streams play at their capture rate', 'NotSupportedError');
+    }
     if (rate < 0 || rate > 16) {
       throw exception('This playback rate is unsupported', 'NotSupportedError');
     }
@@ -558,7 +596,12 @@
 
   globalThis.__chuzzVideoDrain = function () {
     var seen = new Set();
-    var elements = document.querySelectorAll('video,audio');
+    var elements = Array.from(document.querySelectorAll("video,audio"));
+    states.forEach(function (state) {
+      if (state.srcObject && elements.indexOf(state.element) < 0) {
+        elements.push(state.element);
+      }
+    });
     for (var index = 0; index < elements.length; index++) {
       var state = stateFor(elements[index]);
       state.detachedLoad = false;
@@ -628,6 +671,8 @@
     state.buffered = update.buffered;
     state.seekable = update.seekable;
     state.hasFrame = update.hasFrame;
+    state.totalFrames = update.totalVideoFrames || 0;
+    state.sink = update.sink || null;
     state.width = update.width;
     state.height = update.height;
     state.error = update.error;
@@ -672,4 +717,65 @@
       }
     }
   };
+
+  globalThis.__chuzzVideoGetStream = function (element) {
+    return stateFor(element).srcObject;
+  };
+  globalThis.__chuzzVideoSetStream = function (element, stream) {
+    var state = stateFor(element);
+    if (state.srcObject === stream) return;
+    state.srcObject = stream;
+    sync(state, true);
+  };
+  globalThis.__chuzzVideoFrameSource = function (element) {
+    if (!element || element.tagName !== 'VIDEO') return null;
+    var state = stateFor(element);
+    if (!state.hasFrame || state.readyState < 2) {
+      throw exception('The video has no current frame', 'InvalidStateError');
+    }
+    try {
+      return JSON.parse(globalThis.__chuzzVideoAcquire(state.id, state.generation));
+    } catch (error) {
+      throw exception(String(error), 'InvalidStateError');
+    }
+  };
+  globalThis.__chuzzMediaElementStats = function (element) {
+    var state = stateFor(element);
+    return state.sink ? Object.assign({}, state.sink) : null;
+  };
+  Object.defineProperty(prototype, 'getVideoPlaybackQuality', {
+    configurable: true,
+    writable: true,
+    value: function () {
+      var state = stateFor(this);
+      return {
+        creationTime: typeof performance === 'object' ? performance.now() : Date.now(),
+        totalVideoFrames: state.totalFrames,
+        droppedVideoFrames: 0,
+        corruptedVideoFrames: 0
+      };
+    }
+  });
+
+  var audioPrototype = Object.getPrototypeOf(document.createElement('audio'));
+  if (audioPrototype !== prototype) {
+    [
+      'currentSrc', 'paused', 'ended', 'seeking', 'duration', 'readyState',
+      'networkState', 'error', 'buffered', 'seekable', 'played', 'currentTime',
+      'muted', 'volume', 'playbackRate', 'defaultPlaybackRate', 'preload',
+      'autoplay', 'loop', 'controls', 'defaultMuted', 'play', 'pause', 'fastSeek',
+      'canPlayType'
+    ].forEach(function (name) {
+      Object.defineProperty(audioPrototype, name, Object.getOwnPropertyDescriptor(prototype, name));
+    });
+    Object.defineProperty(audioPrototype, 'load', {
+      configurable: true,
+      writable: true,
+      value: function () {
+        var state = stateFor(this);
+        if (state.srcObject || typeof nativeLoad !== 'function') sync(state, true);
+        else nativeLoad.call(this);
+      }
+    });
+  }
 })();

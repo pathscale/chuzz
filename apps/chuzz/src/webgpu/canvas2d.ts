@@ -96,6 +96,14 @@
       }
     }
     function source(image) {
+      if (image.nativeVideo !== undefined) {
+        room(0);
+        return {
+          index: 0, width: image.width, height: image.height,
+          offset: 0, length: image.width * image.height * 4,
+          video: image.nativeVideo
+        };
+      }
       if (image.data.byteLength > 64 * 1024 * 1024) { throw new RangeError("canvas image limit reached"); }
       room(image.data.byteLength);
       // Snapshot mutable page bytes now. Native descriptors never contain pixels.
@@ -302,7 +310,7 @@
       n = n.map(Number);
       if (!finite(n)) { throw new TypeError("invalid gradient coordinates"); }
       if (kind === "radial" && (n[2] < 0 || n[5] < 0)) {
-        throw new DOMException("negative gradient radius", "IndexSizeError");
+        throw new DOMException("negative radius", "IndexSizeError");
       }
       var object = {};
       var resource = { kind: kind, n: n, matrix: state.matrix.slice(), stops: [] };

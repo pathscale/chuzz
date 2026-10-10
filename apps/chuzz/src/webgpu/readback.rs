@@ -62,6 +62,7 @@ fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValu
             | Source::Element { .. }
             | Source::Bitmap { .. }
             | Source::Texture { .. }
+            | Source::Video { .. }
     ) {
         return Err(JsNativeError::typ()
             .with_message("invalid synchronous canvas image source")
@@ -139,6 +140,7 @@ impl Bridge {
     pub(crate) fn install_canvas_readback(&self, document: &mut blitz_script::ScriptDocument) {
         super::canvas2d::install(document, self.clone());
         document.with_js_context(|context| {
+            self.state().media_frames = crate::video::frame_registry(context);
             context.insert_data(CanvasHost(self.clone()));
             context
                 .register_global_builtin_callable(
@@ -150,3 +152,4 @@ impl Bridge {
         });
     }
 }
+

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MediaStream srcObject QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    button { padding: 12px 20px; font: inherit; }
+    canvas { width: 256px; height: 192px; image-rendering: pixelated; background: black; }
+    p { max-width: 900px; }
+  </style>
+</head>
+<body>
+  <h1>Detached live media playback</h1>
+  <button id="run" type="button">Run</button>
+  <canvas id="picture" width="64" height="48"></canvas>
+  <p id="playback">Playback pending</p>
+  <p id="pixels">Canvas pending</p>
+  <p id="texture">Texture pending</p>
+  <p id="pcm">PCM pending</p>
+  <p id="lifecycle">Lifecycle pending</p>
+  <p id="result" role="status">srcObject pending</p>
+  <script src="./src/src-object.ts"></script>
+</body>
+</html>
+

@@ -218,6 +218,8 @@ struct Image {
     height: u32,
     offset: usize,
     length: usize,
+    #[serde(default)]
+    video: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -688,6 +690,7 @@ impl Canvas {
                         height: source.height,
                         offset: source.offset,
                         length: source.length,
+                        video: None,
                     }),
                     repetition: "no-repeat".to_owned(),
                 };
@@ -764,7 +767,7 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
             .with_message("canvas descriptor limit reached in chuzz")
             .into());
     }
-    let request: Request = serde_json::from_str(&json)
+    let mut request: Request = serde_json::from_str(&json)
         .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
     if request.action == "color" {
         return Ok(JsValue::from(color(&request.value).is_ok()));
@@ -803,6 +806,28 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
                 .into());
         }
         inputs.push(Arc::new(bytes.to_vec()));
+    }
+    for command in &mut request.commands {
+        if let Some(image) = command.brush.as_mut().and_then(|brush| brush.image.as_mut())
+            && let Some(handle) = image.video.take()
+        {
+            let frame = crate::video::take_frame(context, handle)
+                .map_err(|error| JsNativeError::typ().with_message(error))?;
+            input_size = input_size.saturating_add(frame.pixels.len());
+            if image.width != frame.image.width
+                || image.height != frame.image.height
+                || image.offset != 0
+                || image.length != frame.pixels.len()
+                || inputs.len() >= 1024
+                || input_size > IMAGE_LIMIT
+            {
+                return Err(JsNativeError::typ()
+                    .with_message("invalid or oversized native canvas video source")
+                    .into());
+            }
+            image.index = inputs.len();
+            inputs.push(frame.pixels);
+        }
     }
     let result = (|| -> Result<JsValue> {
         let size = byte_count(request.width, request.height)?;

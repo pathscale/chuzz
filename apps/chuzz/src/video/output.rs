@@ -4,12 +4,22 @@
 //! Muted output consumes the same PCM timeline without opening a device.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use super::MediaError;
 use super::backend::{Shared, State};
 
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+static DEVICE_AUDIO: AtomicBool = AtomicBool::new(cfg!(feature = "device-audio"));
+
+pub(super) fn set_device_audio_enabled(enabled: bool) {
+    DEVICE_AUDIO.store(enabled, Ordering::Release);
+}
+
+#[cfg(all(
+    feature = "device-audio",
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 pub(super) enum Output {
@@ -17,19 +27,25 @@ pub(super) enum Output {
         last: Instant,
         remainder: f64,
     },
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[cfg(all(
+        feature = "device-audio",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     Device(cpal::Stream),
 }
 
 impl Output {
     pub fn open(shared: Arc<Shared>, silent: bool) -> Result<Self, MediaError> {
-        if silent {
+        if silent || !DEVICE_AUDIO.load(Ordering::Acquire) || !cfg!(feature = "device-audio") {
             return Ok(Self::Silent {
                 last: Instant::now(),
                 remainder: 0.0,
             });
         }
-        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        #[cfg(all(
+            feature = "device-audio",
+            any(target_os = "macos", target_os = "linux", target_os = "windows")
+        ))]
         {
             let device = cpal::default_host()
                 .default_output_device()
@@ -62,7 +78,10 @@ impl Output {
                 .map_err(|error| MediaError::decode(format!("start audio output: {error}")))?;
             Ok(Self::Device(stream))
         }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        #[cfg(not(all(
+            feature = "device-audio",
+            any(target_os = "macos", target_os = "linux", target_os = "windows")
+        )))]
         {
             let _ = shared;
             Err(MediaError::unsupported(
@@ -72,13 +91,17 @@ impl Output {
     }
 
     pub fn configure(&mut self, paused: bool) -> Result<(), MediaError> {
+        let _ = paused;
         match self {
             Self::Silent { last, remainder } => {
                 *last = Instant::now();
                 *remainder = 0.0;
                 Ok(())
             }
-            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            #[cfg(all(
+                feature = "device-audio",
+                any(target_os = "macos", target_os = "linux", target_os = "windows")
+            ))]
             Self::Device(stream) => {
                 let result = if paused {
                     stream.pause().map_err(|error| error.to_string())
@@ -92,6 +115,7 @@ impl Output {
     }
 
     pub fn poll(&mut self, shared: &Shared) -> Result<(), MediaError> {
+        #[allow(irrefutable_let_patterns)]
         if let Self::Silent { last, remainder } = self {
             let now = Instant::now();
             let elapsed = now.duration_since(*last).as_secs_f64();
@@ -115,7 +139,10 @@ impl Output {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+#[cfg(all(
+    feature = "device-audio",
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -209,3 +236,4 @@ fn publish_clock(state: &mut State, latency: f64) {
         state.position = state.position.max(presented).min(state.duration());
     }
 }
+

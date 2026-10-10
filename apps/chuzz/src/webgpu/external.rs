@@ -24,6 +24,9 @@ pub(super) enum Source {
     Element {
         handle: u64,
     },
+    Video {
+        handle: u64,
+    },
     Encoded {
         data: u64,
         #[serde(default)]
@@ -209,6 +212,13 @@ impl Bridge {
         source: Source,
     ) -> Result<Arc<RasterImageData>, GpuError> {
         match source {
+            Source::Video { handle } => {
+                let frames = Arc::clone(&self.state().media_frames);
+                frames
+                    .take(handle)
+                    .map(|frame| frame.image)
+                    .map_err(GpuError::validation)
+            }
             Source::Bitmap { handle } => self
                 .state()
                 .images

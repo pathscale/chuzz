@@ -73,7 +73,6 @@ javascript = [
   "dep:mp4parse",
   "dep:ps-rust_h264",
   "dep:symphonia",
-  "dep:cpal",
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
   "dep:peniko",
@@ -84,12 +83,15 @@ javascript = [
   "dep:p256",
   "dep:x509-cert",
 ]
+# Physical output is opt-in. Headless hosts disable it at startup even when
+# this feature is compiled. Live streams have a measurable device-free sink.
+device-audio = ["dep:cpal"]
 # Opt in for rendered QA as well as GUI builds. A minimal headless embedder
 # can still omit font discovery and provide its own faces.
 system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
 # The `image` crate is pulled in with default features off, so without these a
 # .webp or .avif downloads fine and then cannot be decoded: the element simply
-# never paints, which reads as a missing asset rather than a missing codec.
+# never paints, which reads as a missing asset rather than a failed codec.
 webp = ["image/webp"]
 # Render a page headlessly to a PNG, through `--capture` and `--capture-wasm`.
 #

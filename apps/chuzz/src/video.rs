@@ -24,7 +24,16 @@ mod fragments;
 mod mse;
 mod output;
 mod planar;
+mod sink;
 mod source;
+mod stream;
+
+pub(crate) use stream::{Frames, frame_registry, take_frame};
+
+/// Select device output explicitly. Headless hosts always disable it.
+pub fn set_device_audio_enabled(enabled: bool) {
+    output::set_device_audio_enabled(enabled);
+}
 
 const TIMEUPDATE_INTERVAL: Duration = Duration::from_millis(250);
 /// HTML fires `progress` at most about every 350ms while fetching.
@@ -125,6 +134,10 @@ struct Command {
     force: bool,
     #[serde(default)]
     mse: Option<u64>,
+    #[serde(default)]
+    tracks: Option<Vec<u64>>,
+    #[serde(default)]
+    audio_only: bool,
 }
 
 fn one() -> f64 {
@@ -149,6 +162,7 @@ struct Entry {
     seekable: Vec<[f64; 2]>,
     metadata: bool,
     has_frame: bool,
+    total_frames: u64,
     paused: bool,
     ended: bool,
     seeking: bool,
@@ -188,6 +202,7 @@ impl Entry {
             seekable: Vec::new(),
             metadata: false,
             has_frame: false,
+            total_frames: 0,
             paused: true,
             ended: false,
             seeking: false,
@@ -503,6 +518,7 @@ impl Entry {
             "buffered": self.buffered,
             "seekable": self.seekable,
             "hasFrame": self.has_frame,
+            "totalVideoFrames": self.total_frames,
             "width": self.width,
             "height": self.height,
             "error": self.error,
@@ -519,6 +535,8 @@ impl Entry {
 struct Host {
     net: Arc<NetProvider>,
     mse: Arc<mse::Host>,
+    frames: Arc<Frames>,
+    streams: stream::Host,
     entries: HashMap<u64, Entry>,
 }
 
@@ -564,11 +582,21 @@ impl Host {
         for command in commands {
             if command.op == "load" || command.op == "release" {
                 let existing_node = self.entries.get(&command.id).map(|entry| entry.node);
+                self.frames.remove(command.id);
+                changed |= self.streams.remove(document, command.id);
                 if let Some(mut previous) = self.entries.remove(&command.id) {
                     let _ = set_image(document, previous.node, None, &mut previous.pixels);
                     changed = true;
                 }
-                if command.op == "release" || command.src.as_deref().is_none_or(str::is_empty) {
+                if command.op == "release" {
+                    continue;
+                }
+                if command.tracks.is_some() {
+                    self.streams.load(&command, now);
+                    changed = true;
+                    continue;
+                }
+                if command.src.as_deref().is_none_or(str::is_empty) {
                     continue;
                 }
                 let selector = format!(
@@ -607,6 +635,9 @@ impl Host {
                 continue;
             }
 
+            if self.streams.command(&command) {
+                continue;
+            }
             if let Some(entry) = self.entries.get_mut(&command.id)
                 && entry.generation == command.generation
                 && let Err(error) = entry.command(&command)
@@ -615,15 +646,40 @@ impl Host {
             }
         }
 
-        self.entries
-            .retain(|_, entry| document.inner().get_node(entry.node).is_some());
+        let frames = &self.frames;
+        self.entries.retain(|id, entry| {
+            let live = document.inner().get_node(entry.node).is_some();
+            if !live {
+                frames.remove(*id);
+            }
+            live
+        });
         for (&id, entry) in &mut self.entries {
             match entry.tick(&self.net, now) {
                 Ok(Some(frame)) => {
-                    if let Err(error) =
-                        set_image(document, entry.node, Some(frame), &mut entry.pixels)
-                    {
-                        entry.fail(error);
+                    let result = set_image(
+                        document,
+                        entry.node,
+                        Some(frame),
+                        &mut entry.pixels,
+                    )
+                    .and_then(|()| {
+                        self.frames
+                            .publish(
+                                id,
+                                entry.generation,
+                                entry.width,
+                                entry.height,
+                                Arc::clone(&entry.pixels),
+                            )
+                            .map_err(MediaError::decode)
+                    });
+                    match result {
+                        Ok(()) => entry.total_frames += 1,
+                        Err(error) => {
+                            self.frames.remove(id);
+                            entry.fail(error);
+                        }
                     }
                     changed = true;
                 }
@@ -635,7 +691,7 @@ impl Host {
                 changed = true;
             }
         }
-        changed
+        changed | self.streams.poll(document, now)
     }
 }
 
@@ -689,12 +745,21 @@ fn set_image(
 
 pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
     let mse = mse::install(document);
+    let (capture, frames) = document.with_js_context(|context| {
+        let capture = crate::media::host(context).expect("page capture host");
+        let frames = frame_registry(context);
+        stream::install_frame_bridge(context);
+        (capture, frames)
+    });
     document.eval("globalThis.__chuzzVideoSupported = true;");
     document.eval(include_str!("video.ts"));
     document.eval(include_str!("video/mse.ts"));
+    document.eval(include_str!("video/stream.ts"));
     let mut host = Host {
         net,
         mse,
+        streams: stream::Host::new(capture, Arc::clone(&frames)),
+        frames,
         entries: HashMap::new(),
     };
     document.add_poll_hook(move |document, _| host.poll(document));

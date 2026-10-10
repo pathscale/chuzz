@@ -17,6 +17,7 @@ fn main() {
     // Before the loader can reach the network. See the function's own comment
     // for why the provider is named here rather than left to the resolution.
     chuzz::install_crypto_provider();
+    chuzz::set_device_audio_enabled(false);
 
     let args: Vec<String> = std::env::args().collect();
     let target = match serve::target_from(&args) {
@@ -47,3 +48,4 @@ fn main() {
 }
 
 const PAGE_STACK_BYTES: usize = 256 * 1024 * 1024;
+

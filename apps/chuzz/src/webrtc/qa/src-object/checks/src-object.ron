@@ -1,0 +1,22 @@
+[
+    (
+        id: "src-object-all",
+        group: "webrtc-src-object",
+        what: "Detached live video paints moving canvas and texture pixels while audio consumes resampled PCM without a device",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: src-object PASS",
+        expect: PaintsNamed,
+        covers: [
+            "READY: src-object PASS",
+            "PASS: detached video and audio readiness and advancing clocks",
+            "PASS: changing opaque canvas pixels from native frames",
+            "PASS: changing WebGPU texture pixels from native frames",
+            "PASS: resampled PCM consumption and measured mute",
+            "PASS: pause, resume, track changes and source disposal",
+        ],
+        outcome_timeout_ms: 30000,
+    ),
+]
+

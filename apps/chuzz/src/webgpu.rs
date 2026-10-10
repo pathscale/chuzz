@@ -30,7 +30,9 @@ pub(crate) const WEBGPU_SHIM: &str = concat!(
     "\n",
     include_str!("webgpu/canvas2d.ts"),
     "\n",
-    include_str!("webgpu/images.ts")
+    include_str!("webgpu/images.ts"),
+    "\n",
+    include_str!("webgpu/video.ts")
 );
 
 pub(crate) fn script_document(
@@ -300,6 +302,7 @@ struct State {
     devices: HashMap<u64, Arc<DeviceConnection>>,
     incoming: VecDeque<Request>,
     images: external::Images,
+    media_frames: Arc<crate::video::Frames>,
     bytes: Arc<binary::Table>,
     requests: VecDeque<Request>,
     running: bool,
