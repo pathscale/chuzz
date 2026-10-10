@@ -26,8 +26,24 @@ fn main() {
             std::process::exit(2);
         }
     };
-    if let Err(error) = serve::serve(&target) {
-        eprintln!("chuzz-headless: {error}");
-        std::process::exit(1);
+    // The script runtime allows about 8000 JS frames, and a frame that calls
+    // through a native accessor back into JS also holds Rust stack. The main
+    // thread's 8 MB ran out first on YouTube's Polymer, aborting the worker,
+    // so the page runs on a thread whose stack fits the script limit. The
+    // reservation is virtual; pages are committed only as they are touched.
+    let page = std::thread::Builder::new()
+        .name("chuzz-page".into())
+        .stack_size(PAGE_STACK_BYTES)
+        .spawn(move || serve::serve(&target).map_err(|error| error.to_string()))
+        .expect("spawn the page thread");
+    match page.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("chuzz-headless: {error}");
+            std::process::exit(1);
+        }
+        Err(_) => std::process::exit(101),
     }
 }
+
+const PAGE_STACK_BYTES: usize = 256 * 1024 * 1024;
