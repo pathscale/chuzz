@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyrender::{Paint, PaintScene};
-use anyrender_vello_cpu::ImageCache;
+use anyrender_vello_cpu::{ImageCache, VelloCpuScenePainter};
 use blitz_dom::kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use blitz_dom::node::RasterImageData;
 use blitz_script::boa_engine::object::builtins::{
@@ -24,6 +24,7 @@ use serde::Deserialize;
 use super::{Bridge, lock};
 
 mod backing;
+mod effects;
 mod paths;
 mod text;
 
@@ -176,6 +177,11 @@ struct DrawState {
     baseline: String,
     direction: String,
     smoothing: bool,
+    shadow_blur: f64,
+    shadow_color: String,
+    shadow_offset_x: f64,
+    shadow_offset_y: f64,
+    filter: Vec<effects::FilterOp>,
 }
 
 impl DrawState {
@@ -576,6 +582,23 @@ impl Canvas {
         {
             return Ok(());
         }
+        if !clear {
+            if let Some(effect) = effects::prepare(state)? {
+                return self.draw_effect(
+                    path,
+                    state,
+                    &style,
+                    &paint,
+                    paint_transform,
+                    &extra_clip,
+                    transform,
+                    stroke,
+                    fill,
+                    blend,
+                    &effect,
+                );
+            }
+        }
         let shape = transform.inverse() * path.clone();
         let clips = self.clips.clone();
         let bounds = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
@@ -639,6 +662,189 @@ impl Canvas {
                 }
                 painter.pop_layer();
             });
+        if drawn {
+            self.invalidate();
+        }
+        Ok(())
+    }
+
+    fn draw_effect(
+        &mut self,
+        path: &BezPath,
+        state: &DrawState,
+        style: &Stroke,
+        paint: &Paint,
+        paint_transform: Affine,
+        extra_clip: &Option<BezPath>,
+        transform: Affine,
+        stroke: bool,
+        fill: Fill,
+        blend: BlendMode,
+        effect: &effects::Prepared,
+    ) -> Result<()> {
+        let mut area = path.bounding_box().inflate(1.0, 1.0);
+        if stroke {
+            let matrix = transform.as_coeffs();
+            let radius = state.width * state.miter.max(2.0);
+            area = area.inflate(
+                radius * (matrix[0].abs() + matrix[2].abs()),
+                radius * (matrix[1].abs() + matrix[3].abs()),
+            );
+        }
+        if let Some(clip) = extra_clip {
+            area = area.intersect(clip.bounding_box().inflate(1.0, 1.0));
+        }
+        let canvas = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
+        if ![area.x0, area.y0, area.x1, area.y1]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            area = canvas;
+        }
+        let mut visible = canvas;
+        for clip in &self.clips {
+            visible = visible.intersect(clip.path.bounding_box().inflate(1.0, 1.0));
+        }
+        let margin = effects::margin(effect);
+        area = area.intersect(visible.inflate(margin, margin));
+        if area.x1 <= area.x0 || area.y1 <= area.y0 {
+            return Ok(());
+        }
+        let raster = self.raster_layer(
+            path,
+            style,
+            paint,
+            paint_transform,
+            extra_clip,
+            transform,
+            stroke,
+            fill,
+            area,
+        )?;
+        match effects::apply(raster, effect)? {
+            effects::Outcome::Separate { shadow, shape } => {
+                self.composite(&shadow, state, blend)?;
+                self.composite(&shape, state, blend)?;
+            }
+            effects::Outcome::Filtered { layer } => {
+                self.composite(&layer, state, blend)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn raster_layer(
+        &mut self,
+        path: &BezPath,
+        style: &Stroke,
+        paint: &Paint,
+        paint_transform: Affine,
+        extra_clip: &Option<BezPath>,
+        transform: Affine,
+        stroke: bool,
+        fill: Fill,
+        area: Rect,
+    ) -> Result<effects::Layer> {
+        let x0 = effects::bounded(area.x0.floor())?;
+        let y0 = effects::bounded(area.y0.floor())?;
+        let x1 = effects::bounded(area.x1.ceil())?;
+        let y1 = effects::bounded(area.y1.ceil())?;
+        if x1 <= x0 || y1 <= y0 {
+            return Ok(effects::Layer::empty());
+        }
+        let width = (i64::from(x1) - i64::from(x0)) as usize;
+        let height = (i64::from(y1) - i64::from(y0)) as usize;
+        effects::check_extent(width, height)?;
+        let mut painter = VelloCpuScenePainter::new(width as u16, height as u16)
+            .with_image_cache(Arc::clone(&self.image_cache));
+        let offset = Affine::translate((-(f64::from(x0)), -(f64::from(y0))));
+        if let Some(clip) = extra_clip {
+            painter.render_ctx.set_fill_rule(Fill::NonZero);
+            painter.push_clip_layer(offset, clip);
+        }
+        let shape = transform.inverse() * path.clone();
+        if stroke {
+            painter.stroke(
+                style,
+                offset * transform,
+                paint.as_ref(),
+                Some(transform.inverse() * paint_transform),
+                &shape,
+            );
+        } else {
+            painter.fill(
+                fill,
+                offset * transform,
+                paint.as_ref(),
+                Some(paint_transform),
+                &shape,
+            );
+        }
+        if extra_clip.is_some() {
+            painter.pop_layer();
+        }
+        let pixmap = painter.finish_shared();
+        effects::Layer::from_premul(pixmap.as_ref(), x0, y0, width, height)
+    }
+
+    /// Premultiplied layer bytes are sampled 1:1 in device space. The tile
+    /// translation is the path transform, so the brush translation is the
+    /// layer origin and is not multiplied by the current matrix.
+    fn composite(
+        &mut self,
+        layer: &effects::Layer,
+        state: &DrawState,
+        blend: BlendMode,
+    ) -> Result<()> {
+        if layer.is_empty() {
+            return Ok(());
+        }
+        let bytes = Arc::new(layer.premul_bytes());
+        let image = ImageData {
+            data: Blob::new(Arc::clone(&bytes) as Arc<dyn AsRef<[u8]> + Send + Sync>),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: layer.width as u32,
+            height: layer.height as u32,
+        };
+        let id = image.data.id();
+        let rect = Rect::new(
+            f64::from(layer.x),
+            f64::from(layer.y),
+            f64::from(layer.x) + layer.width as f64,
+            f64::from(layer.y) + layer.height as f64,
+        );
+        let mut area = rect;
+        for clip in &self.clips {
+            area = area.intersect(clip.path.bounding_box().inflate(1.0, 1.0));
+        }
+        let clips = self.clips.clone();
+        let canvas_width = self.width as f64;
+        let canvas_height = self.height as f64;
+        let alpha = state.alpha;
+        let paint_transform = Affine::translate((f64::from(layer.x), f64::from(layer.y)));
+        let drawn = self
+            .backing
+            .paint(area, &self.image_cache, |offset, painter| {
+                let bounds = Rect::new(0.0, 0.0, canvas_width, canvas_height);
+                painter.push_layer(blend, alpha, offset, &bounds, None, None);
+                for clip in &clips {
+                    painter.render_ctx.set_fill_rule(clip.rule);
+                    painter.push_clip_layer(offset, clip.path.as_ref());
+                }
+                painter.fill(
+                    Fill::NonZero,
+                    offset,
+                    image_brush(image.clone(), false, Extend::Pad, Extend::Pad).as_ref(),
+                    Some(paint_transform),
+                    &rect,
+                );
+                for _ in 0..clips.len() {
+                    painter.pop_layer();
+                }
+                painter.pop_layer();
+            });
+        lock(&self.image_cache).remove(id);
         if drawn {
             self.invalidate();
         }

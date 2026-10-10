@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CANVASFX filter and shadow QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; background: white; image-rendering: pixelated; }
+    #effects { width: 640px; height: 360px; }
+    #sprite { width: 24px; height: 24px; }
+  </style>
+</head>
+<body>
+  <h1>CANVASFX filter and shadow QA</h1>
+  <button id="run" type="button">Run filter and shadow checks</button>
+  <p id="result" role="status">Ready</p>
+  <p>Budget: 3000 ms</p>
+  <canvas id="effects" width="640" height="360" aria-label="CANVASFX effect samples"></canvas>
+  <canvas id="sprite" width="24" height="24" aria-hidden="true"></canvas>
+  <script>
+    (function () {
+      var result = document.getElementById("result");
+      var sprite = document.getElementById("sprite");
+      var spriteContext = sprite.getContext("2d");
+      spriteContext.fillStyle = "#ffff00";
+      spriteContext.fillRect(0, 0, 24, 24);
+      var staticCanvas = document.getElementById("effects");
+      var staticContext = staticCanvas.getContext("2d");
+      staticContext.fillStyle = "#2040c0";
+      staticContext.fillRect(8, 300, 48, 36);
+
+      function check(value, message) {
+        if (!value) { throw new Error(message); }
+      }
+      function sample(context, x, y) {
+        return context.getImageData(x, y, 1, 1).data;
+      }
+      function near(context, x, y, expected, tolerance, label) {
+        var pixel = sample(context, x, y);
+        var channel;
+        for (channel = 0; channel < 4; channel++) {
+          if (Math.abs(pixel[channel] - expected[channel]) > tolerance) {
+            throw new Error(label + ": " + pixel[0] + "," + pixel[1] + "," + pixel[2] + "," + pixel[3]);
+          }
+        }
+      }
+      function quiet(context, x, y, limit, label) {
+        var pixel = sample(context, x, y);
+        if (pixel[3] > limit) { throw new Error(label + " alpha " + pixel[3]); }
+      }
+      function fringe(context, x, y, kind, label) {
+        var pixel = sample(context, x, y);
+        var bad = pixel[3] <= 8;
+        if (kind === "red") {
+          bad = bad || pixel[0] < 200 || pixel[1] > 40 || pixel[2] > 40;
+        } else if (kind === "magenta") {
+          bad = bad || pixel[0] < 200 || pixel[2] < 200 || pixel[1] > 40;
+        } else if (kind === "cyan") {
+          bad = bad || pixel[1] < 200 || pixel[2] < 200 || pixel[0] > 40;
+        }
+        if (bad) {
+          throw new Error(label + ": " + pixel[0] + "," + pixel[1] + "," + pixel[2] + "," + pixel[3]);
+        }
+      }
+      function resetEffects(context) {
+        context.shadowBlur = 0;
+        context.shadowColor = "rgba(0, 0, 0, 0)";
+        context.shadowOffsetX = 0;
+        context.shadowOffsetY = 0;
+        context.filter = "none";
+        context.globalAlpha = 1;
+        context.globalCompositeOperation = "source-over";
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.lineWidth = 1;
+        context.lineCap = "butt";
+        context.lineJoin = "miter";
+        context.miterLimit = 10;
+        context.imageSmoothingEnabled = false;
+        context.fillStyle = "#000000";
+        context.strokeStyle = "#000000";
+        context.font = "10px sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.beginPath();
+      }
+      function properties(context) {
+        context.shadowBlur = 3;
+        context.shadowOffsetX = 5;
+        context.shadowOffsetY = -2;
+        context.shadowColor = "#abc";
+        context.filter = "BLUR(2px)";
+        check(context.shadowBlur === 3, "shadowBlur");
+        check(context.shadowOffsetX === 5, "shadowOffsetX");
+        check(context.shadowOffsetY === -2, "shadowOffsetY");
+        check(context.shadowColor === "#abc", "shadowColor " + context.shadowColor);
+        check(context.filter === "blur(2px)", "filter " + context.filter);
+        context.shadowBlur = -4;
+        context.shadowOffsetX = Infinity;
+        context.shadowColor = "not-a-colour";
+        context.filter = "not a filter";
+        context.filter = "blur(-1px)";
+        context.filter = "blur(2)";
+        check(context.shadowBlur === 3, "rejected shadowBlur");
+        check(context.shadowOffsetX === 5, "rejected shadowOffsetX");
+        check(context.shadowColor === "#abc", "rejected shadowColor");
+        check(context.filter === "blur(2px)", "rejected filter " + context.filter);
+        context.save();
+        context.filter = "none";
+        context.shadowBlur = 0;
+        context.shadowOffsetX = 0;
+        context.shadowOffsetY = 0;
+        context.shadowColor = "rgba(0, 0, 0, 0)";
+        context.filter = "blur(-3px)";
+        check(context.filter === "none", "invalid inside save");
+        context.restore();
+        check(context.filter === "blur(2px)", "restored filter " + context.filter);
+        check(context.shadowBlur === 3, "restored shadowBlur");
+        check(context.shadowOffsetX === 5, "restored offsetX");
+        check(context.shadowOffsetY === -2, "restored offsetY");
+        check(context.shadowColor === "#abc", "restored shadowColor");
+        context.filter = "url(#sprite)";
+        check(context.filter === "none", "url filter " + context.filter);
+        context.filter = "blur(2px) url(#sprite) brightness(2)";
+        check(context.filter === "blur(2px) brightness(2)", "url in chain " + context.filter);
+        context.filter = "brightness()";
+        check(context.filter === "brightness(1)", "default brightness " + context.filter);
+        context.filter = "hue-rotate(0.25turn)";
+        check(context.filter === "hue-rotate(90deg)", "turn angle " + context.filter);
+      }
+      function gray(context) {
+        var pixel = sample(context, 180, 120);
+        var spread = Math.max(pixel[0], pixel[1], pixel[2]) - Math.min(pixel[0], pixel[1], pixel[2]);
+        if (spread > 3 || pixel[3] < 250 || pixel[0] < 96 || pixel[0] > 120) {
+          throw new Error("grayscale brightness: " + pixel[0] + "," + pixel[1] + "," + pixel[2] + "," + pixel[3]);
+        }
+      }
+      function textShadow(context, canvas) {
+        resetEffects(context);
+        context.font = "48px Fixture";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillStyle = "#ff0000";
+        context.shadowColor = "#0000ff";
+        context.shadowOffsetX = 90;
+        context.fillText("H", 460, 330);
+        var metrics = context.measureText("H");
+        var x0 = Math.floor(460 - metrics.actualBoundingBoxLeft);
+        var y0 = Math.floor(330 - metrics.actualBoundingBoxAscent);
+        var x1 = Math.ceil(460 + metrics.actualBoundingBoxRight);
+        var y1 = Math.ceil(330 + metrics.actualBoundingBoxDescent);
+        if (x0 < 0) { x0 = 0; }
+        if (y0 < 0) { y0 = 0; }
+        if (x1 > canvas.width) { x1 = canvas.width; }
+        if (y1 > canvas.height) { y1 = canvas.height; }
+        var width = x1 - x0;
+        var height = y1 - y0;
+        if (width < 2 || height < 2 || width > 160 || height > 160) {
+          throw new Error("text bounds " + width + "x" + height);
+        }
+        var data = context.getImageData(x0, y0, width, height).data;
+        var foundX = -1;
+        var foundY = -1;
+        var row, col, index;
+        for (row = 0; row < height && foundX < 0; row++) {
+          for (col = 0; col < width; col++) {
+            index = (row * width + col) * 4;
+            if (data[index] > 240 && data[index + 1] < 20 && data[index + 2] < 20 && data[index + 3] > 250) {
+              foundX = x0 + col;
+              foundY = y0 + row;
+              break;
+            }
+          }
+        }
+        if (foundX < 0) { throw new Error("text ink missing"); }
+        near(context, foundX + 90, foundY, [0, 0, 255, 255], 8, "text shadow");
+      }
+      function run() {
+        var canvas = document.getElementById("effects");
+        var context = canvas.getContext("2d");
+        resetEffects(context);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        properties(context);
+        resetEffects(context);
+
+        context.shadowColor = "#0000ff";
+        context.shadowOffsetX = 40;
+        context.fillStyle = "#ff0000";
+        context.fillRect(16, 16, 32, 32);
+        near(context, 32, 32, [255, 0, 0, 255], 2, "crisp shape");
+        near(context, 60, 32, [0, 0, 255, 255], 2, "crisp shadow left of seam");
+        near(context, 68, 32, [0, 0, 255, 255], 2, "crisp shadow right of seam");
+        quiet(context, 50, 32, 2, "crisp shadow gap");
+
+        resetEffects(context);
+        context.lineWidth = 8;
+        context.strokeStyle = "#ff0000";
+        context.shadowColor = "#0000ff";
+        context.shadowOffsetX = 36;
+        context.strokeRect(240, 20, 24, 24);
+        near(context, 252, 20, [255, 0, 0, 255], 20, "stroke");
+        near(context, 288, 20, [0, 0, 255, 255], 20, "stroke shadow");
+
+        resetEffects(context);
+        context.filter = "blur(4px)";
+        context.fillStyle = "#ff0000";
+        context.fillRect(160, 16, 40, 40);
+        near(context, 180, 36, [255, 0, 0, 255], 4, "blur center");
+        fringe(context, 180, 10, "red", "blur spread");
+        quiet(context, 180, 72, 2, "blur limit");
+
+        resetEffects(context);
+        context.shadowColor = "rgba(255, 0, 0, 0)";
+        context.shadowOffsetX = 20;
+        context.shadowBlur = 4;
+        context.fillStyle = "#0000ff";
+        context.fillRect(400, 16, 20, 20);
+        near(context, 410, 26, [0, 0, 255, 255], 2, "transparent shadow shape");
+        quiet(context, 430, 26, 2, "transparent shadow");
+
+        resetEffects(context);
+        context.fillStyle = "#ff0000";
+        context.fillRect(480, 16, 24, 24);
+        context.shadowColor = "#0000ff";
+        context.shadowOffsetX = 16;
+        context.clearRect(480, 16, 24, 24);
+        quiet(context, 490, 28, 2, "cleared shape");
+        quiet(context, 508, 28, 2, "clearRect shadow");
+
+        resetEffects(context);
+        context.filter = "blur(6px)";
+        var image = context.createImageData(8, 8);
+        var offset;
+        for (offset = 0; offset < image.data.length; offset += 4) {
+          image.data[offset + 1] = 255;
+          image.data[offset + 3] = 255;
+        }
+        context.putImageData(image, 560, 16);
+        near(context, 564, 20, [0, 255, 0, 255], 0, "putImageData");
+        quiet(context, 548, 20, 2, "putImageData blur");
+
+        resetEffects(context);
+        context.shadowColor = "#ff0000";
+        context.fillStyle = "#0000ff";
+        context.fillRect(560, 100, 12, 12);
+        near(context, 566, 106, [0, 0, 255, 255], 2, "zero shadow shape");
+        quiet(context, 558, 106, 2, "zero shadow");
+
+        resetEffects(context);
+        context.shadowColor = "#ff00ff";
+        context.shadowBlur = 8;
+        context.fillStyle = "#00ff00";
+        context.fillRect(16, 100, 28, 28);
+        near(context, 30, 114, [0, 255, 0, 255], 4, "shadow blur shape");
+        fringe(context, 30, 96, "magenta", "shadow blur spread");
+        quiet(context, 30, 90, 8, "shadow blur sigma");
+
+        resetEffects(context);
+        context.filter = "grayscale(100%) brightness(200%)";
+        check(context.filter === "grayscale(1) brightness(2)", "chain " + context.filter);
+        context.fillStyle = "#ff0000";
+        context.fillRect(160, 100, 40, 40);
+        gray(context);
+
+        resetEffects(context);
+        context.filter = "invert(1)";
+        context.fillStyle = "#ff0000";
+        context.fillRect(240, 100, 24, 24);
+        near(context, 252, 112, [0, 255, 255, 255], 4, "invert");
+
+        resetEffects(context);
+        context.save();
+        context.scale(2, 2);
+        context.shadowColor = "#0000ff";
+        context.shadowOffsetX = 20;
+        context.fillStyle = "#ff0000";
+        context.fillRect(180, 55, 12, 12);
+        context.restore();
+        near(context, 372, 122, [255, 0, 0, 255], 2, "scaled shape");
+        near(context, 392, 122, [0, 0, 255, 255], 2, "device shadow offset");
+        quiet(context, 412, 122, 2, "shadow ignored scale");
+
+        resetEffects(context);
+        context.shadowColor = "#0000ff";
+        context.shadowOffsetY = -24;
+        context.fillStyle = "#ff0000";
+        context.fillRect(400, 180, 16, 16);
+        near(context, 408, 188, [255, 0, 0, 255], 2, "negative offset shape");
+        near(context, 408, 164, [0, 0, 255, 255], 2, "negative offset shadow");
+        quiet(context, 408, 176, 2, "negative offset gap");
+
+        resetEffects(context);
+        context.filter = "drop-shadow(48px 0px 0px #00ffff)";
+        context.drawImage(sprite, 16, 180);
+        near(context, 28, 192, [255, 255, 0, 255], 2, "image");
+        near(context, 76, 192, [0, 255, 255, 255], 2, "image shadow");
+        quiet(context, 52, 192, 2, "image shadow gap");
+
+        resetEffects(context);
+        context.filter = "drop-shadow(0px 0px 4px #ff00ff)";
+        context.fillStyle = "#00ff00";
+        context.fillRect(300, 180, 30, 30);
+        near(context, 315, 195, [0, 255, 0, 255], 4, "drop-shadow shape");
+        fringe(context, 294, 195, "magenta", "drop-shadow blur");
+        quiet(context, 284, 195, 2, "drop-shadow radius");
+
+        resetEffects(context);
+        context.save();
+        context.beginPath();
+        context.rect(16, 240, 40, 30);
+        context.clip();
+        context.shadowColor = "#0000ff";
+        context.shadowOffsetX = 30;
+        context.fillStyle = "#ff0000";
+        context.fillRect(10, 248, 30, 16);
+        context.restore();
+        near(context, 24, 256, [255, 0, 0, 255], 2, "clipped shape");
+        near(context, 48, 256, [0, 0, 255, 255], 2, "clipped shadow");
+        quiet(context, 64, 256, 2, "shadow outside clip");
+
+        resetEffects(context);
+        context.save();
+        context.shadowColor = "#ff0000";
+        context.shadowOffsetX = 12;
+        context.shadowBlur = 4;
+        context.filter = "invert(1)";
+        context.restore();
+        context.fillStyle = "#0000ff";
+        context.fillRect(160, 240, 20, 20);
+        near(context, 170, 250, [0, 0, 255, 255], 2, "restored draw");
+        quiet(context, 186, 250, 2, "restored shadow");
+
+        resetEffects(context);
+        context.fillStyle = "#ff00ff";
+        context.fillRect(400, 240, 16, 16);
+        near(context, 408, 248, [255, 0, 255, 255], 2, "fast path");
+        quiet(context, 398, 248, 2, "fast path outside");
+
+        textShadow(context, canvas);
+      }
+      document.getElementById("run").addEventListener("click", function () {
+        this.disabled = true;
+        var start = function () {
+          try {
+            run();
+            result.textContent = "READY: CANVASFX PASS";
+          } catch (error) {
+            result.textContent = "FAIL: CANVASFX " + (error && error.message ? error.message : String(error));
+          }
+        };
+        var fonts = document.fonts;
+        if (fonts && fonts.ready && typeof fonts.ready.then === "function") {
+          fonts.ready.then(start, start);
+        } else {
+          start();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

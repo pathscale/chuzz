@@ -1,0 +1,26 @@
+[
+    (
+        id: "canvasfx-effects",
+        group: "canvas-effects",
+        what: "shadow offsets, shadow blur, CSS filter chains, clips and save/restore match sampled canvas pixels",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CANVASFX PASS",
+        expect: PaintsNamed,
+        covers: ["Budget: 3000 ms"],
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "canvasfx-ink",
+        group: "canvas-effects",
+        what: "the effect canvas presents ink before the checks run",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "CANVASFX effect samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 30000,
+    ),
+]
+

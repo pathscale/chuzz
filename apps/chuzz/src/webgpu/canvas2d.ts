@@ -47,6 +47,215 @@
   function validColor(value) {
     return memo(colorMemo, value, function () { return native({ action: "color", value: value }); });
   }
+  // url() is an SVG filter reference. Canvas has no filter primitives for it,
+  // so a url() function is dropped and a filter that is only url() is "none".
+  function parseFilter(value, canvas) {
+    var source = String(value).trim();
+    if (source.length > 8192) { return null; }
+    if (source.toLowerCase() === "none") { return { css: "none", ops: [] }; }
+    if (!source) { return null; }
+    var i = 0;
+    var ops = [];
+    var sawUrl = false;
+    function skip() {
+      while (i < source.length && /\s/.test(source.charAt(i))) { i++; }
+    }
+    function currentColor() {
+      if (typeof getComputedStyle === "function") {
+        var computed = getComputedStyle(canvas).color;
+        if (computed && validColor(computed)) { return computed; }
+      }
+      return "#000000";
+    }
+    function readNumber(text, at) {
+      var match = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(text.slice(at.i));
+      if (!match) { return null; }
+      var n = Number(match[0]);
+      if (!Number.isFinite(n)) { return null; }
+      at.i += match[0].length;
+      return n;
+    }
+    function readLength(text, at, allowNegative) {
+      while (at.i < text.length && /\s/.test(text.charAt(at.i))) { at.i++; }
+      var start = at.i;
+      var n = readNumber(text, at);
+      if (n === null) { at.i = start; return null; }
+      var unit = "";
+      if (at.i < text.length && /[a-z%]/i.test(text.charAt(at.i))) {
+        var matched = /^[a-z%]+/i.exec(text.slice(at.i));
+        unit = matched[0].toLowerCase();
+        at.i += unit.length;
+      }
+      if (unit === "%") { at.i = start; return null; }
+      if (unit === "") {
+        if (n !== 0) { at.i = start; return null; }
+      } else if (unit !== "px") {
+        at.i = start;
+        return null;
+      }
+      if (!allowNegative && n < 0) { at.i = start; return null; }
+      if (Math.abs(n) > 1e6) { at.i = start; return null; }
+      return n;
+    }
+    function readAmount(text, at, clampUnit) {
+      while (at.i < text.length && /\s/.test(text.charAt(at.i))) { at.i++; }
+      var n = readNumber(text, at);
+      if (n === null) { return null; }
+      if (text.charAt(at.i) === "%") { at.i++; n = n / 100; }
+      if (!Number.isFinite(n) || n < 0 || n > 1e6) { return null; }
+      if (clampUnit && n > 1) { n = 1; }
+      return n;
+    }
+    function readAngle(text, at) {
+      while (at.i < text.length && /\s/.test(text.charAt(at.i))) { at.i++; }
+      var n = readNumber(text, at);
+      if (n === null) { return null; }
+      var unit = "";
+      if (at.i < text.length && /[a-z]/i.test(text.charAt(at.i))) {
+        var matched = /^[a-z]+/i.exec(text.slice(at.i));
+        unit = matched[0].toLowerCase();
+        at.i += unit.length;
+      }
+      var deg = n;
+      if (unit === "" || unit === "deg") {
+        if (unit === "" && n !== 0) { return null; }
+        deg = n;
+      } else if (unit === "rad") { deg = n * 180 / Math.PI; }
+      else if (unit === "grad") { deg = n * 0.9; }
+      else if (unit === "turn") { deg = n * 360; }
+      else { return null; }
+      if (!Number.isFinite(deg) || Math.abs(deg) > 1e8) { return null; }
+      return deg;
+    }
+    function finish(text, at) {
+      while (at.i < text.length && /\s/.test(text.charAt(at.i))) { at.i++; }
+      return at.i === text.length;
+    }
+    function omitted(text) { return !/\S/.test(text); }
+    function readColorToken(text, at) {
+      while (at.i < text.length && /\s/.test(text.charAt(at.i))) { at.i++; }
+      if (at.i >= text.length) { return null; }
+      var rest = text.slice(at.i);
+      if (text.charAt(at.i) === "#") {
+        var hex = /^#[0-9a-fA-F]+/.exec(rest);
+        if (!hex) { return null; }
+        at.i += hex[0].length;
+        return hex[0];
+      }
+      var ident = /^[a-zA-Z]+/.exec(rest);
+      if (!ident) { return null; }
+      var name = ident[0];
+      var after = at.i + name.length;
+      if (text.charAt(after) === "(") {
+        var depth = 1;
+        var j = after + 1;
+        while (j < text.length && depth > 0) {
+          if (text.charAt(j) === "(") { depth++; }
+          else if (text.charAt(j) === ")") {
+            depth--;
+            if (depth === 0) { break; }
+          }
+          j++;
+        }
+        if (depth !== 0) { return null; }
+        var fn = text.slice(at.i, j + 1);
+        at.i = j + 1;
+        return fn;
+      }
+      at.i += name.length;
+      return name;
+    }
+    function parseDropShadow(args) {
+      var at = { i: 0 };
+      var tokens = [];
+      while (at.i < args.length) {
+        while (at.i < args.length && /\s/.test(args.charAt(at.i))) { at.i++; }
+        if (at.i >= args.length) { break; }
+        var start = at.i;
+        if (/[+-.\d]/.test(args.charAt(at.i))) {
+          var length = readLength(args, at, true);
+          if (length === null) { return null; }
+          tokens.push({ k: "l", v: length });
+          continue;
+        }
+        var color = readColorToken(args, at);
+        if (color === null || at.i === start) { return null; }
+        tokens.push({ k: "c", v: color });
+      }
+      var kinds = tokens.map(function (token) { return token.k; }).join("");
+      if (["ll", "lll", "llc", "lllc", "cll", "clll"].indexOf(kinds) < 0) { return null; }
+      var lengths = tokens.filter(function (token) { return token.k === "l"; }).map(function (token) { return token.v; });
+      var colorToken = null;
+      tokens.forEach(function (token) { if (token.k === "c") { colorToken = token.v; } });
+      var blur = lengths.length === 3 ? lengths[2] : 0;
+      if (blur < 0) { return null; }
+      var color = colorToken || currentColor();
+      if (String(color).toLowerCase() === "currentcolor") { color = currentColor(); }
+      if (!validColor(color)) { return null; }
+      return { fn: "drop-shadow", x: lengths[0], y: lengths[1], blur: blur, color: color };
+    }
+    while (i < source.length) {
+      skip();
+      if (i >= source.length) { break; }
+      var nameMatch = /^[a-zA-Z-]+/.exec(source.slice(i));
+      if (!nameMatch) { return null; }
+      var name = nameMatch[0].toLowerCase();
+      i += nameMatch[0].length;
+      skip();
+      if (source.charAt(i) !== "(") { return null; }
+      i++;
+      var argStart = i;
+      var depth = 1;
+      while (i < source.length && depth > 0) {
+        if (source.charAt(i) === "(") { depth++; }
+        else if (source.charAt(i) === ")") {
+          depth--;
+          if (depth === 0) { break; }
+        }
+        i++;
+      }
+      if (depth !== 0) { return null; }
+      var args = source.slice(argStart, i);
+      i++;
+      if (name === "url") { sawUrl = true; continue; }
+      var at = { i: 0 };
+      var op = null;
+      if (name === "blur") {
+        var px = omitted(args) ? 0 : readLength(args, at, false);
+        if (px === null || !finish(args, at)) { return null; }
+        op = { fn: "blur", px: px };
+      } else if (name === "hue-rotate") {
+        var deg = omitted(args) ? 0 : readAngle(args, at);
+        if (deg === null || !finish(args, at)) { return null; }
+        op = { fn: "hue-rotate", deg: deg };
+      } else if (name === "drop-shadow") {
+        op = parseDropShadow(args);
+        if (!op) { return null; }
+      } else if (["brightness", "contrast", "saturate"].indexOf(name) >= 0) {
+        var scale = omitted(args) ? 1 : readAmount(args, at, false);
+        if (scale === null || !finish(args, at)) { return null; }
+        op = { fn: name, amount: scale };
+      } else if (["grayscale", "invert", "opacity", "sepia"].indexOf(name) >= 0) {
+        var amount = omitted(args) ? 1 : readAmount(args, at, true);
+        if (amount === null || !finish(args, at)) { return null; }
+        op = { fn: name, amount: amount };
+      } else {
+        return null;
+      }
+      ops.push(op);
+      if (ops.length > 64) { return null; }
+    }
+    if (!ops.length) { return sawUrl ? { css: "none", ops: [] } : null; }
+    var css = ops.map(function (op) {
+      if (op.fn === "blur") { return "blur(" + op.px + "px)"; }
+      if (op.fn === "hue-rotate") { return "hue-rotate(" + op.deg + "deg)"; }
+      if (op.fn === "drop-shadow") {
+        return "drop-shadow(" + op.x + "px " + op.y + "px " + op.blur + "px " + op.color + ")";
+      }
+      return op.fn + "(" + op.amount + ")";
+    }).join(" ");
+    return { css: css, ops: ops };
+  }
   function fillRule(value) {
     if (value === undefined || value === "nonzero") { return 0; }
     if (value === "evenodd") { return 1; }
@@ -71,7 +280,9 @@
         lineJoin: "miter", miterLimit: 10, lineDashOffset: 0, dash: [],
         font: "10px sans-serif", textAlign: "start", textBaseline: "alphabetic",
         direction: "inherit", imageSmoothingEnabled: true,
-        imageSmoothingQuality: "low", matrix: identity.slice()
+        imageSmoothingQuality: "low", matrix: identity.slice(),
+        shadowBlur: 0, shadowColor: "rgba(0, 0, 0, 0)", shadowOffsetX: 0, shadowOffsetY: 0,
+        filter: "none", filterOps: []
       };
       stack = [];
     }
@@ -98,7 +309,10 @@
         cap: state.lineCap, join: state.lineJoin, miter: state.miterLimit,
         dash: state.dash.slice(), dashOffset: state.lineDashOffset,
         font: state.font, align: state.textAlign, baseline: state.textBaseline,
-        direction: direction, smoothing: state.imageSmoothingEnabled
+        direction: direction, smoothing: state.imageSmoothingEnabled,
+        shadowBlur: state.shadowBlur, shadowColor: state.shadowColor,
+        shadowOffsetX: state.shadowOffsetX, shadowOffsetY: state.shadowOffsetY,
+        filter: state.filterOps
       };
     }
     function flush(action, extra) {
@@ -241,8 +455,29 @@
         return undefined;
       }
     });
-    ["shadowBlur", "shadowColor", "shadowOffsetX", "shadowOffsetY", "filter",
-     "fontKerning", "fontStretch", "fontVariantCaps", "letterSpacing", "wordSpacing",
+    property("shadowBlur", function (value) {
+      value = Number(value);
+      return Number.isFinite(value) && value >= 0 && value <= 1e6 ? value : undefined;
+    });
+    property("shadowOffsetX", function (value) {
+      value = Number(value);
+      return Number.isFinite(value) && Math.abs(value) <= 1e6 ? value : undefined;
+    });
+    property("shadowOffsetY", function (value) {
+      value = Number(value);
+      return Number.isFinite(value) && Math.abs(value) <= 1e6 ? value : undefined;
+    });
+    property("shadowColor", function (value) {
+      value = String(value);
+      return validColor(value) ? value : undefined;
+    });
+    property("filter", function (value) {
+      var parsed = parseFilter(value, canvas);
+      if (!parsed) { return undefined; }
+      state.filterOps = parsed.ops;
+      return parsed.css;
+    });
+    ["fontKerning", "fontStretch", "fontVariantCaps", "letterSpacing", "wordSpacing",
      "textRendering"].forEach(function (name) {
       Object.defineProperty(context, name, {
         get: function () { return missing(name); },
@@ -316,6 +551,7 @@
       if (stack.length >= 256) { throw new RangeError("canvas save limit reached in chuzz"); }
       var saved = Object.assign({}, state);
       saved.matrix = state.matrix.slice(); saved.dash = state.dash.slice();
+      saved.filterOps = state.filterOps.slice();
       stack.push(saved); record("save");
     };
     context.restore = function () {
