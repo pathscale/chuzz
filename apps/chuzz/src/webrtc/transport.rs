@@ -136,6 +136,10 @@ fn rtc(certificate: DtlsCert) -> Rtc {
         .clear_codecs()
         .enable_opus(true, false)
         .enable_pcmu(true, false)
+        // Receiver owns timestamp reordering and the 80 ms playout budget.
+        // str0m's default 15-packet wait after loss exceeds that budget
+        // and releases more packets than the 12-packet lookahead can hold.
+        .set_reordering_size_audio(0)
         .build(Instant::now())
 }
 
@@ -809,8 +813,11 @@ impl Engine {
                 pcmu::encode(&input.read(start, 160, 8000, 1))
             };
             let length = bytes.len();
+            // Preserve the integer capture clock through RTP rebasing.
+            // Floating-point seconds can truncate a microsecond, placing
+            // a packet one sample before Receiver's expected timestamp.
             writer
-                .write(pt, now, MediaTime::from_seconds(start.as_secs_f64()), bytes)
+                .write(pt, now, MediaTime::from_millis(start.as_millis() as u64), bytes)
                 .map_err(|error| format!("OperationError: {error}"))?;
             peer.metrics(|metrics| {
                 metrics.tx_codec = Some(codec.name());
@@ -888,7 +895,10 @@ impl Engine {
                     }
                     let receive = slot.receive.as_mut().ok_or("OperationError: missing Opus receiver")?;
                     let timestamp = data.time.rebase(str0m::media::Frequency::FORTY_EIGHT_KHZ).numer();
-                    if receive.enqueue(timestamp, data.data.into()).is_err() {
+                    if let Err(error) = receive.enqueue(timestamp, data.data.into()) {
+                        eprintln!(
+                            "WebRTC Opus enqueue failed at RTP timestamp {timestamp}: {error}"
+                        );
                         peer.metrics(|metrics| metrics.codec_errors += 1);
                     }
                 } else {
