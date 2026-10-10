@@ -1,0 +1,26 @@
+[
+    (
+        id: "pseudo-disc-ink",
+        group: "pseudo-disc",
+        what: "an empty absolutely positioned ::before with a viewport min() width, a square aspect ratio, stacked radial gradients, a round clip and a shadow paints inside its container after data-fallback is set",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#disc",
+        expect: VisibleInk,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "pseudo-disc-ready",
+        group: "pseudo-disc",
+        what: "getComputedStyle of ::before reports a used width of min(91% of the 600px container, 91vh) and a square aspect ratio",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: pseudo-disc",
+        expect: PaintsNamed,
+        covers: ["READY: pseudo-disc"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

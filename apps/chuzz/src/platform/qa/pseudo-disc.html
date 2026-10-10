@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Pseudo disc</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    html, body {
+      margin: 0;
+      background: transparent;
+      color: #e8eef6;
+      font-family: Fixture;
+    }
+    #disc {
+      position: relative;
+      width: 600px;
+      height: 400px;
+    }
+    #disc[data-fallback="true"]::before {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(91%, 91vh);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 78% 28%, transparent 47%, rgba(7, 10, 19, .96) 74%),
+        radial-gradient(circle at 38% 30%, #6188a3, #17354d 64%, #080d18 80%);
+      box-shadow: 0 0 1.8rem rgba(112, 184, 230, .24);
+    }
+    #status { font-size: 18px; padding: 8px; }
+  </style>
+</head>
+<body>
+  <div id="disc" aria-label="Fallback disc"></div>
+  <p id="status" role="status">waiting</p>
+  <script>
+    function px(value) {
+      var n = parseFloat(value);
+      return Number.isFinite(n) ? n : NaN;
+    }
+
+    setTimeout(function () {
+      var el = document.getElementById("disc");
+      var status = document.getElementById("status");
+      el.setAttribute("data-fallback", "true");
+      var style = getComputedStyle(el, "::before");
+      var box = el.getBoundingClientRect();
+      var width = px(style.width);
+      var height = px(style.height);
+      var ratio = (style.getPropertyValue("aspect-ratio") || "").trim();
+      var expected = Math.min(box.width * 0.91, window.innerHeight * 0.91);
+      var ok = expected > 1
+        && Number.isFinite(width)
+        && Math.abs(width - expected) <= 2
+        && Number.isFinite(height)
+        && Math.abs(height - width) <= 2
+        && ratio.indexOf("/") !== -1;
+      status.textContent = ok
+        ? "READY: pseudo-disc"
+        : "FAIL width " + style.width
+          + " height " + style.height
+          + " ratio " + ratio
+          + " expected " + expected
+          + " viewport " + window.innerHeight;
+    }, 100);
+  </script>
+</body>
+</html>
+
