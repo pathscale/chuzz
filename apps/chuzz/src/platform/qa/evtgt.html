@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>EventTarget receivers</title>
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      font-family: "Fira Sans";
+      margin: 24px;
+      background: #f5f7fa;
+      color: #182436;
+    }
+    button {
+      font-family: "Fira Sans";
+      font-size: 18px;
+      padding: 12px;
+    }
+    #result {
+      padding: 16px;
+      background: #ffffff;
+      border: 2px solid #465d78;
+      font-size: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>EventTarget receivers</h1>
+  <p>Run checks constructed targets, lazy slots, window, nodes, AbortSignal, and illegal receivers.</p>
+  <button id="run" type="button">Run</button>
+  <p id="result" role="status">Waiting for Run</p>
+  <script>
+    (function () {
+      "use strict";
+      var result = document.getElementById("result");
+      var run = document.getElementById("run");
+
+      function assert(condition, name) {
+        if (!condition) throw new Error(name);
+      }
+
+      function throwsIllegal(callback, label) {
+        var caught = null;
+        try {
+          callback();
+        } catch (error) {
+          caught = error;
+        }
+        assert(
+          caught instanceof TypeError &&
+            String(caught && caught.message).indexOf("Illegal invocation") !== -1,
+          label
+        );
+      }
+
+      function exercise(target, label) {
+        var calls = 0;
+        var callbackThis = false;
+        var fn = function () {
+          callbackThis = this === target;
+          calls += 1;
+        };
+        // Through EventTarget.prototype, so a receiver whose own prototype chain lacks the methods
+        // (Reflect.construct with an unrelated new.target) still exercises its native slot.
+        var add = EventTarget.prototype.addEventListener;
+        var remove = EventTarget.prototype.removeEventListener;
+        var dispatch = EventTarget.prototype.dispatchEvent;
+        add.call(target, "go", fn);
+        add.call(target, "go", fn);
+        assert(dispatch.call(target, new Event("go")) === true, label + " dispatch");
+        assert(calls === 1 && callbackThis, label + " dedupe");
+        remove.call(target, "go", fn);
+        dispatch.call(target, new Event("go"));
+        assert(calls === 1, label + " remove");
+
+        var seen = [];
+        add.call(target, "phase", function () { seen.push("bubble"); }, false);
+        add.call(target, "phase", function () { seen.push("capture"); }, true);
+        dispatch.call(target, new Event("phase"));
+        assert(seen.join(",") === "capture,bubble", label + " capture");
+
+        var once = 0;
+        add.call(target, "once", function () { once += 1; }, { once: true });
+        dispatch.call(target, new Event("once"));
+        dispatch.call(target, new Event("once"));
+        assert(once === 1, label + " once");
+
+        var handled = 0;
+        var handleThis = false;
+        var listener = {
+          handleEvent: function () {
+            handleThis = this === listener;
+            handled += 1;
+          }
+        };
+        add.call(target, "obj", listener);
+        dispatch.call(target, new Event("obj"));
+        remove.call(target, "obj", listener);
+        dispatch.call(target, new Event("obj"));
+        assert(handled === 1 && handleThis, label + " handleEvent");
+      }
+
+      function prove() {
+        var constructed = new EventTarget();
+        assert(constructed instanceof EventTarget, "constructed");
+        exercise(constructed, "constructed");
+
+        var cancelling = new EventTarget();
+        cancelling.addEventListener("go", function (event) { event.preventDefault(); });
+        var cancelled = new Event("go", { cancelable: true });
+        assert(
+          cancelling.dispatchEvent(cancelled) === false && cancelled.defaultPrevented,
+          "cancelled"
+        );
+
+        class Child extends EventTarget {
+          constructor() {
+            super();
+            this.marker = "child";
+          }
+        }
+        class Grand extends Child {
+          constructor() {
+            super();
+            this.marker = "grand";
+          }
+        }
+        var grand = new Grand();
+        assert(
+          grand.marker === "grand" && grand instanceof Grand && grand instanceof EventTarget,
+          "subclass"
+        );
+        exercise(grand, "subclass");
+
+        class Implicit extends EventTarget {}
+        var implicit = new Implicit();
+        assert(implicit instanceof EventTarget, "implicit subclass");
+        exercise(implicit, "implicit");
+
+        function Bare() {}
+        var bare = Reflect.construct(EventTarget, [], Bare);
+        assert(Object.getPrototypeOf(bare) === Bare.prototype, "bare prototype");
+        assert(!(bare instanceof EventTarget), "bare not instanceof");
+        exercise(bare, "bare reflect");
+
+        function Named() {}
+        Object.setPrototypeOf(Named.prototype, EventTarget.prototype);
+        Object.setPrototypeOf(Named, EventTarget);
+        var named = Reflect.construct(EventTarget, [], Named);
+        assert(named instanceof Named && named instanceof EventTarget, "named reflect");
+        exercise(named, "named reflect");
+
+        var lazy = Object.create(EventTarget.prototype);
+        assert(lazy instanceof EventTarget, "lazy instanceof");
+        var pathOk = false;
+        lazy.addEventListener("path", function (event) {
+          var path = event.composedPath();
+          pathOk = path.length === 1 && path[0] === lazy &&
+            event.target === lazy && event.currentTarget === lazy;
+        });
+        lazy.dispatchEvent(new Event("path"));
+        assert(pathOk, "lazy path");
+        exercise(lazy, "lazy");
+
+        var adopted = {};
+        Object.setPrototypeOf(adopted, EventTarget.prototype);
+        exercise(adopted, "adopted");
+
+        var sealed = Object.seal(Object.create(EventTarget.prototype));
+        exercise(sealed, "sealed");
+
+        var left = Object.create(EventTarget.prototype);
+        var right = Object.create(EventTarget.prototype);
+        var leftHits = 0;
+        left.addEventListener("go", function () { leftHits += 1; });
+        right.dispatchEvent(new Event("go"));
+        assert(leftHits === 0, "lazy isolation");
+        left.dispatchEvent(new Event("go"));
+        assert(leftHits === 1, "lazy identity");
+
+        var signaled = new EventTarget();
+        var stopper = new AbortController();
+        var blocked = 0;
+        signaled.addEventListener("go", function () { blocked += 1; }, { signal: stopper.signal });
+        stopper.abort();
+        signaled.dispatchEvent(new Event("go"));
+        assert(blocked === 0 && stopper.signal.aborted, "signal option");
+        var already = new AbortController();
+        already.abort();
+        signaled.addEventListener("go", function () { blocked += 1; }, { signal: already.signal });
+        signaled.dispatchEvent(new Event("go"));
+        assert(blocked === 0, "aborted signal");
+
+        var windowHits = 0;
+        var onWindow = function () { windowHits += 1; };
+        EventTarget.prototype.addEventListener.call(window, "evtgt-window", onWindow);
+        try {
+          var dispatched = EventTarget.prototype.dispatchEvent.call(
+            window,
+            new Event("evtgt-window")
+          );
+          assert(dispatched === true && windowHits === 1, "window listener");
+        } finally {
+          EventTarget.prototype.removeEventListener.call(window, "evtgt-window", onWindow);
+        }
+        windowHits = 0;
+        EventTarget.prototype.dispatchEvent.call(window, new Event("evtgt-window"));
+        assert(windowHits === 0, "window removal");
+
+        var node = document.createElement("div");
+        var nodeHits = 0;
+        var onNode = function () { nodeHits += 1; };
+        EventTarget.prototype.addEventListener.call(node, "evtgt-node", onNode);
+        node.dispatchEvent(new Event("evtgt-node"));
+        assert(nodeHits === 1, "node listener");
+        EventTarget.prototype.removeEventListener.call(node, "evtgt-node", onNode);
+        nodeHits = 0;
+        node.dispatchEvent(new Event("evtgt-node"));
+        assert(nodeHits === 0, "node removal");
+
+        var noop = function () {};
+        throwsIllegal(function () {
+          EventTarget.prototype.addEventListener.call({}, "go", noop);
+        }, "plain add");
+        throwsIllegal(function () {
+          EventTarget.prototype.removeEventListener.call({}, "go", noop);
+        }, "plain remove");
+        throwsIllegal(function () {
+          EventTarget.prototype.dispatchEvent.call({}, new Event("go"));
+        }, "plain dispatch");
+        throwsIllegal(function () {
+          EventTarget.prototype.addEventListener.call(null, "go", noop);
+        }, "null receiver");
+        throwsIllegal(function () {
+          EventTarget.prototype.addEventListener.call(Object.create(null), "go", noop);
+        }, "null prototype");
+        throwsIllegal(function () {
+          EventTarget.prototype.dispatchEvent.call(1, new Event("go"));
+        }, "number receiver");
+      }
+
+      function proveAbort() {
+        var removed = new AbortController();
+        var fired = 0;
+        var handler = function () { fired += 1; };
+        removed.signal.addEventListener("abort", handler);
+        removed.signal.removeEventListener("abort", handler);
+        removed.abort();
+        var live = new AbortController();
+        live.signal.addEventListener("abort", function () { fired += 1; });
+        live.abort();
+        function check() {
+          assert(removed.signal.aborted && live.signal.aborted, "signal aborted");
+          assert(fired === 1, "abort listener");
+        }
+        if (fired === 1) return Promise.resolve();
+        return Promise.resolve().then(check);
+      }
+
+      function finish(error) {
+        if (error) {
+          result.textContent = "FAIL: EVTGT " + (error.message || String(error));
+        } else {
+          result.textContent = "READY: EVTGT PASS";
+        }
+      }
+
+      run.addEventListener("click", function () {
+        try {
+          prove();
+          proveAbort().then(function () { finish(null); }, finish);
+        } catch (error) {
+          finish(error);
+        }
+      });
+    }());
+  </script>
+</body>
+</html>

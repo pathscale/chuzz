@@ -1,0 +1,15 @@
+[
+    (
+        id: "evtgt-all",
+        group: "evtgt",
+        what: "EventTarget subclasses, Reflect.construct, lazy listener slots, window and node forwarding, AbortSignal, once capture and signal, and illegal receivers",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: EVTGT PASS",
+        expect: PaintsNamed,
+        covers: ["READY: EVTGT PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+
