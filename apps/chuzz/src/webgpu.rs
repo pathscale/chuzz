@@ -18,6 +18,7 @@ mod canvas2d;
 mod encoder;
 mod external;
 mod host;
+mod inspector;
 mod pipeline;
 mod readback;
 mod resources;
@@ -40,6 +41,12 @@ pub(crate) fn script_document(
     config: blitz_dom::DocumentConfig,
 ) -> blitz_script::ScriptDocument {
     canvas2d::from_html(html, config)
+}
+
+pub(crate) fn inspect_gpu(
+    document: &mut blitz_script::ScriptDocument,
+) -> Result<blitz_control_protocol::WebGpuReport, blitz_control_protocol::DebugError> {
+    inspector::inspect_document(document)
 }
 
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -220,8 +227,10 @@ struct DeviceConnection {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     lost: Arc<AtomicBool>,
+    loss_reason: Arc<Mutex<Option<String>>>,
     scopes: Mutex<Vec<ErrorScope>>,
     resources: Mutex<Resources>,
+    inspection: Mutex<inspector::DeviceState>,
 }
 
 impl DeviceConnection {
@@ -252,8 +261,24 @@ impl DeviceConnection {
     }
 
     async fn execute(&self, command: Command) -> Result<Value, GpuError> {
+        self.begin_inspection_call(&command);
+        if let Some(result) = self.inspection_command(&command) {
+            self.end_inspection_call();
+            return result;
+        }
+        let presenting = command.op == "present";
+        let result = self.execute_inner(command).await;
+        if presenting && result.is_ok() {
+            self.inspection_flush(true);
+        }
+        self.end_inspection_call();
+        result
+    }
+
+    async fn execute_inner(&self, command: Command) -> Result<Value, GpuError> {
         match command.op.as_str() {
             "destroy" => {
+                self.inspection_flush(false);
                 // Removing resources also releases mapped allocations and views.
                 let resources = std::mem::take(&mut *self.resources());
                 drop(resources);
@@ -262,6 +287,7 @@ impl DeviceConnection {
                     &self.owner,
                     self.id,
                     &self.lost,
+                    &self.loss_reason,
                     "destroyed",
                     "GPUDevice.destroy() was called".to_owned(),
                 );
@@ -322,6 +348,7 @@ struct State {
     ready: Vec<(u64, Value)>,
     events: Vec<(u64, Value)>,
     frames: HashMap<u64, canvas::Frame>,
+    inspection: Arc<inspector::Session>,
     wake: crate::net_bridge::PageWake,
 }
 
@@ -347,16 +374,21 @@ fn post_loss(
     owner: &Weak<Mutex<State>>,
     device: u64,
     lost: &AtomicBool,
+    loss_reason: &Mutex<Option<String>>,
     reason: &str,
     message: String,
 ) {
-    if !lost.swap(true, Ordering::AcqRel) {
-        post_event(
-            owner,
-            device,
-            json!({"type": "lost", "reason": reason, "message": message}),
-        );
+    let mut saved_reason = lock(loss_reason);
+    if lost.swap(true, Ordering::AcqRel) {
+        return;
     }
+    *saved_reason = Some(format!("{reason}: {message}"));
+    drop(saved_reason);
+    post_event(
+        owner,
+        device,
+        json!({"type": "lost", "reason": reason, "message": message}),
+    );
 }
 
 impl Bridge {
@@ -379,6 +411,7 @@ impl Bridge {
             match self.byte_table().claim(command) {
                 Ok(lease) => *bytes = lease,
                 Err(error) => {
+                    self.record_request_error(&request, &error);
                     self.state().ready.push((
                         request.id(),
                         json!({
@@ -409,6 +442,12 @@ impl Bridge {
                     "fireDevice": request.fire_device()
                 }),
             ));
+            drop(state);
+            self.record_request_error(
+                &request,
+                &GpuError::internal("WebGPU request limit reached in chuzz"),
+            );
+            state = self.state();
         } else {
             state.incoming.push_back(request);
         }
@@ -496,6 +535,10 @@ impl Bridge {
                     .get(&device)
                     .cloned()
                     .ok_or_else(|| GpuError::validation("invalid GPUDevice"))?;
+                let call = device.inspection_call(&command);
+                if let Some(flight) = self.state().in_flight.get_mut(&id) {
+                    flight.inspection = Some(call);
+                }
                 device.execute(command).await
             }
         }
@@ -618,14 +661,17 @@ impl Bridge {
             "limits": limits_value(&device.limits())?,
             "info": adapter_info(&adapter),
         });
+        let inspection = inspector::device_report(id, &adapter, &options.label, &device)?;
         let connection = Arc::new(DeviceConnection {
             id,
             owner: Arc::downgrade(&self.0),
             device: Arc::new(device),
             queue: Arc::new(queue),
             lost: Arc::new(AtomicBool::new(false)),
+            loss_reason: Arc::new(Mutex::new(None)),
             scopes: Mutex::new(Vec::new()),
             resources: Mutex::new(Resources::default()),
+            inspection: Mutex::new(inspector::DeviceState::new(inspection)),
         });
         {
             // Zero-filled at creation; 64 KiB covers the vertices a draw over an
@@ -641,6 +687,7 @@ impl Bridge {
 
         let owner = connection.owner.clone();
         let lost = Arc::clone(&connection.lost);
+        let loss_reason = Arc::clone(&connection.loss_reason);
         connection
             .device
             .set_device_lost_callback(move |reason, message| {
@@ -648,14 +695,16 @@ impl Bridge {
                     wgpu::DeviceLostReason::Destroyed => "destroyed",
                     wgpu::DeviceLostReason::Unknown => "unknown",
                 };
-                post_loss(&owner, id, &lost, reason, message);
+                post_loss(&owner, id, &lost, &loss_reason, reason, message);
             });
         let weak = Arc::downgrade(&connection);
         connection
             .device
             .on_uncaptured_error(Arc::new(move |error| {
                 if let Some(connection) = weak.upgrade() {
-                    connection.report(&GpuError::from(error));
+                    let error = GpuError::from(error);
+                    connection.record_native_error(&error);
+                    connection.report(&error);
                 }
             }));
 

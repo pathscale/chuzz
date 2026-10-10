@@ -54,10 +54,9 @@ impl Table {
             || entries.values.len() + entries.active.len() >= RESOURCE_LIMIT
             || entries.next_id >= MAX_ID
         {
-            return Err(GpuError {
-                kind: "out-of-memory",
-                message: "WebGPU transfer limit reached in chuzz".to_owned(),
-            });
+            return Err(GpuError::out_of_memory(
+                "WebGPU transfer limit reached in chuzz",
+            ));
         }
         entries.next_id += 1;
         entries.allocated += size as u64;

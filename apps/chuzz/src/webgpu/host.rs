@@ -42,6 +42,7 @@ pub(super) struct Flight {
     device: Option<u64>,
     fire_device: Option<u64>,
     startup: bool,
+    pub(super) inspection: Option<inspector::Call>,
 }
 
 impl Flight {
@@ -53,9 +54,14 @@ impl Flight {
 impl Bridge {
     pub(super) fn enqueue(&self, request: Request) {
         let id = request.id();
+        let inspection = self.inspection_call(&request);
         let startup = matches!(&request, Request::Adapter { .. } | Request::Device { .. });
         let slot = if startup {
             let Some(slot) = StartupSlot::acquire() else {
+                self.record_request_error(
+                    &request,
+                    &GpuError::internal("WebGPU startup is busy in chuzz"),
+                );
                 self.state().ready.push((
                     id,
                     json!({
@@ -86,6 +92,11 @@ impl Bridge {
                         "fireDevice": request.fire_device()
                     }),
                 ));
+                drop(state);
+                self.record_request_error(
+                    &request,
+                    &GpuError::internal("WebGPU request limit reached in chuzz"),
+                );
                 return;
             }
             state.in_flight.insert(
@@ -95,6 +106,7 @@ impl Bridge {
                     device: request.error_device(),
                     fire_device: request.fire_device(),
                     startup,
+                    inspection,
                 },
             );
             if !startup {
@@ -210,6 +222,13 @@ impl Bridge {
             }
             Err(GpuError::internal("WebGPU request timed out in chuzz"))
         };
+        if let Err(error) = &result
+            && let Some(call) = &flight.inspection
+        {
+            // Independent of page routing, including rejected async pipelines
+            // and validation later swallowed by a logical page error scope.
+            self.record_inspection_error(call, error, flight.device.is_some());
+        }
         let payload = match result {
             Ok(value) => {
                 if flight.fire_device.is_some() {
@@ -283,6 +302,7 @@ impl Bridge {
                         &connection.owner,
                         connection.id,
                         &connection.lost,
+                        &connection.loss_reason,
                         "unknown",
                         format!("WebGPU poll failed: {error}"),
                     );

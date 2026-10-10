@@ -88,6 +88,21 @@
     return value === undefined ? "" : String(value);
   }
 
+  function gpuLabel(object, device, handle, initial) {
+    var current = label(initial);
+    Object.defineProperty(object, "label", {
+      enumerable: true,
+      configurable: true,
+      get: function () { return current; },
+      set: function (value) {
+        current = String(value);
+        var state = objectStates.get(object);
+        if (state && state.descriptor) { state.descriptor.label = current; }
+        if (handle) { fire(device, "setLabel", handle, current); }
+      }
+    });
+  }
+
   function operationError(message) {
     return new DOMException(message, "OperationError");
   }
@@ -446,7 +461,7 @@
     readonly(object, "limits", limits(value.limits));
     readonly(object, "queue", queue);
     readonly(object, "adapterInfo", Object.freeze(value.info));
-    readonly(object, "label", value.label);
+    gpuLabel(object, state, state.handle, value.label);
     return object;
   }
 
@@ -645,7 +660,7 @@
     device.buffers.add(object);
     readonly(object, "size", size);
     readonly(object, "usage", usage);
-    object.label = label(options.label);
+    gpuLabel(object, device, state.handle, options.label);
     fire(device, "createBuffer", state.handle, {
       label: object.label,
       size: size,
@@ -826,7 +841,7 @@
       destroyed: false,
       canvas: null
     });
-    object.label = options.label;
+    gpuLabel(object, device, handle, options.label);
     readonly(object, "width", options.size[0]);
     readonly(object, "height", options.size[1]);
     readonly(object, "depthOrArrayLayers", options.size[2]);
@@ -961,6 +976,8 @@
   function configureNativeCanvas(state) {
     var size = canvasSize(state.canvas);
     state.size = size;
+    fire(state.device, "setCanvasId", state.handle,
+      state.canvas.id ? "canvas:#" + state.canvas.id : "canvas:@" + state.handle);
     fire(state.device, "configure", state.handle, {
       generation: state.generation,
       format: state.configuration.format,
@@ -1125,6 +1142,12 @@
         generation: state.generation
       });
     });
+    Object.keys(devices).forEach(function (handle) {
+      var state = devices[handle];
+      if (!state.inspectionSubmitted) { return; }
+      state.inspectionSubmitted = false;
+      fire(state, "inspectionFlush");
+    });
   };
 
   function gpuType(name) {
@@ -1212,7 +1235,7 @@
 
   function makeGpuObject(type, kind, device, handle, name) {
     var object = Object.create(type.prototype);
-    object.label = label(name);
+    gpuLabel(object, device, handle, name);
     objectStates.set(object, {
       kind: kind, device: device, handle: handle, object: object
     });
@@ -1694,6 +1717,7 @@
     var object = makeGpuObject(type, kind, state.device, 0, descriptor.label);
     var pass = objectStates.get(object);
     pass.encoder = state;
+    pass.descriptor = descriptor;
     pass.commands = descriptor.commands;
     pass.ended = false;
     pass.drawCount = 0;
@@ -1892,6 +1916,7 @@
         }
       });
     });
+    device.inspectionSubmitted = true;
     fire(device, "submit", 0, states.map(function (state) { return state.handle; }));
   });
   method(GPUQueue.prototype, "onSubmittedWorkDone", function () {

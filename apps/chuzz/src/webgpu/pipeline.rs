@@ -449,6 +449,18 @@ impl DeviceConnection {
         }
         self.resources().reserve(handle, 0)?;
         let source: Arc<str> = Arc::from(options.code);
+        let entry_points = wgpu::naga::front::wgsl::parse_str(&source)
+            .map(|module| {
+                module
+                    .entry_points
+                    .iter()
+                    .map(|entry| blitz_control_protocol::WebGpuEntryPoint {
+                        stage: format!("{:?}", entry.stage).to_ascii_lowercase(),
+                        name: entry.name.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut module = None;
         let result = checked(&self.device, || {
             module = Some(Arc::new(self.device.create_shader_module(
@@ -461,6 +473,7 @@ impl DeviceConnection {
         .await;
         let error = result.err();
         if let Some(error) = &error {
+            self.record_native_error(error);
             self.report(error);
         }
         let module = module.ok_or_else(|| GpuError::internal("shader creation did not return"))?;
@@ -474,6 +487,13 @@ impl DeviceConnection {
         );
         // An invalid shader is still a GPUShaderModule. Its diagnostics must
         // remain queryable, rather than disappearing with a rejected creation.
+        let info = self.compilation_info(handle).await?;
+        let messages = serde_json::from_value(info["messages"].clone()).map_err(|error| {
+            GpuError::internal(format!(
+                "invalid native shader compilation information: {error}"
+            ))
+        })?;
+        self.update_shader_inspection(handle, entry_points, messages);
         Ok(Value::Null)
     }
 

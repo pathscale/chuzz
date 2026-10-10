@@ -1825,11 +1825,10 @@ fn serve_page(target: &str) -> Result<(), String> {
         let wait = if document.has_pending_jobs() {
             std::time::Duration::ZERO
         } else {
-            document
-                .next_timer_deadline()
-                .map_or(IDLE_TICK, |due| {
-                    due.saturating_duration_since(std::time::Instant::now()).min(IDLE_TICK)
-                })
+            document.next_timer_deadline().map_or(IDLE_TICK, |due| {
+                due.saturating_duration_since(std::time::Instant::now())
+                    .min(IDLE_TICK)
+            })
         };
         let received = match queued_request.take() {
             Some(pair) => Ok(pair),
@@ -1952,6 +1951,14 @@ fn serve_page(target: &str) -> Result<(), String> {
                     message: "the headless page does not handle this request".into(),
                 }),
             },
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuInspect)
+                if !policy.bot_child =>
+            {
+                match crate::webgpu::inspect_gpu(&mut document) {
+                    Ok(report) => DebugResponse::WebGpu(report),
+                    Err(error) => DebugResponse::Error(error),
+                }
+            }
             ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Capture(request))
                 if !policy.bot_child =>
             {
@@ -1986,8 +1993,8 @@ fn serve_page(target: &str) -> Result<(), String> {
             }
             ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
                 code: "unsupported".into(),
-                message: "the headless page serves diagnostics Capture, Snapshot and \
-                          WindowComposition only"
+                message: "the headless page serves diagnostics Capture, Snapshot, \
+                          WindowComposition and WebGpuInspect only"
                     .into(),
             }),
         };

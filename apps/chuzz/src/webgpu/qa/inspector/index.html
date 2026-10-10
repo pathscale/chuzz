@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU inspector QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      margin: 24px;
+      background: #182335;
+      color: white;
+      font-family: Fixture;
+    }
+    button { padding: 12px; margin-right: 12px; font-family: Fixture; }
+    canvas { display: block; width: 384px; height: 192px; margin-top: 16px; }
+    p { min-height: 24px; }
+  </style>
+</head>
+<body>
+  <h1>WebGPU inspector QA</h1>
+  <button id="run" type="button">Start inspector fixture</button>
+  <button id="error" type="button" disabled>Raise scoped validation error</button>
+  <p id="result" role="status">Ready to start</p>
+  <p id="errors" role="status">SCOPED ERRORS: 0</p>
+  <canvas id="stage" width="192" height="96" aria-label="Three labelled GPU draws"></canvas>
+  <script type="module">
+    const result = document.getElementById("result");
+    const errorLine = document.getElementById("errors");
+    const run = document.getElementById("run");
+    const errorButton = document.getElementById("error");
+    const stage = document.getElementById("stage");
+    let started = false;
+    let requestError = false;
+    let errorCount = 0;
+    let device;
+    let context;
+    let pipeline;
+    let vertices;
+    let texture;
+
+    function fail(error) {
+      result.textContent = "FAIL: " + error.message;
+      errorButton.disabled = true;
+    }
+
+    errorButton.onclick = () => {
+      requestError = true;
+      errorButton.disabled = true;
+    };
+
+    async function frame() {
+      try {
+        // All scopes are opened and popped in this one serial loop, so a click
+        // cannot accidentally pop the normal frame's validation scope.
+        if (requestError) {
+          requestError = false;
+          device.pushErrorScope("validation");
+          const invalid = device.createBuffer({
+            label: "deliberate invalid usage",
+            size: 16,
+            usage: 0
+          });
+          const error = await device.popErrorScope();
+          if (!error || !(error instanceof GPUValidationError)) {
+            throw new Error("the deliberate validation error was not returned");
+          }
+          errorCount++;
+          errorLine.textContent = "SCOPED ERRORS: " + errorCount;
+          invalid.destroy();
+        }
+
+        device.pushErrorScope("validation");
+        const encoder = device.createCommandEncoder({ label: "inspector frame encoder" });
+        const pass = encoder.beginRenderPass({
+          label: "three labelled draws",
+          colorAttachments: [{
+            view: context.getCurrentTexture().createView(),
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0.02, g: 0.04, b: 0.09, a: 1 }
+          }]
+        });
+        pass.setPipeline(pipeline);
+        pass.setVertexBuffer(0, vertices);
+        for (let index = 0; index < 3; index++) {
+          pass.setViewport(index * 64, 0, 64, 96, 0, 1);
+          pass.draw(3, 1, 0, 0);
+        }
+        pass.end();
+        device.queue.submit([encoder.finish({ label: "inspector frame commands" })]);
+        const error = await device.popErrorScope();
+        if (error) { throw new Error(error.message); }
+        result.textContent = "READY: WebGPU inspector";
+        requestAnimationFrame(frame);
+      } catch (error) {
+        fail(error);
+      }
+    }
+
+    run.onclick = async () => {
+      if (started) { return; }
+      started = true;
+      run.disabled = true;
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) { throw new Error("no WebGPU adapter"); }
+        device = await adapter.requestDevice({ label: "inspector fixture device" });
+        device.onuncapturederror = event => fail(event.error);
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        context = stage.getContext("webgpu");
+        context.configure({ device, format, alphaMode: "opaque" });
+
+        device.pushErrorScope("validation");
+        vertices = device.createBuffer({
+          label: "inspector vertices",
+          size: 24,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(
+          vertices, 0, new Float32Array([-0.75, -0.65, 0.75, -0.65, 0, 0.75])
+        );
+        texture = device.createTexture({
+          label: "inspector labelled texture",
+          size: [4, 4, 1],
+          format: "rgba8unorm",
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        });
+        const module = device.createShaderModule({
+          label: "inspector triangle shader",
+          code: `
+            @vertex fn vs(@location(0) p: vec2f) -> @builtin(position) vec4f {
+              return vec4f(p, 0.0, 1.0);
+            }
+            @fragment fn fs() -> @location(0) vec4f {
+              return vec4f(0.2, 0.85, 0.4, 1.0);
+            }
+          `
+        });
+        pipeline = device.createRenderPipeline({
+          label: "initial pipeline label",
+          layout: "auto",
+          vertex: {
+            module,
+            entryPoint: "vs",
+            buffers: [{
+              arrayStride: 8,
+              attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }]
+            }]
+          },
+          fragment: { module, entryPoint: "fs", targets: [{ format }] },
+          primitive: { topology: "triangle-list" }
+        });
+        // The inspector must see the JS label after creation too.
+        pipeline.label = "inspector triangle";
+        const error = await device.popErrorScope();
+        if (error) { throw new Error(error.message); }
+        errorButton.disabled = false;
+        await frame();
+      } catch (error) {
+        fail(error);
+      }
+    };
+  </script>
+</body>
+</html>
+

@@ -561,6 +561,7 @@ pub fn install(
 
     let wake = PageWake::new(Arc::clone(&document.inner().shell_provider));
     let gpu = crate::webgpu::Bridge::new(wake.clone());
+    gpu.install_inspector(document);
     gpu.install_bytes(document);
     gpu.install_canvas_readback(document);
     document.eval_named(crate::webgpu::WEBGPU_SHIM, "<chuzz-webgpu>");

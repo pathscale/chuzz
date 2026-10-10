@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use blitz_control_protocol::{WebGpuColorTarget, WebGpuDepthTarget, WebGpuFrame, WebGpuPass};
+
 use super::pipeline::get;
 use super::resources::{checked, decode};
 use super::*;
@@ -14,6 +16,7 @@ pub(super) struct Objects {
     // their owned descriptors between IPC calls, then replay at finish.
     bundle_encoders: HashMap<u64, BundleDescriptor>,
     bundles: HashMap<u64, Bundle>,
+    inspections: HashMap<u64, Arc<CommandInspection>>,
 }
 
 impl Objects {
@@ -46,6 +49,12 @@ struct Finish {
 struct Bundle {
     native: Arc<wgpu::RenderBundle>,
     command_count: usize,
+    inspection: Option<Arc<WebGpuPass>>,
+}
+
+struct CommandInspection {
+    passes: Vec<WebGpuPass>,
+    complete: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -434,6 +443,10 @@ impl DeviceConnection {
                 resources.encoding.commands.remove(&handle);
                 resources.encoding.bundle_encoders.remove(&handle);
                 resources.encoding.bundles.remove(&handle);
+                resources.encoding.inspections.remove(&handle);
+                if op == "submit" {
+                    self.inspection_discard_pending();
+                }
                 Err(error)
             }
         }
@@ -517,11 +530,22 @@ impl DeviceConnection {
                 let bundle = encoder.finish(&wgpu::RenderBundleDescriptor {
                     label: Some(&finish.label),
                 });
+                let inspection = self.inspection_active().then(|| {
+                    let mut pass = WebGpuPass {
+                        kind: "render".to_owned(),
+                        label: finish.label.clone(),
+                        complete: true,
+                        ..Default::default()
+                    };
+                    summarize_commands(self, &resources, &finish.commands, &mut pass);
+                    Arc::new(pass)
+                });
                 resources.encoding.bundles.insert(
                     handle,
                     Bundle {
                         native: Arc::new(bundle),
                         command_count: finish.commands.len(),
+                        inspection,
                     },
                 );
             }
@@ -553,6 +577,9 @@ impl DeviceConnection {
                     .encoders
                     .remove(&finish.encoder)
                     .ok_or_else(|| GpuError::validation("invalid or finished GPUCommandEncoder"))?;
+                let inspection = self
+                    .inspection_active()
+                    .then(|| summarize_operations(self, &resources, &finish.operations));
                 for operation in &finish.operations {
                     replay(&resources, &mut encoder, operation)?;
                 }
@@ -560,6 +587,12 @@ impl DeviceConnection {
                 // The JS GPUCommandBuffer owns the finish descriptor's label.
                 let _label = finish.label;
                 resources.encoding.commands.insert(handle, encoder.finish());
+                if let Some(inspection) = inspection {
+                    resources
+                        .encoding
+                        .inspections
+                        .insert(handle, Arc::new(inspection));
+                }
             }
             "submit" => {
                 let handles: Vec<u64> = decode(args)?;
@@ -576,6 +609,13 @@ impl DeviceConnection {
                         ));
                     }
                 }
+                let profiling = self.inspection_active();
+                let mut frame = WebGpuFrame {
+                    device: self.id,
+                    submits: 1,
+                    complete: profiling,
+                    ..Default::default()
+                };
                 let mut commands = Vec::with_capacity(handles.len());
                 for handle in handles {
                     let command = resources
@@ -583,9 +623,24 @@ impl DeviceConnection {
                         .commands
                         .remove(&handle)
                         .ok_or_else(|| GpuError::validation("invalid GPUCommandBuffer"))?;
+                    let inspection = resources.encoding.inspections.remove(&handle);
+                    if profiling {
+                        if let Some(inspection) = inspection {
+                            frame.complete &= inspection.complete;
+                            let available =
+                                inspector::PASS_LIMIT.saturating_sub(frame.passes.len());
+                            frame.complete &= inspection.passes.len() <= available;
+                            frame
+                                .passes
+                                .extend(inspection.passes.iter().take(available).cloned());
+                        } else {
+                            frame.complete = false;
+                        }
+                    }
                     commands.push(command);
                 }
                 self.queue.submit(commands);
+                self.inspection_submit(frame);
             }
             _ => {
                 return Err(GpuError::validation(format!(
@@ -595,6 +650,151 @@ impl DeviceConnection {
         }
         Ok(Value::Null)
     }
+}
+
+fn summarize_operations(
+    connection: &DeviceConnection,
+    resources: &Resources,
+    operations: &[Operation],
+) -> CommandInspection {
+    let mut inspection = CommandInspection {
+        passes: Vec::new(),
+        complete: true,
+    };
+    for operation in operations {
+        let (mut pass, commands) = match operation {
+            Operation::Render {
+                label,
+                color_attachments,
+                depth_stencil_attachment,
+                commands,
+                ..
+            } => (
+                WebGpuPass {
+                    kind: "render".to_owned(),
+                    label: label.clone(),
+                    color_targets: color_attachments
+                        .iter()
+                        .map(|attachment| {
+                            attachment.as_ref().map(|attachment| WebGpuColorTarget {
+                                target: connection.inspection_target(resources, attachment.view),
+                                resolve_target: attachment
+                                    .resolve_target
+                                    .map(|view| connection.inspection_target(resources, view)),
+                                load_op: attachment.load_op.clone(),
+                                store_op: attachment.store_op.clone(),
+                            })
+                        })
+                        .collect(),
+                    depth_target: depth_stencil_attachment.as_ref().map(|attachment| {
+                        WebGpuDepthTarget {
+                            target: connection.inspection_target(resources, attachment.view),
+                            depth_load_op: attachment.depth_load_op.clone(),
+                            depth_store_op: attachment.depth_store_op.clone(),
+                            stencil_load_op: attachment.stencil_load_op.clone(),
+                            stencil_store_op: attachment.stencil_store_op.clone(),
+                        }
+                    }),
+                    complete: true,
+                    ..Default::default()
+                },
+                commands,
+            ),
+            Operation::Compute { label, commands } => (
+                WebGpuPass {
+                    kind: "compute".to_owned(),
+                    label: label.clone(),
+                    complete: true,
+                    ..Default::default()
+                },
+                commands,
+            ),
+            _ => continue,
+        };
+        if inspection.passes.len() == inspector::PASS_LIMIT {
+            inspection.complete = false;
+            break;
+        }
+        summarize_commands(connection, resources, commands, &mut pass);
+        inspection.complete &= pass.complete;
+        inspection.passes.push(pass);
+    }
+    inspection
+}
+
+fn summarize_commands(
+    connection: &DeviceConnection,
+    resources: &Resources,
+    commands: &[PassCommand],
+    pass: &mut WebGpuPass,
+) {
+    for command in commands {
+        match command {
+            PassCommand::Pipeline(handle) => {
+                let label = connection.inspection_label(*handle);
+                if !pass.pipelines.contains(&label) {
+                    pass.pipelines.push(label);
+                }
+            }
+            PassCommand::Draw {
+                count, instances, ..
+            } => {
+                pass.draws = pass.draws.saturating_add(1);
+                direct_draw_totals(pass, *count, *instances);
+            }
+            PassCommand::DrawIndexed {
+                count, instances, ..
+            } => {
+                pass.draw_indexed = pass.draw_indexed.saturating_add(1);
+                direct_draw_totals(pass, *count, *instances);
+            }
+            PassCommand::DrawIndirect { indexed, .. } => {
+                if *indexed {
+                    pass.draw_indexed_indirect = pass.draw_indexed_indirect.saturating_add(1);
+                } else {
+                    pass.draw_indirect = pass.draw_indirect.saturating_add(1);
+                }
+            }
+            PassCommand::Dispatch(_) | PassCommand::DispatchIndirect { .. } => {
+                pass.dispatches = pass.dispatches.saturating_add(1);
+            }
+            PassCommand::ExecuteBundles(handles) => {
+                for handle in handles {
+                    let Some(bundle) = resources
+                        .encoding
+                        .bundles
+                        .get(handle)
+                        .and_then(|bundle| bundle.inspection.as_ref())
+                    else {
+                        pass.complete = false;
+                        continue;
+                    };
+                    pass.complete &= bundle.complete;
+                    pass.draws = pass.draws.saturating_add(bundle.draws);
+                    pass.draw_indexed = pass.draw_indexed.saturating_add(bundle.draw_indexed);
+                    pass.draw_indirect = pass.draw_indirect.saturating_add(bundle.draw_indirect);
+                    pass.draw_indexed_indirect = pass
+                        .draw_indexed_indirect
+                        .saturating_add(bundle.draw_indexed_indirect);
+                    pass.vertices = pass.vertices.saturating_add(bundle.vertices);
+                    pass.instances = pass.instances.saturating_add(bundle.instances);
+                    for label in &bundle.pipelines {
+                        if !pass.pipelines.contains(label) {
+                            pass.pipelines.push(label.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn direct_draw_totals(pass: &mut WebGpuPass, count: u32, instances: u32) {
+    pass.vertices = pass
+        .vertices
+        .saturating_add(u64::from(count) * u64::from(instances));
+    pass.instances = pass.instances.saturating_add(u64::from(instances));
 }
 
 fn replay(

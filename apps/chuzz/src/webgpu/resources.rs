@@ -19,6 +19,8 @@ pub(super) struct Command {
 pub(super) struct GpuError {
     pub kind: &'static str,
     pub message: String,
+    /// Other native filters raised by the same checked operation.
+    pub other: Vec<GpuError>,
 }
 
 impl GpuError {
@@ -26,6 +28,7 @@ impl GpuError {
         Self {
             kind: "validation",
             message: message.into(),
+            other: Vec::new(),
         }
     }
 
@@ -33,6 +36,15 @@ impl GpuError {
         Self {
             kind: "internal",
             message: message.into(),
+            other: Vec::new(),
+        }
+    }
+
+    pub fn out_of_memory(message: impl Into<String>) -> Self {
+        Self {
+            kind: "out-of-memory",
+            message: message.into(),
+            other: Vec::new(),
         }
     }
 
@@ -51,6 +63,7 @@ impl From<wgpu::Error> for GpuError {
         Self {
             kind,
             message: error.to_string(),
+            other: Vec::new(),
         }
     }
 }
@@ -76,8 +89,10 @@ pub(super) async fn checked<T>(
         (value, internal.pop(), memory.pop(), validation.pop())
     };
     let errors = [internal.await, memory.await, validation.await];
-    if let Some(error) = errors.into_iter().flatten().next() {
-        Err(error.into())
+    let mut errors = errors.into_iter().flatten().map(GpuError::from);
+    if let Some(mut error) = errors.next() {
+        error.other.extend(errors);
+        Err(error)
     } else {
         Ok(value)
     }
@@ -101,6 +116,16 @@ pub(super) struct Resources {
 }
 
 impl Resources {
+    pub fn live(&self, handle: u64) -> bool {
+        self.buffers.contains_key(&handle)
+            || self.textures.contains_key(&handle)
+            || self.views.contains_key(&handle)
+            || self.samplers.contains_key(&handle)
+            || self.queries.contains_key(&handle)
+            || self.pipelines.contains(handle)
+            || self.encoding.contains(handle)
+    }
+
     pub fn reserve(&self, handle: u64, bytes: u64) -> Result<(), GpuError> {
         if handle == 0
             || self.buffers.contains_key(&handle)
@@ -128,10 +153,9 @@ impl Resources {
         let allocated = self.buffers.values().map(|entry| entry.size).sum::<u64>()
             + self.textures.values().map(|entry| entry.bytes).sum::<u64>();
         if bytes > ALLOCATION_LIMIT || allocated.saturating_add(bytes) > DEVICE_BYTES_LIMIT {
-            return Err(GpuError {
-                kind: "out-of-memory",
-                message: "WebGPU allocation limit reached in chuzz".to_owned(),
-            });
+            return Err(GpuError::out_of_memory(
+                "WebGPU allocation limit reached in chuzz",
+            ));
         }
         Ok(())
     }
