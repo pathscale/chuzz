@@ -766,16 +766,10 @@
       'autoplay', 'loop', 'controls', 'defaultMuted', 'play', 'pause', 'fastSeek',
       'canPlayType'
     ].forEach(function (name) {
-      Object.defineProperty(audioPrototype, name, Object.getOwnPropertyDescriptor(prototype, name));
-    });
-    Object.defineProperty(audioPrototype, 'load', {
-      configurable: true,
-      writable: true,
-      value: function () {
-        var state = stateFor(this);
-        if (state.srcObject || typeof nativeLoad !== 'function') sync(state, true);
-        else nativeLoad.call(this);
-      }
+      // Most of these now live on HTMLMediaElement.prototype, shared with
+      // video already; copy only what is still video-only.
+      var descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+      if (descriptor) Object.defineProperty(audioPrototype, name, descriptor);
     });
   }
 })();
