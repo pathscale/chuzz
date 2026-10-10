@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HTTPS and WSS QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #182335; color: white; font-family: "Fira Sans", sans-serif; }
+    label { display: block; margin: 12px 0; }
+    input { width: 440px; padding: 8px; font: inherit; }
+    button { padding: 12px 20px; font: inherit; }
+    p { max-width: 760px; }
+  </style>
+</head>
+<body>
+  <h1>HTTPS and WSS QA</h1>
+  <p>Load HTTPS assets and keep two backend sessions alive through sequenced heartbeats.</p>
+  <label>TLS 1.3 backend <input id="tls13-origin" value="https://localhost:49443"></label>
+  <label>TLS 1.2 backend <input id="tls12-origin" value="https://localhost:49444"></label>
+  <button id="run" type="button">Run</button>
+  <p id="https-result" role="status">HTTPS pending</p>
+  <p id="tls13-result" role="status">TLS 1.3 WSS pending</p>
+  <p id="tls12-result" role="status">TLS 1.2 WSS pending</p>
+  <p id="result" role="status">TLS pending</p>
+  <script src="./src/tls.ts"></script>
+</body>
+</html>
+

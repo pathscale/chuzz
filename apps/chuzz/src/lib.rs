@@ -14,21 +14,13 @@
 //! the harness, so the harness measured a browser nobody ships. There is one
 //! loader now, and one place a gap gets fixed.
 
-/// Name the TLS provider, rather than letting the resolver imply one.
+/// Install RustCrypto for consumers that use rustls' process default.
 ///
-/// `rustls` selects its cryptographic provider from crate features, and panics
-/// at the first handshake when the graph enables neither provider or
-/// both, and with no lockfile that is not fixed at any point in time.
-///
-/// It presents as a site bug rather than a browser one. The socket never
-/// opens, Solid halts reactivity on the escaped error, and the page collapses
-/// to unnamed nodes, so a QA run reports a broken site.
-///
-/// Both binaries call this before anything can reach the network. An `Err`
-/// means a provider is already installed, which is the outcome being asked
-/// for, so it is discarded.
+/// Both binaries call this before reaching the network. Browser HTTPS and
+/// WSS configurations also name the provider explicitly, so an embedder's
+/// previously installed default cannot change their cryptography.
 pub fn install_crypto_provider() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _ = ps_rustls_rustcrypto::provider().install_default();
 }
 
 #[cfg(feature = "javascript")]
@@ -62,6 +54,7 @@ pub mod net_bridge;
 // fact about serving a directory, not about having no window.
 pub mod page_server;
 pub mod script_fetch;
+mod tls;
 #[cfg(feature = "javascript")]
 mod video;
 #[cfg(feature = "javascript")]

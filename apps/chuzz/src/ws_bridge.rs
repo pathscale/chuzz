@@ -35,7 +35,7 @@ use nago_wss::proto::message::{CloseFrame, Limits, Message};
 use nago_wss::stream::{ByteStream, Errno, StreamExt};
 use nagoya::net::TcpStream;
 use nagoya::reactor::Reactor;
-use rustls_platform_verifier::BuilderVerifierExt;
+
 
 // The default 16 MiB frame cap disconnects pages that send a self-contained
 // image-rich JSON result in one frame. Keep a bounded cap, with room for the
@@ -466,23 +466,13 @@ async fn open_socket(
     }
     let offered: Vec<&str> = protocols.iter().map(String::as_str).collect();
 
-    crate::install_crypto_provider();
-    let provider = rustls::crypto::CryptoProvider::get_default()
-        .cloned()
-        .ok_or_else(|| "no crypto provider".to_owned())?;
     let mut entropy = [0u8; 16];
-    provider
+    crate::tls::crypto_provider()
         .secure_random
         .fill(&mut entropy)
         .map_err(|_| "WebSocket handshake entropy unavailable".to_owned())?;
     let tls = if secure {
-        let config = rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .map_err(|error| error.to_string())?
-            .with_platform_verifier()
-            .map_err(|error| error.to_string())?
-            .with_no_client_auth();
-        Some(Arc::new(config))
+        Some(crate::tls::client_config()?)
     } else {
         None
     };

@@ -91,17 +91,15 @@ wasmi = "1.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# The WebSocket client runs on nagoya. Supply the TLS configuration explicitly
-# so it uses the process crypto provider and the machine's trust policy.
+# HTTPS and WSS use an explicit RustCrypto provider and native trust anchors.
+# The transport must not enable a second crypto backend through crate features.
 nago-wss = { version = "^0.3", default-features = false, features = ["tls", "simd-utf8"] }
-rustls-platform-verifier = "^0.6.2"
-# Named directly only so the binary can install a crypto provider by name. See
-# `install_crypto_provider`: rustls otherwise picks one from crate features and
-# panics at the first handshake when the resolution enables neither provider or
-# both, and with no lockfile that is not fixed at any point in time.
-rustls = { version = "0.23", default-features = false, features = [
-  "aws-lc-rs",
+nago-rustls = { version = "^0.1.2", default-features = false }
+rustls-native-certs = "^0.8.4"
+ps-rustls-rustcrypto = { version = "^0.1.0", default-features = false, features = ["std", "tls12", "zeroize"] }
+rustls = { version = "^0.23.27", default-features = false, features = [
   "std",
+  "tls12",
 ] }
 cursor-icon = "^1"
 cookie_store = "^0.22.1"

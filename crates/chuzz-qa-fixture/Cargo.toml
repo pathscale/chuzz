@@ -13,5 +13,17 @@ publish = false
 name = "chuzz-qa-fixture"
 path = "src/main.rs"
 
+[[bin]]
+name = "chuzz-tls-fixture"
+path = "src/tls_main.rs"
+
 [dependencies]
 nagoya.workspace = true
+nago-wss.workspace = true
+nago-rustls.workspace = true
+rustls.workspace = true
+ps-rustls-rustcrypto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+
