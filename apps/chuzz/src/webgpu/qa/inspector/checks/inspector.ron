@@ -60,5 +60,15 @@
         open_timeout_ms: 30000,
         outcome_timeout_ms: 5000,
     ),
+    (
+        id: "gpu-inspector-pipeline-glob",
+        group: "webgpu",
+        what: "a label glob matches a pipeline whose label carries a varying suffix",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "render-pipeline:inspector*",
+        expect: GpuHasResource,
+        outcome_timeout_ms: 10000,
+    ),
 ]
-
