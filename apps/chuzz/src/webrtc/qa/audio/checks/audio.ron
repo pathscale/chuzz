@@ -2,7 +2,7 @@
     (
         id: "audio-graph",
         group: "webrtc-audio",
-        what: "Native Web Audio renders analyser-only graphs, mixed stream destinations, automation, cloned tracks and resampled near-silent audio",
+        what: "Native Web Audio renders microphone analyser input, mixed W04 stream destinations, automation, independent cloned tracks, ended events and resampled near-silent audio",
         open: None,
         hover: None,
         click: Some("#run"),
@@ -12,3 +12,4 @@
         outcome_timeout_ms: 15000,
     ),
 ]
+

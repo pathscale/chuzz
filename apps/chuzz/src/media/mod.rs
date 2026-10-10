@@ -18,10 +18,11 @@ use serde_json::{Value, json};
 pub mod fake;
 pub mod frame;
 pub mod pcm;
+pub mod source;
 pub mod track;
 
-use fake::Source;
 use frame::VideoPixels;
+use source::Source;
 use track::{Kind, Settings, Track};
 
 const TRACK_LIMIT: usize = 128;
@@ -73,6 +74,7 @@ pub(super) fn allocate() -> Result<u64, Error> {
 
 struct Store {
     tracks: BTreeMap<u64, Arc<Track>>,
+    audio_tracks: HashMap<u64, u64>,
     published: HashMap<u64, (bool, bool, bool)>,
     revision: u64,
     published_revision: u64,
@@ -90,6 +92,7 @@ impl Default for Store {
     fn default() -> Self {
         Self {
             tracks: BTreeMap::new(),
+            audio_tracks: HashMap::new(),
             published: HashMap::new(),
             revision: 0,
             published_revision: 0,
@@ -145,6 +148,10 @@ fn request_constraints(value: Option<&Value>) -> Result<Option<Value>, Error> {
 }
 
 impl Host {
+    pub fn media_epoch(&self) -> Instant {
+        self.origin
+    }
+
     pub fn track(&self, id: u64) -> Result<Arc<Track>, Error> {
         let store = self
             .store
@@ -167,11 +174,12 @@ impl Host {
                 track.stop();
             }
             store.tracks.clear();
+            store.audio_tracks.clear();
             store.published.clear();
         }
     }
 
-    fn control(&self, request: Value) -> Result<Value, Error> {
+    fn control(&self, request: Value, context: &Context) -> Result<Value, Error> {
         let op = request
             .get("op")
             .and_then(Value::as_str)
@@ -183,7 +191,7 @@ impl Host {
         if store.closed {
             return Err(Error::state("capture document has closed"));
         }
-        if !self.secure && !matches!(op, "init" | "id") {
+        if !self.secure && matches!(op, "enumerate" | "acquire" | "present" | "mute") {
             return Err(Error::named(
                 "NotAllowedError",
                 "capture requires a secure context",
@@ -192,6 +200,30 @@ impl Host {
         match op {
             "init" => Ok(json!({"secure": self.secure})),
             "id" => Ok(json!(format!("chuzz-media-{}", allocate()?))),
+            "audioEnded" => Ok(Value::Null),
+            "audioStream" => {
+                if store.tracks.len() >= TRACK_LIMIT {
+                    return Err(Error::named(
+                        "QuotaExceededError",
+                        "too many live capture tracks",
+                    ));
+                }
+                let id = request
+                    .get("audio")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| Error::typ("a graph PCM track identifier is required"))?;
+                let audio = crate::audio::registered_track(context, id)
+                    .map_err(|error| Error::state(&error.to_string()))?;
+                let settings = Settings::Audio {
+                    sample_rate: audio.sample_rate(),
+                    channel_count: audio.channels(),
+                };
+                let source = Arc::new(Source::from_audio(audio, self.origin)?);
+                let track = Arc::new(Track::new(allocate()?, source, json!({}), settings));
+                let descriptor = track.descriptor()?;
+                store.tracks.insert(track.id, track);
+                Ok(descriptor)
+            }
             "enumerate" => {
                 let mut devices = fake::devices(
                     store.video,
@@ -285,7 +317,7 @@ impl Host {
                         store.revision = store.revision.wrapping_add(1);
                         if !value {
                             for track in store.tracks.values() {
-                                if track.source.kind.name() == kind {
+                                if track.source.is_capture() && track.source.kind.name() == kind {
                                     track.stop();
                                 }
                             }
@@ -298,7 +330,7 @@ impl Host {
                         _ => return Err(Error::typ("only capture sources can be muted")),
                     }
                     for track in store.tracks.values() {
-                        if track.source.kind.name() == kind {
+                        if track.source.is_capture() && track.source.kind.name() == kind {
                             track.source.muted.store(value, Ordering::Release);
                         }
                     }
@@ -316,10 +348,25 @@ impl Host {
                     .cloned()
                     .ok_or_else(|| Error::state("unknown or ended capture track"))?;
                 match op {
+                    "audio" => {
+                        if track.source.kind != Kind::Audio || track.is_stopped() {
+                            return Err(Error::state("a live audio track is required"));
+                        }
+                        if let Some(id) = store.audio_tracks.get(&track.id) {
+                            return Ok(json!(id));
+                        }
+                        let audio = crate::audio::pcm::Track::from_media(&track)
+                            .map_err(|error| Error::state(&error))?;
+                        let audio_id = crate::audio::register_track(context, audio)
+                            .map_err(|error| Error::state(&error.to_string()))?;
+                        store.audio_tracks.insert(track.id, audio_id);
+                        Ok(json!(audio_id))
+                    }
                     "describe" => track.descriptor(),
                     "stop" => {
                         track.stop();
                         store.tracks.remove(&id);
+                        store.audio_tracks.remove(&id);
                         store.published.remove(&id);
                         Ok(Value::Null)
                     }
@@ -392,6 +439,7 @@ impl Host {
         }
         for id in ended {
             store.tracks.remove(&id);
+            store.audio_tracks.remove(&id);
             store.published.remove(&id);
         }
         let changed = store.revision != store.published_revision;
@@ -490,7 +538,7 @@ fn control(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
     } else {
         serde_json::from_str::<Value>(&text)
             .map_err(|_| Error::typ("invalid media command"))
-            .and_then(|request| host.control(request))
+            .and_then(|request| host.control(request, context))
     };
     let updates = host
         .updates()
@@ -532,3 +580,4 @@ pub(crate) fn install(document: &mut ScriptDocument) {
         true
     });
 }
+

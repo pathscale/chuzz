@@ -75,6 +75,7 @@ impl Page {
 
     fn register_track(&self, track: Arc<Track>) -> Result<u64, String> {
         let mut state = lock(&self.state);
+        state.tracks.retain(|_, track| !track.ended());
         if state.tracks.len() == TRACKS {
             return Err("QuotaExceededError: audio track limit".to_owned());
         }
@@ -126,6 +127,11 @@ fn page(context: &Context) -> JsResult<Arc<Page>> {
 /// identifier to the JS track through __chuzzAudioAttachTrack.
 pub fn register_track(context: &Context, track: Arc<Track>) -> JsResult<u64> {
     page(context)?.register_track(track).map_err(native_error)
+}
+
+/// Lease a graph output for the media host without copying its PCM history.
+pub(crate) fn registered_track(context: &Context, id: u64) -> JsResult<Arc<Track>> {
+    page(context)?.track(id).map_err(native_error)
 }
 
 /// The same timestamp origin must be used for capture and decoded PCM.
@@ -252,6 +258,7 @@ fn execute(page: &Arc<Page>, command: Command) -> Result<Value, String> {
             let engine = page.engine(context)?;
             let track = track.map(|id| page.track(id)).transpose()?;
             let mut state = lock(&page.state);
+            state.tracks.retain(|_, track| !track.ended());
             if kind == "streamDestination" && state.tracks.len() == TRACKS {
                 return Err("QuotaExceededError: audio track limit".to_owned());
             }
@@ -509,8 +516,13 @@ async fn run(engine: Weak<Engine>, page: Weak<Page>) {
 }
 
 pub(crate) fn install(document: &mut ScriptDocument) {
+    let epoch = document.with_js_context(|context| {
+        crate::media::host(context)
+            .map(|host| host.media_epoch())
+            .unwrap_or_else(|_| Instant::now())
+    });
     let page = Arc::new(Page {
-        epoch: Instant::now(),
+        epoch,
         state: Mutex::new(State::default()),
         events: Mutex::new(VecDeque::new()),
         reader: Mutex::new(None),
@@ -579,3 +591,4 @@ pub(crate) fn install(document: &mut ScriptDocument) {
         true
     });
 }
+

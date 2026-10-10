@@ -133,6 +133,15 @@
     if (!state) throw new TypeError('expected a MediaStreamTrack');
     return state;
   }
+  function attachAudio(track) {
+    var state = stateOf(track);
+    if (state.data.kind !== 'audio' || state.data.readyState !== 'live') return;
+    if (typeof g.__chuzzAudioAttachTrack !== 'function') return;
+    var id = call('audio', { handle: state.data.handle });
+    g.__chuzzAudioAttachTrack(track, id);
+  }
+  Object.defineProperty(g, '__chuzzMediaAttachAudioTrack', { value: attachAudio });
+
   function MediaStreamTrack(token, descriptor) {
     if (token !== secret) throw new TypeError('Illegal constructor');
     Target.call(this);
@@ -141,6 +150,12 @@
     this.onmute = null;
     this.onunmute = null;
     this.onended = null;
+    try {
+      attachAudio(this);
+    } catch (error) {
+      this.stop();
+      throw error;
+    }
   }
   inherit(MediaStreamTrack);
   ['id', 'kind', 'label', 'muted', 'readyState'].forEach(function (name) {
@@ -280,6 +295,28 @@
     }
   };
 
+  Object.defineProperty(g, '__chuzzMediaCreateAudioStream', {
+    value: function (metadata) {
+      if (!metadata || !Number.isSafeInteger(metadata.track) || metadata.track <= 0) {
+        throw new TypeError('invalid graph PCM metadata');
+      }
+      var descriptor = call('audioStream', { audio: metadata.track });
+      var track = new MediaStreamTrack(secret, descriptor);
+      try {
+        return new MediaStream([track]);
+      } catch (error) {
+        track.stop();
+        throw error;
+      }
+    }
+  });
+  Object.defineProperty(g, '__chuzzMediaAudioEnded', {
+    value: function () {
+      // Native source state ends every live clone sharing the closed graph.
+      call('audioEnded');
+    }
+  });
+
   function MediaDeviceInfo(token, data) {
     if (token !== secret) throw new TypeError('Illegal constructor');
     deviceState.set(this, data);
@@ -342,6 +379,11 @@
         return new MediaStream(tracks);
       } catch (error) {
         tracks.forEach(function (track) { track.stop(); });
+        descriptors.forEach(function (descriptor) {
+          if (!liveTracks.has(descriptor.handle)) {
+            try { call('stop', { handle: descriptor.handle }); } catch (ignored) {}
+          }
+        });
         throw error;
       }
     });

@@ -54,6 +54,7 @@
 
   document.getElementById("run").onclick = async function () {
     const owners = [];
+    const captures = [];
     result.textContent = "Running Web Audio";
     measurements.textContent = "";
     try {
@@ -68,6 +69,9 @@
       const second = new OscillatorNode(context, { frequency: 880 });
       const gain = new GainNode(context, { gain: 0.4 });
       const mixed = context.createMediaStreamDestination();
+      assert(mixed.stream instanceof MediaStream, "destination is not a W04 MediaStream");
+      assert(mixed.stream.getAudioTracks()[0] instanceof MediaStreamTrack,
+        "destination is not a W04 MediaStreamTrack");
       first.connect(gain);
       second.connect(gain);
       gain.connect(mixed);
@@ -98,6 +102,57 @@
         "analyser peak is not the rendered 440 Hz tone");
       assert(tone.level > 120, "frequency analyser returned no tone energy");
 
+      const microphoneStream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: { exact: 8000 }, channelCount: { exact: 2 } },
+      });
+      captures.push(microphoneStream);
+      const microphone = microphoneStream.getAudioTracks()[0];
+      assert(microphone instanceof MediaStreamTrack, "microphone is not a W04 track");
+      const microphoneSource = context.createMediaStreamSource(microphoneStream);
+      const microphoneMonitor = analyser(context, 1024);
+      microphoneSource.connect(microphoneMonitor);
+      await waitFor(() => rms(microphoneMonitor) > 0.15,
+        "microphone analyser-only graph did not render capture PCM");
+      const microphonePeak = peak(microphoneMonitor, context);
+      assert(Math.abs(microphonePeak.frequency - 440) < context.sampleRate / microphoneMonitor.fftSize,
+        "microphone dominant bin is not near 440 Hz");
+      assert(microphonePeak.level > 120, "microphone frequency analyser has no tone energy");
+      assert(rms(microphoneMonitor) < 0.20, "microphone amplitude is incorrect");
+
+      microphone.enabled = false;
+      await waitFor(() => rms(microphoneMonitor) === 0,
+        "disabled microphone did not render exact silence");
+      microphone.enabled = true;
+      await waitFor(() => rms(microphoneMonitor) > 0.15,
+        "re-enabled microphone stayed silent");
+      __chuzzFakeMedia.setMuted("audio", true);
+      await waitFor(() => microphone.muted && rms(microphoneMonitor) === 0,
+        "muted microphone did not render silence");
+      assert(!mixed.stream.getAudioTracks()[0].muted && rms(monitor) > 0.2,
+        "fake microphone mute affected the graph destination");
+      __chuzzFakeMedia.setMuted("audio", false);
+      await waitFor(() => !microphone.muted && rms(microphoneMonitor) > 0.15,
+        "unmuted microphone stayed silent");
+
+      await microphone.applyConstraints({
+        sampleRate: { exact: 48000 }, channelCount: { exact: 1 },
+      });
+      await sleep(60);
+      const reconfiguredMicrophonePeak = peak(microphoneMonitor, context);
+      assert(Math.abs(reconfiguredMicrophonePeak.frequency - 440)
+        < context.sampleRate / microphoneMonitor.fftSize,
+        "microphone constraints desynchronized the native PCM format");
+
+      const microphoneClone = microphone.clone();
+      const microphoneCloneStream = new MediaStream([microphoneClone]);
+      captures.push(microphoneCloneStream);
+      const microphoneCloneSource = context.createMediaStreamSource(microphoneCloneStream);
+      const microphoneCloneMonitor = analyser(context, 1024);
+      microphoneCloneSource.connect(microphoneCloneMonitor);
+      microphone.stop();
+      await waitFor(() => rms(microphoneMonitor) === 0 && rms(microphoneCloneMonitor) > 0.15,
+        "microphone stop did not preserve its independently registered clone");
+
       monitor.fftSize = 256;
       assert(monitor.frequencyBinCount === 128, "256 FFT bin count");
       const short = new Uint8Array(9);
@@ -123,7 +178,12 @@
 
       const original = mixed.stream.getAudioTracks()[0];
       const clone = original.clone();
+      assert(clone instanceof MediaStreamTrack, "generated clone is not a W04 track");
       assert(clone !== original && clone.id !== original.id, "track clone identity");
+      let explicitEnded = 0;
+      let cloneEnded = 0;
+      original.addEventListener("ended", () => { explicitEnded++; });
+      clone.addEventListener("ended", () => { cloneEnded++; });
       original.stop();
       assert(original.readyState === "ended" && clone.readyState === "live",
         "stopping one generated track stopped its clone");
@@ -200,12 +260,21 @@
       await context.close();
       assert(context.state === "closed" && clone.readyState === "ended",
         "closing context did not end generated capture");
+      assert(microphoneClone.readyState === "live",
+        "closing an audio consumer stopped microphone capture");
+      await waitFor(() => cloneEnded === 1, "generated clone ended event missing");
+      await sleep(20);
+      assert(cloneEnded === 1 && explicitEnded === 0,
+        "generated track ended events were duplicated or emitted for explicit stop");
+      assert(!cloneStream.active, "ended generated stream stayed active");
 
       measurements.textContent = JSON.stringify({
         mixedRms: initial,
         reducedRms: reduced,
         quietRms,
         tone,
+        microphonePeak,
+        reconfiguredMicrophonePeak,
         resampledPeak,
         sink: stats,
       }, null, 2);
@@ -213,6 +282,10 @@
     } catch (error) {
       result.textContent = "FAIL: " + error.name + ": " + error.message;
     } finally {
+      for (const stream of captures) {
+        for (const track of stream.getTracks()) track.stop();
+      }
+      if (globalThis.__chuzzFakeMedia) __chuzzFakeMedia.setMuted("audio", false);
       for (const context of owners) {
         if (context.state !== "closed") await context.close();
       }

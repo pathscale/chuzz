@@ -7,9 +7,10 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::Error;
-use super::fake::{AUDIO_GROUP, CAMERA, MICROPHONE, Source, VIDEO_GROUP};
+use super::fake::{AUDIO_GROUP, CAMERA, MICROPHONE, VIDEO_GROUP};
 use super::frame::{Cancellation, VideoFrame};
 use super::pcm::Pcm;
+use super::source::Source;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -149,6 +150,9 @@ impl Track {
     }
 
     pub fn is_stopped(&self) -> bool {
+        if self.source.ended() {
+            self.stop();
+        }
         self.stopped.load(Ordering::Acquire)
     }
 
@@ -176,12 +180,12 @@ impl Track {
             "handle": self.id,
             "id": format!("chuzz-track-{}", self.id),
             "kind": self.source.kind.name(),
-            "label": self.source.kind.label(),
+            "label": self.source.label(),
             "enabled": enabled,
             "muted": muted,
             "readyState": if ended { "ended" } else { "live" },
-            "settings": state.settings.json(),
-            "capabilities": self.source.kind.capabilities(),
+            "settings": self.source.settings_json(state.settings),
+            "capabilities": self.source.capabilities(),
             "constraints": state.constraints
         }))
     }
@@ -210,7 +214,11 @@ impl Track {
         if self.is_stopped() {
             return Ok(());
         }
-        let settings = resolve(self.source.kind, &constraints)?;
+        let settings = if let Some(audio) = self.source.audio() {
+            resolve_fixed_audio(audio.sample_rate(), audio.channels(), &constraints)?
+        } else {
+            resolve(self.source.kind, &constraints)?
+        };
         let mut state = self
             .state
             .lock()
@@ -255,7 +263,7 @@ impl Track {
         let pcm = self
             .source
             .pcm(&self.settings()?, first_frame, frames, silent, generation)?;
-        if !pcm.generation.is_current() {
+        if self.is_stopped() || !pcm.generation.is_current() {
             return Err(Error::state("capture PCM was cancelled"));
         }
         Ok(pcm)
@@ -503,3 +511,67 @@ pub fn resolve(kind: Kind, constraints: &Value) -> Result<Settings, Error> {
     }
     Ok(selected)
 }
+
+fn select_fixed_audio(
+    sample_rate: u32,
+    channel_count: u16,
+    sets: &[Set<'_>],
+) -> Result<Settings, Error> {
+    let rate = f64::from(sample_rate);
+    let channels = f64::from(channel_count);
+    let latency = 128.0 / rate;
+    numeric(sets, "sampleRate", [rate, rate], rate, true)?;
+    numeric(
+        sets,
+        "channelCount",
+        [channels, channels],
+        channels,
+        true,
+    )?;
+    numeric(sets, "sampleSize", [32.0, 32.0], 32.0, true)?;
+    numeric(sets, "latency", [latency, latency], latency, false)?;
+    scalar(sets, "deviceId", json!(""))?;
+    scalar(sets, "groupId", json!(""))?;
+    for key in ["echoCancellation", "noiseSuppression", "autoGainControl"] {
+        scalar(sets, key, json!(false))?;
+    }
+    Ok(Settings::Audio {
+        sample_rate,
+        channel_count,
+    })
+}
+
+fn resolve_fixed_audio(
+    sample_rate: u32,
+    channel_count: u16,
+    constraints: &Value,
+) -> Result<Settings, Error> {
+    if !constraints.is_object() {
+        return Err(Error::typ("capture constraints must be a dictionary"));
+    }
+    let mut sets = vec![(constraints, false)];
+    let mut selected = select_fixed_audio(sample_rate, channel_count, &sets)?;
+    if let Some(advanced) = constraints.get("advanced") {
+        let advanced = advanced
+            .as_array()
+            .filter(|sets| sets.len() <= 32)
+            .ok_or_else(|| Error::typ("advanced must contain at most 32 dictionaries"))?;
+        for set in advanced {
+            if !set.is_object() {
+                return Err(Error::typ(
+                    "an advanced constraint set must be a dictionary",
+                ));
+            }
+            sets.push((set, true));
+            match select_fixed_audio(sample_rate, channel_count, &sets) {
+                Ok(settings) => selected = settings,
+                Err(error) if error.name == "OverconstrainedError" => {
+                    sets.pop();
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(selected)
+}
+

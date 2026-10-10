@@ -8,6 +8,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::media::frame::Cancellation;
+
 use super::analysis::Analysis;
 use super::pcm::{Buffer, Pcm, Track};
 use super::resample;
@@ -217,6 +219,7 @@ pub(crate) struct Graph {
     samples: u64,
     sum_squares: f64,
     underruns: u64,
+    cancellation: Cancellation,
 }
 
 impl Graph {
@@ -233,6 +236,7 @@ impl Graph {
             samples: 0,
             sum_squares: 0.0,
             underruns: 0,
+            cancellation: Cancellation::default(),
         }
     }
 
@@ -476,6 +480,7 @@ impl Graph {
     pub(crate) fn close(&mut self) {
         self.closed = true;
         self.running = false;
+        self.cancellation.cancel();
         for node in self.nodes.values() {
             if let Kind::StreamDestination(buffer) = &node.kind {
                 buffer.close();
@@ -491,9 +496,17 @@ impl Graph {
     }
 
     fn pcm(&self, start: Duration, channels: u16, samples: Vec<f32>) -> Arc<Pcm> {
+        let first_frame = (start.as_secs_f64() * f64::from(self.sample_rate)).round() as u64;
         Arc::new(
-            Pcm::new(start, self.sample_rate, channels, Arc::from(samples))
-                .expect("rendered audio has a validated format"),
+            Pcm::new(
+                self.id,
+                self.sample_rate,
+                channels,
+                first_frame,
+                self.cancellation.generation(),
+                Arc::from(samples),
+            )
+            .expect("rendered audio has a validated format"),
         )
     }
 

@@ -1,6 +1,7 @@
 //! Immutable, interleaved floating-point PCM shared by capture and output.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::Error;
 use super::frame::{Generation, MediaTime};
@@ -69,6 +70,36 @@ impl Pcm {
         }
     }
 
+    pub fn start(&self) -> Duration {
+        Duration::from_secs_f64(self.presentation.seconds())
+    }
+
+    pub fn end(&self) -> Duration {
+        self.start() + Duration::from_secs_f64(self.duration().seconds())
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    pub(crate) fn at(&self, frame: usize, channel: usize, output_channels: u16) -> f32 {
+        if frame >= self.frames() || !self.generation.is_current() {
+            return 0.0;
+        }
+        let channels = usize::from(self.channels);
+        if channels == 2 && output_channels == 1 {
+            let left = f64::from(self.samples[frame * 2]);
+            let right = f64::from(self.samples[frame * 2 + 1]);
+            ((left + right) * 0.5) as f32
+        } else {
+            self.samples[frame * channels + channel.min(channels - 1)]
+        }
+    }
+
     pub fn energy(&self) -> f64 {
         self.samples
             .iter()
@@ -80,3 +111,4 @@ impl Pcm {
         (self.energy() / self.samples.len() as f64).sqrt()
     }
 }
+

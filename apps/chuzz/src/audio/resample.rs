@@ -39,7 +39,6 @@ pub(crate) fn read(
         return output;
     }
 
-    let blocks = track.buffer.snapshot();
     let input_rate = f64::from(track.sample_rate());
     let target_rate = f64::from(output_rate);
     let cutoff = (target_rate / input_rate).min(1.0);
@@ -47,6 +46,31 @@ pub(crate) fn read(
     // for an input quantum and the symmetric interpolation filter.
     let latency = 2.0 * (128.0 / target_rate).max(128.0 / input_rate)
         + f64::from(RADIUS) / input_rate;
+    let blocks = if let Some(media) = track.media()
+        && media.source.is_capture()
+    {
+        // Capture is synchronous and deterministic. Pull only the window
+        // needed by this render quantum, including the interpolation taps.
+        let first = ((start.as_secs_f64() - latency) * input_rate)
+            .floor()
+            .max(0.0) as u64;
+        let first = first.saturating_sub(RADIUS as u64);
+        let last = ((start.as_secs_f64() + frames as f64 / target_rate - latency)
+            * input_rate)
+            .ceil()
+            .max(0.0) as u64;
+        let last = last.saturating_add(RADIUS as u64 + 1);
+        let length = last.saturating_sub(first);
+        let Ok(length) = usize::try_from(length) else {
+            return output;
+        };
+        let Ok(pcm) = media.pcm_at(first, length) else {
+            return output;
+        };
+        vec![Arc::new(pcm)]
+    } else {
+        track.buffer.snapshot()
+    };
 
     for frame in 0..frames {
         let time = start.as_secs_f64() + frame as f64 / target_rate - latency;
@@ -85,3 +109,4 @@ pub(crate) fn read(
     }
     output
 }
+

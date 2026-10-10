@@ -3,9 +3,6 @@
 
   const contexts = new Map();
   const trackIds = new WeakMap();
-  const tracks = new Map();
-  const trackToken = {};
-  let nextStream = 1;
 
   function exception(name, message) {
     if (typeof g.DOMException === "function" && name !== "RangeError" && name !== "TypeError") {
@@ -108,133 +105,6 @@
     }
   }
 
-  class GraphTrack extends AudioEvents {
-    constructor(token, metadata) {
-      super();
-      if (token !== trackToken) throw new TypeError("Illegal constructor");
-      this._native = metadata.track;
-      this._rate = metadata.sampleRate;
-      this._channels = metadata.channelCount;
-      this._constraints = {};
-      this._endedNotified = false;
-      this._stopped = !!metadata.ended;
-      this.onended = null;
-      this.onmute = null;
-      this.onunmute = null;
-      this.contentHint = "";
-      trackIds.set(this, this._native);
-      tracks.set(this._native, this);
-    }
-    get id() { return "chuzz-audio-" + this._native; }
-    get kind() { return "audio"; }
-    get label() { return "Web Audio destination"; }
-    get muted() { return false; }
-    get readyState() {
-      return call({ op: "track", track: this._native, action: "inspect" }).ended ? "ended" : "live";
-    }
-    get enabled() {
-      return call({ op: "track", track: this._native, action: "inspect" }).enabled;
-    }
-    set enabled(value) {
-      call({ op: "track", track: this._native, action: "enabled", enabled: !!value });
-    }
-    stop() {
-      call({ op: "track", track: this._native, action: "stop" });
-      this._stopped = true;
-    }
-    clone() {
-      return new GraphTrack(trackToken, call({
-        op: "track", track: this._native, action: "clone",
-      }));
-    }
-    getSettings() {
-      return {
-        sampleRate: this._rate,
-        channelCount: this._channels,
-        latency: 128 / this._rate,
-      };
-    }
-    getCapabilities() {
-      return {
-        sampleRate: { min: this._rate, max: this._rate },
-        channelCount: { min: this._channels, max: this._channels },
-        latency: { min: 128 / this._rate, max: 128 / this._rate },
-      };
-    }
-    getConstraints() { return JSON.parse(JSON.stringify(this._constraints)); }
-    applyConstraints(constraints = {}) {
-      try {
-        for (const pair of [["sampleRate", this._rate], ["channelCount", this._channels]]) {
-          const requested = constraints[pair[0]];
-          if (requested && typeof requested === "object") {
-            if ((requested.exact !== undefined && Number(requested.exact) !== pair[1])
-                || (requested.min !== undefined && Number(requested.min) > pair[1])
-                || (requested.max !== undefined && Number(requested.max) < pair[1])) {
-              const error = exception("OverconstrainedError", "fixed destination format");
-              error.constraint = pair[0];
-              throw error;
-            }
-          }
-        }
-        this._constraints = JSON.parse(JSON.stringify(constraints));
-        return Promise.resolve();
-      } catch (error) {
-        return Promise.reject(error);
-      }
-    }
-    _sourceEnded() {
-      if (!this._stopped && !this._endedNotified) {
-        this._endedNotified = true;
-        this._emit("ended");
-      }
-    }
-  }
-
-  class GraphStream extends AudioEvents {
-    constructor(input = []) {
-      super();
-      if (input && typeof input.getTracks === "function") input = input.getTracks();
-      this._tracks = [];
-      this._id = "chuzz-audio-stream-" + nextStream++;
-      this.onaddtrack = null;
-      this.onremovetrack = null;
-      for (const track of input) {
-        if (!track || typeof track.clone !== "function" || typeof track.kind !== "string") {
-          throw new TypeError("expected a MediaStreamTrack");
-        }
-        if (!this._tracks.includes(track)) this._tracks.push(track);
-      }
-    }
-    get id() { return this._id; }
-    get active() { return this._tracks.some(track => track.readyState === "live"); }
-    getTracks() { return this._tracks.slice(); }
-    getAudioTracks() { return this._tracks.filter(track => track.kind === "audio"); }
-    getVideoTracks() { return this._tracks.filter(track => track.kind === "video"); }
-    getTrackById(id) { return this._tracks.find(track => track.id === String(id)) || null; }
-    addTrack(track) {
-      if (!track || typeof track.clone !== "function" || typeof track.kind !== "string") {
-        throw new TypeError("expected a MediaStreamTrack");
-      }
-      if (!this._tracks.includes(track)) {
-        this._tracks.push(track);
-        this._emit("addtrack", { track });
-      }
-    }
-    removeTrack(track) {
-      const index = this._tracks.indexOf(track);
-      if (index !== -1) {
-        this._tracks.splice(index, 1);
-        this._emit("removetrack", { track });
-      }
-    }
-    clone() { return new GraphStream(this._tracks.map(track => track.clone())); }
-  }
-
-  // W04 can supply its complete media wrappers while retaining this native
-  // PCM registry. The fallback provides real generated-audio track ownership
-  // on revisions that do not yet have the capture wave.
-  if (typeof g.MediaStreamTrack !== "function") g.MediaStreamTrack = GraphTrack;
-  if (typeof g.MediaStream !== "function") g.MediaStream = GraphStream;
   g.__chuzzAudioAttachTrack = function (track, id) {
     if (!track || !Number.isSafeInteger(id) || id <= 0) throw new TypeError("invalid audio track");
     trackIds.set(track, id);
@@ -440,6 +310,10 @@
       const audio = stream.getAudioTracks().slice().sort((left, right) =>
         String(left.id) < String(right.id) ? -1 : String(left.id) > String(right.id) ? 1 : 0);
       if (!audio.length) throw exception("InvalidStateError", "stream has no audio track");
+      if (trackIds.get(audio[0]) === undefined
+          && typeof g.__chuzzMediaAttachAudioTrack === "function") {
+        g.__chuzzMediaAttachAudioTrack(audio[0]);
+      }
       const id = trackIds.get(audio[0]);
       if (id === undefined) {
         throw exception("NotSupportedError", "track has no native PCM registration");
@@ -452,16 +326,15 @@
 
   class MediaStreamAudioDestinationNode extends AudioNode {
     constructor(context) {
+      if (typeof g.__chuzzMediaCreateAudioStream !== "function") {
+        throw exception("NotSupportedError", "native media adapter is unavailable");
+      }
       const metadata = context._create("streamDestination");
       super(context, metadata.node, 1, 0);
-      let stream;
-      if (typeof g.__chuzzMediaCreateAudioStream === "function") {
-        stream = g.__chuzzMediaCreateAudioStream(metadata.audio);
-        const audio = stream.getAudioTracks();
-        if (audio.length !== 1) throw new TypeError("audio media adapter must produce one track");
-        trackIds.set(audio[0], metadata.audio.track);
-      } else {
-        stream = new g.MediaStream([new GraphTrack(trackToken, metadata.audio)]);
+      const stream = g.__chuzzMediaCreateAudioStream(metadata.audio);
+      const audio = stream.getAudioTracks();
+      if (audio.length !== 1 || trackIds.get(audio[0]) === undefined) {
+        throw new TypeError("audio media adapter must produce one registered track");
       }
       Object.defineProperty(this, "stream", { value: stream, enumerable: true });
     }
@@ -512,8 +385,6 @@
         }
         if (state === "closed") {
           for (const id of result.endedTracks || []) {
-            const track = tracks.get(id);
-            if (track) track._sourceEnded();
             if (typeof g.__chuzzMediaAudioEnded === "function") g.__chuzzMediaAudioEnded(id);
           }
           contexts.delete(this._id);
@@ -566,3 +437,4 @@
   g.MediaStreamAudioSourceNode = MediaStreamAudioSourceNode;
   g.MediaStreamAudioDestinationNode = MediaStreamAudioDestinationNode;
 })(globalThis);
+
