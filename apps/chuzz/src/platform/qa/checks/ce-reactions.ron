@@ -1,0 +1,15 @@
+[
+    (
+        id: "ce-reactions",
+        group: "ce-reactions",
+        what: "ES5 Reflect.construct and HTMLElement.call upgrades, captured callbacks, define-time TypeError, parsed observed attributes, and connected move ordering",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: CEREACT PASS",
+        expect: PaintsNamed,
+        covers: ["READY: CEREACT PASS", "CEREACT upgraded"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+

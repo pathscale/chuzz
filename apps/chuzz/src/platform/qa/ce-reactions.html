@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CE reactions</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { font-family: Fixture; margin: 0; }
+    #result, cereact-parsed { display: block; font-family: Fixture; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <cereact-parsed id="p1" label="one"></cereact-parsed>
+  <cereact-parsed id="p2" label="two"></cereact-parsed>
+  <div id="result"></div>
+  <script>
+    "use strict";
+    const result = document.getElementById("result");
+    const failures = [];
+    function check(condition, reason) {
+      if (!condition) failures.push(reason);
+    }
+    function inherit(constructor) {
+      constructor.prototype = Object.create(HTMLElement.prototype);
+      constructor.prototype.constructor = constructor;
+    }
+    function iterable() {
+      const values = ["label"];
+      return {
+        0: "ignored",
+        length: 1,
+        [Symbol.iterator]: function () {
+          let index = 0;
+          return {
+            next: function () {
+              if (index < values.length) return { value: values[index++], done: false };
+              return { value: undefined, done: true };
+            },
+          };
+        },
+      };
+    }
+    try {
+      check(Object.getPrototypeOf(HTMLDivElement) === HTMLElement, "div constructor chain");
+      check(Object.getPrototypeOf(HTMLMediaElement) === HTMLElement, "media constructor chain");
+      check(Object.getPrototypeOf(HTMLAudioElement) === HTMLMediaElement, "audio constructor chain");
+      check(HTMLElement.prototype.constructor === HTMLElement, "HTMLElement constructor property");
+      check(document.createElement("div") instanceof HTMLDivElement, "div instanceof");
+      check(document.createElement("span") instanceof HTMLElement, "span instanceof HTMLElement");
+      let bare = "none";
+      try { new HTMLElement(); } catch (error) { bare = error.name; }
+      check(bare === "TypeError", "bare HTMLElement " + bare);
+
+      const parsed = [];
+      function Parsed() {
+        const element = Reflect.construct(HTMLElement, [], new.target);
+        parsed.push("construct:" + (new.target === Parsed) + ":" + element.tagName);
+        return element;
+      }
+      inherit(Parsed);
+      Parsed.observedAttributes = ["label"];
+      Parsed.prototype.attributeChangedCallback = function (name, oldValue, newValue, namespace) {
+        parsed.push(["attr", this.id, name, oldValue, newValue, namespace].join(":"));
+      };
+      Parsed.prototype.connectedCallback = function () {
+        parsed.push("connect:" + this.id);
+        if (this.id === "p1") this.textContent = "CEREACT upgraded";
+      };
+      customElements.define("cereact-parsed", Parsed);
+      check(customElements.get("cereact-parsed") === Parsed, "parsed get");
+      const p1 = document.getElementById("p1");
+      check(p1 instanceof Parsed && p1 instanceof HTMLElement, "parsed instanceof");
+      check(p1.constructor === Parsed, "parsed constructor");
+      check(Object.getPrototypeOf(p1) === Parsed.prototype, "parsed prototype");
+      check(p1.textContent === "CEREACT upgraded", "painted upgrade");
+      check(parsed.join("|") === [
+        "construct:true:CEREACT-PARSED",
+        "attr:p1:label:null:one:null",
+        "connect:p1",
+        "construct:true:CEREACT-PARSED",
+        "attr:p2:label:null:two:null",
+        "connect:p2",
+      ].join("|"), "parsed order " + parsed.join("|"));
+
+      function CallStyle() {
+        const self = HTMLElement.call(this);
+        return self;
+      }
+      inherit(CallStyle);
+      customElements.define("cereact-call", CallStyle);
+      const callEl = document.createElement("cereact-call");
+      check(callEl.tagName === "CEREACT-CALL" && callEl instanceof CallStyle && callEl instanceof HTMLElement, "call upgrade");
+      check(callEl.constructor === CallStyle && Object.getPrototypeOf(callEl) === CallStyle.prototype, "call identity");
+      try {
+        const callNew = new CallStyle();
+        check(callNew.tagName === "CEREACT-CALL" && callNew instanceof CallStyle, "call direct");
+      } catch (error) {
+        check(false, "call direct " + error.name + " " + error.message);
+      }
+
+      function Adapter() {
+        return HTMLElement.call(this) || this;
+      }
+      inherit(Adapter);
+      const adapterLog = [];
+      Adapter.prototype.connectedCallback = function () {
+        adapterLog.push("adapter-connect:" + this.tagName);
+      };
+      customElements.define("cereact-adapter", Adapter);
+      const adapter = document.createElement("cereact-adapter");
+      document.body.appendChild(adapter);
+      check(adapter instanceof Adapter && adapterLog.join("|") === "adapter-connect:CEREACT-ADAPTER", "adapter " + adapterLog.join("|"));
+
+      const sparseLog = [];
+      function Sparse() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(Sparse);
+      Sparse.prototype.disconnectedCallback = undefined;
+      Sparse.prototype.connectedCallback = function () { sparseLog.push("sparse-connect"); };
+      customElements.define("cereact-sparse", Sparse);
+      const sparse = document.createElement("cereact-sparse");
+      document.body.appendChild(sparse);
+      sparse.remove();
+      sparse.setAttribute("label", "x");
+      check(sparseLog.join("|") === "sparse-connect", "sparse " + sparseLog.join("|"));
+
+      function expectTypeError(label, name, assign) {
+        const Ctor = function () { return Reflect.construct(HTMLElement, [], new.target); };
+        inherit(Ctor);
+        assign(Ctor);
+        let errorName = "none";
+        try { customElements.define(name, Ctor); } catch (error) { errorName = error.name; }
+        check(errorName === "TypeError", label + " " + errorName);
+        check(customElements.get(name) === undefined, label + " registered");
+      }
+      expectTypeError("null-callback", "cereact-bad-null", function (Ctor) { Ctor.prototype.connectedCallback = null; });
+      expectTypeError("number-callback", "cereact-bad-num", function (Ctor) { Ctor.prototype.disconnectedCallback = 1; });
+      expectTypeError("object-callback", "cereact-bad-obj", function (Ctor) { Ctor.prototype.adoptedCallback = {}; });
+      expectTypeError("move-callback", "cereact-bad-move", function (Ctor) { Ctor.prototype.connectedMoveCallback = 1; });
+
+      const snapLog = [];
+      function Snap() {
+        return HTMLElement.call(this);
+      }
+      inherit(Snap);
+      Snap.observedAttributes = iterable();
+      Snap.prototype.connectedCallback = function () { snapLog.push("snap-connect"); };
+      Snap.prototype.attributeChangedCallback = function (name, oldValue, newValue, namespace) {
+        snapLog.push(["snap-attr", name, oldValue, newValue, namespace === null].join(":"));
+      };
+      customElements.define("cereact-snap", Snap);
+      Snap.prototype.connectedCallback = function () { snapLog.push("snap-replaced-connect"); };
+      Snap.prototype.attributeChangedCallback = function () { snapLog.push("snap-replaced-attr"); };
+      Snap.observedAttributes = ["other"];
+      const snap = document.createElement("cereact-snap");
+      document.body.appendChild(snap);
+      snap.setAttribute("label", "a");
+      snap.setAttribute("other", "b");
+      snap.setAttribute("ignored", "c");
+      check(snapLog.join("|") === "snap-connect|snap-attr:label:null:a:true", "snap " + snapLog.join("|"));
+
+      function ArrayLike() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(ArrayLike);
+      ArrayLike.prototype.attributeChangedCallback = function () {};
+      ArrayLike.observedAttributes = { length: 1, 0: "label" };
+      let arrayLike = "none";
+      try { customElements.define("cereact-arraylike", ArrayLike); } catch (error) { arrayLike = error.name; }
+      check(arrayLike === "TypeError", "arraylike " + arrayLike);
+      check(customElements.get("cereact-arraylike") === undefined, "arraylike registered");
+
+      const orderLog = [];
+      function Order() {
+        orderLog.push("order-construct");
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(Order);
+      Order.observedAttributes = ["label"];
+      Order.prototype.attributeChangedCallback = function (name, oldValue, newValue) {
+        orderLog.push(["order-attr", name, oldValue, newValue].join(":"));
+      };
+      Order.prototype.connectedCallback = function () {
+        orderLog.push("order-before");
+        this.setAttribute("label", "next");
+        orderLog.push("order-after");
+      };
+      customElements.define("cereact-order", Order);
+      const order = document.createElement("cereact-order");
+      document.body.appendChild(order);
+      check(orderLog.join("|") === "order-construct|order-before|order-attr:label:null:next|order-after", "order " + orderLog.join("|"));
+
+      const moverLog = [];
+      function Mover() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(Mover);
+      Mover.prototype.connectedCallback = function () { moverLog.push("mover-connect"); };
+      Mover.prototype.disconnectedCallback = function () { moverLog.push("mover-disconnect"); };
+      Mover.prototype.connectedMoveCallback = function () { moverLog.push("mover-move"); };
+      customElements.define("cereact-mover", Mover);
+      Mover.prototype.connectedMoveCallback = function () { moverLog.push("mover-replaced"); };
+      const boxA = document.createElement("div");
+      const boxB = document.createElement("div");
+      document.body.appendChild(boxA);
+      document.body.appendChild(boxB);
+      const mover = document.createElement("cereact-mover");
+      boxA.appendChild(mover);
+      boxB.appendChild(mover);
+      mover.remove();
+      check(moverLog.join("|") === "mover-connect|mover-move|mover-disconnect", "mover " + moverLog.join("|"));
+
+      const plainLog = [];
+      function PlainMove() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(PlainMove);
+      PlainMove.prototype.connectedCallback = function () { plainLog.push("plain-connect"); };
+      PlainMove.prototype.disconnectedCallback = function () { plainLog.push("plain-disconnect"); };
+      customElements.define("cereact-plain", PlainMove);
+      const plain = document.createElement("cereact-plain");
+      boxA.appendChild(plain);
+      boxB.appendChild(plain);
+      plain.remove();
+      check(plainLog.join("|") === "plain-connect|plain-disconnect|plain-connect|plain-disconnect", "plain " + plainLog.join("|"));
+
+      const liveLog = [];
+      function Live() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(Live);
+      Live.prototype.connectedCallback = function () { liveLog.push("live-old"); };
+      customElements.define("cereact-live", Live);
+      const secondProto = Object.create(HTMLElement.prototype);
+      secondProto.constructor = Live;
+      secondProto.connectedCallback = function () { liveLog.push("live-new"); };
+      Live.prototype = secondProto;
+      const live = new Live();
+      document.body.appendChild(live);
+      check(Object.getPrototypeOf(live) === secondProto, "live prototype");
+      check(liveLog.join("|") === "live-old", "live callback " + liveLog.join("|"));
+
+      class Modern extends HTMLElement {
+        constructor() {
+          super();
+          this.modern = true;
+        }
+      }
+      customElements.define("cereact-modern", Modern);
+      const modern = document.createElement("cereact-modern");
+      check(modern.modern === true && modern.tagName === "CEREACT-MODERN" && modern instanceof Modern && modern instanceof HTMLElement, "modern");
+
+      class Para extends HTMLParagraphElement {
+        constructor() {
+          super();
+          this.para = true;
+        }
+      }
+      customElements.define("cereact-para", Para, { extends: "p" });
+      const para = new Para();
+      check(para.para === true && para.tagName === "P" && para instanceof Para && para instanceof HTMLParagraphElement, "customized");
+
+      class Wrong extends HTMLParagraphElement {
+        constructor() { super(); }
+      }
+      customElements.define("cereact-wrong", Wrong);
+      let wrong = "none";
+      try { new Wrong(); } catch (error) { wrong = error.name; }
+      check(wrong === "TypeError", "wrong base " + wrong);
+
+      function FormPlain() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(FormPlain);
+      FormPlain.formAssociated = true;
+      customElements.define("cereact-formplain", FormPlain);
+      check(customElements.get("cereact-formplain") === FormPlain, "form plain");
+
+      function FormBad() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(FormBad);
+      FormBad.formAssociated = true;
+      FormBad.prototype.formResetCallback = 1;
+      let formBad = "none";
+      try { customElements.define("cereact-formbad", FormBad); } catch (error) { formBad = error.name; }
+      check(formBad === "TypeError", "formbad " + formBad);
+      check(customElements.get("cereact-formbad") === undefined, "formbad registered");
+
+      function FormString() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(FormString);
+      FormString.formAssociated = "false";
+      FormString.prototype.formDisabledCallback = {};
+      let formString = "none";
+      try { customElements.define("cereact-formstring", FormString); } catch (error) { formString = error.name; }
+      check(formString === "TypeError", "formstring " + formString);
+      check(customElements.get("cereact-formstring") === undefined, "formstring registered");
+
+      function FormSkip() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(FormSkip);
+      FormSkip.formAssociated = false;
+      FormSkip.prototype.formResetCallback = 1;
+      FormSkip.prototype.connectedCallback = function () {};
+      let formSkip = "defined";
+      try { customElements.define("cereact-formskip", FormSkip); } catch (error) { formSkip = error.name; }
+      check(formSkip === "defined", "formskip " + formSkip);
+      check(customElements.get("cereact-formskip") === FormSkip, "formskip get");
+
+      const boomLog = [];
+      function Boom() {
+        return Reflect.construct(HTMLElement, [], new.target);
+      }
+      inherit(Boom);
+      Boom.prototype.connectedCallback = function () {
+        boomLog.push("boom-connect");
+        throw new Error("boom");
+      };
+      Boom.prototype.disconnectedCallback = function () { boomLog.push("boom-disconnect"); };
+      customElements.define("cereact-boom", Boom);
+      const boom = document.createElement("cereact-boom");
+      let boomThrew = false;
+      try { document.body.appendChild(boom); } catch (error) { boomThrew = true; }
+      boom.remove();
+      check(boomThrew === false, "boom rethrew");
+      check(boomLog.join("|") === "boom-connect|boom-disconnect", "boom " + boomLog.join("|"));
+
+      result.textContent = failures.length ? ("FAIL: CEREACT " + failures.join("; ")) : "READY: CEREACT PASS";
+    } catch (error) {
+      result.textContent = "FAIL: CEREACT " + (error && error.name ? (error.name + " " + error.message) : error);
+    }
+  </script>
+</body>
+</html>
