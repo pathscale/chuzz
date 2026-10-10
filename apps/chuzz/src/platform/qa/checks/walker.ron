@@ -1,0 +1,15 @@
+[
+    (
+        id: "sites-dom-traversal",
+        group: "walker",
+        what: "Native TreeWalker navigation, masks and filters; live NodeIterator removal, replacement and moves",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "PASS: walker",
+        expect: PaintsNamed,
+        covers: ["Traversal rendered"],
+        outcome_timeout_ms: 10000,
+    ),
+]
+
