@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>JPEG XL image QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <canvas id="target" width="160" height="160" aria-label="JPEG XL canvas"></canvas>
+  <p id="result" role="status">JPEG XL waiting</p>
+  <script>
+    // A script-created Image with a JPEG XL src (libjxl conformance sample), drawn into a 2D canvas, and the same
+    // bytes through createImageBitmap from a Blob.
+    var result = document.getElementById("result");
+    function fail(reason) { result.textContent = "FAIL: JXLIMG " + reason; }
+    var image = new Image();
+    image.onerror = function () { fail("onerror fired for a valid JPEG XL file"); };
+    image.onload = function () {
+      if (!(image.naturalWidth > 0 && image.naturalHeight > 0)) return fail("natural size " + image.naturalWidth);
+      var context = document.getElementById("target").getContext("2d");
+      context.drawImage(image, 0, 0, 160, 160);
+      var data = context.getImageData(0, 0, 160, 160).data;
+      var opaque = 0, colours = {};
+      for (var i = 0; i < data.length; i += 4) {
+        if (data[i + 3] > 0) { opaque++; colours[data[i] >> 5 + "," + (data[i + 1] >> 5) + "," + (data[i + 2] >> 5)] = 1; }
+      }
+      if (opaque < 1000) return fail("only " + opaque + " painted pixels");
+      if (Object.keys(colours).length < 3) return fail("decoded to a flat image");
+      fetch("img/sunset_logo.jxl").then(function (response) { return response.blob(); })
+        .then(function (blob) { return createImageBitmap(blob); })
+        .then(function (bitmap) {
+          if (bitmap.width !== image.naturalWidth || bitmap.height !== image.naturalHeight) {
+            return fail("bitmap " + bitmap.width + "x" + bitmap.height);
+          }
+          result.textContent = "READY: JXLIMG PASS " + image.naturalWidth + "x" + image.naturalHeight;
+        }, function (error) { fail("createImageBitmap " + error.message); });
+    };
+    image.src = "img/sunset_logo.jxl";
+  </script>
+</body>
+</html>

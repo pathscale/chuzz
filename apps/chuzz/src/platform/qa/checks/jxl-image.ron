@@ -1,0 +1,24 @@
+[
+    (
+        id: "jxl-image-script",
+        group: "jxl-image",
+        what: "new Image() and createImageBitmap decode a JPEG XL file to a multi-colour image drawn into a 2D canvas",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: JXLIMG PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "jxl-image-canvas-paints",
+        group: "jxl-image",
+        what: "the canvas holding the decoded JPEG XL reaches document painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#target",
+        expect: VisibleInk,
+        outcome_timeout_ms: 10000,
+    ),
+]
