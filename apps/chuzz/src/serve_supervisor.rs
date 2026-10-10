@@ -421,9 +421,13 @@ impl Supervisor {
         match frame {
             WorkerFrame::Begin(operation) => {
                 if let Some(session) = &mut self.session {
+                    let budget = match operation {
+                        Operation::Load if !session.local => REMOTE_LOAD_DEADLINE,
+                        _ => operation.budget(),
+                    };
                     session
                         .operations
-                        .push((operation, Instant::now() + operation.budget()));
+                        .push((operation, Instant::now() + budget));
                 }
             }
             WorkerFrame::End => {
