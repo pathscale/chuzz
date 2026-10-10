@@ -1129,9 +1129,10 @@ async fn fetch_page(
     } else {
         decode_body(&bytes)
     };
-    // One parse serves both: the external script urls and the wasm script tag.
-    // Parsing twice would be wasteful and, worse, could disagree.
-    let (urls, wasm_script) = {
+    // Discover HTML scripts without constructing a DOM that would be discarded.
+    // This also finds WASM declarations beyond the first JavaScript boundary.
+    // XHTML retains its XML parser and complete tree.
+    let (urls, wasm_script) = if blitz_html::DocumentHtmlParser::is_xhtml_document(&html) {
         let document = blitz_script::ScriptDocument::from_html(
             &html,
             DocumentConfig {
@@ -1141,6 +1142,28 @@ async fn fetch_page(
         );
         let wasm_script = crate::wasm_page::find_wasm_script(&document.inner());
         (document.external_script_urls(), wasm_script)
+    } else {
+        let tags = blitz_html::scan_script_tags(&html);
+        let base_url = Url::parse(&resolved_url).ok();
+        let urls = tags
+            .iter()
+            .filter(|tag| tag.is_javascript())
+            .filter_map(|tag| tag.src.as_ref())
+            .filter_map(|src| match &base_url {
+                Some(base) => base.join(src.as_ref()).ok(),
+                None => Url::parse(src.as_ref()).ok(),
+            })
+            .collect();
+        let wasm_script = tags
+            .iter()
+            .find(|tag| tag.script_type.as_ref() == "application/wasm")
+            .and_then(|tag| {
+                Some(crate::wasm_page::WasmScript {
+                    src: tag.src.as_ref()?.to_string(),
+                    mount: tag.mount.as_ref()?.to_string(),
+                })
+            });
+        (urls, wasm_script)
     };
     let wasm = match wasm_script {
         Some(script) => {

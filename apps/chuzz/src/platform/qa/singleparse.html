@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta id="head-anchor" name="singleparse" content="retained">
+<title>SINGLEPARSE platform proof</title>
+<style>
+@font-face {
+    font-family: "SingleParse";
+    src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+}
+body {
+    font-family: "SingleParse";
+    margin: 20px;
+    color: #102030;
+    background: #ffffff;
+}
+button { font: inherit; padding: 8px 20px; }
+#result { font-size: 20px; }
+img { width: 24px; height: 24px; }
+</style>
+<script id="bootstrap">
+globalThis.__singleparse = {
+    root: document.documentElement,
+    head: document.head,
+    anchor: document.getElementById("head-anchor"),
+    bodyHidden: document.body === null,
+    firstScript: document.currentScript,
+    host: globalThis.__singleparseHost || null,
+    insertions: new Map(),
+    ids: new Map(),
+    removals: [],
+    imageLoads: 0,
+    imageErrors: 0,
+    windowLoads: 0,
+    dcl: 0,
+    order: [],
+    states: [document.readyState]
+};
+__singleparse.anchor.singleparseToken = {};
+__singleparse.token = __singleparse.anchor.singleparseToken;
+__singleparse.record = function (records) {
+    for (const record of records) {
+        for (const node of record.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            __singleparse.insertions.set(node,
+                (__singleparse.insertions.get(node) || 0) + 1);
+            if (node.id) {
+                __singleparse.ids.set(node.id,
+                    (__singleparse.ids.get(node.id) || 0) + 1);
+            }
+        }
+        for (const node of record.removedNodes) {
+            if (node.nodeType === 1) __singleparse.removals.push(node);
+        }
+    }
+};
+__singleparse.observer = new MutationObserver(__singleparse.record);
+__singleparse.observer.observe(document, { childList: true, subtree: true });
+document.addEventListener("readystatechange", function () {
+    __singleparse.states.push(document.readyState);
+});
+document.addEventListener("DOMContentLoaded", function () {
+    const proof = __singleparse;
+    proof.record(proof.observer.takeRecords());
+    proof.dcl++;
+    proof.dclState = document.readyState;
+    proof.order.push("DOMContentLoaded");
+    const children = Array.from(document.body.children);
+    proof.sameChildren = proof.beforeChildren &&
+        children.length === proof.beforeChildren.length &&
+        children.every((node, index) => node === proof.beforeChildren[index]);
+    proof.sameHead = document.documentElement === proof.root &&
+        document.head === proof.head &&
+        document.getElementById("head-anchor") === proof.anchor &&
+        proof.anchor.singleparseToken === proof.token &&
+        proof.firstScript === document.getElementById("bootstrap");
+});
+window.addEventListener("load", function () {
+    __singleparse.windowLoads++;
+    __singleparse.loadState = document.readyState;
+    __singleparse.order.push("load");
+});
+</script>
+<script id="deferred" src="./src/singleparse.ts" defer></script>
+<script id="module" type="module" src="./src/singleparse-module.ts"></script>
+<script type="importmap" src="./src/singleparse-forbidden.ts">{"imports":{}}</script>
+<script nomodule src="./src/singleparse-forbidden.ts"></script>
+<!-- <script src="./src/singleparse-forbidden.ts"></script> -->
+<noscript><script src="./src/singleparse-forbidden.ts"></script></noscript>
+</head>
+<body id="singleparse-body">
+<h1 id="heading">SINGLEPARSE platform proof</h1>
+<button id="run" type="button">Run identity checks</button>
+<button id="large" type="button">Navigate to 20,000 source elements</button>
+<p id="result" role="status">READY: SINGLEPARSE awaiting run</p>
+<section id="nested"><b id="nested-child">Each element is inserted once.</b></section>
+<img id="markup" alt="Markup image"
+    src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAHUlEQVR4AQESAO3/AP8AAP//AAD/AP8AAP//AAD/R8oH+YOsvdsAAAAASUVORK5CYII="
+    onload="__singleparse.imageLoads++; __singleparse.imageTarget = this"
+    onerror="__singleparse.imageErrors++">
+<template id="inert">
+    <script src="./src/singleparse-forbidden.ts"></script>
+</template>
+<script id="blocking" src="./src/singleparse-external.ts"></script>
+<p id="after-external">This node follows the blocking external script.</p>
+<script id="tail">
+__singleparse.beforeChildren = Array.from(document.body.children);
+__singleparse.tailState = document.readyState;
+__singleparse.body = document.body;
+__singleparse.markup = document.getElementById("markup");
+</script>
+</body>
+</html>

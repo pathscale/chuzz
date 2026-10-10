@@ -310,7 +310,9 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   bindDomPrototype('HTMLElement', globalThis.document && globalThis.document.documentElement);
   if (globalThis.document) {
     bindDomPrototype('HTMLHeadElement', globalThis.document.head);
-    bindDomPrototype('HTMLBodyElement', globalThis.document.body);
+    // A streaming navigation can still be in head during shim installation.
+    bindDomPrototype('HTMLBodyElement',
+      globalThis.document.body || globalThis.document.createElement('body'));
     bindDomPrototype('HTMLAnchorElement', globalThis.document.createElement('a'));
     bindDomPrototype('HTMLButtonElement', globalThis.document.createElement('button'));
     bindDomPrototype('HTMLFormElement', globalThis.document.createElement('form'));

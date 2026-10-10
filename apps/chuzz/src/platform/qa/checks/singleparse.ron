@@ -1,0 +1,27 @@
+[
+    (
+        id: "singleparse-identity",
+        group: "singleparse",
+        what: "head and body DOM identity, one insertion per source element, one markup image load, parser boundaries and startup event ordering survive streaming",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: SINGLEPARSE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: SINGLEPARSE PASS"],
+        outcome_timeout_ms: 20000,
+    ),
+    (
+        id: "singleparse-large",
+        group: "singleparse",
+        what: "a generated navigation parses 20000 source elements and logs head-to-tail parsing and complete navigation startup timing",
+        open: None,
+        hover: None,
+        click: Some("#large"),
+        subject: "READY: SINGLEPARSE LARGE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: SINGLEPARSE LARGE PASS"],
+        outcome_timeout_ms: 60000,
+    ),
+]
+

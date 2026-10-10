@@ -1,0 +1,24 @@
+[
+    (
+        id: "location-fragment",
+        group: "location",
+        what: "assigning a fragment-only location.href stays in the document, adds a history entry and fires hashchange",
+        open: None,
+        hover: None,
+        click: Some("#fragment"),
+        subject: "READY: LOCATION FRAGMENT PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "location-assignment",
+        group: "location",
+        what: "assigning location.href navigates to the new document",
+        open: None,
+        hover: None,
+        click: Some("#leave"),
+        subject: "READY: LOCATION ARRIVED",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 15000,
+    ),
+]

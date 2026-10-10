@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Location QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font: inherit; padding: 6px 12px; }
+  </style>
+</head>
+<body>
+  <button id="fragment" type="button">Jump to a fragment</button>
+  <button id="leave" type="button">Leave by assignment</button>
+  <p id="status" role="status">Location waiting</p>
+  <script>
+    // Survives only while this document does: a fragment change must not reload the page.
+    var marker = "kept";
+    var status = document.getElementById("status");
+    window.addEventListener("hashchange", function (event) {
+      var ok = marker === "kept" && location.hash === "#part" && location.href === event.newURL &&
+        event.newURL.endsWith("location.html#part") && history.length === 2;
+      status.textContent = ok ? "READY: LOCATION FRAGMENT PASS" : "FAIL: LOCATION FRAGMENT " + location.href;
+    });
+    document.getElementById("fragment").addEventListener("click", function () {
+      location.href = "#part";
+    });
+    document.getElementById("leave").addEventListener("click", function () {
+      location.href = "./location-next.html?from=assignment";
+    });
+  </script>
+</body>
+</html>

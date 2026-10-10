@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Location QA destination</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="arrived" role="status">Location destination loading</p>
+  <script>
+    document.getElementById("arrived").textContent = location.search === "?from=assignment"
+      ? "READY: LOCATION ARRIVED" : "FAIL: LOCATION ARRIVED " + location.href;
+  </script>
+</body>
+</html>
