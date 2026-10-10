@@ -782,10 +782,17 @@ impl Canvas {
                     * Affine::translate((n[4], n[5]))
                     * Affine::scale_non_uniform(n[6] / n[2], n[7] / n[3])
                     * Affine::translate((-n[0], -n[1]));
-                // Sample only the source rectangle: scaling a sub-rect must
-                // clamp at its own edges, not filter in the pixels around it,
-                // and a small strip of a large canvas converts only the strip.
-                let (crop, origin) = crop_source(source, inputs, x0, y0, x1, y1)?;
+                // Sample only the source rectangle: a smoothed, scaled sub-rect
+                // must clamp at its own edges, not filter in the pixels around
+                // it. Nearest-neighbour or unscaled copies never sample outside
+                // the rectangle, so they keep the whole source and its cached
+                // conversion.
+                let scaled = (n[6] - n[2]).abs() > 1.0e-9 || (n[7] - n[3]).abs() > 1.0e-9;
+                let (crop, origin) = if state.smoothing && scaled {
+                    crop_source(source, inputs, x0, y0, x1, y1)?
+                } else {
+                    (source.clone(), (0.0, 0.0))
+                };
                 let actual = Brush {
                     kind: "pattern".to_owned(),
                     color: String::new(),
