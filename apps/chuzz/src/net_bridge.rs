@@ -197,6 +197,26 @@ fn failure(message: impl std::fmt::Display) -> serde_json::Value {
     serde_json::json!({"ok": false, "error": message.to_string()})
 }
 
+/// The `strict-origin-when-cross-origin` Referer for a request from `document`:
+/// the full URL (no fragment or credentials) to the same origin, the origin
+/// across origins, nothing on an HTTPS to HTTP downgrade or from a non-HTTP page.
+fn default_referrer(document: &Url, target: &Url) -> Option<String> {
+    if !matches!(document.scheme(), "http" | "https")
+        || document.scheme() == "https" && target.scheme() == "http"
+    {
+        return None;
+    }
+    if document.origin() == target.origin() {
+        let mut full = document.clone();
+        full.set_fragment(None);
+        let _ = full.set_username("");
+        let _ = full.set_password(None);
+        Some(full.to_string())
+    } else {
+        Some(format!("{}/", document.origin().ascii_serialization()))
+    }
+}
+
 fn forbidden_header(name: &str) -> bool {
     matches!(
         name,
@@ -317,6 +337,17 @@ impl ScriptHost {
         wire.headers
             .entry(HeaderName::from_static("accept-language"))
             .or_insert(HeaderValue::from_static("en-US,en;q=0.9"));
+        // The page cannot set Referer; the browser sends one under the default
+        // strict-origin-when-cross-origin policy, as for engine subresources.
+        if let Some(referrer) = self
+            .base
+            .as_ref()
+            .and_then(|base| default_referrer(base, &url))
+            && let Ok(value) = HeaderValue::from_str(&referrer)
+        {
+            wire.headers
+                .insert(HeaderName::from_static("referer"), value);
+        }
         if !matches!(method, Method::GET | Method::HEAD) {
             wire.body = request.body.map(Into::into);
         }
