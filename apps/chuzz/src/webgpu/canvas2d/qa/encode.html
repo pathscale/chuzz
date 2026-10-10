@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas encode QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    img, canvas { display: block; margin: 12px 0; width: 160px; height: 80px; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <h1>Canvas encode QA</h1>
+  <button id="run" type="button">Run encode checks</button>
+  <p id="result" role="status">Ready</p>
+  <canvas id="source" width="16" height="8" aria-label="Encoded source"></canvas>
+  <img id="from-blob" alt="Decoded toBlob PNG">
+  <img id="from-data" alt="Decoded toDataURL PNG">
+  <script>
+    var result = document.getElementById("result");
+    function assert(condition, message) { if (!condition) { throw new Error(message); } }
+    // Left half red, right half green, with a half-transparent blue bottom-right pixel.
+    var source = document.getElementById("source");
+    var context = source.getContext("2d");
+    context.fillStyle = "#ff0000"; context.fillRect(0, 0, 8, 8);
+    context.fillStyle = "#00ff00"; context.fillRect(8, 0, 8, 8);
+    context.fillStyle = "rgba(0, 0, 255, 0.5)"; context.clearRect(15, 7, 1, 1); context.fillRect(15, 7, 1, 1);
+    function load(image, url) {
+      return new Promise(function (resolve, reject) {
+        image.onload = function () { resolve(image); };
+        image.onerror = function () { reject(new Error("decode failed for " + image.id)); };
+        image.src = url;
+      });
+    }
+    function samples(image) {
+      var canvas = document.createElement("canvas");
+      canvas.width = 16; canvas.height = 8;
+      var c = canvas.getContext("2d");
+      c.drawImage(image, 0, 0);
+      var d = c.getImageData(0, 0, 16, 8).data;
+      function at(x, y) { var i = (y * 16 + x) * 4; return [d[i], d[i + 1], d[i + 2], d[i + 3]]; }
+      return [at(2, 2), at(12, 2), at(15, 7)];
+    }
+    function near(actual, wanted, label) {
+      actual.forEach(function (value, index) {
+        assert(Math.abs(value - wanted[index]) <= 3, label + " got " + actual.join(",") + " wanted " + wanted.join(","));
+      });
+    }
+    function check(image, label) {
+      var s = samples(image);
+      near(s[0], [255, 0, 0, 255], label + " red");
+      near(s[1], [0, 255, 0, 255], label + " green");
+      near(s[2], [0, 0, 255, 128], label + " translucent blue");
+      assert(image.naturalWidth === 16 && image.naturalHeight === 8, label + " size " + image.naturalWidth + "x" + image.naturalHeight);
+    }
+    document.getElementById("run").onclick = async function () {
+      try {
+        assert(typeof source.toBlob === "function", "toBlob missing");
+        var blob = await new Promise(function (resolve) { source.toBlob(resolve, "image/png"); });
+        assert(blob && blob.type === "image/png" && blob.size > 20, "toBlob gave no PNG");
+        check(await load(document.getElementById("from-blob"), URL.createObjectURL(blob)), "toBlob");
+        var url = source.toDataURL();
+        assert(url.indexOf("data:image/png;base64,") === 0, "toDataURL prefix " + url.slice(0, 30));
+        check(await load(document.getElementById("from-data"), url), "toDataURL");
+        result.textContent = "READY: canvas encode PASS";
+      } catch (error) {
+        result.textContent = "FAIL: " + error.message;
+      }
+    };
+  </script>
+</body>
+</html>

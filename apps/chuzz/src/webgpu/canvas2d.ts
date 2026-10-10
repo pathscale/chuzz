@@ -493,4 +493,53 @@
     batch.forEach(function (context) { context.__paint(); });
     active = null;
   };
+
+  // toBlob and toDataURL encode PNG (the one type every browser supports; other
+  // types fall back to it, as the standard allows). The pixels come through a
+  // scratch 2D canvas and drawImage, which already reads 2D, WebGPU and video
+  // backed canvases alike.
+  function canvasPng(canvas) {
+    var width = canvas.width, height = canvas.height;
+    if (!width || !height) { return null; }
+    var scratch = document.createElement("canvas");
+    scratch.width = width;
+    scratch.height = height;
+    var context = scratch.getContext("2d");
+    context.drawImage(canvas, 0, 0);
+    var pixels = context.getImageData(0, 0, width, height).data;
+    var buffer = pixels.buffer.slice(pixels.byteOffset, pixels.byteOffset + pixels.byteLength);
+    return globalThis.__chuzzEncodePng(width, height, buffer);
+  }
+  var canvasPrototype = Object.getPrototypeOf(document.createElement("canvas"));
+  while (canvasPrototype && !Object.prototype.hasOwnProperty.call(canvasPrototype, "getContext")) {
+    canvasPrototype = Object.getPrototypeOf(canvasPrototype);
+  }
+  if (canvasPrototype) {
+    Object.defineProperty(canvasPrototype, "toBlob", {
+      configurable: true,
+      writable: true,
+      value: function toBlob(callback, type, quality) {
+        if (typeof callback !== "function") { throw new TypeError("toBlob requires a callback"); }
+        var canvas = this;
+        setTimeout(function () {
+          var png = null;
+          try { png = canvasPng(canvas); } catch (error) { png = null; }
+          callback(png ? new Blob([png], { type: "image/png" }) : null);
+        }, 0);
+      }
+    });
+    Object.defineProperty(canvasPrototype, "toDataURL", {
+      configurable: true,
+      writable: true,
+      value: function toDataURL(type, quality) {
+        var png = canvasPng(this);
+        if (!png) { return "data:,"; }
+        var text = "";
+        for (var index = 0; index < png.length; index += 0x8000) {
+          text += String.fromCharCode.apply(null, png.subarray(index, index + 0x8000));
+        }
+        return "data:image/png;base64," + btoa(text);
+      }
+    });
+  }
 })();

@@ -74,6 +74,8 @@ javascript = [
   "dep:mp4parse",
   "dep:ps-rust_h264",
   "dep:less-avc",
+  # HTMLCanvasElement.toBlob and toDataURL encode PNG.
+  "dep:png",
   "dep:rusty-opus",
   "dep:symphonia",
   "dep:anyrender",

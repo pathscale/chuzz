@@ -8,7 +8,7 @@ use anyrender::{Paint, PaintScene};
 use anyrender_vello_cpu::{ImageCache, VelloCpuScenePainter};
 use blitz_dom::kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use blitz_dom::node::RasterImageData;
-use blitz_script::boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsUint8ClampedArray};
+use blitz_script::boa_engine::object::builtins::{JsArray, JsArrayBuffer, JsUint8Array, JsUint8ClampedArray};
 use blitz_script::boa_engine::{
     Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
 };
@@ -805,6 +805,33 @@ impl Canvas {
     }
 }
 
+/// `__chuzzEncodePng(width, height, rgba)`: the PNG bytes behind
+/// `HTMLCanvasElement.toBlob` and `toDataURL`, from straight RGBA pixels.
+fn encode_png(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let failure = |message: &str| JsNativeError::typ().with_message(message.to_owned());
+    let width = args.first().cloned().unwrap_or_default().to_u32(context)?;
+    let height = args.get(1).cloned().unwrap_or_default().to_u32(context)?;
+    let object = args
+        .get(2)
+        .and_then(JsValue::as_object)
+        .ok_or_else(|| failure("expected canvas pixels"))?;
+    let buffer = JsArrayBuffer::from_object(object.clone())?;
+    let pixels = buffer.data().ok_or_else(|| failure("detached canvas pixels"))?;
+    if width == 0 || height == 0 || pixels.len() != byte_count(width, height).map_err(|e| failure(&e))? {
+        return Err(failure("canvas pixels do not match the canvas size").into());
+    }
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| failure(&e.to_string()))?;
+        writer.write_image_data(&pixels).map_err(|e| failure(&e.to_string()))?;
+        writer.finish().map_err(|e| failure(&e.to_string()))?;
+    }
+    Ok(JsUint8Array::from_iter(png, context)?.into())
+}
+
 fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let host = context
         .get_data::<Host>()
@@ -1098,5 +1125,12 @@ pub(super) fn install(document: &mut blitz_script::ScriptDocument, bridge: Bridg
                 NativeFunction::from_fn_ptr(native),
             )
             .expect("canvas command bridge");
+        context
+            .register_global_builtin_callable(
+                JsString::from("__chuzzEncodePng"),
+                3,
+                NativeFunction::from_fn_ptr(encode_png),
+            )
+            .expect("canvas PNG encoder");
     });
 }
