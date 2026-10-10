@@ -291,6 +291,24 @@
         const singular = new DOMMatrix([0, 0, 0, 0, 0, 0]).inverse();
         assert(Number.isNaN(singular.a) && singular.is2D === false, "singular inverse");
         assert(DOMPoint.fromPoint({ x: 8 }).w === 1, "point dictionary defaults");
+
+        const link = document.createElement("a");
+        link.href = "https://user:pw@example.test:8080/a/b?x=1#frag";
+        assert(link.protocol === "https:" && link.host === "example.test:8080"
+            && link.hostname === "example.test" && link.port === "8080"
+            && link.pathname === "/a/b" && link.search === "?x=1" && link.hash === "#frag"
+            && link.username === "user" && link.password === "pw"
+            && link.origin === "https://example.test:8080", "anchor URL parts");
+        link.pathname = "/c";
+        link.search = "y=2";
+        link.hash = "";
+        assert(link.href === "https://user:pw@example.test:8080/c?y=2", "anchor URL setters");
+        const relative = document.createElement("area");
+        relative.setAttribute("href", "rel/page");
+        assert(relative.pathname.endsWith("/rel/page") && relative.protocol === location.protocol,
+            "relative area URL");
+        assert(document.createElement("a").pathname === "" && sandbox.pathname === undefined,
+            "missing href and non-link elements");
     }
 
     document.getElementById("run").addEventListener("click", function () {
