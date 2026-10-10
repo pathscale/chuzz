@@ -32,7 +32,21 @@
   function native(request, buffers) {
     return globalThis.__chuzzCanvas2D(JSON.stringify(request), buffers || []);
   }
-  function validColor(value) { return native({ action: "color", value: value }); }
+  // Pages assign the same few colour and font strings on every draw; each
+  // check is a JSON round trip to the host, so remember the answers.
+  var MEMO_LIMIT = 1024;
+  function memo(map, key, compute) {
+    if (map.has(key)) { return map.get(key); }
+    var value = compute();
+    if (map.size >= MEMO_LIMIT) { map.clear(); }
+    map.set(key, value);
+    return value;
+  }
+  var colorMemo = new Map();
+  var fontMemo = new Map();
+  function validColor(value) {
+    return memo(colorMemo, value, function () { return native({ action: "color", value: value }); });
+  }
   function fillRule(value) {
     if (value === undefined || value === "nonzero") { return 0; }
     if (value === "evenodd") { return 1; }
@@ -211,12 +225,17 @@
     property("imageSmoothingQuality", enumeration(["low", "medium", "high"]));
     property("font", function (value) {
       var base = 16, root = 16;
-      if (typeof getComputedStyle === "function") {
+      value = String(value);
+      // Only relative sizes depend on the element and root font sizes, and
+      // resolving those styles costs more than the font parse itself.
+      if (/em|%|larger|smaller/i.test(value) && typeof getComputedStyle === "function") {
         base = parseFloat(getComputedStyle(canvas).fontSize) || 16;
         root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
       }
       try {
-        return native({ action: "font", value: String(value), fontBase: base, rootBase: root });
+        return memo(fontMemo, value + "|" + base + "|" + root, function () {
+          return native({ action: "font", value: value, fontBase: base, rootBase: root });
+        });
       } catch (error) {
         if (String(error).indexOf("not implemented in chuzz:") >= 0) { throw error; }
         return undefined;
