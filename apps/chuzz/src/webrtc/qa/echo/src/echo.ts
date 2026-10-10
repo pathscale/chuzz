@@ -243,10 +243,33 @@
       api.assert(microphone.readyState === 'live', 'peer close stopped caller-owned capture');
       monitor.source.disconnect();
       monitor.node.disconnect();
+      if (oscillator) {
+        oscillator.stop();
+        oscillator = null;
+      }
       await context.close();
       api.assert(context.state === 'closed', 'audio graph remained open');
+      var closedAudio = {
+        state: context.state,
+        currentTime: context.currentTime
+      };
+      if (peer.native) closedAudio.samples = __chuzzAudioInspect(context).samples;
+      // AudioNodes remain valid after close. Repeated disconnects must not
+      // throw or restart the render clock, including disconnect(output).
+      monitor.source.disconnect();
+      monitor.node.disconnect();
+      monitor.source.disconnect(0);
+      monitor.node.disconnect(0);
+      await api.sleep(100);
+      api.assert(context.state === 'closed'
+        && context.currentTime === closedAudio.currentTime,
+      'disconnect after close restarted the audio graph');
+      if (peer.native) {
+        api.assert(__chuzzAudioInspect(context).samples === closedAudio.samples,
+          'closed audio graph continued rendering');
+      }
+      closedAudio.disconnectAfterClose = true;
       stream.getTracks().forEach(function (track) { track.stop(); });
-      if (oscillator) oscillator.stop();
       api.assert(microphone.readyState === 'ended', 'capture owner failed to stop its track');
 
       await channel.stop();
@@ -271,6 +294,7 @@
         restartedPage: restarted,
         restartedHelper: helperRestarted,
         closedHelper: helperClosed,
+        closedAudio: closedAudio,
         processCleanup: deleted,
         control: !peer.native
       });
@@ -281,11 +305,11 @@
         monitor.source.disconnect();
         monitor.node.disconnect();
       }
-      if (context && context.state !== 'closed') await context.close();
-      if (stream) stream.getTracks().forEach(function (track) { track.stop(); });
       if (oscillator) {
         try { oscillator.stop(); } catch (_) {}
       }
+      if (context && context.state !== 'closed') await context.close();
+      if (stream) stream.getTracks().forEach(function (track) { track.stop(); });
       if (channel) await channel.stop();
       if (opened && !sessionDeleted) {
         await api.request('/api/echo/' + opened.session, { method: 'DELETE' });

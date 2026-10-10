@@ -370,8 +370,9 @@ impl Graph {
         to: Option<u64>,
         param: Option<String>,
     ) -> Result<(), String> {
-        self.open()?;
-        if !self.nodes.contains_key(&from) {
+        // IDs are allocated consecutively and never reused. Closing releases
+        // render nodes, but existing AudioNodes may still disconnect.
+        if from == 0 || from >= self.next_node {
             return Err("InvalidAccessError: unknown source node".to_owned());
         }
         let before = self.edges.len();
