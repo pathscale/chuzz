@@ -103,58 +103,7 @@
 
     document.getElementById("large").addEventListener("click", function () {
         this.disabled = true;
-        const font = new URL("./fonts/FiraSans-Regular.woff2", location.href).href;
-        const rows = [];
-        for (let index = 0; index < 20000; index++) {
-            rows.push('<span data-index="' + index + '">Source element</span>');
-        }
-
-        // This function is serialized into the generated navigation. It uses
-        // only that document's globals, without retaining this page's closure.
-        function finishLargePage() {
-            const timing = globalThis.singleparseLarge;
-            timing.parseMs = performance.now() - timing.headStart;
-            timing.startupMs = Date.now() - timing.navigationStart;
-            timing.count = document.getElementById("large-rows").children.length;
-            console.log("SINGLEPARSE 20000 source elements: head-to-tail parse " +
-                timing.parseMs.toFixed(1) + " ms; navigation/startup " +
-                timing.startupMs + " ms");
-            document.getElementById("timing").textContent =
-                "20,000 source elements: head-to-tail parse " +
-                timing.parseMs.toFixed(1) + " ms; navigation/startup " +
-                timing.startupMs + " ms";
-            document.addEventListener("DOMContentLoaded", async function () {
-                const result = document.getElementById("result");
-                try {
-                    await document.fonts.ready;
-                    if (timing.count !== 20000) {
-                        throw new Error("Incorrect source element count: " + timing.count);
-                    }
-                    result.textContent = "READY: SINGLEPARSE LARGE PASS";
-                } catch (error) {
-                    result.textContent = "FAIL: SINGLEPARSE LARGE " + error.message;
-                    console.error(error);
-                }
-            });
-        }
-
-        const source = '<!doctype html><html lang="en"><head><meta charset="UTF-8">' +
-            '<title>SINGLEPARSE large source page</title>' +
-            '<style>@font-face{font-family:SingleParse;src:url(' +
-            JSON.stringify(font) + ') format("woff2");}' +
-            'body{font-family:SingleParse;margin:20px;color:#102030;background:#fff;}' +
-            '#result{font-size:20px;}#large-rows{display:none;}</style>' +
-            '<script>globalThis.singleparseLarge={headStart:performance.now(),' +
-            'navigationStart:__SINGLEPARSE_START__};</script></head><body>' +
-            '<h1>SINGLEPARSE large source page</h1>' +
-            '<p id="result" role="status">RUNNING: SINGLEPARSE LARGE</p>' +
-            '<p id="timing" role="status">Parsing 20,000 source elements</p>' +
-            '<div id="large-rows">' + rows.join("") + '</div>' +
-            '<script>(' + finishLargePage.toString() + ')();</script></body></html>';
-
-        // The complete generated markup goes through the navigation loader.
-        // document.write or innerHTML would miss the discarded initial parse.
-        const stamped = source.replace("__SINGLEPARSE_START__", String(Date.now()));
-        location.href = "data:text/html;charset=utf-8," + encodeURIComponent(stamped);
+        // A real navigation through the loader to a static 20,000-element page; the start time rides in the query.
+        location.href = "./singleparse-large.html?t=" + Date.now();
     });
 })();
