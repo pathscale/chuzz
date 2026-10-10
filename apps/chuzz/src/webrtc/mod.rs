@@ -3,6 +3,7 @@
 pub mod crypto;
 mod gather;
 mod host;
+mod opus;
 mod pcmu;
 mod qa;
 mod sdp;

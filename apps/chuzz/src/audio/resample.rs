@@ -27,6 +27,20 @@ fn input_sample(
     0.0
 }
 
+fn weight(distance: f64, cutoff: f64) -> f64 {
+    if distance.abs() >= f64::from(RADIUS) {
+        return 0.0;
+    }
+    let argument = PI * distance * cutoff;
+    let sinc = if argument.abs() < 1.0e-12 {
+        cutoff
+    } else {
+        argument.sin() / (PI * distance)
+    };
+    let window = 0.5 + 0.5 * (PI * distance / f64::from(RADIUS)).cos();
+    sinc * window
+}
+
 pub(crate) fn read(
     track: &Track,
     start: Duration,
@@ -35,9 +49,27 @@ pub(crate) fn read(
     output_channels: u16,
 ) -> Vec<f32> {
     let mut output = vec![0.0; frames * usize::from(output_channels)];
-    if track.ended() || !track.enabled() {
-        return output;
+    read_into(track, start, output_rate, output_channels, &mut output);
+    output
+}
+
+pub(crate) fn read_into(
+    track: &Track,
+    start: Duration,
+    output_rate: u32,
+    output_channels: u16,
+    output: &mut [f32],
+) {
+    output.fill(0.0);
+    if output_channels == 0
+        || output_rate == 0
+        || !output.len().is_multiple_of(usize::from(output_channels))
+        || track.ended()
+        || !track.enabled()
+    {
+        return;
     }
+    let frames = output.len() / usize::from(output_channels);
 
     let input_rate = f64::from(track.sample_rate());
     let target_rate = f64::from(output_rate);
@@ -62,10 +94,10 @@ pub(crate) fn read(
         let last = last.saturating_add(RADIUS as u64 + 1);
         let length = last.saturating_sub(first);
         let Ok(length) = usize::try_from(length) else {
-            return output;
+            return;
         };
         let Ok(pcm) = media.pcm_at(first, length) else {
-            return output;
+            return;
         };
         vec![Arc::new(pcm)]
     } else {
@@ -81,18 +113,7 @@ pub(crate) fn read(
             let mut weight_sum = 0.0;
             for tap in -RADIUS..=RADIUS {
                 let index = center + f64::from(tap);
-                let distance = position - index;
-                if distance.abs() >= f64::from(RADIUS) {
-                    continue;
-                }
-                let argument = PI * distance * cutoff;
-                let sinc = if argument.abs() < 1.0e-12 {
-                    cutoff
-                } else {
-                    argument.sin() / (PI * distance)
-                };
-                let window = 0.5 + 0.5 * (PI * distance / f64::from(RADIUS)).cos();
-                let weight = sinc * window;
+                let weight = weight(position - index, cutoff);
                 sum += input_sample(
                     &blocks,
                     index / input_rate,
@@ -107,6 +128,36 @@ pub(crate) fn read(
             }
         }
     }
-    output
+}
+
+/// Convert an already decoded block without the capture/graph clock delay.
+/// Edge extension prevents packet boundaries introducing artificial silence.
+pub(crate) fn block(pcm: &Pcm, output_rate: u32, output_channels: u16) -> Arc<[f32]> {
+    let frames = (pcm.frames() as u64 * u64::from(output_rate)
+        / u64::from(pcm.sample_rate())) as usize;
+    let input_rate = f64::from(pcm.sample_rate());
+    let target_rate = f64::from(output_rate);
+    let cutoff = (target_rate / input_rate).min(1.0);
+    let mut output = vec![0.0; frames * usize::from(output_channels)];
+    for frame in 0..frames {
+        let position = frame as f64 * input_rate / target_rate;
+        let center = position.floor();
+        for channel in 0..usize::from(output_channels) {
+            let mut sum = 0.0;
+            let mut weight_sum = 0.0;
+            for tap in -RADIUS..=RADIUS {
+                let index = center + f64::from(tap);
+                let weight = weight(position - index, cutoff);
+                let index = index.clamp(0.0, (pcm.frames() - 1) as f64) as usize;
+                sum += f64::from(pcm.at(index, channel, output_channels)) * weight;
+                weight_sum += weight;
+            }
+            if weight_sum.abs() > 1.0e-12 {
+                output[frame * usize::from(output_channels) + channel] =
+                    (sum / weight_sum) as f32;
+            }
+        }
+    }
+    output.into()
 }
 

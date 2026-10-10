@@ -72,6 +72,7 @@ javascript = [
   "blitz-script/intl",
   "dep:mp4parse",
   "dep:ps-rust_h264",
+  "dep:rusty-opus",
   "dep:symphonia",
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
@@ -189,6 +190,8 @@ worktable.workspace = true
 mp4parse = { version = "^0.17", optional = true }
 # The VIDEORUST brief explicitly selects this synchronous local fork.
 ps-rust_h264 = { package = "rust_h264", version = "^0.4", path = "../../../ps-rust_h264", optional = true }
+# Synchronous, dependency-free Rust Opus encode/decode, BSD-3-Clause.
+rusty-opus = { package = "ps-rusty-opus", version = "^1", optional = true }
 symphonia = { version = "^0.5.5", default-features = false, features = ["aac"], optional = true }
 # WebRTC has no implicit crypto provider or example server dependencies.
 str0m = { version = "^0.24.1", default-features = false, optional = true }

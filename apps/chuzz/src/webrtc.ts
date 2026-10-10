@@ -197,14 +197,23 @@
     if (kind === 'video') return { codecs: [], headerExtensions: [] };
     if (kind !== 'audio') return null;
     return {
-      codecs: [{ mimeType: 'audio/PCMU', clockRate: 8000, channels: 1 }],
+      codecs: [
+        {
+          mimeType: 'audio/opus', clockRate: 48000, channels: 2,
+          sdpFmtpLine: 'minptime=10;useinbandfec=1;stereo=1;cbr=0'
+        },
+        { mimeType: 'audio/PCMU', clockRate: 8000, channels: 1 }
+      ],
       headerExtensions: []
     };
   }
 
   function RTCRtpSender(token, pc, slot, track) {
     if (token !== secret) throw new TypeError('Illegal constructor');
-    senders.set(this, { pc: pc, slot: slot, track: track, active: true, transaction: 0 });
+    senders.set(this, {
+      pc: pc, slot: slot, track: track, active: true, transaction: 0,
+      maxBitrate: 32000, cbr: false, codecs: []
+    });
   }
   RTCRtpSender.getCapabilities = capabilities;
   Object.defineProperty(RTCRtpSender.prototype, 'track', {
@@ -225,10 +234,10 @@
     var data = senders.get(this);
     return {
       transactionId: String(data.transaction),
-      codecs: [{ payloadType: 0, mimeType: 'audio/PCMU', clockRate: 8000, channels: 1 }],
+      codecs: copy(data.codecs),
       headerExtensions: [],
       rtcp: { reducedSize: true },
-      encodings: [{ active: data.active }]
+      encodings: [{ active: data.active, maxBitrate: data.maxBitrate, cbr: data.cbr }]
     };
   };
   RTCRtpSender.prototype.setParameters = function (parameters) {
@@ -240,9 +249,19 @@
         throw error('InvalidModificationError: parameters do not match the sender transaction');
       }
       var encoding = parameters.encodings[0];
-      if (Object.keys(encoding).some(function (key) { return key !== 'active'; })) {
-        throw error('NotSupportedError: bitrate, scaling and frame-rate budgets belong to W08');
+      if (Object.keys(encoding).some(function (key) {
+        return !['active', 'maxBitrate', 'cbr'].includes(key);
+      })) {
+        throw error('NotSupportedError: unsupported audio encoding parameter');
       }
+      var maxBitrate = encoding.maxBitrate === undefined ? 32000 : Number(encoding.maxBitrate);
+      if (!Number.isInteger(maxBitrate) || maxBitrate < 6000 || maxBitrate > 510000) {
+        throw new RangeError('Opus bitrate must be between 6000 and 510000');
+      }
+      if (encoding.cbr !== undefined && typeof encoding.cbr !== 'boolean') {
+        throw new TypeError('cbr must be boolean');
+      }
+      var cbr = encoding.cbr === undefined ? false : encoding.cbr;
       var current = self.getParameters();
       ['codecs', 'headerExtensions', 'rtcp'].forEach(function (key) {
         if (JSON.stringify(parameters[key]) !== JSON.stringify(current[key])) {
@@ -250,8 +269,12 @@
         }
       });
       var active = encoding.active === undefined ? true : Boolean(encoding.active);
-      return request(data.pc, 'active', { slot: data.slot, active: active }).then(function () {
+      return request(data.pc, 'parameters', {
+        slot: data.slot, active: active, maxBitrate: maxBitrate, cbr: cbr
+      }).then(function () {
         data.active = active;
+        data.maxBitrate = maxBitrate;
+        data.cbr = cbr;
         data.transaction++;
       });
     });
@@ -265,7 +288,7 @@
     Object.defineProperty(track, 'label', { value: 'Remote WebRTC audio', enumerable: true });
     receivers.set(this, {
       pc: pc, slot: slot, track: track, audio: metadata.track,
-      handle: g.__chuzzFakeMedia.handle(track), streams: [], announced: false
+      handle: g.__chuzzFakeMedia.handle(track), streams: [], announced: false, codecs: []
     });
   }
   RTCRtpReceiver.getCapabilities = capabilities;
@@ -274,7 +297,7 @@
   });
   RTCRtpReceiver.prototype.getParameters = function () {
     return {
-      codecs: [{ payloadType: 0, mimeType: 'audio/PCMU', clockRate: 8000, channels: 1 }],
+      codecs: copy(receivers.get(this).codecs),
       headerExtensions: [], rtcp: { reducedSize: true }
     };
   };
@@ -306,14 +329,23 @@
   });
   RTCRtpTransceiver.prototype.setCodecPreferences = function (codecs) {
     var data = transceivers.get(this);
-    open(data.pc);
-    codecs = Array.from(codecs);
-    if (codecs.length > 1 || codecs.some(function (codec) {
-      return codec.mimeType.toLowerCase() !== 'audio/pcmu'
-        || codec.clockRate !== 8000 || (codec.channels !== undefined && codec.channels !== 1);
-    })) {
-      throw error('NotSupportedError: only synchronous PCMU is enabled');
+    var pc = open(data.pc);
+    if (pc.signalingState !== 'stable') {
+      throw error('InvalidStateError: change codec preferences in stable signaling');
     }
+    var names = Array.from(codecs).map(function (codec) {
+      var name = String(codec.mimeType).toLowerCase();
+      if (name === 'audio/opus' && codec.clockRate === 48000
+          && (codec.channels === undefined || codec.channels === 2)) return 'opus';
+      if (name === 'audio/pcmu' && codec.clockRate === 8000
+          && (codec.channels === undefined || codec.channels === 1)) return 'pcmu';
+      throw error('NotSupportedError: only Opus and PCMU audio are enabled');
+    });
+    if (new Set(names).size !== names.length) {
+      throw error('InvalidAccessError: duplicate codec preference');
+    }
+    native('preferences', { peer: pc.id, slot: data.slot, codecs: names });
+    negotiate(data.pc);
   };
 
   function RTCPeerConnection(configuration) {
@@ -566,6 +598,11 @@
       local.mid = entry.mid;
       local.currentDirection = entry.currentDirection;
       var receiver = receivers.get(local.receiver);
+      var sender = senders.get(local.sender);
+      var codecs = entry.codecs || [];
+      if (JSON.stringify(sender.codecs) !== JSON.stringify(codecs)) sender.transaction++;
+      sender.codecs = copy(codecs);
+      receiver.codecs = copy(codecs);
       if (entry.remote && !receiver.announced) {
         receiver.announced = true;
         if (entry.remote.track) {
@@ -636,6 +673,16 @@
   });
   Object.defineProperty(g, '__chuzzWebrtcInspect', {
     value: function (pc) { return native('inspect', { peer: state(pc).id }); }
+  });
+  Object.defineProperty(g, '__chuzzWebrtcDropAudio', {
+    value: function (pc, count) {
+      return queued(pc, function () {
+        if (!Number.isInteger(count) || count < 1 || count > 5) {
+          throw new RangeError('drop between one and five RTP packets');
+        }
+        return request(pc, 'dropAudio', { count: count }).then(function () {});
+      });
+    }
   });
 
   g.RTCSessionDescription = RTCSessionDescription;

@@ -2,7 +2,7 @@
     (
         id: "peer-all",
         group: "webrtc-peer",
-        what: "Browser peers negotiate fake microphone audio, exchange host candidates, authenticate DTLS over real loopback UDP and release transport ownership",
+        what: "Browser peers negotiate Opus, analyse the received fake microphone tone, conceal forced RTP loss, retain PCMU fallback and release transport ownership",
         open: None,
         hover: None,
         click: Some("#run"),
@@ -14,6 +14,9 @@
             "PASS: gathered host candidates, trickle exchange and final null events",
             "PASS: real UDP and authenticated DTLS 1.2 on both peers",
             "PASS: shared MediaStreamTrack identity and received microphone PCM",
+            "PASS: negotiated Opus, 32 kbit CBR and remote 440 Hz analyser tone",
+            "PASS: forced RTP loss uses FEC and PLC without a silence gap over 20 ms",
+            "PASS: PCMU fallback delivers the remote microphone tone",
             "PASS: property handlers and EventTarget state listeners",
             "PASS: closed peers release sockets and preserve local capture",
         ],

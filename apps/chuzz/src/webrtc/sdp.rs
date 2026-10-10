@@ -3,9 +3,10 @@
 //! str0m parses and negotiates SDP. This module validates browser invariants
 //! before that mutable negotiation and extracts identity, not packet state.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use str0m::media::Direction;
 
 pub(super) const SLOT_LIMIT: usize = 32;
@@ -14,6 +15,33 @@ pub(super) const SLOT_LIMIT: usize = 32;
 pub(super) struct Description {
     pub r#type: String,
     pub sdp: String,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct AudioCodec {
+    pub payload_type: u8,
+    pub opus: bool,
+    pub stereo: bool,
+    pub fec: bool,
+    pub cbr: bool,
+    pub bitrate: Option<u32>,
+    pub fmtp: String,
+}
+
+impl AudioCodec {
+    pub(super) fn name(&self) -> &'static str {
+        if self.opus { "opus" } else { "pcmu" }
+    }
+
+    pub(super) fn parameters(&self) -> Value {
+        json!({
+            "payloadType": self.payload_type,
+            "mimeType": if self.opus { "audio/opus" } else { "audio/PCMU" },
+            "clockRate": if self.opus { 48000 } else { 8000 },
+            "channels": if self.opus { 2 } else { 1 },
+            "sdpFmtpLine": self.fmtp
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +54,124 @@ pub(super) struct Section {
     pub password: String,
     pub fingerprint: String,
     pub setup: String,
+    pub codecs: Vec<AudioCodec>,
+}
+
+#[derive(Default)]
+struct Mapping {
+    payloads: Vec<u8>,
+    names: BTreeMap<u8, String>,
+    formats: BTreeMap<u8, String>,
+}
+
+fn payload(value: &str) -> Result<u8, String> {
+    value
+        .parse::<u8>()
+        .ok()
+        .filter(|value| *value <= 127)
+        .ok_or_else(|| "OperationError: invalid audio payload type".into())
+}
+
+fn mapping_attribute(mapping: &mut Mapping, line: &str) -> Result<(), String> {
+    let (value, formats) = if let Some(value) = line.strip_prefix("a=rtpmap:") {
+        (value, false)
+    } else if let Some(value) = line.strip_prefix("a=fmtp:") {
+        (value, true)
+    } else {
+        return Ok(());
+    };
+    let (number, value) = value
+        .split_once(' ')
+        .ok_or("OperationError: incomplete audio codec attribute")?;
+    let number = payload(number)?;
+    let target = if formats {
+        &mut mapping.formats
+    } else {
+        &mut mapping.names
+    };
+    if target.insert(number, value.trim().into()).is_some() {
+        return Err("OperationError: duplicate audio codec attribute".into());
+    }
+    Ok(())
+}
+
+fn audio_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
+    let mut codecs = Vec::new();
+    for number in mapping.payloads {
+        let name = mapping.names.get(&number).map(String::as_str);
+        let pcmu = number == 0
+            && name.is_none_or(|name| {
+                name.eq_ignore_ascii_case("PCMU/8000")
+                    || name.eq_ignore_ascii_case("PCMU/8000/1")
+            });
+        if number == 0 && !pcmu {
+            return Err("OperationError: payload type zero must be mono PCMU at 8000 Hz".into());
+        }
+        let opus = name.is_some_and(|name| name.eq_ignore_ascii_case("opus/48000/2"));
+        if !pcmu && !opus {
+            continue;
+        }
+        let fmtp = mapping.formats.get(&number).cloned().unwrap_or_default();
+        let mut codec = AudioCodec {
+            payload_type: number,
+            opus,
+            stereo: false,
+            fec: false,
+            cbr: false,
+            bitrate: None,
+            fmtp,
+        };
+        if opus {
+            let mut keys = BTreeSet::new();
+            for entry in codec.fmtp.split(';').map(str::trim).filter(|entry| !entry.is_empty()) {
+                let (key, value) = entry
+                    .split_once('=')
+                    .ok_or("OperationError: incomplete Opus format parameter")?;
+                let key = key.trim().to_ascii_lowercase();
+                let value = value.trim();
+                if !keys.insert(key.clone()) {
+                    return Err("OperationError: duplicate Opus format parameter".into());
+                }
+                match key.as_str() {
+                    "stereo" | "useinbandfec" | "cbr" => {
+                        let enabled = match value {
+                            "0" => false,
+                            "1" => true,
+                            _ => return Err("OperationError: invalid Opus boolean parameter".into()),
+                        };
+                        match key.as_str() {
+                            "stereo" => codec.stereo = enabled,
+                            "useinbandfec" => codec.fec = enabled,
+                            _ => codec.cbr = enabled,
+                        }
+                    }
+                    "maxaveragebitrate" => {
+                        codec.bitrate = Some(
+                            value
+                                .parse::<u32>()
+                                .ok()
+                                .filter(|rate| (6000..=510_000).contains(rate))
+                                .ok_or("OperationError: invalid Opus bitrate")?,
+                        );
+                    }
+                    "minptime" => {
+                        let minimum = value
+                            .parse::<u32>()
+                            .map_err(|_| "OperationError: invalid Opus minptime")?;
+                        if minimum > 20 {
+                            return Err("NotSupportedError: Opus sender uses 20 ms packets".into());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        codecs.push(codec);
+    }
+    if codecs.is_empty() {
+        return Err("NotSupportedError: audio must offer Opus at 48000 Hz or mono PCMU".into());
+    }
+    Ok(codecs)
 }
 
 pub(super) fn direction(value: &str) -> Result<Direction, String> {
@@ -113,8 +259,10 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
         password: String::new(),
         fingerprint: String::new(),
         setup: String::new(),
+        codecs: Vec::new(),
     };
     let mut sections: Vec<Section> = Vec::new();
+    let mut mappings: Vec<Mapping> = Vec::new();
     let mut bundle: Option<Vec<String>> = None;
 
     for line in description.sdp.lines() {
@@ -130,26 +278,27 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
                 || fields[0] != "m=audio"
                 || fields[1] == "0"
                 || fields[2] != "UDP/TLS/RTP/SAVPF"
-                || !fields[3..].contains(&"0")
             {
                 return Err(
-                    "NotSupportedError: W07 supports active DTLS audio sections offering PCMU"
-                        .into(),
+                    "NotSupportedError: active DTLS audio sections are required".into(),
                 );
             }
             if sections.len() == SLOT_LIMIT {
                 return Err("OperationError: too many SDP sections".into());
             }
+            let payloads = fields[3..]
+                .iter()
+                .map(|value| payload(value))
+                .collect::<Result<Vec<_>, _>>()?;
+            if payloads.iter().copied().collect::<BTreeSet<_>>().len() != payloads.len() {
+                return Err("OperationError: duplicate m-line payload type".into());
+            }
+            mappings.push(Mapping { payloads, ..Mapping::default() });
             sections.push(defaults.clone());
         } else {
             attributes(sections.last_mut().unwrap_or(&mut defaults), line)?;
-            if line.starts_with("a=rtpmap:0 ")
-                && !matches!(
-                    line.strip_prefix("a=rtpmap:0 "),
-                    Some("PCMU/8000" | "PCMU/8000/1")
-                )
-            {
-                return Err("OperationError: payload type zero must be mono PCMU at 8000 Hz".into());
+            if let Some(mapping) = mappings.last_mut() {
+                mapping_attribute(mapping, line)?;
             }
             if line.starts_with("a=sctp-") || line.starts_with("a=simulcast:") {
                 return Err("NotSupportedError: SCTP and simulcast are not enabled".into());
@@ -159,6 +308,9 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
 
     if sections.is_empty() {
         return Err("OperationError: SDP has no audio sections".into());
+    }
+    for (section, mapping) in sections.iter_mut().zip(mappings) {
+        section.codecs = audio_codecs(mapping)?;
     }
     let mut mids = BTreeSet::new();
     for section in &sections {
@@ -212,6 +364,81 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
         return Err("OperationError: BUNDLE must preserve all MID identities and m-line order".into());
     }
     Ok(sections)
+}
+
+/// Apply local codec policy to str0m's generated descriptions. Payload numbers
+/// retain their negotiated identity; removed codecs lose their attributes.
+pub(super) fn local(
+    mut description: Description,
+    preferences: &[Vec<String>],
+) -> Result<Description, String> {
+    let sections = sections(&description)?;
+    if sections.len() != preferences.len() {
+        return Err("OperationError: missing local codec policy".into());
+    }
+    let selected: Vec<Vec<&AudioCodec>> = sections
+        .iter()
+        .zip(preferences)
+        .map(|(section, preferences)| {
+            preferences
+                .iter()
+                .flat_map(|name| section.codecs.iter().filter(move |codec| codec.name() == name))
+                .collect()
+        })
+        .collect();
+    if selected.iter().any(Vec::is_empty) {
+        return Err("NotSupportedError: codec preferences have no negotiated audio codec".into());
+    }
+    let mut result = String::with_capacity(description.sdp.len() + sections.len() * 64);
+    let mut index = None;
+    for line in description.sdp.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.starts_with("m=") {
+            index = Some(index.map_or(0, |value: usize| value + 1));
+            let fields: Vec<_> = line.split_whitespace().collect();
+            result.push_str(&fields[..3].join(" "));
+            for codec in &selected[index.expect("audio section")] {
+                result.push(' ');
+                result.push_str(&codec.payload_type.to_string());
+            }
+            result.push_str("\r\n");
+            continue;
+        }
+        if let Some(index) = index {
+            let attribute = line
+                .strip_prefix("a=rtpmap:")
+                .or_else(|| line.strip_prefix("a=fmtp:"))
+                .or_else(|| line.strip_prefix("a=rtcp-fb:"));
+            if let Some(attribute) = attribute {
+                let number = attribute.split_whitespace().next().unwrap_or("");
+                if number != "*" {
+                    let number = payload(number)?;
+                    let Some(codec) = selected[index]
+                        .iter()
+                        .find(|codec| codec.payload_type == number)
+                    else {
+                        continue;
+                    };
+                    if codec.opus && line.starts_with("a=fmtp:") {
+                        continue;
+                    }
+                    if codec.opus && line.starts_with("a=rtpmap:") {
+                        result.push_str(line);
+                        result.push_str("\r\n");
+                        result.push_str(&format!(
+                            "a=fmtp:{number} minptime=10;useinbandfec=1;stereo=1;cbr=0\r\n"
+                        ));
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push_str(line);
+        result.push_str("\r\n");
+    }
+    description.sdp = result;
+    self::sections(&description)?;
+    Ok(description)
 }
 
 /// Set answer directions and outgoing track identity after str0m accepts an

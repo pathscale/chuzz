@@ -17,6 +17,14 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+pub(crate) fn resample_block(
+    pcm: &Pcm,
+    output_rate: u32,
+    output_channels: u16,
+) -> Arc<[f32]> {
+    super::resample::block(pcm, output_rate, output_channels)
+}
+
 pub(crate) struct Buffer {
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
@@ -193,6 +201,16 @@ impl Track {
         output_channels: u16,
     ) -> Vec<f32> {
         super::resample::read(self, start, frames, output_rate, output_channels)
+    }
+
+    pub(crate) fn read_into(
+        &self,
+        start: Duration,
+        output_rate: u32,
+        output_channels: u16,
+        output: &mut [f32],
+    ) {
+        super::resample::read_into(self, start, output_rate, output_channels, output);
     }
 
     /// The capture owner calls this when the shared source actually ends.

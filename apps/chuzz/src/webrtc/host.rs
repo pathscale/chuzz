@@ -43,6 +43,19 @@ pub(super) struct Metrics {
     pub samples_sent: u64,
     pub samples_received: u64,
     pub received_energy: f64,
+    pub tx_codec: Option<&'static str>,
+    pub rx_codec: Option<&'static str>,
+    pub opus_packets_sent: u64,
+    pub opus_bytes_sent: u64,
+    pub opus_min_packet_bytes: Option<usize>,
+    pub opus_max_packet_bytes: Option<usize>,
+    pub audio_dropped: u64,
+    pub concealed_frames: u64,
+    pub plc_frames: u64,
+    pub fec_attempts: u64,
+    pub codec_errors: u64,
+    pub max_silence_frames: u64,
+    pub max_playout_gap_frames: u64,
 }
 
 pub(super) struct Job {
@@ -267,7 +280,7 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
         if outputs.len() >= sdp::SLOT_LIMIT {
             return Err("OperationError: receiver limit reached".into());
         }
-        let output = AudioTrack::new(8000, 1)?;
+        let output = AudioTrack::new(48_000, 2)?;
         let id = crate::audio::register_track(context, Arc::clone(&output))
             .map_err(|error| error.to_string())?;
         outputs.push(output);

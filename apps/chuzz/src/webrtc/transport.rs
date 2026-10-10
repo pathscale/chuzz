@@ -1,7 +1,7 @@
 //! One task owns one Rtc, its sockets, pacing and protocol deadlines.
 //!
-//! The PCMU path is a bounded bootstrap audio path. Adaptive playout, Opus,
-//! video codecs and RTP statistics remain separate media waves.
+//! Opus is preferred, with PCMU fallback. Codec calls and bounded receive
+//! lookahead run synchronously here; adaptive playout remains a later wave.
 
 use std::collections::VecDeque;
 use std::future::{Future, poll_fn};
@@ -25,7 +25,7 @@ use crate::media::track::Track;
 
 use super::gather::{self, Config, Socket};
 use super::host::{Job, Peer};
-use super::pcmu;
+use super::{opus, pcmu};
 use super::sdp::{self, Description, Section};
 
 const AUDIO_QUANTUM: Duration = Duration::from_millis(20);
@@ -45,6 +45,68 @@ struct Slot {
     remote: Option<Section>,
     active: bool,
     rx_next: u64,
+    silence_run: u64,
+    preferences: Vec<String>,
+    codecs: Vec<sdp::AudioCodec>,
+    send: opus::Sender,
+    receive: Option<Box<opus::Receiver>>,
+}
+
+struct Sink<'a> {
+    output: &'a AudioTrack,
+    receiver: &'a Track,
+    next: &'a mut u64,
+    silence_run: &'a mut u64,
+    generation: crate::media::frame::Generation,
+    peer: &'a Peer,
+}
+
+impl Sink<'_> {
+    fn push(&mut self, decoded: opus::Decoded) -> Result<(), String> {
+        let pcm = Arc::new(
+            Pcm::new(
+                self.receiver.source.id,
+                opus::RATE,
+                2,
+                decoded.position,
+                self.generation.clone(),
+                decoded.samples,
+            )
+            .map_err(|error| format!("{}: {}", error.name, error.message))?,
+        );
+        let gap = if *self.next == 0 {
+            0
+        } else {
+            decoded.position.saturating_sub(*self.next)
+        };
+        let mut silence_max = *self.silence_run;
+        for frame in pcm.samples().chunks_exact(2) {
+            if frame.iter().all(|sample| sample.abs() < 1.0e-6) {
+                *self.silence_run += 1;
+                silence_max = silence_max.max(*self.silence_run);
+            } else {
+                *self.silence_run = 0;
+            }
+        }
+        let frames = pcm.frames() as u64;
+        let energy = pcm.energy();
+        self.output.push(pcm)?;
+        *self.next = decoded.position + frames;
+        self.receiver.source.muted.store(false, Ordering::Release);
+        self.peer.metrics(|metrics| {
+            metrics.samples_received += frames;
+            metrics.received_energy += energy;
+            metrics.concealed_frames += decoded.concealed_frames;
+            metrics.fec_attempts += decoded.fec_attempts;
+            if decoded.fec_attempts == 0 {
+                metrics.plc_frames += decoded.concealed_frames;
+            }
+            metrics.codec_errors += decoded.errors;
+            metrics.max_silence_frames = metrics.max_silence_frames.max(silence_max);
+            metrics.max_playout_gap_frames = metrics.max_playout_gap_frames.max(gap);
+        });
+        Ok(())
+    }
 }
 
 struct Engine {
@@ -64,6 +126,7 @@ struct Engine {
     connected: bool,
     epoch: Instant,
     audio_deadline: Instant,
+    audio_drop: u64,
     cancellation: Cancellation,
 }
 
@@ -71,6 +134,7 @@ fn rtc(certificate: DtlsCert) -> Rtc {
     super::crypto::config()
         .set_dtls_cert(certificate)
         .clear_codecs()
+        .enable_opus(true, false)
         .enable_pcmu(true, false)
         .build(Instant::now())
 }
@@ -88,6 +152,60 @@ fn description(data: &Value) -> Result<Description, String> {
 }
 
 impl Engine {
+    fn local_sdp(&self, description: Description) -> Result<Description, String> {
+        let sections = sdp::sections(&description)?;
+        let preferences = sections
+            .iter()
+            .map(|section| {
+                self.slots
+                    .iter()
+                    .find(|slot| slot.mid.is_some_and(|mid| mid.to_string() == section.mid))
+                    .map(|slot| slot.preferences.clone())
+                    .ok_or_else(|| "OperationError: missing local codec slot".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        sdp::local(description, &preferences)
+    }
+
+    fn commit_codecs(&mut self) -> Result<(), String> {
+        let local = self.current_local.as_ref().ok_or("OperationError: missing local SDP")?;
+        let remote = self.current_remote.as_ref().ok_or("OperationError: missing remote SDP")?;
+        let answer = if local.r#type == "answer" { local } else { remote };
+        let answers = sdp::sections(answer)?;
+        let remotes = sdp::sections(remote)?;
+        for section in answers {
+            let remote = remotes
+                .iter()
+                .find(|remote| remote.mid == section.mid)
+                .ok_or("OperationError: missing remote codec section")?;
+            let slot = self
+                .slots
+                .iter_mut()
+                .find(|slot| slot.mid.is_some_and(|mid| mid.to_string() == section.mid))
+                .ok_or("OperationError: missing negotiated codec slot")?;
+            let old_opus = slot.codecs.iter().find(|codec| codec.opus).map(|codec| codec.payload_type);
+            slot.codecs = section
+                .codecs
+                .into_iter()
+                .map(|codec| {
+                    // Opus fmtp describes the remote receiver's preferences.
+                    // Preserve the answer's payload order and identity.
+                    remote
+                        .codecs
+                        .iter()
+                        .find(|remote| remote.payload_type == codec.payload_type && remote.opus == codec.opus)
+                        .cloned()
+                        .unwrap_or(codec)
+                })
+                .collect();
+            let new_opus = slot.codecs.iter().find(|codec| codec.opus).map(|codec| codec.payload_type);
+            if old_opus != new_opus {
+                slot.receive = None;
+            }
+        }
+        Ok(())
+    }
+
     fn slot(&mut self, id: u64) -> Result<&mut Slot, String> {
         self.slots
             .iter_mut()
@@ -108,6 +226,7 @@ impl Engine {
                     "mid": slot.mid.map(|mid| mid.to_string()),
                     "direction": slot.direction,
                     "currentDirection": slot.current,
+                    "codecs": slot.codecs.iter().map(sdp::AudioCodec::parameters).collect::<Vec<_>>(),
                     "remote": remote.map(|remote| json!({
                         "stream": remote.stream,
                         "track": remote.track
@@ -230,10 +349,10 @@ impl Engine {
         let (offer, pending) = changes
             .apply()
             .ok_or("OperationError: str0m did not produce an offer")?;
-        let description = Description {
+        let description = self.local_sdp(Description {
             r#type: "offer".into(),
             sdp: offer.to_sdp_string(),
-        };
+        })?;
         sdp::sections(&description)?;
         self.pending = Some(pending);
         self.generated_offer = Some(description.clone());
@@ -285,10 +404,10 @@ impl Engine {
                 (direction.as_str(), stream.as_deref(), track.as_deref())
             })
             .collect();
-        let description = Description {
+        let description = self.local_sdp(Description {
             r#type: "answer".into(),
             sdp: sdp::answer(&generated.sdp, &entries),
-        };
+        })?;
         sdp::sections(&description)?;
         SdpAnswer::from_sdp_string(&description.sdp)
             .map_err(|error| format!("OperationError: {error}"))?;
@@ -322,6 +441,9 @@ impl Engine {
                 }
             }
             _ => return Err("InvalidStateError: invalid local-description transition".into()),
+        }
+        if self.signaling == "stable" {
+            self.commit_codecs()?;
         }
         let snapshot = self.snapshot();
         // The reply is posted by the caller before gathering notifications.
@@ -388,6 +510,11 @@ impl Engine {
                             remote: Some(section),
                             active: true,
                             rx_next: 0,
+                            silence_run: 0,
+                            preferences: vec!["opus".into(), "pcmu".into()],
+                            codecs: Vec::new(),
+                            send: opus::Sender::new(),
+                            receive: None,
                         });
                     } else {
                         let slot = self.slot(id)?;
@@ -410,6 +537,12 @@ impl Engine {
                 if sections.len() != offered.len()
                     || sections.iter().zip(&offered).any(|(answer, offer)| {
                         answer.mid != offer.mid
+                            || answer.codecs.iter().any(|codec| {
+                                !offer.codecs.iter().any(|offered| {
+                                    offered.payload_type == codec.payload_type
+                                        && offered.opus == codec.opus
+                                })
+                            })
                             || (sdp::sends(&answer.direction)
                                 && !sdp::receives(&offer.direction))
                             || (sdp::receives(&answer.direction)
@@ -450,6 +583,9 @@ impl Engine {
             }
             _ => return Err("InvalidStateError: invalid remote-description transition".into()),
         }
+        if self.signaling == "stable" {
+            self.commit_codecs()?;
+        }
         if !self.connected {
             peer.post(json!({"type": "connection", "state": "connecting"}));
         }
@@ -478,6 +614,11 @@ impl Engine {
                     remote: None,
                     active: true,
                     rx_next: 0,
+                    silence_run: 0,
+                    preferences: vec!["opus".into(), "pcmu".into()],
+                    codecs: Vec::new(),
+                    send: opus::Sender::new(),
+                    receive: None,
                 });
                 Ok(Value::Null)
             }
@@ -504,6 +645,47 @@ impl Engine {
                 self.slot(slot_id(&job.data)?)?.active = job.data["active"]
                     .as_bool()
                     .ok_or("TypeError: active must be boolean")?;
+                Ok(Value::Null)
+            }
+            "parameters" => {
+                let bitrate = job.data["maxBitrate"]
+                    .as_u64()
+                    .filter(|bitrate| (6000..=510_000).contains(bitrate))
+                    .ok_or("RangeError: Opus bitrate must be between 6000 and 510000")?;
+                let cbr = job.data["cbr"].as_bool().ok_or("TypeError: cbr must be boolean")?;
+                let active = job.data["active"].as_bool().ok_or("TypeError: active must be boolean")?;
+                let slot = self.slot(slot_id(&job.data)?)?;
+                slot.send.bitrate = bitrate as u32;
+                slot.send.cbr = cbr;
+                slot.active = active;
+                Ok(Value::Null)
+            }
+            "preferences" => {
+                if self.signaling != "stable" {
+                    return Err("InvalidStateError: change codec preferences in stable signaling".into());
+                }
+                let values = job.data["codecs"]
+                    .as_array()
+                    .ok_or("TypeError: codec preferences must be an array")?;
+                let mut preferences = Vec::new();
+                for value in values {
+                    let name = value.as_str().ok_or("TypeError: invalid codec preference")?;
+                    if !matches!(name, "opus" | "pcmu") || preferences.iter().any(|value| value == name) {
+                        return Err("NotSupportedError: invalid audio codec preference".into());
+                    }
+                    preferences.push(name.to_owned());
+                }
+                if preferences.is_empty() {
+                    preferences = vec!["opus".into(), "pcmu".into()];
+                }
+                self.slot(slot_id(&job.data)?)?.preferences = preferences;
+                Ok(Value::Null)
+            }
+            "dropAudio" => {
+                self.audio_drop = job.data["count"]
+                    .as_u64()
+                    .filter(|count| (1..=5).contains(count))
+                    .ok_or("RangeError: drop between one and five RTP packets")?;
                 Ok(Value::Null)
             }
             "createOffer" => Ok(json!({"description": self.offer()?})),
@@ -561,33 +743,72 @@ impl Engine {
         }
         // Skip capture debt instead of producing a burst of late packets.
         self.audio_deadline = now + AUDIO_QUANTUM;
-        let start = now.saturating_duration_since(self.epoch);
-        for slot in &self.slots {
+        let elapsed = now.saturating_duration_since(self.epoch);
+        // Capture and RTP use the same integer 20 ms clock. Scheduler jitter
+        // must not create fractional-frame gaps in the receiver's RTP clock.
+        let start = Duration::from_millis((elapsed.as_millis() / 20) as u64 * 20);
+        let generation = self.cancellation.generation();
+        for slot in &mut self.slots {
+            if slot.current.as_deref().is_some_and(sdp::receives)
+                && let (Some(receive), Some(output), Some(receiver)) =
+                    (&mut slot.receive, &slot.output, &slot.receiver)
+                && !receiver.is_stopped()
+            {
+                let mut sink = Sink {
+                    output,
+                    receiver,
+                    next: &mut slot.rx_next,
+                    silence_run: &mut slot.silence_run,
+                    generation: generation.clone(),
+                    peer,
+                };
+                receive.render(now, self.epoch, |decoded| sink.push(decoded))?;
+            }
             if !slot.active
                 || !slot.current.as_deref().is_some_and(sdp::sends)
                 || slot.track.as_ref().is_none_or(|track| track.is_stopped())
             {
                 continue;
             }
-            let (Some(input), Some(mid)) = (&slot.input, slot.mid) else {
+            let (Some(input), Some(mid), Some(codec)) =
+                (&slot.input, slot.mid, slot.codecs.first())
+            else {
                 continue;
             };
-            let samples = input.read(start, 160, 8000, 1);
-            let bytes = pcmu::encode(&samples);
             let Some(writer) = self.rtc.writer(mid) else {
                 continue;
             };
             let Some(pt) = writer
                 .payload_params()
-                .find(|params| params.spec().codec == Codec::PCMU)
+                .find(|params| {
+                    params.pt() == codec.payload_type.into()
+                        && params.spec().codec == if codec.opus { Codec::Opus } else { Codec::PCMU }
+                })
                 .map(|params| params.pt())
             else {
                 continue;
             };
+            let bytes = if codec.opus {
+                slot.send.encode(input, start, codec)?
+            } else {
+                pcmu::encode(&input.read(start, 160, 8000, 1))
+            };
+            let length = bytes.len();
             writer
                 .write(pt, now, MediaTime::from_seconds(start.as_secs_f64()), bytes)
                 .map_err(|error| format!("OperationError: {error}"))?;
-            peer.metrics(|metrics| metrics.samples_sent += 160);
+            peer.metrics(|metrics| {
+                metrics.tx_codec = Some(codec.name());
+                metrics.samples_sent += if codec.opus { opus::FRAME as u64 } else { 160 };
+                if codec.opus {
+                    metrics.opus_packets_sent += 1;
+                    metrics.opus_bytes_sent += length as u64;
+                    metrics.opus_min_packet_bytes =
+                        Some(metrics.opus_min_packet_bytes.map_or(length, |value| value.min(length)));
+                    metrics.opus_max_packet_bytes =
+                        Some(metrics.opus_max_packet_bytes.map_or(length, |value| value.max(length)));
+                }
+            });
         }
         Ok(())
     }
@@ -620,46 +841,77 @@ impl Engine {
                     peer.post(json!({"type": "connection", "state": "connected"}));
                 }
             }
-            Event::MediaData(data) if data.params.spec().codec == Codec::PCMU => {
-                if data.data.is_empty() || data.data.len() > 12_000 {
-                    return Err("OperationError: PCMU receive block exceeds media bounds".into());
-                }
+            Event::MediaData(data)
+                if matches!(data.params.spec().codec, Codec::Opus | Codec::PCMU) =>
+            {
                 let Some(slot) = self.slots.iter_mut().find(|slot| slot.mid == Some(data.mid)) else {
                     return Ok(());
                 };
                 if !slot.current.as_deref().is_some_and(sdp::receives) {
                     return Ok(());
                 }
+                let Some(codec) = slot
+                    .codecs
+                    .iter()
+                    .find(|codec| {
+                        data.params.pt() == codec.payload_type.into()
+                            && codec.opus == (data.params.spec().codec == Codec::Opus)
+                    })
+                else {
+                    return Ok(());
+                };
                 let (Some(output), Some(receiver)) = (&slot.output, &slot.receiver) else {
                     return Ok(());
                 };
-                let samples = pcmu::decode(&data.data);
-                let position = (data
-                    .network_time
-                    .saturating_duration_since(self.epoch)
-                    .as_secs_f64()
-                    * 8000.0) as u64;
-                let position = position.max(slot.rx_next);
-                let pcm = Arc::new(
-                    Pcm::new(
+                if receiver.is_stopped() {
+                    return Ok(());
+                }
+                peer.metrics(|metrics| metrics.rx_codec = Some(codec.name()));
+                if codec.opus {
+                    if slot.receive.is_none() {
+                        slot.receive = Some(Box::new(opus::Receiver::new(true, slot.rx_next)?));
+                    }
+                    let receive = slot.receive.as_mut().ok_or("OperationError: missing Opus receiver")?;
+                    let timestamp = data.time.rebase(str0m::media::Frequency::FORTY_EIGHT_KHZ).numer();
+                    if receive.enqueue(timestamp, data.data.into()).is_err() {
+                        peer.metrics(|metrics| metrics.codec_errors += 1);
+                    }
+                } else {
+                    if data.data.is_empty() || data.data.len() > 2000 {
+                        peer.metrics(|metrics| metrics.codec_errors += 1);
+                        return Ok(());
+                    }
+                    let pcm = Pcm::new(
                         receiver.source.id,
                         8000,
                         1,
-                        position,
+                        0,
                         self.cancellation.generation(),
-                        samples,
+                        pcmu::decode(&data.data),
                     )
-                    .map_err(|error| format!("{}: {}", error.name, error.message))?,
-                );
-                slot.rx_next = position + pcm.frames() as u64;
-                let frames = pcm.frames() as u64;
-                let energy = pcm.energy();
-                output.push(pcm)?;
-                receiver.source.muted.store(false, Ordering::Release);
-                peer.metrics(|metrics| {
-                    metrics.samples_received += frames;
-                    metrics.received_energy += energy;
-                });
+                    .map_err(|error| format!("{}: {}", error.name, error.message))?;
+                    let samples = crate::audio::pcm::resample_block(&pcm, opus::RATE, 2);
+                    let position = ((data.network_time.saturating_duration_since(self.epoch)
+                        + opus::PLAYOUT)
+                        .as_secs_f64()
+                        * f64::from(opus::RATE)) as u64;
+                    let position = position.max(slot.rx_next);
+                    let mut sink = Sink {
+                        output,
+                        receiver,
+                        next: &mut slot.rx_next,
+                        silence_run: &mut slot.silence_run,
+                        generation: self.cancellation.generation(),
+                        peer,
+                    };
+                    sink.push(opus::Decoded {
+                        position,
+                        samples,
+                        concealed_frames: 0,
+                        fec_attempts: 0,
+                        errors: 0,
+                    })?;
+                }
             }
             _ => {}
         }
@@ -710,6 +962,7 @@ async fn drive(
         connected: false,
         epoch,
         audio_deadline: Instant::now(),
+        audio_drop: 0,
         cancellation: Cancellation::default(),
     };
     let mut transmits: VecDeque<Transmit> = VecDeque::new();
@@ -838,6 +1091,18 @@ async fn drive(
                     metrics.bytes_received += length as u64;
                     metrics.dtls_received += u64::from(dtls(&buffer[..length]));
                 });
+                // Fixture loss occurs before SRTP ingestion. STUN, DTLS and
+                // RTCP remain intact, so the test exercises actual RTP gaps.
+                if engine.audio_drop > 0
+                    && engine.connected
+                    && length >= 12
+                    && buffer[0] & 0xc0 == 0x80
+                    && !(192..=223).contains(&buffer[1])
+                {
+                    engine.audio_drop -= 1;
+                    peer.metrics(|metrics| metrics.audio_dropped += 1);
+                    continue;
+                }
                 if let Ok(receive) = Receive::new(
                     Protocol::Udp,
                     gather::socket_address(source)?,
