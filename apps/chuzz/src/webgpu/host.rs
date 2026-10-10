@@ -109,6 +109,22 @@ impl Bridge {
             }
         }
 
+        // Wake the window's deadline check even if native adapter discovery
+        // blocks the GPU pool. This timer runs on the process Nagoya runtime.
+        let owner = Arc::downgrade(&self.0);
+        let _ = nagoya::spawn(async move {
+            nagoya::sleep(STARTUP_DEADLINE).await;
+            if let Some(owner) = owner.upgrade() {
+                let wake = {
+                    let state = lock(&owner);
+                    state.in_flight.contains_key(&id).then(|| state.wake.clone())
+                };
+                if let Some(wake) = wake {
+                    wake.wake();
+                }
+            }
+        });
+
         // Native adapter enumeration and device creation can block inside
         // their first poll. The document executor must never steal this work.
         // Host polling owns the deadline even if the driver never yields.
@@ -205,7 +221,12 @@ impl Bridge {
                 })
             }
         };
-        self.state().ready.push((id, payload));
+        let wake = {
+            let mut state = self.state();
+            state.ready.push((id, payload));
+            state.wake.clone()
+        };
+        wake.wake();
     }
 
     pub(super) fn expire_requests(&self) {
@@ -251,4 +272,3 @@ impl Bridge {
         });
     }
 }
-

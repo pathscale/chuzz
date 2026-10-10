@@ -169,11 +169,15 @@ struct Command {
 pub struct Bridge {
     events: Arc<Mutex<Vec<Event>>>,
     senders: Arc<Mutex<HashMap<u64, Arc<Outbox>>>>,
+    wake: crate::net_bridge::PageWake,
 }
 
 impl Bridge {
-    pub fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(wake: crate::net_bridge::PageWake) -> Self {
+        Self {
+            wake,
+            ..Default::default()
+        }
     }
 
     fn post(&self, id: u64, payload: serde_json::Value) {
@@ -184,6 +188,7 @@ impl Bridge {
         if let Ok(mut queue) = self.events.lock() {
             queue.push(Event { id, payload });
         }
+        self.wake.wake();
     }
 
     fn forget(&self, id: u64) {

@@ -12,3 +12,6 @@ publish = false
 [[bin]]
 name = "chuzz-qa-fixture"
 path = "src/main.rs"
+
+[dependencies]
+nagoya.workspace = true

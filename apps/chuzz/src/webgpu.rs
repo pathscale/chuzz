@@ -298,6 +298,7 @@ struct State {
     ready: Vec<(u64, Value)>,
     events: Vec<(u64, Value)>,
     frames: HashMap<u64, canvas::Frame>,
+    wake: crate::net_bridge::PageWake,
 }
 
 #[derive(Clone, Default)]
@@ -309,7 +310,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn post_event(owner: &Weak<Mutex<State>>, device: u64, value: Value) {
     if let Some(state) = owner.upgrade() {
-        lock(&state).events.push((device, value));
+        let wake = {
+            let mut state = lock(&state);
+            state.events.push((device, value));
+            state.wake.clone()
+        };
+        wake.wake();
     }
 }
 
@@ -330,6 +336,13 @@ fn post_loss(
 }
 
 impl Bridge {
+    pub(crate) fn new(wake: crate::net_bridge::PageWake) -> Self {
+        Self(Arc::new(Mutex::new(State {
+            wake,
+            ..Default::default()
+        })))
+    }
+
     fn state(&self) -> MutexGuard<'_, State> {
         lock(&self.0)
     }
@@ -371,6 +384,9 @@ impl Bridge {
         } else {
             state.incoming.push_back(request);
         }
+        let wake = state.wake.clone();
+        drop(state);
+        wake.wake();
         true
     }
 

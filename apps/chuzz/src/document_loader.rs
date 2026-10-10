@@ -147,10 +147,11 @@ impl blitz_traits::net::NetProvider for NetProvider {
                 Some(provider.fetch_response_async(request).await)
             };
 
-            provider.waker.wake(doc_id);
             if let Some(Ok(response)) = result {
                 handler.bytes(response.url.to_string(), response.body);
             }
+            // The consumer must see the bytes when it responds to this wake.
+            provider.waker.wake(doc_id);
         });
     }
 

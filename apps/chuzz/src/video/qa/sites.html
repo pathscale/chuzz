@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SITESB browser platform QA</title>
+  <style>
+    @font-face {
+      font-family: "Fira Sans";
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body {
+      margin: 24px;
+      background: #182335;
+      color: white;
+      font-family: "Fira Sans", sans-serif;
+    }
+    button { padding: 12px 20px; font: inherit; }
+    section { margin: 20px 0; padding: 16px; border: 1px solid #789; }
+    canvas { width: 160px; height: 100px; }
+  </style>
+</head>
+<body>
+  <h1>SITESB browser platform QA</h1>
+  <section id="gate">
+    <h2>Consent fixture</h2>
+    <button id="accept" type="button"><span>I am 18 or older</span></button>
+  </section>
+  <p id="gate-result" role="status">Consent pending</p>
+  <section>
+    <button id="run-network" type="button">Run network checks</button>
+    <p id="network-result" role="status">Network ready</p>
+  </section>
+  <section>
+    <button id="run-window" type="button">Run window checks</button>
+    <p id="window-result" role="status">Window ready</p>
+    <canvas id="window-canvas" width="160" height="100" aria-label="Presented green GPU frame"></canvas>
+  </section>
+  <script src="./src/sites.ts"></script>
+</body>
+</html>

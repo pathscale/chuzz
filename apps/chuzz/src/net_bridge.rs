@@ -1,514 +1,581 @@
-//! `fetch` and `XMLHttpRequest`, built out of what the script engine already
-//! exposes.
-//!
-//! Most of the web fetches its own content. A page that renders server-side is
-//! the exception now, so an engine without these does not render a slightly
-//! incomplete page: it renders the shell and stops. Measured over a
-//! hundred-site corpus, `XMLHttpRequest` was missing on 6 sites and `fetch` on
-//! 4 by name, and the pages laying out at 37% and 44% of a reference browser's
-//! height are the same story counted the same way.
-//!
-//! The asynchronous network bridge uses three script surfaces:
-//!
-//! - `window.ipc.postMessage(text)`, a string channel from JavaScript to here;
-//! - `eval`, the same channel in reverse;
-//! - `add_poll_hook`, work run on the document thread during polling.
-//!
-//! JavaScript posts a request and parks a promise. The handler here spawns the
-//! real fetch on the page's own provider, so it obeys the same per-origin
-//! connection cap as every other load. When it finishes, the result goes on a
-//! queue, and the next poll hands it back by evaluating a call to the resolver
-//! the shim installed. Nothing blocks: unlike a `<script src>`, which the HTML
-//! spec makes synchronous, `fetch` is asynchronous by definition and this can
-//! honour that.
+//! Page networking, cookie access and completion wakeups shared by both hosts.
 
+use std::future::poll_fn;
 use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 use std::time::Duration;
 
+use blitz_script::boa_engine::{
+    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
+};
 use blitz_dom::Document as _;
-use blitz_traits::net::{Method, Request};
+use blitz_traits::net::Url;
+use blitz_traits::platform::{
+    FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse,
+};
+use blitz_traits::shell::ShellProvider;
 
 use crate::decode::decode_body;
 use crate::document_loader::NetProvider;
 
-/// A finished request, waiting for the document thread to hand it back.
+#[derive(Default)]
+struct WakeState {
+    waker: Option<Waker>,
+    shell: Option<Arc<dyn ShellProvider>>,
+}
+
+/// Publish results before waking the document. Never hold a queue lock while
+/// calling a host waker or the window's queued shell provider.
+#[derive(Clone, Default)]
+pub(crate) struct PageWake(Arc<Mutex<WakeState>>);
+
+impl PageWake {
+    fn new(shell: Arc<dyn ShellProvider>) -> Self {
+        Self(Arc::new(Mutex::new(WakeState {
+            waker: None,
+            shell: Some(shell),
+        })))
+    }
+
+    fn bind(&self, waker: Option<&Waker>) {
+        if let Some(waker) = waker {
+            self.0
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .waker = Some(waker.clone());
+        }
+    }
+
+    pub(crate) fn wake(&self) {
+        let (waker, shell) = {
+            let state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+            (state.waker.clone(), state.shell.clone())
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        } else if let Some(shell) = shell {
+            shell.request_redraw();
+        }
+    }
+}
+
 struct Delivery {
     id: u64,
     payload: serde_json::Value,
 }
 
-/// Requests in flight and results waiting to be delivered.
-#[derive(Clone, Default)]
-struct Mailbox(Arc<Mutex<Vec<Delivery>>>);
+#[derive(Clone)]
+struct Mailbox {
+    entries: Arc<Mutex<Vec<Delivery>>>,
+    wake: PageWake,
+}
 
 impl Mailbox {
     fn post(&self, delivery: Delivery) {
-        // A poisoned lock here would mean a panic on the document thread while
-        // holding it, and the page is already lost at that point; dropping the
-        // delivery is better than a second panic on top of the first.
-        if let Ok(mut queue) = self.0.lock() {
-            queue.push(delivery);
-        }
+        self.entries
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(delivery);
+        self.wake.wake();
     }
 
     fn drain(&self) -> Vec<Delivery> {
-        match self.0.lock() {
-            Ok(mut queue) => std::mem::take(&mut *queue),
-            Err(_) => Vec::new(),
+        std::mem::take(
+            &mut *self
+                .entries
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        )
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct NetRequest {
+    #[serde(default)]
+    id: u64,
+    url: String,
+    #[serde(default = "get_method")]
+    method: String,
+    #[serde(default)]
+    headers: Vec<(String, String)>,
+    #[serde(default)]
+    body: Option<Vec<u8>>,
+    #[serde(default = "default_credentials")]
+    credentials: String,
+}
+
+fn get_method() -> String {
+    "GET".to_owned()
+}
+
+fn default_credentials() -> String {
+    "same-origin".to_owned()
+}
+
+struct ScriptCookies {
+    jar: Arc<crate::cookie_store::BrowserCookieStore>,
+    origin: Option<Url>,
+}
+
+impl ScriptCookies {
+    fn allows(&self, url: &Url) -> bool {
+        self.origin
+            .as_ref()
+            .is_some_and(|origin| origin.origin() == url.origin())
+    }
+}
+
+impl blitz_traits::net::CookieJar for ScriptCookies {
+    fn cookies_header(&self, url: &Url) -> Option<blitz_traits::net::http::HeaderValue> {
+        if self.allows(url) {
+            blitz_traits::net::CookieJar::cookies_header(self.jar.as_ref(), url)
+        } else {
+            None
+        }
+    }
+
+    fn store_from_response(&self, url: &Url, headers: &blitz_traits::net::http::HeaderMap) {
+        if self.allows(url) {
+            blitz_traits::net::CookieJar::store_from_response(self.jar.as_ref(), url, headers);
         }
     }
 }
 
-/// Scroll operations posted by the JavaScript shim for the document thread.
-#[derive(Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ScrollMode {
-    To,
-    By,
-}
+type FetchResult = Result<FetchResponse, FetchError>;
 
-#[derive(Clone, Copy, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScrollCommand {
-    mode: ScrollMode,
-    #[serde(default)]
-    left: Option<f64>,
-    #[serde(default)]
-    top: Option<f64>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScrollEnvelope {
-    #[serde(rename = "__chuzz_scroll")]
-    command: ScrollCommand,
+#[derive(Default)]
+struct CompletionState {
+    result: Option<FetchResult>,
+    waker: Option<Waker>,
 }
 
 #[derive(Clone, Default)]
-struct ScrollMailbox(Arc<Mutex<Vec<ScrollCommand>>>);
+struct Completion(Arc<Mutex<CompletionState>>);
 
-impl ScrollMailbox {
-    fn post(&self, command: ScrollCommand) {
-        if let Ok(mut queue) = self.0.lock() {
-            queue.push(command);
-        }
-    }
-
-    fn drain(&self) -> Vec<ScrollCommand> {
-        match self.0.lock() {
-            Ok(mut queue) => std::mem::take(&mut *queue),
-            Err(_) => Vec::new(),
-        }
-    }
-}
-
-/// Apply one request to the native root scrollport, then expose that real
-/// position and its resulting scroll events to JavaScript.
-fn apply_viewport_scroll(
-    document: &mut blitz_script::ScriptDocument,
-    command: ScrollCommand,
-) -> bool {
-    let mut events = Vec::new();
-    let changed = {
-        let mut inner = document.inner_mut();
-        let current = inner.viewport_scroll();
-        let (left, top) = match command.mode {
-            ScrollMode::To => (
-                command.left.unwrap_or(current.x),
-                command.top.unwrap_or(current.y),
-            ),
-            ScrollMode::By => (
-                current.x + command.left.unwrap_or(0.0),
-                current.y + command.top.unwrap_or(0.0),
-            ),
+impl FetchHandler for Completion {
+    fn complete(self: Box<Self>, result: FetchResult) {
+        let waker = {
+            let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+            state.result = Some(result);
+            state.waker.take()
         };
-        // Blitz's scroll methods subtract their arguments from the native
-        // offset, so current-minus-target expresses a target position.
-        let dx = current.x - left;
-        let dy = current.y - top;
-        if let Some(root) = inner.try_root_element().map(|element| element.id) {
-            inner.scroll_node_by_has_changed(root, dx, dy, |event| {
-                events.push(event);
-            })
-        } else {
-            inner.scroll_viewport_by_has_changed(dx, dy)
+        if let Some(waker) = waker {
+            waker.wake();
         }
-    };
-
-    if changed {
-        refresh_script_scroll(document);
-        for event in events {
-            document.dispatch_dom_event(event);
-        }
-        // Scroll events on the root element are non-bubbling in Blitz. The
-        // viewport's browser-facing event is targeted at Window, so dispatch
-        // it separately after updating the getters from native state.
-        document.eval(
-            "if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.Event === 'function') globalThis.dispatchEvent(new Event('scroll'));",
-        );
     }
-    changed
 }
 
-fn refresh_script_scroll(document: &mut blitz_script::ScriptDocument) {
-    let position = document.inner().viewport_scroll();
-    let position = serde_json::json!({ "x": position.x, "y": position.y });
-    document.eval(&format!(
-        "if (globalThis.__chuzzScrollRefresh) globalThis.__chuzzScrollRefresh({position});"
-    ));
+async fn fetch_response(provider: &blitz_net::Provider, request: FetchRequest) -> FetchResult {
+    let completion = Completion::default();
+    FetchProvider::fetch(provider, request, Box::new(completion.clone()));
+    poll_fn(|context| {
+        let mut state = completion
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(result) = state.result.take() {
+            Poll::Ready(result)
+        } else {
+            state.waker = Some(context.waker().clone());
+            Poll::Pending
+        }
+    })
+    .await
 }
 
-/// What the shim posts when a page asks for a URL.
-#[derive(serde::Deserialize)]
-struct NetRequest {
-    id: u64,
-    url: String,
-    #[serde(default)]
-    method: Option<String>,
-    #[serde(default)]
-    body: Option<String>,
+#[derive(Clone)]
+struct ScriptHost {
+    net: Arc<NetProvider>,
+    same_origin: Arc<blitz_net::Provider>,
+    include: Arc<blitz_net::Provider>,
+    omit: Arc<blitz_net::Provider>,
+    base: Option<Url>,
+    deadline: Duration,
 }
 
-/// One `document.cookie = ...` assignment from the JavaScript shim.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CookieAssignment {
-    cookie: String,
+fn failure(message: impl std::fmt::Display) -> serde_json::Value {
+    serde_json::json!({"ok": false, "error": message.to_string()})
 }
 
-/// Give `document` a working `fetch` and `XMLHttpRequest`.
-///
-/// `deadline` bounds a single request. Nothing blocks on it, but a page that
-/// waits forever for a server that never answers keeps the capture alive for
-/// no reason, and a browser tab holds the connection.
+fn forbidden_header(name: &str) -> bool {
+    matches!(
+        name,
+        "accept-charset"
+            | "accept-encoding"
+            | "access-control-request-headers"
+            | "access-control-request-method"
+            | "connection"
+            | "content-length"
+            | "cookie"
+            | "cookie2"
+            | "date"
+            | "dnt"
+            | "expect"
+            | "host"
+            | "keep-alive"
+            | "origin"
+            | "referer"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "via"
+    ) || name.starts_with("proxy-")
+        || name.starts_with("sec-")
+}
+
+fn cors_allowed(response: &FetchResponse, origin: &str, credentials: &str) -> bool {
+    let allowed = response
+        .headers
+        .get("access-control-allow-origin")
+        .and_then(|value| value.to_str().ok());
+    (allowed == Some(origin) || (allowed == Some("*") && credentials != "include"))
+        && (credentials != "include"
+            || response
+                .headers
+                .get("access-control-allow-credentials")
+                .and_then(|value| value.to_str().ok())
+                == Some("true"))
+}
+
+fn header_tokens(response: &FetchResponse, name: &str) -> Vec<String> {
+    response
+        .headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect()
+}
+
+impl ScriptHost {
+    async fn perform(&self, request: NetRequest) -> serde_json::Value {
+        match nagoya::timeout(self.deadline, self.perform_inner(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => failure(error),
+            Err(_) => failure("timed out"),
+        }
+    }
+
+    async fn perform_inner(&self, request: NetRequest) -> Result<serde_json::Value, String> {
+        use blitz_traits::platform::http::{HeaderName, HeaderValue, Method};
+
+        let mut url = Url::options()
+            .base_url(self.base.as_ref())
+            .parse(&request.url)
+            .map_err(|error| error.to_string())?;
+        if !matches!(url.scheme(), "http" | "https" | "file" | "data") {
+            return Err("unsupported request scheme".to_owned());
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err("request URL cannot contain credentials".to_owned());
+        }
+        url.set_fragment(None);
+
+        let method = Method::from_bytes(request.method.as_bytes())
+            .map_err(|error| error.to_string())?;
+        if matches!(method.as_str(), "CONNECT" | "TRACE" | "TRACK") {
+            return Err("forbidden request method".to_owned());
+        }
+        let provider = match request.credentials.as_str() {
+            "same-origin" => &self.same_origin,
+            "include" => &self.include,
+            "omit" => &self.omit,
+            _ => return Err("invalid credentials mode".to_owned()),
+        };
+        let mut wire = FetchRequest::get(url.clone()).method(method.clone());
+        let mut unsafe_headers = Vec::new();
+        for (name, value) in request.headers {
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| error.to_string())?;
+            if forbidden_header(name.as_str()) {
+                continue;
+            }
+            let value = HeaderValue::from_str(&value).map_err(|error| error.to_string())?;
+            let safelisted = match name.as_str() {
+                "accept" | "accept-language" | "content-language" => {
+                    value.as_bytes().len() <= 128
+                        && !value.as_bytes().iter().any(|byte| {
+                            *byte < 0x20 && *byte != b'\t' || *byte == 0x7f
+                        })
+                }
+                "content-type" => value.to_str().is_ok_and(|value| {
+                    matches!(
+                        value.split(';').next().unwrap_or_default().trim(),
+                        "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+                    )
+                }),
+                _ => false,
+            };
+            if !safelisted {
+                unsafe_headers.push(name.as_str().to_owned());
+            }
+            wire.headers.append(name, value);
+        }
+        wire.headers
+            .entry(HeaderName::from_static("accept-language"))
+            .or_insert(HeaderValue::from_static("en-US,en;q=0.9"));
+        if !matches!(method, Method::GET | Method::HEAD) {
+            wire.body = request.body.map(Into::into);
+        }
+
+        let origin = self
+            .base
+            .as_ref()
+            .filter(|base| base.origin().is_tuple())
+            .map(|base| base.origin().ascii_serialization());
+        let cross_origin = matches!(url.scheme(), "http" | "https")
+            && self
+                .base
+                .as_ref()
+                .is_none_or(|base| base.origin() != url.origin());
+        if cross_origin {
+            let origin = origin.as_deref().unwrap_or("null");
+            wire.headers.insert(
+                HeaderName::from_static("origin"),
+                HeaderValue::from_str(origin).map_err(|error| error.to_string())?,
+            );
+            if !matches!(method, Method::GET | Method::HEAD | Method::POST)
+                || !unsafe_headers.is_empty()
+            {
+                unsafe_headers.sort();
+                unsafe_headers.dedup();
+                let mut preflight = FetchRequest::get(url.clone()).method(Method::OPTIONS);
+                preflight.headers.insert(
+                    HeaderName::from_static("origin"),
+                    HeaderValue::from_str(origin).map_err(|error| error.to_string())?,
+                );
+                preflight.headers.insert(
+                    HeaderName::from_static("access-control-request-method"),
+                    HeaderValue::from_str(method.as_str()).map_err(|error| error.to_string())?,
+                );
+                if !unsafe_headers.is_empty() {
+                    preflight.headers.insert(
+                        HeaderName::from_static("access-control-request-headers"),
+                        HeaderValue::from_str(&unsafe_headers.join(", "))
+                            .map_err(|error| error.to_string())?,
+                    );
+                }
+                let response = fetch_response(&self.omit, preflight)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let methods = header_tokens(&response, "access-control-allow-methods");
+                let headers = header_tokens(&response, "access-control-allow-headers");
+                if !response.status.is_success()
+                    || !cors_allowed(&response, origin, &request.credentials)
+                    || (!matches!(method, Method::GET | Method::HEAD | Method::POST)
+                        && !methods.contains(&method.as_str().to_ascii_lowercase())
+                        && !(methods.contains(&"*".to_owned()) && request.credentials != "include"))
+                    || unsafe_headers.iter().any(|name| {
+                        !headers.contains(name)
+                            && !(headers.contains(&"*".to_owned())
+                                && request.credentials != "include"
+                                && name != "authorization")
+                    })
+                {
+                    return Err("CORS preflight rejected".to_owned());
+                }
+            }
+        }
+
+        let response = fetch_response(provider, wire)
+            .await
+            .map_err(|error| error.to_string())?;
+        let response_cross_origin = matches!(response.url.scheme(), "http" | "https")
+            && self
+                .base
+                .as_ref()
+                .is_none_or(|base| base.origin() != response.url.origin());
+        if response_cross_origin
+            && !cors_allowed(
+                &response,
+                origin.as_deref().unwrap_or("null"),
+                &request.credentials,
+            )
+        {
+            return Err("CORS response rejected".to_owned());
+        }
+        let exposed = header_tokens(&response, "access-control-expose-headers");
+        let headers = response
+            .headers
+            .iter()
+            .filter(|(name, _)| {
+                !matches!(name.as_str(), "set-cookie" | "set-cookie2")
+                    && (!response_cross_origin
+                        || matches!(
+                            name.as_str(),
+                            "cache-control"
+                                | "content-language"
+                                | "content-length"
+                                | "content-type"
+                                | "expires"
+                                | "last-modified"
+                                | "pragma"
+                        )
+                        || exposed.iter().any(|value| value == name.as_str())
+                        || (request.credentials != "include"
+                            && exposed.iter().any(|value| value == "*")))
+            })
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str(), value))
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "ok": true,
+            "status": response.status.as_u16(),
+            "statusText": response.status.canonical_reason().unwrap_or(""),
+            "url": response.url.as_str(),
+            "headers": headers,
+            "body": decode_body(&response.body),
+            "bytes": &response.body[..],
+        }))
+    }
+}
+
+fn script_host(context: &Context) -> JsResult<ScriptHost> {
+    context
+        .get_data::<ScriptHost>()
+        .cloned()
+        .ok_or_else(|| JsNativeError::typ().with_message("page network host is unavailable").into())
+}
+
+fn argument_string(args: &[JsValue], context: &mut Context) -> JsResult<String> {
+    Ok(args
+        .first()
+        .cloned()
+        .unwrap_or_default()
+        .to_string(context)?
+        .to_std_string_escaped())
+}
+
+fn synchronous_request(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let host = script_host(context)?;
+    let text = argument_string(args, context)?;
+    let request = serde_json::from_str::<NetRequest>(&text)
+        .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+    let result = nagoya::block_on(host.perform(request));
+    JsValue::from_json(&result, context)
+}
+
+fn cookie_get(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let host = script_host(context)?;
+    let value = host
+        .base
+        .as_ref()
+        .map(|url| host.net.cookie_store().script_cookies(url))
+        .unwrap_or_default();
+    Ok(JsString::from(value).into())
+}
+
+fn cookie_set(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let host = script_host(context)?;
+    let assignment = argument_string(args, context)?;
+    if let Some(url) = &host.base {
+        host.net
+            .cookie_store()
+            .set_script_cookie(url, &assignment)
+            .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+    }
+    cookie_get(&JsValue::undefined(), &[], context)
+}
+
 pub fn install(
     document: &mut blitz_script::ScriptDocument,
     net: Arc<NetProvider>,
     deadline: Duration,
-    base: Option<blitz_traits::net::Url>,
+    base: Option<Url>,
 ) {
-    document.eval(NETWORK_API_SHIM);
-    // After the web-API shim, so the real socket replaces the inert one that
-    // shim installs when nothing better exists.
+    let host = ScriptHost {
+        same_origin: Arc::new(blitz_net::Provider::with_user_agent_and_cookie_provider(
+            None,
+            net.user_agent(),
+            Arc::new(ScriptCookies {
+                jar: net.cookie_store(),
+                origin: base.clone(),
+            }),
+        )),
+        include: Arc::new(blitz_net::Provider::with_user_agent_and_cookie_provider(
+            None,
+            net.user_agent(),
+            net.cookie_store(),
+        )),
+        omit: Arc::new(blitz_net::Provider::with_user_agent(None, net.user_agent())),
+        net,
+        base,
+        deadline,
+    };
+    document.with_js_context(|context| {
+        context.insert_data(host.clone());
+        for (name, length, function) in [
+            (
+                "__chuzzNetSync",
+                1,
+                synchronous_request
+                    as fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+            ),
+            ("__chuzzCookieGet", 0, cookie_get),
+            ("__chuzzCookieSet", 1, cookie_set),
+        ] {
+            context
+                .register_global_builtin_callable(
+                    JsString::from(name),
+                    length,
+                    NativeFunction::from_fn_ptr(function),
+                )
+                .expect("page network native bridge");
+        }
+    });
+    document.eval(include_str!("network.ts"));
     document.eval(crate::ws_bridge::WEBSOCKET_SHIM);
-    let gpu = crate::webgpu::Bridge::default();
+
+    let wake = PageWake::new(Arc::clone(&document.inner().shell_provider));
+    let gpu = crate::webgpu::Bridge::new(wake.clone());
     gpu.install_bytes(document);
+    gpu.install_canvas_readback(document);
     document.eval(crate::webgpu::WEBGPU_SHIM);
 
-    let initial_cookie = base
-        .as_ref()
-        .map(|url| net.cookie_store().script_cookies(url))
-        .unwrap_or_default();
-    document.eval(&format!(
-        "if (globalThis.__chuzzCookieRefresh) __chuzzCookieRefresh({});",
-        serde_json::to_string(&initial_cookie).expect("a cookie header serializes as JSON")
-    ));
-
-    let mailbox = Mailbox::default();
+    let mailbox = Mailbox {
+        entries: Arc::new(Mutex::new(Vec::new())),
+        wake: wake.clone(),
+    };
     let handler_mailbox = mailbox.clone();
-    let scroll_mailbox = ScrollMailbox::default();
-    let handler_scroll_mailbox = scroll_mailbox.clone();
-    let poll_scroll_mailbox = scroll_mailbox.clone();
-    let sockets = crate::ws_bridge::Bridge::new();
+    let sockets = crate::ws_bridge::Bridge::new(wake.clone());
     let handler_sockets = sockets.clone();
-    gpu.install_canvas_readback(document);
     let handler_gpu = gpu.clone();
-    let handler_base = base.clone();
-    let poll_base = base.clone();
-    let poll_net = Arc::clone(&net);
-    let mut last_cookie = initial_cookie;
-    let initial_scroll = document.inner().viewport_scroll();
-    let mut last_scroll = (initial_scroll.x, initial_scroll.y);
 
     document.set_ipc_handler(move |message| {
-        // Setting an IPC handler replaces it rather than adding to it.
-        // Each bridge claims its own messages through this shared handler.
         if handler_sockets.handle(&message) || handler_gpu.handle(&message) {
             return;
         }
-        if let Ok(assignment) = serde_json::from_str::<CookieAssignment>(&message) {
-            let Some(url) = handler_base.clone() else {
-                return;
-            };
-            let _ = net
-                .cookie_store()
-                .set_script_cookie(&url, &assignment.cookie);
-            return;
-        }
-        if let Ok(request) = serde_json::from_str::<ScrollEnvelope>(&message) {
-            handler_scroll_mailbox.post(request.command);
-            return;
-        }
         let Ok(request) = serde_json::from_str::<NetRequest>(&message) else {
-            // Not ours. The channel is shared, and a message this does not
-            // recognise belongs to somebody else rather than being an error.
             return;
         };
-        // Resolved against the page, not parsed on its own. `fetch("/v.json")`
-        // is the ordinary way to ask for something on your own origin, and
-        // parsing it without a base makes it a relative reference with no
-        // scheme, which is a hard error. A page whose bootstrap asks that way
-        // then fails at its first step and renders nothing.
-        let Ok(url) = blitz_traits::net::Url::options()
-            .base_url(handler_base.as_ref())
-            .parse(&request.url)
-        else {
-            handler_mailbox.post(Delivery {
-                id: request.id,
-                payload: serde_json::json!({"ok": false, "error": "invalid URL"}),
-            });
-            return;
-        };
-
-        let method = match request.method.as_deref().map(str::to_ascii_uppercase) {
-            Some(ref verb) if verb == "POST" => Method::POST,
-            Some(ref verb) if verb == "PUT" => Method::PUT,
-            Some(ref verb) if verb == "DELETE" => Method::DELETE,
-            _ => Method::GET,
-        };
-
-        let mut blitz_request = Request::get(url);
-        blitz_request.method = method;
-        if let Some(body) = request.body {
-            blitz_request.body = blitz_traits::net::Body::Bytes(body.into_bytes().into());
-        }
-
-        let net = Arc::clone(&net);
+        let host = host.clone();
         let mailbox = handler_mailbox.clone();
         let id = request.id;
-
-        // Spawned rather than blocked on: this runs on the document thread, and
-        // holding it here would stop the very scripts waiting for the answer.
         let _ = nagoya::spawn(async move {
-            let payload = match nagoya::timeout(deadline, net.fetch_async(blitz_request)).await {
-                Ok(Ok((_, bytes))) => serde_json::json!({
-                    "ok": true,
-                    "status": 200,
-                    "body": decode_body(&bytes),
-                    "bytes": &bytes[..],
-                }),
-                Ok(Err(error)) => serde_json::json!({"ok": false, "error": format!("{error:?}")}),
-                Err(_) => serde_json::json!({"ok": false, "error": "timed out"}),
-            };
+            let payload = host.perform(request).await;
             mailbox.post(Delivery { id, payload });
         });
     });
 
-    document.add_poll_hook(move |document, _| {
-        let current_cookie = poll_base
-            .as_ref()
-            .map(|url| poll_net.cookie_store().script_cookies(url))
-            .unwrap_or_default();
-        let cookie_changed = current_cookie != last_cookie;
-        if cookie_changed {
-            document.eval(&format!(
-                "if (globalThis.__chuzzCookieRefresh) __chuzzCookieRefresh({});",
-                serde_json::to_string(&current_cookie).expect("a cookie header serializes as JSON")
-            ));
-            last_cookie = current_cookie;
-        }
-
-        // Bridge events and fetch results share a pass, and any of them is
-        // reason enough to draw a frame.
-        let drew = sockets.drain_into(document) | gpu.drain_into(document);
-        let mut scroll_changed = false;
-        for command in poll_scroll_mailbox.drain() {
-            if apply_viewport_scroll(document, command) {
-                let position = document.inner().viewport_scroll();
-                last_scroll = (position.x, position.y);
-                scroll_changed = true;
-            }
-        }
-
-        // Wheel, keyboard and automation actions can also move the native
-        // viewport. Mirror those positions and notify Window listeners when
-        // the movement did not originate in the shim queue above.
-        let position = document.inner().viewport_scroll();
-        if (position.x, position.y) != last_scroll {
-            refresh_script_scroll(document);
-            document.eval(
-                "if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.Event === 'function') globalThis.dispatchEvent(new Event('scroll'));",
-            );
-            last_scroll = (position.x, position.y);
-            scroll_changed = true;
-        }
-        let ready = mailbox.drain();
-        if ready.is_empty() {
-            return drew | cookie_changed | scroll_changed;
-        }
-        for delivery in ready {
-            // `serde_json` renders a JavaScript-safe literal, so the body needs
-            // no escaping of its own. Building this string by hand is how a
-            // page's own quotes end up as a syntax error in the resolver.
+    document.add_poll_hook(move |document, task_context| {
+        wake.bind(task_context.map(|context| context.waker()));
+        let mut changed = sockets.drain_into(document) | gpu.drain_into(document);
+        for delivery in mailbox.drain() {
             document.eval(&format!(
                 "globalThis.__chuzzNetResolve({}, {});",
                 delivery.id, delivery.payload
             ));
+            changed = true;
         }
-        // The page has new data; whatever it renders from it needs a frame.
-        true
+        changed
     });
 }
-
-/// The JavaScript half: promises parked here, resolved from the host.
-const NETWORK_API_SHIM: &str = r#"
-(function () {
-  var pending = Object.create(null);
-  var nextId = 1;
-
-  // Called by the host when a request finishes. Kept off the page's own names
-  // so a site defining `fetch` helpers cannot collide with it.
-  globalThis.__chuzzNetResolve = function (id, result) {
-    var entry = pending[id];
-    if (!entry) { return; }
-    delete pending[id];
-    try { entry(result); } catch (error) { /* the page's own handler threw */ }
-  };
-
-  function send(url, options, onResult) {
-    var id = nextId++;
-    pending[id] = onResult;
-    try {
-      window.ipc.postMessage(JSON.stringify({
-        id: id,
-        url: String(url),
-        method: options && options.method ? String(options.method) : "GET",
-        body: options && options.body != null ? String(options.body) : null
-      }));
-    } catch (error) {
-      delete pending[id];
-      onResult({ ok: false, error: String(error) });
-    }
-    return id;
-  }
-
-  // Stop listening for a request's answer.
-  //
-  // The request itself keeps running: the host has already spawned it and there
-  // is no cancellation channel back. What this buys is the observable half of
-  // aborting: the caller's promise settles now, and its handler does not run
-  // later against a component that has been torn down.
-  function forget(id) { delete pending[id]; }
-
-  function Response(result) {
-    var body = result.body == null ? "" : String(result.body);
-    var bytes = result.bytes === undefined
-      ? new TextEncoder().encode(body) : new Uint8Array(result.bytes);
-    this.ok = !!result.ok;
-    this.status = result.ok ? (result.status || 200) : 0;
-    this.statusText = result.ok ? "OK" : String(result.error || "error");
-    this.url = result.url || "";
-    this.headers = {
-      get: function () { return null; },
-      has: function () { return false; },
-      forEach: function () {}
-    };
-    this.text = function () { return Promise.resolve(body); };
-    this.arrayBuffer = function () { return Promise.resolve(bytes.slice().buffer); };
-    this.blob = function () {
-      return Promise.resolve(new Blob([bytes], { type: "application/octet-stream" }));
-    };
-    this.json = function () {
-      try { return Promise.resolve(JSON.parse(body)); }
-      catch (error) { return Promise.reject(error); }
-    };
-    this.clone = function () { return new Response(result); };
-  }
-
-  function abortError(signal) {
-    var reason = signal && signal.reason;
-    if (reason !== undefined && reason !== null) { return reason; }
-    var error = new Error("The operation was aborted");
-    error.name = "AbortError";
-    return error;
-  }
-
-  if (typeof globalThis.fetch === "undefined") {
-    globalThis.fetch = function (input, init) {
-      var url = input && input.url ? input.url : input;
-      var signal = init && init.signal;
-      return new Promise(function (resolve, reject) {
-        // An already-aborted signal rejects without touching the network, which
-        // is what a caller reusing a controller across renders depends on.
-        if (signal && signal.aborted) { reject(abortError(signal)); return; }
-        var id = send(url, init, function (result) {
-          if (result.ok) { resolve(new Response(result)); }
-          else { reject(new TypeError("fetch failed: " + (result.error || "unknown"))); }
-        });
-        if (signal && typeof signal.addEventListener === "function") {
-          signal.addEventListener("abort", function () {
-            forget(id);
-            reject(abortError(signal));
-          });
-        }
-      });
-    };
-  }
-
-  if (typeof globalThis.XMLHttpRequest === "undefined") {
-    var XHR = function () {
-      this.readyState = 0;
-      this.status = 0;
-      this.statusText = "";
-      this.responseText = "";
-      this.responseType = "";
-      this.response = "";
-      this.onreadystatechange = null;
-      this.onload = null;
-      this.onerror = null;
-      this.onabort = null;
-      this._method = "GET";
-      this._url = "";
-      // The id of the request in flight, so `abort` has something to drop.
-      this._id = 0;
-    };
-    XHR.prototype.open = function (method, url) {
-      var self = this;
-      this._method = method || "GET";
-      this._url = url;
-      this.readyState = 1;
-      if (this.onreadystatechange) { this.onreadystatechange(); }
-    };
-    // Accepted and ignored: no header reaches the host yet, and throwing here
-    // would break pages that only ever set an Accept.
-    XHR.prototype.setRequestHeader = function () {};
-    XHR.prototype.getAllResponseHeaders = function () { return ""; };
-    XHR.prototype.getResponseHeader = function () { return null; };
-    XHR.prototype.abort = function () {
-      if (this._id) { forget(this._id); this._id = 0; }
-      this.readyState = 0;
-      this.status = 0;
-      this.statusText = "";
-      this.responseText = "";
-      if (this.onabort) { this.onabort(); }
-      if (this.onreadystatechange) { this.onreadystatechange(); }
-    };
-    XHR.prototype.send = function (body) {
-      var self = this;
-      this._id = send(this._url, { method: this._method, body: body }, function (result) {
-        self._id = 0;
-        self.readyState = 4;
-        if (result.ok) {
-          self.status = result.status || 200;
-          self.statusText = "OK";
-          self.responseText = result.body == null ? "" : String(result.body);
-          var bytes = result.bytes === undefined
-            ? new TextEncoder().encode(self.responseText) : new Uint8Array(result.bytes);
-          if (self.responseType === "arraybuffer") { self.response = bytes.buffer; }
-          else if (self.responseType === "blob") { self.response = new Blob([bytes]); }
-          else if (self.responseType === "json") { self.response = JSON.parse(self.responseText); }
-          else { self.response = self.responseText; }
-          if (self.onreadystatechange) { self.onreadystatechange(); }
-          if (self.onload) { self.onload(); }
-        } else {
-          self.status = 0;
-          self.statusText = String(result.error || "error");
-          if (self.onreadystatechange) { self.onreadystatechange(); }
-          if (self.onerror) { self.onerror(); }
-        }
-      });
-    };
-    globalThis.XMLHttpRequest = XHR;
-  }
-})();
-"#;
