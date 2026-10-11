@@ -2496,6 +2496,10 @@ pub async fn load_for_capture(
             Arc::clone(&net_provider),
             CAPTURE_SCRIPT_DEADLINE,
         ));
+        // A headless or captured page is the one foreground page, as in
+        // headless Chrome: document.hasFocus() is true before its scripts run,
+        // so input handlers that ignore keys while unfocused still take them.
+        document.inner_mut().set_window_focused(true);
         install_web_api_shim(&mut document, &net_provider);
         if !prelude.is_empty() {
             document.eval(prelude);

@@ -27,8 +27,18 @@
         result.textContent = "KEYS FAIL: " + reason;
       }
 
-      document.addEventListener("keydown", function (event) {
+      // Listened for on window: key events start at the focused element (body when nothing else has focus) and
+      // bubble up. Like a game's input layer, keys only count while the page is visible and focused.
+      window.addEventListener("keydown", function (event) {
         if (failed || phase === "done") return;
+        if (document.hidden || !document.hasFocus()) {
+          fail("keydown while the page reports itself unfocused or hidden");
+          return;
+        }
+        if (event.target !== document.body && event.target !== document.documentElement) {
+          fail("keydown target is not the body");
+          return;
+        }
         if (phase === "v-down") {
           if (event.key !== "v") {
             fail("expected v down, got " + event.key);
