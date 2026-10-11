@@ -21,4 +21,15 @@
         expect: VisibleInk,
         outcome_timeout_ms: 10000,
     ),
+    (
+        id: "jxl-image-markup",
+        group: "jxl-image",
+        what: "an <img> in markup with a JPEG XL src paints its pixels",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#markup-jxl",
+        expect: VisibleInk,
+        outcome_timeout_ms: 10000,
+    ),
 ]
