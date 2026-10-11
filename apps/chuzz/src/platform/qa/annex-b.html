@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Annex B QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">Annex B waiting</p>
+  <p id="comment" role="status">HTML comment waiting</p>
+  <script>
+    <!-- a classic script may open with an HTML-like comment, as build tools leave behind
+    document.getElementById("comment").textContent = "READY: HTMLCOMMENT PASS";
+    --> and close with one at the start of a line
+  </script>
+  <script>
+    // ECMAScript Annex B, which every browser ships for classic scripts.
+    (function () {
+      var failures = [];
+      function check(label, fn) { try { if (!fn()) failures.push(label); } catch (e) { failures.push(label + " threw " + e.message); } }
+      check("substr", function () { return "abcdef".substr(2, 3) === "cde"; });
+      check("escape", function () { return escape("a b") === "a%20b" && unescape("%41") === "A"; });
+      check("getYear", function () { return typeof new Date(2020, 0, 1).getYear === "function"; });
+      check("anchor", function () { return "x".anchor("y") === '<a name="y">x</a>'; });
+      check("trimLeft", function () { return " x".trimLeft() === "x"; });
+      check("compile", function () { return typeof /a/.compile === "function"; });
+      check("legacy octal", function () { return eval("010") === 8; });
+      check("block function", function () { eval("{ function hoisted() { return 1; } }"); return typeof hoisted === "function"; });
+      document.getElementById("result").textContent = failures.length
+        ? "FAIL: ANNEXB " + failures.join(", ")
+        : "READY: ANNEXB PASS";
+    })();
+  </script>
+</body>
+</html>

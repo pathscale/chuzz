@@ -1,0 +1,24 @@
+[
+    (
+        id: "annex-b-builtins",
+        group: "annex-b",
+        what: "Annex B builtins and syntax a classic script relies on: substr, escape, getYear, anchor, trimLeft, RegExp compile, legacy octal, block-level function hoisting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: ANNEXB PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "annex-b-html-comment",
+        group: "annex-b",
+        what: "a classic script that opens with <!-- and has a --> line runs",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: HTMLCOMMENT PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]
