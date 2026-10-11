@@ -348,6 +348,14 @@ impl ScriptHost {
             wire.headers
                 .insert(HeaderName::from_static("referer"), value);
         }
+        crate::identity::stamp_request_headers(
+            &mut wire.headers,
+            self.net.user_agent(),
+            &url,
+            crate::identity::RequestKind::Fetch {
+                initiator: self.base.as_ref(),
+            },
+        );
         if !matches!(method, Method::GET | Method::HEAD) {
             wire.body = request.body.map(Into::into);
         }

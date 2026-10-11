@@ -101,6 +101,111 @@ pub fn user_agent_for_spoofing(spoofing: bool) -> String {
     }
 }
 
+/// What a request is for, which decides the fetch metadata Chromium attaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestKind<'a> {
+    /// A top-level navigation. `initiator` is the page it came from, if any.
+    Navigate { initiator: Option<&'a url::Url> },
+    /// A page `fetch()` or `XMLHttpRequest`.
+    Fetch { initiator: Option<&'a url::Url> },
+    /// An engine subresource (style, script, image, font). The engine does not
+    /// say which, so only the client hints are sent: a wrong `sec-fetch-dest`
+    /// is a stronger signal than none.
+    Subresource,
+}
+
+/// The Chrome major version a `User-Agent` claims, when it claims one.
+fn chrome_major(user_agent: &str) -> Option<&str> {
+    let version = user_agent.split("Chrome/").nth(1)?;
+    let major = version.split('.').next()?;
+    (!major.is_empty() && major.bytes().all(|byte| byte.is_ascii_digit())).then_some(major)
+}
+
+/// `same-origin`, `same-site` or `cross-site`, by registrable domain.
+fn fetch_site(initiator: &url::Url, target: &url::Url) -> &'static str {
+    if initiator.origin() == target.origin() {
+        return "same-origin";
+    }
+    let site = |url: &url::Url| {
+        let host = url.host_str()?.to_ascii_lowercase();
+        let domain = psl::domain(host.as_bytes())
+            .map(|domain| domain.as_bytes().to_vec())
+            .unwrap_or_else(|| host.into_bytes());
+        Some((url.scheme().to_owned(), domain))
+    };
+    match (site(initiator), site(target)) {
+        (Some(a), Some(b)) if a == b => "same-site",
+        _ => "cross-site",
+    }
+}
+
+/// Add the headers Chromium sends for `kind` when the `User-Agent` is
+/// Chrome-family: the low-entropy client hints, and fetch metadata for
+/// navigations and page fetches. Servers that see a Chrome `User-Agent`
+/// without them answer 400 or a challenge (measured on Facebook). Only secure
+/// URLs get them, as in Chromium. The brand list is plain Chromium's, so the
+/// browser claims the family, not Google's product. Headers already present are
+/// kept.
+pub fn stamp_request_headers(
+    headers: &mut blitz_traits::net::http::HeaderMap,
+    user_agent: &str,
+    url: &url::Url,
+    kind: RequestKind<'_>,
+) {
+    use blitz_traits::net::http::{HeaderName, HeaderValue};
+
+    let Some(major) = chrome_major(user_agent) else {
+        return;
+    };
+    let secure = url.scheme() == "https"
+        || matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if !secure {
+        return;
+    }
+    let mut set = |name: &'static str, value: String| {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            headers
+                .entry(HeaderName::from_static(name))
+                .or_insert(value);
+        }
+    };
+    set(
+        "sec-ch-ua",
+        format!("\"Chromium\";v=\"{major}\", \"Not-A.Brand\";v=\"99\""),
+    );
+    set("sec-ch-ua-mobile", "?0".to_owned());
+    set("sec-ch-ua-platform", "\"macOS\"".to_owned());
+    match kind {
+        RequestKind::Navigate { initiator } => {
+            set(
+                "accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,\
+                 image/webp,image/apng,*/*;q=0.8"
+                    .to_owned(),
+            );
+            set("upgrade-insecure-requests", "1".to_owned());
+            let site = initiator.map_or("none", |initiator| fetch_site(initiator, url));
+            set("sec-fetch-site", site.to_owned());
+            set("sec-fetch-mode", "navigate".to_owned());
+            set("sec-fetch-user", "?1".to_owned());
+            set("sec-fetch-dest", "document".to_owned());
+            set("priority", "u=0, i".to_owned());
+        }
+        RequestKind::Fetch { initiator } => {
+            let site = initiator.map_or("none", |initiator| fetch_site(initiator, url));
+            set("sec-fetch-site", site.to_owned());
+            set(
+                "sec-fetch-mode",
+                if site == "same-origin" { "same-origin" } else { "cors" }.to_owned(),
+            );
+            set("accept", "*/*".to_owned());
+            set("sec-fetch-dest", "empty".to_owned());
+            set("priority", "u=1, i".to_owned());
+        }
+        RequestKind::Subresource => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

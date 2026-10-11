@@ -109,8 +109,21 @@ impl NetProvider {
     /// network failure is an error. A request with a body (form POST) keeps the older path.
     pub async fn fetch_document_async(
         &self,
-        request: blitz_traits::net::Request,
+        mut request: blitz_traits::net::Request,
     ) -> Result<(String, blitz_traits::net::Bytes), String> {
+        let initiator = request
+            .headers
+            .get("referer")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| url::Url::parse(value).ok());
+        crate::identity::stamp_request_headers(
+            &mut request.headers,
+            self.user_agent(),
+            &request.url.clone(),
+            crate::identity::RequestKind::Navigate {
+                initiator: initiator.as_ref(),
+            },
+        );
         if !matches!(request.body, blitz_traits::net::Body::Empty)
             || !matches!(request.url.scheme(), "http" | "https")
         {
@@ -141,9 +154,15 @@ impl blitz_traits::net::NetProvider for NetProvider {
     fn fetch(
         &self,
         doc_id: usize,
-        request: blitz_traits::net::Request,
+        mut request: blitz_traits::net::Request,
         handler: Box<dyn blitz_traits::net::NetHandler>,
     ) {
+        crate::identity::stamp_request_headers(
+            &mut request.headers,
+            self.user_agent(),
+            &request.url.clone(),
+            crate::identity::RequestKind::Subresource,
+        );
         let signal = request.signal.clone();
         let provider = self.clone();
         let _ = nagoya::spawn(async move {
