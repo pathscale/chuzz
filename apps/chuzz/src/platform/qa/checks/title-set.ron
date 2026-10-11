@@ -1,0 +1,13 @@
+[
+    (
+        id: "title-set",
+        group: "title-set",
+        what: "strict code assigning document.title replaces the <title>, creates one in a document without",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: TITLESET PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]
