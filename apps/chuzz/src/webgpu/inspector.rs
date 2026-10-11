@@ -3,8 +3,8 @@ use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use blitz_control_protocol::{
-    DebugError, WebGpuCompilationMessage, WebGpuDevice, WebGpuEntryPoint, WebGpuError,
-    WebGpuErrors, WebGpuFrame, WebGpuReport, WebGpuResource, WebGpuResourceDetails,
+    CapturedImage, DebugError, WebGpuCompilationMessage, WebGpuDevice, WebGpuEntryPoint,
+    WebGpuError, WebGpuErrors, WebGpuFrame, WebGpuReport, WebGpuResource, WebGpuResourceDetails,
 };
 
 use super::*;
@@ -455,6 +455,26 @@ pub(super) fn inspect_document(
         })
 }
 
+pub(super) fn capture_document(
+    document: &mut blitz_script::ScriptDocument,
+    target: &str,
+) -> Result<CapturedImage, DebugError> {
+    let bridge = document.with_js_context(|context| {
+        context
+            .get_data::<InspectorHost>()
+            .map(|host| host.0.clone())
+    });
+    let Some(bridge) = bridge else {
+        return Err(DebugError {
+            code: "unsupported".to_owned(),
+            message: "the document has no page WebGPU inspector".to_owned(),
+        });
+    };
+    // Commands still sitting in `incoming` have to be ordered ahead of the copy.
+    bridge.prepare_images(document);
+    bridge.capture_and_wait(target)
+}
+
 impl DeviceConnection {
     pub(super) fn inspection_call(&self, command: &Command) -> Call {
         let inspection = lock(&self.inspection);
@@ -531,6 +551,19 @@ impl DeviceConnection {
 
     pub(super) fn inspection_label(&self, handle: u64) -> String {
         lock(&self.inspection).label(handle)
+    }
+
+    pub(super) fn canvases_named(&self, target: &str) -> Vec<u64> {
+        let resources = self.resources();
+        let inspection = lock(&self.inspection);
+        inspection
+            .canvases
+            .iter()
+            .filter(|(handle, name)| {
+                name.as_str() == target && resources.canvases.contains_key(*handle)
+            })
+            .map(|(handle, _)| *handle)
+            .collect()
     }
 
     pub(super) fn inspection_target(&self, resources: &Resources, view: u64) -> String {

@@ -1991,10 +1991,18 @@ fn serve_page(target: &str) -> Result<(), String> {
                 // is what lets a spill check run headlessly at all.
                 DebugResponse::WindowComposition(WindowComposition::default())
             }
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuCapture { target })
+                if !policy.bot_child =>
+            {
+                match crate::webgpu::capture_gpu(&mut document, &target) {
+                    Ok(captured) => DebugResponse::Captured(captured),
+                    Err(error) => DebugResponse::Error(error),
+                }
+            }
             ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
                 code: "unsupported".into(),
                 message: "the headless page serves diagnostics Capture, Snapshot, \
-                          WindowComposition and WebGpuInspect only"
+                          WindowComposition, WebGpuInspect and WebGpuCapture only"
                     .into(),
             }),
         };

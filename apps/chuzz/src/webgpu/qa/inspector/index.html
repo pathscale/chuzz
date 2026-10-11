@@ -40,6 +40,7 @@
     let pipeline;
     let vertices;
     let texture;
+    let offscreen;
 
     function fail(error) {
       result.textContent = "FAIL: " + error.message;
@@ -74,6 +75,22 @@
 
         device.pushErrorScope("validation");
         const encoder = device.createCommandEncoder({ label: "inspector frame encoder" });
+        const offscreenPass = encoder.beginRenderPass({
+          label: "inspector offscreen draws",
+          colorAttachments: [{
+            view: offscreen.createView(),
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0.02, g: 0.04, b: 0.09, a: 1 }
+          }]
+        });
+        offscreenPass.setPipeline(pipeline);
+        offscreenPass.setVertexBuffer(0, vertices);
+        for (let index = 0; index < 3; index++) {
+          offscreenPass.setViewport(index * 64, 0, 64, 96, 0, 1);
+          offscreenPass.draw(3, 1, 0, 0);
+        }
+        offscreenPass.end();
         const pass = encoder.beginRenderPass({
           label: "three labelled draws",
           colorAttachments: [{
@@ -127,6 +144,12 @@
           size: [4, 4, 1],
           format: "rgba8unorm",
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        });
+        offscreen = device.createTexture({
+          label: "inspector offscreen",
+          size: [192, 96, 1],
+          format,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
         });
         const module = device.createShaderModule({
           label: "inspector triangle shader",

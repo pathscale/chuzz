@@ -42,6 +42,9 @@ pub(super) struct Flight {
     device: Option<u64>,
     fire_device: Option<u64>,
     startup: bool,
+    /// False for a diagnostics capture: its pixels go to the caller, not to
+    /// `__chuzzGpuResolve`.
+    delivers_reply: bool,
     pub(super) inspection: Option<inspector::Call>,
 }
 
@@ -82,16 +85,18 @@ impl Bridge {
             let mut state = self.state();
             if state.in_flight.len() >= REQUEST_LIMIT || state.in_flight.contains_key(&id) {
                 request.reject_readback("WebGPU request limit reached in chuzz");
-                state.ready.push((
-                    id,
-                    json!({
-                        "ok": false,
-                        "error": "WebGPU request limit reached in chuzz",
-                        "kind": "internal",
-                        "reported": false,
-                        "fireDevice": request.fire_device()
-                    }),
-                ));
+                if request.delivers_reply() {
+                    state.ready.push((
+                        id,
+                        json!({
+                            "ok": false,
+                            "error": "WebGPU request limit reached in chuzz",
+                            "kind": "internal",
+                            "reported": false,
+                            "fireDevice": request.fire_device()
+                        }),
+                    ));
+                }
                 drop(state);
                 self.record_request_error(
                     &request,
@@ -106,6 +111,7 @@ impl Bridge {
                     device: request.error_device(),
                     fire_device: request.fire_device(),
                     startup,
+                    delivers_reply: request.delivers_reply(),
                     inspection,
                 },
             );
@@ -186,6 +192,10 @@ impl Bridge {
                 Request::Readback { completion, .. } => Some(Arc::clone(completion)),
                 _ => None,
             };
+            let capture = match &request {
+                Request::Capture { slot, .. } => Some(Arc::clone(slot)),
+                _ => None,
+            };
             // One command worker per document retains push/create/write/pop
             // ordering. Startup requests use separate tasks.
             let result = match nagoya::timeout(DEADLINE, self.execute(request)).await {
@@ -196,6 +206,14 @@ impl Bridge {
                 && let Err(error) = &result
             {
                 completion.finish(Err(GpuError::internal(error.message.clone())));
+            }
+            if let Some(slot) = capture
+                && let Err(error) = &result
+            {
+                slot.finish(Err(blitz_control_protocol::DebugError {
+                    code: error.kind.to_owned(),
+                    message: error.message.clone(),
+                }));
             }
             self.complete_request(id, result);
         }
@@ -228,6 +246,12 @@ impl Bridge {
             // Independent of page routing, including rejected async pipelines
             // and validation later swallowed by a logical page error scope.
             self.record_inspection_error(call, error, flight.device.is_some());
+        }
+        if !flight.delivers_reply {
+            if let Ok(value) = &result {
+                self.release_reply(value);
+            }
+            return;
         }
         let payload = match result {
             Ok(value) => {

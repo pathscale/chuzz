@@ -49,6 +49,13 @@ pub(crate) fn inspect_gpu(
     inspector::inspect_document(document)
 }
 
+pub(crate) fn capture_gpu(
+    document: &mut blitz_script::ScriptDocument,
+    target: &str,
+) -> Result<blitz_control_protocol::CapturedImage, blitz_control_protocol::DebugError> {
+    inspector::capture_document(document, target)
+}
+
 const DEADLINE: Duration = Duration::from_secs(10);
 const OBJECT_LIMIT: usize = 64;
 const REQUEST_LIMIT: usize = 4096;
@@ -168,6 +175,14 @@ enum Request {
         source: external::Source,
         completion: Arc<readback::Completion>,
     },
+    // Diagnostics capture. Not a page command: the worker copies pixels into
+    // `slot` and the document thread reads that slot.
+    #[serde(skip)]
+    Capture {
+        id: u64,
+        target: String,
+        slot: Arc<readback::CaptureSlot>,
+    },
 }
 
 impl Request {
@@ -176,14 +191,28 @@ impl Request {
             Self::Adapter { id, .. }
             | Self::Device { id, .. }
             | Self::Command { id, .. }
-            | Self::Readback { id, .. } => *id,
+            | Self::Readback { id, .. }
+            | Self::Capture { id, .. } => *id,
         }
     }
 
     fn reject_readback(&self, message: &str) {
-        if let Self::Readback { completion, .. } = self {
-            completion.finish(Err(GpuError::internal(message)));
+        match self {
+            Self::Readback { completion, .. } => {
+                completion.finish(Err(GpuError::internal(message)));
+            }
+            Self::Capture { slot, .. } => {
+                slot.finish(Err(blitz_control_protocol::DebugError {
+                    code: "internal".to_owned(),
+                    message: message.to_owned(),
+                }));
+            }
+            _ => {}
         }
+    }
+
+    fn delivers_reply(&self) -> bool {
+        !matches!(self, Self::Capture { .. })
     }
 
     fn fire_device(&self) -> Option<u64> {
@@ -514,6 +543,10 @@ impl Bridge {
                 source, completion, ..
             } => {
                 completion.finish(self.resolve_source(source).await);
+                Ok(Value::Null)
+            }
+            Request::Capture { target, slot, .. } => {
+                self.capture_on_worker(&target, slot).await;
                 Ok(Value::Null)
             }
             Request::Command {
