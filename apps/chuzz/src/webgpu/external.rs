@@ -156,65 +156,12 @@ fn decode_raster(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
     )))
 }
 
-/// A bare JPEG XL codestream starts FF 0A; the ISO BMFF container starts with a 12-byte "JXL " signature box.
-fn is_jxl(bytes: &[u8]) -> bool {
-    bytes.starts_with(&[0xff, 0x0a])
-        || bytes.starts_with(&[
-            0, 0, 0, 0x0c, b'J', b'X', b'L', b' ', 0x0d, 0x0a, 0x87, 0x0a,
-        ])
-}
-
-/// The first keyframe of a JPEG XL image as straight RGBA8 in sRGB.
-fn decode_jxl(bytes: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
-    use jxl_oxide::{EnumColourEncoding, JxlImage, NullCms, RenderingIntent};
-
-    let invalid = |error: String| GpuError::validation(format!("JPEG XL: {error}"));
-    let mut image = JxlImage::builder()
-        .read_bytes(Arc::from(bytes))
-        .map_err(|error| invalid(error.to_string()))?;
-    let (width, height) = (image.width(), image.height());
-    // Check the declared size against the allocation budget before rendering anything.
-    let bytes_needed = byte_count(width, height)?;
-    if bytes_needed > ALLOCATION_LIMIT as usize {
-        return Err(invalid(format!(
-            "{width}x{height} exceeds the decode budget"
-        )));
-    }
-    image.set_cms(NullCms);
-    image.request_color_encoding(EnumColourEncoding::srgb(RenderingIntent::Relative));
-    let render = image
-        .render_frame(0)
-        .map_err(|error| invalid(error.to_string()))?;
-    let mut stream = render.stream();
-    let (width, height, channels) = (stream.width(), stream.height(), stream.channels() as usize);
-    let mut samples = vec![0f32; width as usize * height as usize * channels];
-    stream.write_to_buffer(&mut samples);
-    let to_byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-    for pixel in samples.chunks_exact(channels) {
-        let (rgb, alpha) = match channels {
-            1 => ([pixel[0]; 3], 1.0),
-            2 => ([pixel[0]; 3], pixel[1]),
-            3 => ([pixel[0], pixel[1], pixel[2]], 1.0),
-            _ => ([pixel[0], pixel[1], pixel[2]], pixel[3]),
-        };
-        rgba.extend_from_slice(&[
-            to_byte(rgb[0]),
-            to_byte(rgb[1]),
-            to_byte(rgb[2]),
-            to_byte(alpha),
-        ]);
-    }
-    Ok(Arc::new(RasterImageData::new(
-        width,
-        height,
-        Arc::new(rgba),
-    )))
-}
-
 fn decode_encoded(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
-    if is_jxl(data) {
-        return decode_jxl(data);
+    // One JPEG XL decoder for <img> and script images: blitz-dom's (first keyframe, sRGB, RGBA8).
+    if blitz_dom::net::is_jxl(data) {
+        let (width, height, rgba) = blitz_dom::net::decode_jxl(data)
+            .map_err(|error| GpuError::validation(format!("JPEG XL: {error}")))?;
+        return Ok(Arc::new(RasterImageData::new(width, height, Arc::new(rgba))));
     }
     match decode_raster(data) {
         Ok(image) => Ok(image),

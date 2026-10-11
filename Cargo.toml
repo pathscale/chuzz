@@ -84,8 +84,6 @@ anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.3",
 # blitz-paint already uses; it has to be named here to be called. Default
 # features stay off so SVG text does not pull system fonts into a headless build.
 anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15", default-features = false, features = ["image_format_png", "image_format_jpeg", "image_format_gif", "image_format_webp"] }
-# JPEG XL, which the `image` crate does not decode. Pure Rust, no threads of its own.
-jxl-oxide = { package = "ps-jxl-oxide", version = "^0.13" }
 # Compiled-in open fonts for headless renders that must not depend on the machine.
 headless-fonts = "^0.1"
 blitz-paint = { package = "ps-blitz-paint", version = "^0.5" }
