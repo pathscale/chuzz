@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Value is QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    .track { width: 240px; height: 24px; background: #243044; margin: 0 0 16px; }
+    .fill { display: block; height: 24px; background: #3ddc97; }
+    button { font: inherit; font-size: 16px; padding: 8px 16px; min-width: 64px; min-height: 32px; }
+  </style>
+</head>
+<body>
+  <div id="charge" class="track" role="progressbar" aria-label="Charge" aria-valuemin="0" aria-valuemax="100" aria-valuenow="40" aria-valuetext="40 percent">
+    <div id="charge-fill" class="fill" style="width: 40%"></div>
+  </div>
+  <div id="level" class="track" role="meter" aria-label="Level" aria-valuenow="7" aria-valuemin="0" aria-valuemax="10">
+    <div class="fill" style="width: 70%"></div>
+  </div>
+  <button id="fill" type="button">Fill</button>
+  <script>
+    // Fill writes the progressbar's live value. The painted width follows it.
+    document.getElementById("fill").addEventListener("click", function () {
+      var charge = document.getElementById("charge");
+      charge.setAttribute("aria-valuenow", "100");
+      charge.setAttribute("aria-valuetext", "100 percent");
+      document.getElementById("charge-fill").style.width = "100%";
+    });
+  </script>
+</body>
+</html>
