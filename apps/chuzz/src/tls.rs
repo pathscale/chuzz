@@ -6,7 +6,7 @@ use rustls::{ClientConfig, RootCertStore, crypto::CryptoProvider};
 
 pub(crate) fn crypto_provider() -> Arc<CryptoProvider> {
     static PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
-    Arc::clone(PROVIDER.get_or_init(|| Arc::new(ps_rustls_rustcrypto::provider())))
+    Arc::clone(PROVIDER.get_or_init(|| Arc::new(ps_rustcrypto::provider())))
 }
 
 pub(crate) fn client_config() -> Result<Arc<ClientConfig>, String> {

@@ -20,7 +20,7 @@
 /// WSS configurations also name the provider explicitly, so an embedder's
 /// previously installed default cannot change their cryptography.
 pub fn install_crypto_provider() {
-    let _ = ps_rustls_rustcrypto::provider().install_default();
+    let _ = ps_rustcrypto::provider().install_default();
 }
 
 /// Set host policy before opening media. The device-audio feature is also

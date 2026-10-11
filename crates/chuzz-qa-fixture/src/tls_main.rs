@@ -94,7 +94,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let options = options()?;
-    let provider = Arc::new(ps_rustls_rustcrypto::provider());
+    let provider = Arc::new(ps_rustcrypto::provider());
     let mut config = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[options.version])
         .map_err(|error| error.to_string())?
@@ -186,7 +186,7 @@ async fn serve(
                     .map_err(|error| error.to_string())?;
                 return Err("fixture upgrade policy rejected request".to_owned());
             }
-            let provider = ps_rustls_rustcrypto::provider();
+            let provider = ps_rustcrypto::provider();
             let mut entropy = [0u8; 16];
             provider
                 .secure_random
