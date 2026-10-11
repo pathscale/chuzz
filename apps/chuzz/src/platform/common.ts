@@ -258,6 +258,385 @@
       });
     }
   };
+
+  // WebAuthn is a Window API. Worker realms still share the other platform APIs.
+  if (typeof g.document !== "undefined") {
+    const credentialToken = {};
+    const responseState = new WeakMap();
+    const credentialState = new WeakMap();
+    const containerState = new WeakSet();
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    function bufferBytes(value, label) {
+      if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+      if (ArrayBuffer.isView(value)) {
+        return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+      }
+      throw new TypeError(label + " must be a BufferSource");
+    }
+    function encodeBytes(value) {
+      const bytes = bufferBytes(value, "value");
+      let result = "";
+      for (let offset = 0; offset < bytes.length; offset += 3) {
+        const count = Math.min(3, bytes.length - offset);
+        const word = (bytes[offset] << 16)
+          | ((bytes[offset + 1] || 0) << 8) | (bytes[offset + 2] || 0);
+        result += alphabet[(word >>> 18) & 63] + alphabet[(word >>> 12) & 63];
+        if (count > 1) result += alphabet[(word >>> 6) & 63];
+        if (count > 2) result += alphabet[word & 63];
+      }
+      return result;
+    }
+    function decodeBytes(value, label) {
+      if (typeof value !== "string" || !/^[A-Za-z0-9_-]*$/.test(value)
+          || value.length % 4 === 1) {
+        throw exception("EncodingError", label + " is not base64url");
+      }
+      const bytes = [];
+      let word = 0;
+      let bits = 0;
+      for (const character of value) {
+        word = (word << 6) | alphabet.indexOf(character);
+        bits += 6;
+        if (bits >= 8) {
+          bits -= 8;
+          bytes.push((word >>> bits) & 255);
+        }
+      }
+      const buffer = new Uint8Array(bytes).buffer;
+      if (encodeBytes(buffer) !== value) {
+        throw exception("EncodingError", label + " is not canonical base64url");
+      }
+      return buffer;
+    }
+    function dictionary(value, label) {
+      if (value === null || typeof value !== "object") {
+        throw new TypeError(label + " must be a dictionary");
+      }
+      return value;
+    }
+    function requiredString(value, label) {
+      if (value === undefined) throw new TypeError(label + " is required");
+      return String(value);
+    }
+    function enumeration(value, values, fallback, label) {
+      value = value === undefined ? fallback : String(value);
+      if (!values.includes(value)) throw new TypeError("Invalid " + label);
+      return value;
+    }
+    function verification(value) {
+      return enumeration(value, ["required", "preferred", "discouraged"],
+        "preferred", "userVerification");
+    }
+    function timeout(value) {
+      if (value === undefined) return 60000;
+      value = Number(value);
+      if (!Number.isFinite(value) || value < 0) throw new TypeError("Invalid timeout");
+      return Math.max(1, Math.min(120000, Math.trunc(value)));
+    }
+    function descriptorList(values) {
+      return Array.from(values === undefined ? [] : values, descriptor => {
+        descriptor = dictionary(descriptor, "credential descriptor");
+        return {
+          type: enumeration(descriptor.type, ["public-key"], "public-key", "credential type"),
+          id: bufferBytes(descriptor.id, "credential id")
+        };
+      });
+    }
+    function creationOptions(value) {
+      value = dictionary(value, "publicKey");
+      const rp = dictionary(value.rp, "rp");
+      const user = dictionary(value.user, "user");
+      const selection = value.authenticatorSelection === undefined
+        ? {} : dictionary(value.authenticatorSelection, "authenticatorSelection");
+      const params = Array.from(value.pubKeyCredParams === undefined ? [] : value.pubKeyCredParams,
+        parameter => {
+          parameter = dictionary(parameter, "pubKeyCredParams entry");
+          const alg = Number(parameter.alg);
+          if (!Number.isInteger(alg) || alg < -2147483648 || alg > 2147483647) {
+            throw new TypeError("Invalid public key algorithm");
+          }
+          return {
+            type: enumeration(parameter.type, ["public-key"], "public-key", "credential type"),
+            alg
+          };
+        });
+      return {
+        challenge: bufferBytes(value.challenge, "challenge"),
+        rp: {
+          id: rp.id === undefined ? undefined : String(rp.id),
+          name: requiredString(rp.name, "rp.name")
+        },
+        user: {
+          id: bufferBytes(user.id, "user.id"),
+          name: requiredString(user.name, "user.name"),
+          displayName: requiredString(user.displayName, "user.displayName")
+        },
+        pubKeyCredParams: params,
+        excludeCredentials: descriptorList(value.excludeCredentials),
+        authenticatorSelection: {
+          authenticatorAttachment: selection.authenticatorAttachment === undefined ? undefined
+            : enumeration(selection.authenticatorAttachment, ["platform", "cross-platform"],
+              "platform", "authenticatorAttachment"),
+          residentKey: selection.residentKey === undefined ? undefined
+            : enumeration(selection.residentKey, ["required", "preferred", "discouraged"],
+              "discouraged", "residentKey"),
+          requireResidentKey: !!selection.requireResidentKey,
+          userVerification: verification(selection.userVerification)
+        },
+        attestation: enumeration(value.attestation, ["none", "indirect", "direct", "enterprise"],
+          "none", "attestation"),
+        timeout: timeout(value.timeout)
+      };
+    }
+    function requestOptions(value) {
+      value = dictionary(value, "publicKey");
+      return {
+        challenge: bufferBytes(value.challenge, "challenge"),
+        rpId: value.rpId === undefined ? undefined : String(value.rpId),
+        allowCredentials: descriptorList(value.allowCredentials),
+        userVerification: verification(value.userVerification),
+        timeout: timeout(value.timeout)
+      };
+    }
+    function attributes(object, values) {
+      for (const name of Object.keys(values)) {
+        Object.defineProperty(object, name, { enumerable: true, value: values[name] });
+      }
+    }
+    function responseData(response, kind) {
+      const state = responseState.get(response);
+      if (!state || (kind && state.kind !== kind)) throw new TypeError("Illegal invocation");
+      return state;
+    }
+    class Credential {
+      constructor(token, values) {
+        if (token !== credentialToken) throw new TypeError("Illegal constructor");
+        attributes(this, { id: values.id, type: "public-key" });
+      }
+    }
+    class AuthenticatorResponse {
+      constructor(token, values, kind) {
+        if (token !== credentialToken) throw new TypeError("Illegal constructor");
+        attributes(this, { clientDataJSON: new Uint8Array(values.clientDataJSON).buffer });
+        responseState.set(this, { kind, values });
+      }
+    }
+    class AuthenticatorAttestationResponse extends AuthenticatorResponse {
+      constructor(token, values) {
+        super(token, values, "create");
+        attributes(this, { attestationObject: new Uint8Array(values.attestationObject).buffer });
+        const state = responseData(this);
+        state.authenticatorData = new Uint8Array(values.authenticatorData).buffer;
+        state.publicKey = new Uint8Array(values.publicKey).buffer;
+      }
+      getAuthenticatorData() {
+        return responseData(this, "create").authenticatorData.slice(0);
+      }
+      getPublicKey() { return responseData(this, "create").publicKey.slice(0); }
+      getPublicKeyAlgorithm() { return responseData(this, "create").values.publicKeyAlgorithm; }
+      getTransports() { return responseData(this, "create").values.transports.slice(); }
+    }
+    class AuthenticatorAssertionResponse extends AuthenticatorResponse {
+      constructor(token, values) {
+        super(token, values, "get");
+        attributes(this, {
+          authenticatorData: new Uint8Array(values.authenticatorData).buffer,
+          signature: new Uint8Array(values.signature).buffer,
+          userHandle: values.userHandle === null ? null : new Uint8Array(values.userHandle).buffer
+        });
+      }
+    }
+    class PublicKeyCredential extends Credential {
+      constructor(token, values, create) {
+        super(token, values);
+        const response = create
+          ? new AuthenticatorAttestationResponse(token, values)
+          : new AuthenticatorAssertionResponse(token, values);
+        attributes(this, {
+          rawId: new Uint8Array(values.rawId).buffer,
+          response,
+          authenticatorAttachment: values.authenticatorAttachment
+        });
+        credentialState.set(this, { create });
+      }
+      getClientExtensionResults() {
+        if (!credentialState.has(this)) throw new TypeError("Illegal invocation");
+        return {};
+      }
+      toJSON() {
+        const state = credentialState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        const response = this.response;
+        const result = {
+          id: this.id,
+          rawId: encodeBytes(this.rawId),
+          type: this.type,
+          authenticatorAttachment: this.authenticatorAttachment,
+          clientExtensionResults: this.getClientExtensionResults(),
+          response: { clientDataJSON: encodeBytes(response.clientDataJSON) }
+        };
+        if (state.create) {
+          Object.assign(result.response, {
+            attestationObject: encodeBytes(response.attestationObject),
+            authenticatorData: encodeBytes(response.getAuthenticatorData()),
+            publicKey: encodeBytes(response.getPublicKey()),
+            publicKeyAlgorithm: response.getPublicKeyAlgorithm(),
+            transports: response.getTransports()
+          });
+        } else {
+          Object.assign(result.response, {
+            authenticatorData: encodeBytes(response.authenticatorData),
+            signature: encodeBytes(response.signature),
+            userHandle: response.userHandle === null ? null : encodeBytes(response.userHandle)
+          });
+        }
+        return result;
+      }
+      static isUserVerifyingPlatformAuthenticatorAvailable() {
+        return Promise.resolve().then(() => !!call({ op: "webauthn-info" }));
+      }
+      static isConditionalMediationAvailable() { return Promise.resolve(false); }
+      static getClientCapabilities() {
+        return this.isUserVerifyingPlatformAuthenticatorAvailable().then(available => ({
+          conditionalCreate: false,
+          conditionalGet: false,
+          hybridTransport: false,
+          passkeyPlatformAuthenticator: available,
+          userVerifyingPlatformAuthenticator: available,
+          relatedOrigins: false,
+          signalAllAcceptedCredentials: false,
+          signalCurrentUserDetails: false,
+          signalUnknownCredential: false
+        }));
+      }
+      static parseCreationOptionsFromJSON(value) {
+        value = dictionary(value, "options");
+        const user = dictionary(value.user, "user");
+        return {
+          ...value,
+          rp: { ...dictionary(value.rp, "rp") },
+          challenge: decodeBytes(value.challenge, "challenge"),
+          user: { ...user, id: decodeBytes(user.id, "user.id") },
+          pubKeyCredParams: Array.from(value.pubKeyCredParams || [], entry => ({ ...entry })),
+          excludeCredentials: jsonDescriptors(value.excludeCredentials)
+        };
+      }
+      static parseRequestOptionsFromJSON(value) {
+        value = dictionary(value, "options");
+        return {
+          ...value,
+          challenge: decodeBytes(value.challenge, "challenge"),
+          allowCredentials: jsonDescriptors(value.allowCredentials)
+        };
+      }
+    }
+    function jsonDescriptors(values) {
+      return Array.from(values === undefined ? [] : values, descriptor => {
+        descriptor = dictionary(descriptor, "credential descriptor");
+        return {
+          ...descriptor,
+          id: decodeBytes(descriptor.id, "credential id"),
+          ...(descriptor.transports === undefined ? {}
+            : { transports: Array.from(descriptor.transports, String) })
+        };
+      });
+    }
+    function credentialsRequest(create, options) {
+      return new Promise((resolve, reject) => {
+        options = dictionary(options, "options");
+        if (!info.secure) throw exception("SecurityError", "WebAuthn requires a secure context");
+        if (options.publicKey === undefined) {
+          throw exception("NotSupportedError", "Only public-key credentials are supported");
+        }
+        const mediation = enumeration(options.mediation,
+          ["silent", "optional", "required", "conditional"], "optional", "mediation");
+        if (mediation === "conditional" || mediation === "silent") {
+          throw exception("NotAllowedError", "This mediation mode is unavailable");
+        }
+        const signal = options.signal;
+        if (signal !== undefined && !(signal instanceof g.AbortSignal)) {
+          throw new TypeError("signal must be an AbortSignal");
+        }
+        if (signal && signal.aborted) throw exception("AbortError", "The request was aborted");
+        const prepared = create ? creationOptions(options.publicKey) : requestOptions(options.publicKey);
+        const started = call({
+          op: create ? "webauthn-create" : "webauthn-get", options: prepared
+        });
+        if (started && started.error) {
+          throw exception(started.error.name, started.error.message);
+        }
+        const id = started;
+        let done = false;
+        let timer = null;
+        function cleanup() {
+          done = true;
+          if (timer !== null) g.clearTimeout(timer);
+          if (signal) signal.removeEventListener("abort", abort);
+        }
+        function abort() {
+          if (done) return;
+          cleanup();
+          try { call({ op: "webauthn-abort", id }); } finally {
+            reject(exception("AbortError", "The request was aborted"));
+          }
+        }
+        function check() {
+          if (done) return;
+          if (signal && signal.aborted) { abort(); return; }
+          try {
+            const state = call({ op: "webauthn-status", id });
+            if (state.pending) {
+              timer = g.setTimeout(check, 10);
+              return;
+            }
+            cleanup();
+            if (state.error) reject(exception(state.error.name, state.error.message));
+            else resolve(new PublicKeyCredential(credentialToken, state.result, create));
+          } catch (error) {
+            cleanup();
+            call({ op: "webauthn-abort", id });
+            reject(error);
+          }
+        }
+        if (signal) signal.addEventListener("abort", abort, { once: true });
+        check();
+      });
+    }
+    class CredentialsContainer {
+      constructor(token) {
+        if (token !== credentialToken) throw new TypeError("Illegal constructor");
+        containerState.add(this);
+      }
+      create(options = {}) {
+        if (!containerState.has(this)) return Promise.reject(new TypeError("Illegal invocation"));
+        return credentialsRequest(true, options);
+      }
+      get(options = {}) {
+        if (!containerState.has(this)) return Promise.reject(new TypeError("Illegal invocation"));
+        return credentialsRequest(false, options);
+      }
+      store() {
+        if (!containerState.has(this)) return Promise.reject(new TypeError("Illegal invocation"));
+        return Promise.reject(exception("NotSupportedError", "Credential storage is unavailable"));
+      }
+      preventSilentAccess() {
+        if (!containerState.has(this)) return Promise.reject(new TypeError("Illegal invocation"));
+        return Promise.resolve();
+      }
+    }
+    for (const constructor of [
+      Credential, PublicKeyCredential, AuthenticatorResponse,
+      AuthenticatorAttestationResponse, AuthenticatorAssertionResponse, CredentialsContainer
+    ]) {
+      Object.defineProperty(constructor.prototype, Symbol.toStringTag, { value: constructor.name });
+      g[constructor.name] = constructor;
+    }
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true, enumerable: true, value: new CredentialsContainer(credentialToken)
+    });
+  }
+
   if (!g.crypto) g.crypto = {};
   if (typeof g.crypto.getRandomValues !== "function") {
     g.crypto.getRandomValues = function (array) {
@@ -288,4 +667,5 @@
     value: Object.freeze({ Target, exception, event, message, info })
   });
 })(globalThis);
+
 

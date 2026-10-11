@@ -1,0 +1,14 @@
+[
+    (
+        id: "webauthn",
+        group: "webauthn",
+        what: "Platform WebAuthn creates an ES256 resident credential with anonymous attestation, returns an assertion for it, serializes binary fields, and rejects exclusion, unsupported algorithms, foreign relying parties, abort and conditional mediation",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: WEBAUTHN PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 15000,
+    ),
+]
+

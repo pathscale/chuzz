@@ -88,6 +88,10 @@ javascript = [
   "dep:ps-str0m-rust-crypto",
   "dep:p256",
   "dep:x509-cert",
+  "dep:ctap2",
+  "dep:se-fido-store",
+  "dep:sha2",
+  "dep:backend-se",
 ]
 # Physical output is opt-in. Headless hosts disable it at startup even when
 # this feature is compiled. Live streams have a measurable device-free sink.
@@ -188,6 +192,9 @@ rusty_alloc.workspace = true
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ctap2 = { workspace = true, optional = true }
+se-fido-store = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 rustls.workspace = true
 rustls-native-certs.workspace = true
 ps-rustcrypto.workspace = true
@@ -225,6 +232,9 @@ wgpu = { version = "^29", default-features = false, features = [
   # Re-export the existing Naga parser for shader entry-point diagnostics.
   "naga-ir",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+backend-se = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
 # Device output only. This release uses CoreAudio C bindings without objc2.

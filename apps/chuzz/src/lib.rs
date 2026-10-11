@@ -98,6 +98,8 @@ mod tls;
 mod video;
 #[cfg(feature = "javascript")]
 mod webapi;
+#[cfg(feature = "javascript")]
+pub mod webauthn;
 pub mod webgpu;
 #[cfg(feature = "javascript")]
 pub mod webrtc;

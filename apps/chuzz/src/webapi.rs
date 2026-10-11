@@ -71,6 +71,7 @@ struct Realm {
 
 impl Drop for Realm {
     fn drop(&mut self) {
+        crate::webauthn::release_realm(self.id);
         let mut process = lock(&PROCESS);
         process
             .channels
@@ -111,6 +112,19 @@ enum Operation {
         id: u64,
     },
     LockQuery,
+    WebauthnInfo,
+    WebauthnCreate {
+        options: crate::webauthn::CreationOptions,
+    },
+    WebauthnGet {
+        options: crate::webauthn::RequestOptions,
+    },
+    WebauthnStatus {
+        id: u64,
+    },
+    WebauthnAbort {
+        id: u64,
+    },
 }
 
 fn text(args: &[JsValue], index: usize, context: &mut Context) -> JsResult<String> {
@@ -284,6 +298,20 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
             };
             serde_json::json!({"held": entries(true), "pending": entries(false)})
         }
+        Operation::WebauthnInfo => {
+            serde_json::json!(realm.secure && crate::webauthn::platform_available())
+        }
+        Operation::WebauthnCreate { options } => {
+            crate::webauthn::create(realm.id, &realm.public_origin, realm.secure, options)
+        }
+        Operation::WebauthnGet { options } => {
+            crate::webauthn::get(realm.id, &realm.public_origin, realm.secure, options)
+        }
+        Operation::WebauthnStatus { id } => crate::webauthn::status(realm.id, id),
+        Operation::WebauthnAbort { id } => {
+            crate::webauthn::abort(realm.id, id);
+            serde_json::Value::Null
+        }
     };
     JsValue::from_json(&result, context)
 }
@@ -436,3 +464,4 @@ pub(crate) fn install(document: &mut blitz_script::ScriptDocument) {
         }
     });
 }
+

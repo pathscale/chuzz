@@ -31,6 +31,10 @@ const ECHO_SCRIPT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/echo.ts");
 const ECHO_HELPER_SCRIPT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/helper.ts");
+const WEBAUTHN_HTML: &[u8] =
+    include_bytes!("../../../apps/chuzz/src/platform/qa/webauthn.html");
+const WEBAUTHN_FONT: &[u8] =
+    include_bytes!("../../../apps/chuzz/src/platform/qa/fonts/FiraSans-Regular.woff2");
 /// The Referer the last `/referer.png` request carried, for the domb fixture.
 static IMAGE_REFERER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -267,6 +271,10 @@ async fn serve(
             ("text/javascript; charset=utf-8", ECHO_HELPER_SCRIPT.to_vec())
         }
         "/echo/fonts/FiraSans-Regular.woff2" => ("font/woff2", FONT.to_vec()),
+        "/webauthn/" | "/webauthn/index.html" => {
+            ("text/html; charset=utf-8", WEBAUTHN_HTML.to_vec())
+        }
+        "/webauthn/fonts/FiraSans-Regular.woff2" => ("font/woff2", WEBAUTHN_FONT.to_vec()),
         "/api/udp" => {
             if method != "POST" {
                 return respond(

@@ -97,6 +97,14 @@ wasmi = "1.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# WebAuthn CTAP2, encrypted credential storage and the macOS SE backend.
+# MIT, synchronous Rust libraries with no tokio or C dependency crates.
+# backend-se calls the macOS Security and CoreFoundation frameworks through FFI.
+ctap2 = { package = "se-fido-ctap2", version = "^0.1" }
+se-fido-store = "^0.1"
+backend-se = { package = "se-fido-backend-se", version = "^0.1" }
+# WebAuthn clientDataHash. RustCrypto, MIT OR Apache-2.0, no async runtime.
+sha2 = { version = "^0.10", default-features = false }
 # HTTPS and WSS use an explicit RustCrypto provider and native trust anchors.
 # The transport must not enable a second crypto backend through crate features.
 nago-wss = { version = "^0.3", default-features = false, features = ["tls", "simd-utf8"] }
@@ -159,5 +167,3 @@ strip = "none"
 # The fork is published as `ps-usvg` now and ps-blitz depends on it by version,
 # so the requirement travels with the dependency instead of being restated by
 # every consumer.
-
-

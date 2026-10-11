@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebAuthn QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">WebAuthn waiting</p>
+  <script>
+    (async function () {
+      var step = "origin";
+      var result = document.getElementById("result");
+      function check(label, condition) {
+        if (!condition) throw new Error(label);
+      }
+      function b64(buffer) {
+        var bytes = new Uint8Array(buffer);
+        var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        var output = "";
+        for (var i = 0; i < bytes.length; i += 3) {
+          var count = Math.min(3, bytes.length - i);
+          var word = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+          output += alphabet[(word >>> 18) & 63] + alphabet[(word >>> 12) & 63];
+          if (count > 1) output += alphabet[(word >>> 6) & 63];
+          if (count > 2) output += alphabet[word & 63];
+        }
+        return output;
+      }
+      function equal(left, right) {
+        left = new Uint8Array(left);
+        right = new Uint8Array(right);
+        return left.length === right.length && left.every(function (byte, index) {
+          return byte === right[index];
+        });
+      }
+      function counter(bytes) {
+        return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(33);
+      }
+      function cbor(buffer) {
+        var bytes = new Uint8Array(buffer);
+        var offset = 0;
+        function byte() {
+          check("CBOR truncated", offset < bytes.length);
+          return bytes[offset++];
+        }
+        function item(depth) {
+          check("CBOR depth", depth < 16);
+          var head = byte();
+          var major = head >>> 5;
+          var length = head & 31;
+          if (length >= 24) {
+            check("CBOR definite length", length <= 26);
+            var count = length === 24 ? 1 : length === 25 ? 2 : 4;
+            length = 0;
+            for (var i = 0; i < count; i++) length = length * 256 + byte();
+          }
+          if (major === 0) return length;
+          if (major === 1) return -1 - length;
+          if (major === 2 || major === 3) {
+            check("CBOR string bounds", offset + length <= bytes.length);
+            var value = bytes.slice(offset, offset + length);
+            offset += length;
+            return major === 2 ? value.buffer : new TextDecoder().decode(value);
+          }
+          if (major === 4) {
+            var array = [];
+            for (var i = 0; i < length; i++) array.push(item(depth + 1));
+            return array;
+          }
+          if (major === 5) {
+            var map = new Map();
+            for (var i = 0; i < length; i++) {
+              var key = item(depth + 1);
+              check("CBOR duplicate key", !map.has(key));
+              map.set(key, item(depth + 1));
+            }
+            return map;
+          }
+          throw new Error("CBOR unsupported type");
+        }
+        var value = item(0);
+        check("CBOR trailing bytes", offset === bytes.length);
+        return value;
+      }
+      async function rejects(name, operation) {
+        try {
+          await operation();
+        } catch (error) {
+          check("expected " + name + ", got " + error.name,
+            error instanceof DOMException && error.name === name);
+          return;
+        }
+        throw new Error("expected " + name + " rejection");
+      }
+      try {
+        check("serve at localhost:49123/webauthn/",
+          location.origin === "http://localhost:49123"
+          && (location.pathname === "/webauthn/" || location.pathname === "/webauthn/index.html"));
+        step = "availability";
+        check("availability boolean",
+          typeof await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable() === "boolean");
+
+        var challenge = crypto.getRandomValues(new Uint8Array(32));
+        var userId = crypto.getRandomValues(new Uint8Array(16));
+        function creation() {
+          return {
+            challenge: challenge,
+            rp: { id: "localhost", name: "WebAuthn QA" },
+            user: { id: userId, name: "qa", displayName: "QA" },
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: { residentKey: "required" },
+            attestation: "none",
+            timeout: 10000
+          };
+        }
+
+        step = "create";
+        var credential = await navigator.credentials.create({ publicKey: creation() });
+        check("Credential instances",
+          credential instanceof Credential && credential instanceof PublicKeyCredential);
+        check("credential type", credential.type === "public-key");
+        check("credential rawId", credential.rawId instanceof ArrayBuffer && credential.rawId.byteLength > 0);
+        check("credential id", credential.id === b64(credential.rawId));
+        check("attachment", credential.authenticatorAttachment === "platform");
+        var attestationResponse = credential.response;
+        check("attestation response instances",
+          attestationResponse instanceof AuthenticatorResponse
+          && attestationResponse instanceof AuthenticatorAttestationResponse);
+
+        step = "create client data";
+        var clientData = JSON.parse(new TextDecoder().decode(attestationResponse.clientDataJSON));
+        check("create client type", clientData.type === "webauthn.create");
+        check("create challenge", clientData.challenge === b64(challenge.buffer));
+        check("create origin", clientData.origin === "http://localhost:49123");
+        check("create crossOrigin", clientData.crossOrigin === false);
+
+        step = "attestation";
+        var attestation = cbor(attestationResponse.attestationObject);
+        check("attestation map", attestation instanceof Map);
+        check("none format", attestation.get("fmt") === "none");
+        check("empty statement",
+          attestation.get("attStmt") instanceof Map && attestation.get("attStmt").size === 0);
+        var createData = new Uint8Array(attestationResponse.getAuthenticatorData());
+        check("create authenticator data length", createData.length >= 55 + credential.rawId.byteLength);
+        check("create UP and AT", (createData[32] & 0x41) === 0x41);
+        check("attestation authenticator data",
+          equal(attestation.get("authData"), createData.buffer));
+        check("anonymous AAGUID", createData.slice(37, 53).every(function (byte) { return byte === 0; }));
+        check("public key algorithm", attestationResponse.getPublicKeyAlgorithm() === -7);
+        check("public key SPKI", attestationResponse.getPublicKey().byteLength === 91);
+        check("internal transport", attestationResponse.getTransports().join(",") === "internal");
+        check("extensions empty", Object.keys(credential.getClientExtensionResults()).length === 0);
+
+        step = "rpIdHash";
+        if (crypto.subtle && typeof crypto.subtle.digest === "function") {
+          var rpHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("localhost"));
+          check("create rpIdHash", equal(createData.slice(0, 32).buffer, rpHash));
+        }
+
+        step = "get";
+        var getChallenge = crypto.getRandomValues(new Uint8Array(32));
+        var assertion = await navigator.credentials.get({
+          publicKey: {
+            challenge: getChallenge,
+            rpId: "localhost",
+            allowCredentials: [{ type: "public-key", id: credential.rawId }],
+            timeout: 10000
+          }
+        });
+        check("assertion id", assertion.id === credential.id && equal(assertion.rawId, credential.rawId));
+        check("assertion response instances",
+          assertion.response instanceof AuthenticatorResponse
+          && assertion.response instanceof AuthenticatorAssertionResponse);
+        var assertionClient = JSON.parse(new TextDecoder().decode(assertion.response.clientDataJSON));
+        check("get client type", assertionClient.type === "webauthn.get");
+        check("get challenge", assertionClient.challenge === b64(getChallenge.buffer));
+        check("get origin", assertionClient.origin === "http://localhost:49123");
+        check("get crossOrigin", assertionClient.crossOrigin === false);
+        var getData = new Uint8Array(assertion.response.authenticatorData);
+        check("get data length", getData.length === 37);
+        check("get UP", (getData[32] & 1) === 1);
+        check("get rpIdHash", equal(getData.slice(0, 32).buffer, createData.slice(0, 32).buffer));
+        check("signCount",
+          counter(getData) > counter(createData)
+          || (counter(getData) === 0 && counter(createData) === 0));
+        check("signature", assertion.response.signature.byteLength > 0);
+        check("userHandle", equal(assertion.response.userHandle, userId.buffer));
+
+        step = "JSON helpers";
+        var json = credential.toJSON();
+        check("credential JSON id", json.id === credential.id && json.rawId === credential.id);
+        check("credential JSON attestation",
+          json.response.attestationObject === b64(attestationResponse.attestationObject));
+        var parsed = PublicKeyCredential.parseCreationOptionsFromJSON({
+          challenge: b64(challenge.buffer),
+          rp: { id: "localhost", name: "WebAuthn QA" },
+          user: { id: b64(userId.buffer), name: "qa", displayName: "QA" },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+          excludeCredentials: [{ type: "public-key", id: credential.id }]
+        });
+        check("creation JSON challenge", equal(parsed.challenge, challenge.buffer));
+        check("creation JSON user", equal(parsed.user.id, userId.buffer));
+        check("creation JSON descriptor", equal(parsed.excludeCredentials[0].id, credential.rawId));
+        var parsedRequest = PublicKeyCredential.parseRequestOptionsFromJSON({
+          challenge: b64(getChallenge.buffer),
+          allowCredentials: [{ type: "public-key", id: credential.id }]
+        });
+        check("request JSON challenge", equal(parsedRequest.challenge, getChallenge.buffer));
+        check("request JSON descriptor", equal(parsedRequest.allowCredentials[0].id, credential.rawId));
+
+        step = "excluded credential";
+        var excluded = creation();
+        excluded.excludeCredentials = [{ type: "public-key", id: credential.rawId }];
+        await rejects("InvalidStateError", function () {
+          return navigator.credentials.create({ publicKey: excluded });
+        });
+
+        step = "unsupported algorithm";
+        var unsupported = creation();
+        unsupported.pubKeyCredParams = [{ alg: -257 }];
+        await rejects("NotSupportedError", function () {
+          return navigator.credentials.create({ publicKey: unsupported });
+        });
+
+        step = "foreign relying party";
+        await rejects("SecurityError", function () {
+          return navigator.credentials.get({
+            publicKey: { challenge: getChallenge, rpId: "example.com" }
+          });
+        });
+
+        step = "abort";
+        var controller = new AbortController();
+        controller.abort();
+        await rejects("AbortError", function () {
+          return navigator.credentials.get({
+            publicKey: { challenge: getChallenge, rpId: "localhost" },
+            signal: controller.signal
+          });
+        });
+
+        step = "conditional mediation";
+        await rejects("NotAllowedError", function () {
+          return navigator.credentials.get({
+            publicKey: { challenge: getChallenge, rpId: "localhost" },
+            mediation: "conditional"
+          });
+        });
+        check("conditional availability",
+          await PublicKeyCredential.isConditionalMediationAvailable() === false);
+        await navigator.credentials.preventSilentAccess();
+        result.textContent = "READY: WEBAUTHN PASS";
+      } catch (error) {
+        result.textContent = "FAIL: WEBAUTHN " + step + ": " + error.name + ": " + error.message;
+      }
+    })();
+  </script>
+</body>
+</html>
+
