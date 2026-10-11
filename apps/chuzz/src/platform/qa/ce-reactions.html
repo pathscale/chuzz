@@ -60,7 +60,7 @@
       inherit(Parsed);
       Parsed.observedAttributes = ["label"];
       Parsed.prototype.attributeChangedCallback = function (name, oldValue, newValue, namespace) {
-        parsed.push(["attr", this.id, name, oldValue, newValue, namespace].join(":"));
+        parsed.push(["attr", this.id, name, oldValue, newValue, namespace].map(String).join(":"));
       };
       Parsed.prototype.connectedCallback = function () {
         parsed.push("connect:" + this.id);
@@ -147,7 +147,7 @@
       Snap.observedAttributes = iterable();
       Snap.prototype.connectedCallback = function () { snapLog.push("snap-connect"); };
       Snap.prototype.attributeChangedCallback = function (name, oldValue, newValue, namespace) {
-        snapLog.push(["snap-attr", name, oldValue, newValue, namespace === null].join(":"));
+        snapLog.push(["snap-attr", name, oldValue, newValue, namespace === null].map(String).join(":"));
       };
       customElements.define("cereact-snap", Snap);
       Snap.prototype.connectedCallback = function () { snapLog.push("snap-replaced-connect"); };
@@ -179,7 +179,7 @@
       inherit(Order);
       Order.observedAttributes = ["label"];
       Order.prototype.attributeChangedCallback = function (name, oldValue, newValue) {
-        orderLog.push(["order-attr", name, oldValue, newValue].join(":"));
+        orderLog.push(["order-attr", name, oldValue, newValue].map(String).join(":"));
       };
       Order.prototype.connectedCallback = function () {
         orderLog.push("order-before");
