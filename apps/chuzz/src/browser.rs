@@ -1091,7 +1091,7 @@ async fn fetch_page(
     }
     let requested_url = request.url.to_string();
 
-    let (resolved_url, bytes) = match net.fetch_async(request).await {
+    let (resolved_url, bytes) = match net.fetch_document_async(request).await {
         Ok(response) => response,
         Err(error) => {
             browser.note(

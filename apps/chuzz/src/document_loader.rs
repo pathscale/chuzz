@@ -104,6 +104,30 @@ impl NetProvider {
             .await
     }
 
+    /// A top-level document. Every HTTP status is a page, as in any browser: the body of a 403 or 503
+    /// is often an error or challenge page the reader has to see and its scripts have to run. Only a
+    /// network failure is an error. A request with a body (form POST) keeps the older path.
+    pub async fn fetch_document_async(
+        &self,
+        request: blitz_traits::net::Request,
+    ) -> Result<(String, blitz_traits::net::Bytes), String> {
+        if !matches!(request.body, blitz_traits::net::Body::Empty)
+            || !matches!(request.url.scheme(), "http" | "https")
+        {
+            return self
+                .fetch_async(request)
+                .await
+                .map_err(|error| format!("{error:?}"));
+        }
+        let request = Self::with_default_language(request);
+        let mut wire = blitz_traits::platform::FetchRequest::get(request.url).method(request.method);
+        wire.headers = request.headers;
+        let response = crate::net_bridge::fetch_response(&self.inner, wire)
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        Ok((response.url.to_string(), response.body))
+    }
+
     pub async fn fetch_async(
         &self,
         request: blitz_traits::net::Request,
@@ -2353,10 +2377,7 @@ pub async fn load_for_capture(
         )));
     }
 
-    let (resolved_url, bytes) = net_provider
-        .fetch_async(request)
-        .await
-        .map_err(|error| format!("{error:?}"))?;
+    let (resolved_url, bytes) = net_provider.fetch_document_async(request).await?;
     let html = decode_body(&bytes);
 
     let resolved_url = Url::parse(&resolved_url)?;
