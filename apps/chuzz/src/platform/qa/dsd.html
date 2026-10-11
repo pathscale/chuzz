@@ -84,9 +84,9 @@
       if (!nestedText || nestedText.textContent !== "DSD nested") fail("nested text");
       var slotted = host.querySelector("span");
       if (!slotted || slotted.textContent !== "DSD slotted") fail("slotted");
-      var closed = document.getElementById("closed-host");
-      if (closed.shadowRoot !== null) fail("closed exposed");
-      if (closed.querySelector("template")) fail("closed template left");
+      var closedHost = document.getElementById("closed-host");
+      if (closedHost.shadowRoot !== null) fail("closed exposed");
+      if (closedHost.querySelector("template")) fail("closed template left");
       var twice = document.getElementById("twice");
       if (!twice.shadowRoot) fail("twice missing root");
       var second = document.getElementById("twice-template");
