@@ -1,0 +1,13 @@
+[
+    (
+        id: "inventory",
+        group: "inventory",
+        what: "Lists missing APIs and asserts nothing about the count",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "INVENTORY TOTAL",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]

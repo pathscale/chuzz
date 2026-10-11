@@ -1,8 +1,17 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>inventory</title>
-<style>@font-face{font-family:F;src:url("./FiraSans-Regular.woff2") format("woff2");} body{font-family:F;font-size:10px}</style></head>
+<style>
+  @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+  body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  #host { position: fixed; left: -10000px; top: 0; }
+  #summary { margin: 0 0 8px; font-size: 16px; white-space: nowrap; }
+  #missing { columns: 3; column-gap: 24px; font-size: 12px; line-height: 1.2; }
+  #missing p { break-inside: avoid; margin: 0 0 2px; }
+</style></head>
 <body>
 <div id="host"><span class="a" data-x="1" title="t">hi</span><!--c--></div>
+<p id="summary" role="status"></p>
+<div id="missing"></div>
 <script>
 // Reports every listed web platform name that is missing, as aria-labelled <p> lines "MISSING: name".
 var missing = [];
@@ -126,7 +135,15 @@ check('Intl.DateTimeFormat', function () { return typeof new Intl.DateTimeFormat
 check('location.href', function () { return location.href.indexOf('http') === 0; });
 check('document.currentScript', function () { return true; });
 check('MutationObserver fires', function () { return typeof new MutationObserver(function () {}).observe === 'function'; });
-missing.forEach(function (l) { var p = document.createElement('p'); p.textContent = l; p.setAttribute('aria-label', 'MISSING: ' + l); document.body.appendChild(p); });
-var done = document.createElement('p'); done.textContent = 'TOTAL ' + missing.length; done.setAttribute('aria-label', 'MISSING: TOTAL ' + missing.length); document.body.appendChild(done);
+var summary = document.getElementById('summary');
+summary.textContent = 'INVENTORY TOTAL ' + missing.length;
+summary.setAttribute('aria-label', summary.textContent);
+var output = document.getElementById('missing');
+missing.forEach(function (l) {
+  var p = document.createElement('p');
+  p.textContent = l;
+  p.setAttribute('aria-label', 'MISSING: ' + l);
+  output.appendChild(p);
+});
 </script>
 </body></html>
