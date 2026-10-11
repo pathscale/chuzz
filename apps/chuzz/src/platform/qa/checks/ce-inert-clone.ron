@@ -1,0 +1,13 @@
+[
+    (
+        id: "ce-inert-clone",
+        group: "ce-inert-clone",
+        what: "template content lives in an inert document: its cloneNode clones are not upgraded and get no reactions until adopted into the window document, then upgrade with attribute reactions; importNode upgrades at once",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: CEINERT PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]

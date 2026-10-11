@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Template inert clone QA</title>
+<style>@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); } body { margin: 24px; background: #151923; color: white; font-family: Fixture; }</style></head>
+<body>
+<p id="result" role="status">Template inert clone waiting</p>
+<template id="tpl"><x-inert label="a"></x-inert></template>
+<script>
+  // Spec (and Chrome): a template's content lives in an inert document with no custom element registry.
+  // Cloning that content with cloneNode keeps the clone in the inert document, so its custom elements are
+  // NOT upgraded and get no reactions. They upgrade (constructor, then attributeChangedCallback for each
+  // observed attribute) only when adopted into the window's document: appendChild, adoptNode or importNode.
+  var log = [];
+  class XInert extends HTMLElement {
+    static get observedAttributes() { return ["label"]; }
+    constructor() { super(); log.push("construct"); }
+    attributeChangedCallback(name, oldValue, newValue) { log.push("attr:" + name + "=" + newValue); }
+    connectedCallback() { log.push("connected"); }
+  }
+  customElements.define("x-inert", XInert);
+  var out = [];
+  var tpl = document.getElementById("tpl");
+  out.push("contentDocIsWindowDoc:" + (tpl.content.ownerDocument === document));
+  var clone = tpl.content.cloneNode(true);
+  var el = clone.firstChild;
+  out.push("cloneDocIsWindowDoc:" + (el.ownerDocument === document));
+  out.push("cloneUpgraded:" + (el instanceof XInert));
+  el.setAttribute("label", "b");
+  out.push("cloneLog:" + (log.join(",") || "none"));
+  log.length = 0;
+  document.body.appendChild(clone);
+  out.push("afterAppend:" + (el instanceof XInert) + " " + log.join(","));
+  log.length = 0;
+  var imported = document.importNode(tpl.content, true).firstChild;
+  out.push("importNode:" + (imported instanceof XInert) + " " + log.join(","));
+  var expected = "contentDocIsWindowDoc:false | cloneDocIsWindowDoc:false | cloneUpgraded:false | cloneLog:none | " +
+    "afterAppend:true construct,attr:label=b,connected | importNode:true construct,attr:label=a";
+  var got = out.join(" | ");
+  document.getElementById("result").textContent = got === expected ? "READY: CEINERT PASS" : "FAIL: CEINERT " + got;
+</script>
+</body></html>
