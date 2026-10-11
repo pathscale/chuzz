@@ -406,3 +406,39 @@ Not scheduled, but they bound what "works" means for a browser:
 
 AgencyZero has a parallel set at `agencyzero/docs/`, including its own `TODO.md`, the
 measured `performance.md`, and the renderer research this repository inherits.
+
+## If we want to be in the crap store
+
+The Mac App Store requires the App Sandbox. Runtime cost is negligible (a kernel policy check on file opens,
+process launches and network calls); the work is fitting inside it. Chrome and Firefox stay out mostly because of
+extensions, helper processes and their own updaters; chuzz has none of those, so this is days of work, not months.
+JIT is allowed in the sandbox with the hardened-runtime `allow-jit` entitlement. (iOS is different: no JIT for App
+Store apps, and arbitrary-site browsing must use WebKit outside the EU browser-engine entitlement.)
+
+Already fits, no change:
+- Settings and cookies go to `$HOME/Library/Application Support/ai.chuzz.browser`; in a sandboxed app `$HOME` is
+  the container, so the path redirects on its own. Temp files use `std::env::temp_dir()`, also redirected.
+- Page workers re-launch the chuzz binary itself with an inherited socket (`serve_supervisor.rs`). A sandboxed app
+  may launch executables from its own bundle, and they inherit the sandbox.
+
+Entitlements to declare:
+- `network.client` (loading pages) and `network.server` (listening sockets in `serve.rs`, `page_server.rs`,
+  `webrtc/gather.rs`).
+- `device.camera` / `device.audio-input` with usage strings, only if pages get WebRTC media.
+- `files.user-selected.read-write` for `<input type=file>` and saving, plus `files.downloads.read-write`.
+- `cs.allow-jit` for the desktop JIT.
+
+Store build flavour:
+- Updates come from the store: no self-update.
+- Inspector (the socket the QA tools attach to) becomes a setting, off by default, in the existing diagnostics
+  settings file:
+  - Listens on `127.0.0.1` TCP (not the temp-dir descriptor, which sits inside the container), fixed default port
+    overridable in settings; tools take `--port`.
+  - Auth token: generated at random when the inspector is enabled, shown in settings and stored in the diagnostics
+    file so our tools can read it; the user may set their own. Without a token any app on the machine can drive the
+    browser (loopback stops other machines, not local apps), so "no token" is an explicit choice with a warning.
+    Dev and headless QA builds may default to no token.
+  - Always loopback only, and reject requests that carry a browser `Origin` header (stops web pages reaching it
+    through DNS rebinding).
+- Before submitting: a test build signed with the sandbox on, to catch any file read outside the container that a
+  grep of `apps/chuzz/src` missed (dependencies included).
