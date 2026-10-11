@@ -86,7 +86,7 @@ fn options() -> Result<Options, String> {
 }
 
 #[global_allocator]
-static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
+static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 
 fn main() {
     if let Err(error) = run() {

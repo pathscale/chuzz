@@ -18,7 +18,7 @@ name = "chuzz-tls-fixture"
 path = "src/tls_main.rs"
 
 [dependencies]
-rusty_alloc-api.workspace = true
+rusty_alloc.workspace = true
 nagoya.workspace = true
 nago-wss.workspace = true
 nago-rustls.workspace = true
