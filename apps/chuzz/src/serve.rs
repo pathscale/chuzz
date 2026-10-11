@@ -1731,11 +1731,21 @@ fn serve_page(target: &str) -> Result<(), String> {
         let _load = supervisor::operation(supervisor::Operation::Load);
         policy.validate_url(&url)?;
         trace(&format!("loading {}", display_url(&url, policy.bot_child)));
-        let prelude = if policy.bot_child {
+        let mut prelude = if policy.bot_child {
             String::new()
         } else {
             restore_script(carried, &url)
         };
+        // Diagnosis only: a script file run before the page's own scripts, to instrument a site
+        // whose failure no standalone repro shows. Never read for a bot child.
+        if !policy.bot_child
+            && let Ok(path) = std::env::var("CHUZZ_DEBUG_PRELUDE")
+        {
+            let script = std::fs::read_to_string(&path)
+                .map_err(|error| format!("CHUZZ_DEBUG_PRELUDE {path}: {error}"))?;
+            prelude.push('\n');
+            prelude.push_str(&script);
+        }
         let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
             blitz_traits::net::Request::get(url.clone()),
             Arc::clone(&net_provider),
