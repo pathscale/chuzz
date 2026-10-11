@@ -41,6 +41,47 @@ pub struct NetProvider {
 
 const DEFAULT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 
+/// Debugging aid for real sites: with `CHUZZ_DEBUG_DUMP=<dir>`, every script
+/// response is written there as `<n>-<host><path>.js`, the exact bytes the page
+/// ran, so an error's `line:column` on an obfuscated or per-request script (a
+/// challenge page's) can be read back. Nothing is written unless the variable
+/// is set.
+fn dump_script_for_debugging(response: &blitz_traits::platform::FetchResponse) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let Some(dir) = std::env::var_os("CHUZZ_DEBUG_DUMP") else {
+        return;
+    };
+    let script = response
+        .headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("javascript") || value.contains("ecmascript"))
+        || response.url.path().ends_with(".js")
+        || response.url.path().ends_with(".mjs");
+    if !script {
+        return;
+    }
+    let name: String = format!(
+        "{}{}",
+        response.url.host_str().unwrap_or_default(),
+        response.url.path()
+    )
+    .chars()
+    .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+    .take(120)
+    .collect();
+    let path = std::path::Path::new(&dir).join(format!(
+        "{}-{name}.js",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &response.body));
+    match written {
+        Ok(()) => eprintln!("chuzz: dumped {} to {}", response.url, path.display()),
+        Err(error) => eprintln!("chuzz: CHUZZ_DEBUG_DUMP {}: {error}", path.display()),
+    }
+}
+
 impl NetProvider {
     pub fn new(waker: Option<Arc<dyn blitz_traits::net::NetWaker>>) -> Self {
         Self::with_user_agent(waker, &crate::identity::user_agent_from_env())
@@ -99,9 +140,12 @@ impl NetProvider {
         &self,
         request: blitz_traits::net::Request,
     ) -> Result<blitz_traits::platform::FetchResponse, blitz_net::ProviderError> {
-        self.inner
+        let response = self
+            .inner
             .fetch_response_async(Self::with_default_language(request))
-            .await
+            .await?;
+        dump_script_for_debugging(&response);
+        Ok(response)
     }
 
     /// A top-level document. Every HTTP status is a page, as in any browser: the body of a 403 or 503
