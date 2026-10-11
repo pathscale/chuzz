@@ -238,6 +238,20 @@ async fn cancellable<F: Future>(endpoint: &Endpoint, future: F) -> Result<F::Out
     .await
 }
 
+/// Virtual reservation for a worker thread, the same as the page thread's: Boa's parser and AST
+/// clone recurse on the native stack, and a minified bundle's deep expression chains overflowed the
+/// 2 MB a default thread gets, which aborts the whole process. Pages are committed only when touched.
+const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// A one-thread runtime for one worker, on a thread sized for Boa.
+fn worker_runtime(id: u64) -> nagoya::runtime::Runtime {
+    nagoya::runtime::Runtime::builder()
+        .workers(1)
+        .label(&format!("chuzz-worker-{id}"))
+        .stack_size(WORKER_STACK_BYTES)
+        .build()
+}
+
 fn create(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let page = context
         .get_data::<PageHost>()
@@ -270,7 +284,7 @@ fn create(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
     }
 
     let id = page.next_id.fetch_add(1, Ordering::Relaxed);
-    let worker_runtime = Arc::new(nagoya::runtime::Runtime::new(1));
+    let worker_runtime = Arc::new(worker_runtime(id));
     let endpoint = Arc::new(Endpoint {
         id,
         canceled: Arc::new(AtomicBool::new(false)),

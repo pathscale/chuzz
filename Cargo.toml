@@ -110,7 +110,7 @@ rustls = { version = "^0.23.27", default-features = false, features = [
 cursor-icon = "^1"
 cookie_store = "^0.22.1"
 psl = "^2"
-nagoya = { version = "^0.1", features = ["reactor"] }
+nagoya = { version = "^0.1.14", features = ["reactor"] }
 url = "2.5"
 worktable = "^1.11.0"
 tauri = { version = "^2", default-features = false }

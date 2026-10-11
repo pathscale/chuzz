@@ -1,0 +1,13 @@
+[
+    (
+        id: "worker-deep",
+        group: "worker-deep",
+        what: "a dedicated worker compiles a 20000-term expression and answers (a catchable error also counts); the browser does not abort",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: WORKERDEEP PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 20000,
+    ),
+]

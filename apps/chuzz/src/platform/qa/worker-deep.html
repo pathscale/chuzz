@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Worker deep script QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">Worker deep waiting</p>
+  <script>
+    // A dedicated worker compiles and runs a minified-bundle shape: one expression 20000 terms deep inside a
+    // function inside a for loop. The engine recurses on the native stack to parse and compile it, so a
+    // worker thread with a default-size stack aborted the whole browser instead of answering.
+    var source = [
+      "var terms = [];",
+      "for (var i = 0; i < 20000; i++) terms.push('x');",
+      "var body = 'for (var n = 0, t = ' + terms.join(' + ') + '; n < 1; n++) return t;';",
+      "var deep = new Function('x', body);",
+      "postMessage(String(deep(1)));"
+    ].join("\n");
+    var result = document.getElementById("result");
+    var worker = new Worker("data:text/javascript," + encodeURIComponent(source));
+    worker.onmessage = function (event) {
+      result.textContent = event.data === "20000" ? "READY: WORKERDEEP PASS" : "FAIL: WORKERDEEP got " + event.data;
+    };
+    worker.onerror = function (event) {
+      // A RangeError for a too-deep script is an acceptable, catchable outcome; an abort is not.
+      result.textContent = "READY: WORKERDEEP PASS (error " + (event.message || "") + ")";
+    };
+  </script>
+</body>
+</html>
