@@ -1985,21 +1985,17 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       if (reason !== undefined) { return reason; }
       return new globalThis.DOMException('signal is aborted without reason', 'AbortError');
     };
+    // An EventTarget, as in every browser: listeners, options and dispatch are the engine's, and a
+    // page that calls EventTarget.prototype.addEventListener on a signal (a common polyfill for the
+    // `signal` listener option) gets a valid receiver instead of Illegal invocation.
     var AbortSignal = function () {
       this.aborted = false;
       this.reason = undefined;
       this.onabort = null;
-      this._handlers = [];
     };
-    AbortSignal.prototype.addEventListener = function (type, handler) {
-      if (type === 'abort' && typeof handler === 'function') { this._handlers.push(handler); }
-    };
-    AbortSignal.prototype.removeEventListener = function (type, handler) {
-      if (type !== 'abort') { return; }
-      var at = this._handlers.indexOf(handler);
-      if (at >= 0) { this._handlers.splice(at, 1); }
-    };
-    AbortSignal.prototype.dispatchEvent = function () { return false; };
+    AbortSignal.prototype = Object.create(globalThis.EventTarget.prototype, {
+      constructor: { value: AbortSignal, writable: true, configurable: true }
+    });
     AbortSignal.prototype.throwIfAborted = function () {
       if (this.aborted) { throw this.reason; }
     };
@@ -2007,15 +2003,11 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       if (signal.aborted) { return; }
       signal.aborted = true;
       signal.reason = abortReason(reason);
-      var event = { type: 'abort', target: signal };
+      var event = new globalThis.Event('abort');
       if (typeof signal.onabort === 'function') {
-        try { signal.onabort(event); } catch (error) { /* the page's handler threw */ }
+        try { signal.onabort.call(signal, event); } catch (error) { /* the page's handler threw */ }
       }
-      var handlers = signal._handlers.slice();
-      signal._handlers.length = 0;
-      for (var index = 0; index < handlers.length; index++) {
-        try { handlers[index](event); } catch (error) { /* likewise */ }
-      }
+      signal.dispatchEvent(event);
     };
     AbortSignal.abort = function (reason) {
       var signal = new AbortSignal();

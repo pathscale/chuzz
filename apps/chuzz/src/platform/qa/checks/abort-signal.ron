@@ -1,0 +1,13 @@
+[
+    (
+        id: "abort-signal",
+        group: "abort-signal",
+        what: "AbortSignal is an EventTarget: generic EventTarget methods accept it, once and removeEventListener apply, abort dispatches a real Event after onabort, any() follows its sources",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: ABORTSIGNAL PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]

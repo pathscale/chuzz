@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AbortSignal QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">AbortSignal waiting</p>
+  <script>
+    // AbortSignal is an EventTarget: the generic EventTarget methods accept it as a receiver (a common
+    // polyfill for the `signal` listener option calls them that way), listener options apply, and abort
+    // dispatches a real Event after onabort.
+    (function () {
+      var failures = [];
+      function check(label, ok) { if (!ok) failures.push(label); }
+      try {
+        var controller = new AbortController();
+        var signal = controller.signal;
+        check("instanceof", signal instanceof EventTarget && signal instanceof AbortSignal);
+        var log = [];
+        signal.onabort = function (event) { log.push("onabort:" + event.type + ":" + (this === signal)); };
+        EventTarget.prototype.addEventListener.call(signal, "abort", function (event) {
+          log.push("generic:" + (event instanceof Event) + ":" + (event.target === signal));
+        });
+        var once = 0;
+        signal.addEventListener("abort", function () { once++; }, { once: true });
+        var removed = function () { log.push("removed"); };
+        signal.addEventListener("abort", removed);
+        signal.removeEventListener("abort", removed);
+        controller.abort();
+        controller.abort();
+        check("order " + log.join(","), log.join(",") === "onabort:abort:true,generic:true:true");
+        check("once " + once, once === 1);
+        check("reason", signal.aborted && signal.reason instanceof DOMException && signal.reason.name === "AbortError");
+        var threw = false;
+        try { signal.throwIfAborted(); } catch (error) { threw = error === signal.reason; }
+        check("throwIfAborted", threw);
+        var first = new AbortController();
+        var any = AbortSignal.any([first.signal, new AbortController().signal]);
+        var anyFired = false;
+        any.addEventListener("abort", function () { anyFired = true; });
+        first.abort("why");
+        check("any", anyFired && any.reason === "why");
+      } catch (error) {
+        failures.push("threw " + error.message);
+      }
+      document.getElementById("result").textContent = failures.length
+        ? "FAIL: ABORTSIGNAL " + failures.join(", ")
+        : "READY: ABORTSIGNAL PASS";
+    })();
+  </script>
+</body>
+</html>
