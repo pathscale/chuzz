@@ -206,8 +206,8 @@ less-avc = { package = "ps-less-avc", version = "^0.1.5", optional = true }
 rusty-opus = { package = "ps-rusty-opus", version = "^1", optional = true }
 symphonia = { version = "^0.5.5", default-features = false, features = ["aac"], optional = true }
 # WebRTC has no implicit crypto provider or example server dependencies.
-str0m = { version = "^0.24.1", default-features = false, optional = true }
-ps-str0m-rust-crypto = { version = "^0.1.1", default-features = false, optional = true }
+str0m = { package = "ps-str0m", version = "^0.25", default-features = false, optional = true }
+ps-str0m-rust-crypto = { version = "^0.2", default-features = false, optional = true }
 # Certificate verification in the native crypto QA fixture.
 p256 = { version = "^0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"], optional = true }
 x509-cert = { version = "^0.2.5", default-features = false, features = ["std"], optional = true }
