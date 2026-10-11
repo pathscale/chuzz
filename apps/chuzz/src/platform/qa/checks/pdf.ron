@@ -1,0 +1,25 @@
+// Run these checks with pdf/fixture.pdf itself as the qa-hosted --page target.
+[
+    (
+        id: "pdf-page-image",
+        group: "pdf",
+        what: "direct PDF navigation rasterizes its page and paints the embedded PNG",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#pdf-page-1",
+        expect: VisibleInk,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "pdf-page-text",
+        group: "pdf",
+        what: "the PDF's extracted text is present and paints below the page image",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "PDF FIXTURE PAGE 1",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]

@@ -168,21 +168,54 @@ impl NetProvider {
                 initiator: initiator.as_ref(),
             },
         );
-        if !matches!(request.body, blitz_traits::net::Body::Empty)
+        let requested_url = request.url.clone();
+        let response = if !matches!(request.body, blitz_traits::net::Body::Empty)
             || !matches!(request.url.scheme(), "http" | "https")
         {
-            return self
-                .fetch_async(request)
+            // This includes file URLs and form submissions. Keep their
+            // response headers until document-type detection has run.
+            self.fetch_response_async(request)
                 .await
-                .map_err(|error| format!("{error:?}"));
-        }
-        let request = Self::with_default_language(request);
-        let mut wire = blitz_traits::platform::FetchRequest::get(request.url).method(request.method);
-        wire.headers = request.headers;
-        let response = crate::net_bridge::fetch_response(&self.inner, wire)
-            .await
-            .map_err(|error| format!("{error:?}"))?;
-        Ok((response.url.to_string(), response.body))
+                .map_err(|error| format!("{error:?}"))?
+        } else {
+            let request = Self::with_default_language(request);
+            let mut wire =
+                blitz_traits::platform::FetchRequest::get(request.url).method(request.method);
+            wire.headers = request.headers;
+            crate::net_bridge::fetch_response(&self.inner, wire)
+                .await
+                .map_err(|error| format!("{error:?}"))?
+        };
+        Ok(Self::document_response(&requested_url, response))
+    }
+
+    fn document_response(
+        requested_url: &url::Url,
+        response: blitz_traits::platform::FetchResponse,
+    ) -> (String, blitz_traits::net::Bytes) {
+        let resolved_url = response.url.to_string();
+        let body = response.body;
+        #[cfg(feature = "pdf")]
+        let body = {
+            let content_type = response
+                .headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok());
+            if crate::pdf::is_pdf(&resolved_url, content_type, &body)
+                || crate::pdf::is_pdf(requested_url.as_str(), None, &body)
+            {
+                blitz_traits::net::Bytes::from(
+                    crate::pdf::viewer_html(&resolved_url, &body).into_bytes(),
+                )
+            } else {
+                body
+            }
+        };
+        #[cfg(not(feature = "pdf"))]
+        let _ = requested_url;
+        // The generated HTML is parsed at the navigation's resolved URL,
+        // preserving history, location and the document's base URL.
+        (resolved_url, body)
     }
 
     pub async fn fetch_async(

@@ -43,6 +43,7 @@ default = [
   "javascript",
   "wasm",
   "capture",
+  "pdf",
   "webp",
   "avif",
 ]
@@ -99,6 +100,9 @@ device-audio = ["dep:cpal"]
 # Opt in for rendered QA as well as GUI builds. A minimal headless embedder
 # can still omit font discovery and provide its own faces.
 system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
+# PDF navigation uses the synchronous Rust toolkit and the existing PNG encoder.
+# Bundled faces also paint PDF text whose font program is not embedded.
+pdf = ["dep:pdf-toolkit", "dep:png", "headless-fonts"]
 # The `image` crate is pulled in with default features off, so without these a
 # .webp or .avif downloads fine and then cannot be decoded: the element simply
 # never paints, which reads as a missing asset rather than a failed codec.
@@ -138,6 +142,7 @@ capture = [
   "dep:png",
   "wasm",
   "headless-fonts",
+  "pdf",
 ]
 # The compiled-in faces of the headless-fonts crate. Used only when `system-fonts` is off, so a
 # capture renders the same glyphs on every machine; a feature cannot turn another off, so a build
@@ -179,6 +184,9 @@ anyrender = { workspace = true, optional = true }
 anyrender_vello_cpu = { workspace = true, optional = true }
 anyrender_svg = { workspace = true, optional = true }
 headless-fonts = { workspace = true, optional = true }
+# Required for PDF parsing, page rasterization and searchable text. MIT, pure
+# Rust and synchronous; the selected features require neither tokio nor C.
+pdf-toolkit = { version = "^0.3", default-features = false, features = ["raster", "text"], optional = true }
 # These are already in Blitz's renderer and text graph. Naming their public
 # types lets the canvas use the same painter, font collection and outlines.
 peniko = { version = "^0.6", optional = true }

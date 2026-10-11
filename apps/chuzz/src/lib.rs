@@ -92,6 +92,8 @@ pub mod net_bridge;
 // reaches for it, but it is not conditional on that mode: what it does is a
 // fact about serving a directory, not about having no window.
 pub mod page_server;
+#[cfg(feature = "pdf")]
+pub mod pdf;
 pub mod script_fetch;
 mod tls;
 #[cfg(feature = "javascript")]
