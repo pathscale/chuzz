@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Keys QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">KEYS waiting</p>
+  <script>
+    // Press("v") toggles a flag. Hold("ArrowRight", 400) must keyup at least 350ms
+    // after keydown. Down("Shift"), a pause, then Up("Shift") must arrive as that key.
+    (function () {
+      var result = document.getElementById("result");
+      var phase = "v-down";
+      var vOn = false;
+      var arrowDownAt = 0;
+      var shiftDownAt = 0;
+      var failed = false;
+
+      function fail(reason) {
+        if (failed || phase === "done") return;
+        failed = true;
+        result.textContent = "KEYS FAIL: " + reason;
+      }
+
+      document.addEventListener("keydown", function (event) {
+        if (failed || phase === "done") return;
+        if (phase === "v-down") {
+          if (event.key !== "v") {
+            fail("expected v down, got " + event.key);
+            return;
+          }
+          vOn = !vOn;
+          phase = "v-up";
+          return;
+        }
+        if (phase === "arrow-down") {
+          if (event.key !== "ArrowRight") {
+            fail("expected ArrowRight down, got " + event.key);
+            return;
+          }
+          arrowDownAt = performance.now();
+          phase = "arrow-up";
+          return;
+        }
+        if (phase === "shift-down") {
+          if (event.key !== "Shift") {
+            fail("expected Shift down, got " + event.key);
+            return;
+          }
+          shiftDownAt = performance.now();
+          phase = "shift-up";
+          return;
+        }
+        fail("unexpected keydown " + event.key);
+      });
+
+      document.addEventListener("keyup", function (event) {
+        if (failed || phase === "done") return;
+        if (phase === "v-up") {
+          if (event.key !== "v") {
+            fail("expected v up, got " + event.key);
+            return;
+          }
+          if (!vOn) {
+            fail("v press did not toggle");
+            return;
+          }
+          phase = "arrow-down";
+          return;
+        }
+        if (phase === "arrow-up") {
+          if (event.key !== "ArrowRight") {
+            fail("expected ArrowRight up, got " + event.key);
+            return;
+          }
+          var held = performance.now() - arrowDownAt;
+          if (held < 350) {
+            fail("ArrowRight held " + Math.round(held) + "ms");
+            return;
+          }
+          phase = "shift-down";
+          return;
+        }
+        if (phase === "shift-up") {
+          if (event.key !== "Shift") {
+            fail("expected Shift up, got " + event.key);
+            return;
+          }
+          var waited = performance.now() - shiftDownAt;
+          if (waited < 80) {
+            fail("Shift gap " + Math.round(waited) + "ms");
+            return;
+          }
+          if (!vOn) {
+            fail("v state lost");
+            return;
+          }
+          phase = "done";
+          result.textContent = "READY: KEYS PASS";
+          return;
+        }
+        fail("unexpected keyup " + event.key);
+      });
+    })();
+  </script>
+</body>
+</html>

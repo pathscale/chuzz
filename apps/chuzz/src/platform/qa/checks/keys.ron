@@ -1,0 +1,21 @@
+[
+    (
+        id: "keys",
+        group: "keys",
+        what: "a timed key sequence reaches the document: press, hold, down, wait, up",
+        open: None,
+        hover: None,
+        click: None,
+        keys: [
+            Press("v"),
+            Hold("ArrowRight", 400),
+            Down("Shift"),
+            Wait(120),
+            Up("Shift"),
+        ],
+        subject: "READY: KEYS PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]
+
