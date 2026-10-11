@@ -44,7 +44,11 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
     args.get(index + 1).cloned()
 }
 
+#[global_allocator]
+static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
+
 fn main() {
+    chuzz::tune_allocator();
     // Before any of the entry points below can reach the network. See the
     // function's own comment for why the provider is named here rather than
     // left to the resolution.

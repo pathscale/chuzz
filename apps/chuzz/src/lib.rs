@@ -23,6 +23,18 @@ pub fn install_crypto_provider() {
     let _ = ps_rustcrypto::provider().install_default();
 }
 
+/// Configure the global allocator (rusty_alloc) for a long-running process: freed memory is purged
+/// back to the OS after 10 ms, which keeps resident memory flat. Opt-in in rusty_alloc's defaults;
+/// `RUSTY_ALLOC_PURGE_DELAY` in the environment still overrides it.
+pub fn tune_allocator() {
+    if let Some(purge_delay) = rusty_alloc::options::OPTION_NAMES
+        .iter()
+        .position(|name| *name == "purge_delay")
+    {
+        rusty_alloc::options::set_default(purge_delay, 10);
+    }
+}
+
 /// Set host policy before opening media. The device-audio feature is also
 /// required to open a physical output. Live stream QA uses native PCM output.
 #[cfg(feature = "javascript")]

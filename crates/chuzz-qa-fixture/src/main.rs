@@ -44,6 +44,9 @@ fn io_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
 }
 
+#[global_allocator]
+static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
+
 fn main() -> io::Result<()> {
     let mut port = 49_123;
     let mut echo_host = None;

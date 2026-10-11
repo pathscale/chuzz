@@ -184,6 +184,8 @@ blitz-paint = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 flate2.workspace = true
 nagoya.workspace = true
+rusty_alloc.workspace = true
+rusty_alloc-api.workspace = true
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true

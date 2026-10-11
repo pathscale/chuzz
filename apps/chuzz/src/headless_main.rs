@@ -13,7 +13,11 @@
 
 use chuzz::serve;
 
+#[global_allocator]
+static ALLOC: rusty_alloc_api::RustyAlloc = rusty_alloc_api::RustyAlloc;
+
 fn main() {
+    chuzz::tune_allocator();
     // Before the loader can reach the network. See the function's own comment
     // for why the provider is named here rather than left to the resolution.
     chuzz::install_crypto_provider();
