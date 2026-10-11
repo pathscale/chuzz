@@ -34,7 +34,14 @@
 //! ```sh
 //! chuzz-headless /path/to/dist            # or a file, or an http(s) URL
 //! QA_INSPECT_PAGE=/path/to/dist chuzz-headless
+//! QA_INSPECT_PAGE=/path/to/dist QA_INSPECT_STORAGE=/path/to/storage.json chuzz-headless
 //! ```
+//!
+//! `QA_INSPECT_STORAGE` is a JSON object of string values. The host installs
+//! them into `localStorage` for the page origin before any page script runs,
+//! through the same prelude a navigation uses to restore storage. A missing,
+//! unreadable, or invalid file prints
+//! `chuzz-headless: QA_INSPECT_STORAGE: ...` and exits 2.
 //!
 //! It prints its descriptor path on stdout when it is ready, then serves until
 //! killed. That line, and one page per process, are the two properties
@@ -1612,10 +1619,39 @@ fn follow_navigation(
     Ok(())
 }
 
+/// `localStorage` seed for the first document, or nothing when the variable is
+/// unset.
+///
+/// Read once per process. The supervisor validates before it announces a
+/// descriptor, and the page worker applies the map through the storage
+/// prelude. A bad file exits 2 here so the check cannot run without its state.
+fn read_qa_inspect_storage() -> Option<std::collections::BTreeMap<String, String>> {
+    let path = match std::env::var("QA_INSPECT_STORAGE") {
+        Ok(path) if !path.is_empty() => path,
+        Ok(_) => fail_qa_inspect_storage("path is empty"),
+        Err(std::env::VarError::NotPresent) => return None,
+        Err(error) => fail_qa_inspect_storage(&error.to_string()),
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => fail_qa_inspect_storage(&format!("{path}: {error}")),
+    };
+    match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text) {
+        Ok(map) => Some(map),
+        Err(error) => fail_qa_inspect_storage(&error.to_string()),
+    }
+}
+
+fn fail_qa_inspect_storage(error: &str) -> ! {
+    eprintln!("chuzz-headless: QA_INSPECT_STORAGE: {error}");
+    std::process::exit(2);
+}
+
 /// Load `target` and serve it over the inspection socket until killed.
 pub fn serve(target: &str) -> Result<(), String> {
+    let storage = read_qa_inspect_storage();
     if supervisor::is_worker() {
-        let result = serve_page(target);
+        let result = serve_page(target, storage.as_ref());
         let message = result
             .as_ref()
             .err()
@@ -1628,7 +1664,10 @@ pub fn serve(target: &str) -> Result<(), String> {
     }
 }
 
-fn serve_page(target: &str) -> Result<(), String> {
+fn serve_page(
+    target: &str,
+    seeded: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<(), String> {
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
     let (request_tx, request_rx) =
@@ -1797,8 +1836,24 @@ fn serve_page(target: &str) -> Result<(), String> {
     };
 
     // Which origin the standing document belongs to, so what it stored is
-    // offered back only to itself.
-    let mut document = load(url, None)?;
+    // offered back only to itself. A check seed takes the same prelude as
+    // storage carried across navigations, so the first document sees it
+    // before its own scripts.
+    let seed = match seeded {
+        None => None,
+        Some(entries) => {
+            let local = match serde_json::to_string(entries) {
+                Ok(local) => local,
+                Err(error) => fail_qa_inspect_storage(&error.to_string()),
+            };
+            Some(StoredState {
+                origin: url.origin().ascii_serialization(),
+                local,
+                session: "{}".to_owned(),
+            })
+        }
+    };
+    let mut document = load(url, seed.as_ref())?;
     let mut origin = document.inner().url().origin().ascii_serialization();
     trace("document ready");
     // Debugging aid for real sites: CHUZZ_DEBUG_EVAL names a script file that

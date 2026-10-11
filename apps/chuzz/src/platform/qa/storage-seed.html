@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Storage seed QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+  <script>
+    // First page script. The host prelude has already filled localStorage.
+    (function () {
+      var reason = "";
+      try {
+        var raw = localStorage.getItem("demo:profile:v1");
+        if (raw === null) {
+          reason = "missing profile";
+        } else {
+          var profile = JSON.parse(raw);
+          var blob = profile.blob;
+          if (profile.level !== 7) {
+            reason = "level";
+          } else if (profile.meter !== 100) {
+            reason = "meter";
+          } else if (typeof blob !== "string" || blob.length !== 4096) {
+            reason = "blob length";
+          } else {
+            for (var i = 0; i < blob.length; i++) {
+              if (blob.charAt(i) !== "x") {
+                reason = "blob";
+                break;
+              }
+            }
+          }
+          if (!reason && localStorage.getItem("demo:theme") !== "dark") {
+            reason = "theme";
+          }
+        }
+      } catch (error) {
+        reason = "threw";
+      }
+      var text = reason ? ("STORAGE FAIL: " + reason) : "READY: STORAGE PASS";
+      if (document.readyState === "loading") {
+        document.write('<p id="result" role="status">' + text + '</p>');
+      } else {
+        var node = document.getElementById("result");
+        if (node) {
+          node.textContent = text;
+        }
+      }
+    })();
+  </script>
+</head>
+<body>
+  <p id="result" role="status">STORAGE FAIL: script did not finish</p>
+</body>
+</html>
