@@ -108,10 +108,12 @@ pub enum RequestKind<'a> {
     Navigate { initiator: Option<&'a url::Url> },
     /// A page `fetch()` or `XMLHttpRequest`.
     Fetch { initiator: Option<&'a url::Url> },
-    /// An engine subresource (style, script, image, font). The engine does not
-    /// say which, so only the client hints are sent: a wrong `sec-fetch-dest`
-    /// is a stronger signal than none.
-    Subresource,
+    /// An engine subresource. `destination` is the Fetch destination token;
+    /// `initiator` is the document that requested it.
+    Subresource {
+        destination: &'static str,
+        initiator: Option<&'a url::Url>,
+    },
 }
 
 /// The Chrome major version a `User-Agent` claims, when it claims one.
@@ -141,11 +143,11 @@ fn fetch_site(initiator: &url::Url, target: &url::Url) -> &'static str {
 
 /// Add the headers Chromium sends for `kind` when the `User-Agent` is
 /// Chrome-family: the low-entropy client hints, and fetch metadata for
-/// navigations and page fetches. Servers that see a Chrome `User-Agent`
-/// without them answer 400 or a challenge (measured on Facebook). Only secure
-/// URLs get them, as in Chromium. The brand list is plain Chromium's, so the
-/// browser claims the family, not Google's product. Headers already present are
-/// kept.
+/// navigations, page fetches and engine subresources. Servers that see a Chrome
+/// `User-Agent` without them answer 400 or a challenge (measured on Facebook).
+/// Only secure URLs get them, as in Chromium. The brand list is plain Chromium's,
+/// so the browser claims the family, not Google's product. Headers already
+/// present are kept.
 pub fn stamp_request_headers(
     headers: &mut blitz_traits::net::http::HeaderMap,
     user_agent: &str,
@@ -202,7 +204,31 @@ pub fn stamp_request_headers(
             set("sec-fetch-dest", "empty".to_owned());
             set("priority", "u=1, i".to_owned());
         }
-        RequestKind::Subresource => {}
+        RequestKind::Subresource {
+            destination,
+            initiator,
+        } => {
+            let site = initiator.map_or("none", |initiator| fetch_site(initiator, url));
+            set("sec-fetch-site", site.to_owned());
+            let mode = match destination {
+                "iframe" => "navigate",
+                "empty" => "cors",
+                _ => "no-cors",
+            };
+            set("sec-fetch-mode", mode.to_owned());
+            set("sec-fetch-dest", destination.to_owned());
+            if destination == "iframe" {
+                set("upgrade-insecure-requests", "1".to_owned());
+            }
+            match destination {
+                "image" => set(
+                    "accept",
+                    "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8".to_owned(),
+                ),
+                "style" => set("accept", "text/css,*/*;q=0.1".to_owned()),
+                _ => {}
+            }
+        }
     }
 }
 

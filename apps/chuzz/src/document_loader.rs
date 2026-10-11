@@ -201,11 +201,20 @@ impl blitz_traits::net::NetProvider for NetProvider {
         mut request: blitz_traits::net::Request,
         handler: Box<dyn blitz_traits::net::NetHandler>,
     ) {
+        let initiator = request
+            .headers
+            .get("referer")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| url::Url::parse(value).ok());
+        let destination = request.destination.as_str();
         crate::identity::stamp_request_headers(
             &mut request.headers,
             self.user_agent(),
             &request.url.clone(),
-            crate::identity::RequestKind::Subresource,
+            crate::identity::RequestKind::Subresource {
+                destination,
+                initiator: initiator.as_ref(),
+            },
         );
         let signal = request.signal.clone();
         let provider = self.clone();
