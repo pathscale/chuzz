@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Stylesheet order QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    #swatch { width: 100px; height: 80px; background: #151923; }
+  </style>
+</head>
+<body>
+  <div id="swatch" aria-label="Late document sheet swatch"></div>
+  <div id="host"></div>
+  <p id="result" role="status">Stylesheet order waiting</p>
+  <script>
+    // A document <style> created first (so it has the lower node id), then a <style> inside a shadow
+    // root. Adding the document sheet afterwards must apply it, not order it against the shadow sheet,
+    // which the document cascade never holds (that ordering used to kill the page worker).
+    var early = document.createElement("style");
+    early.textContent = "#swatch { border-left: 60px solid rgb(255, 255, 255); }";
+    var root = document.getElementById("host").attachShadow({ mode: "open" });
+    var inner = document.createElement("style");
+    inner.textContent = "p { color: rgb(255, 0, 0); }";
+    root.appendChild(inner);
+    root.appendChild(document.createElement("p")).textContent = "shadow text";
+    document.body.offsetWidth;
+    document.head.appendChild(early);
+    var colour = getComputedStyle(document.getElementById("swatch")).borderLeftColor;
+    document.getElementById("result").textContent = colour === "rgb(255, 255, 255)"
+      ? "READY: SHEETORDER PASS"
+      : "FAIL: SHEETORDER border " + colour;
+  </script>
+</body>
+</html>

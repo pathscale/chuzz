@@ -1,0 +1,24 @@
+[
+    (
+        id: "sheet-order-script",
+        group: "sheet-order",
+        what: "a document <style> added after a shadow-root <style> with a higher node id applies, and the page survives",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: SHEETORDER PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "sheet-order-swatch",
+        group: "sheet-order",
+        what: "the swatch painted by the late document sheet reaches the screen",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#swatch",
+        expect: VisibleInk,
+        outcome_timeout_ms: 10000,
+    ),
+]
