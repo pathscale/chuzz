@@ -167,9 +167,24 @@
   navigator.plugins = emptyList();
   navigator.mimeTypes = emptyList();
   navigator.javaEnabled = () => false;
-  const brands = [{ brand: "Chuzz", version: info.version.split(".")[0] }];
+  // The brands agree with the User-Agent and the sec-ch-ua header: a Chrome-family
+  // identity reports plain Chromium's list, the honest one reports Chuzz.
+  function chromeMajor() {
+    const match = /Chrome\/(\d+)\./.exec(String(navigator.userAgent || ""));
+    return match ? match[1] : null;
+  }
+  function brandList(full) {
+    const major = chromeMajor();
+    if (major === null) {
+      return [{ brand: "Chuzz", version: full ? info.version : info.version.split(".")[0] }];
+    }
+    return [
+      { brand: "Chromium", version: full ? `${major}.0.0.0` : major },
+      { brand: "Not-A.Brand", version: full ? "99.0.0.0" : "99" }
+    ];
+  }
   navigator.userAgentData = {
-    get brands() { return brands.map(brand => ({ ...brand })); },
+    get brands() { return brandList(false); },
     mobile: false,
     platform: info.uaPlatform,
     toJSON() { return { brands: this.brands, mobile: false, platform: info.uaPlatform }; },
@@ -178,8 +193,8 @@
         const result = this.toJSON();
         const values = {
           architecture: info.architecture, bitness: info.bitness,
-          fullVersionList: [{ brand: "Chuzz", version: info.version }],
-          uaFullVersion: info.version, wow64: false
+          fullVersionList: brandList(true),
+          uaFullVersion: brandList(true)[0].version, wow64: false
         };
         for (const hint of hints) {
           if (Object.prototype.hasOwnProperty.call(values, String(hint))) {
