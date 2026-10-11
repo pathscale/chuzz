@@ -281,10 +281,29 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       globalThis.navigator.sendBeacon = function () { return false; };
     }
   }
-  // A declared, unavailable observer takes the standards-compatible fallback
-  // path in feature-detecting telemetry instead of throwing on a bare name.
+  // An observer that supports no entry types: it constructs, observes and
+  // disconnects, and never delivers, because nothing here records timing
+  // entries. Feature-detecting telemetry reads the empty
+  // `supportedEntryTypes`; scripts that construct it unconditionally (a
+  // challenge page's) no longer throw on `new undefined`.
   if (typeof globalThis.PerformanceObserver === 'undefined') {
-    globalThis.PerformanceObserver = undefined;
+    var PerformanceObserver = function PerformanceObserver(callback) {
+      if (!(this instanceof PerformanceObserver)) {
+        throw new TypeError("Failed to construct 'PerformanceObserver': Please use the 'new' operator");
+      }
+      if (typeof callback !== 'function') {
+        throw new TypeError("Failed to construct 'PerformanceObserver': The callback provided as parameter 1 is not a function.");
+      }
+    };
+    PerformanceObserver.prototype.observe = function () {};
+    PerformanceObserver.prototype.disconnect = function () {};
+    PerformanceObserver.prototype.takeRecords = function () { return []; };
+    Object.defineProperty(PerformanceObserver, 'supportedEntryTypes', {
+      configurable: true,
+      enumerable: true,
+      get: function () { return Object.freeze([]); },
+    });
+    globalThis.PerformanceObserver = PerformanceObserver;
   }
   if (typeof globalThis.NodeFilter === 'undefined') {
     globalThis.NodeFilter = Object.freeze({
@@ -524,6 +543,11 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   }
   if (typeof globalThis.performance.getEntriesByType !== 'function') {
     globalThis.performance.getEntriesByType = function () {
+      return [];
+    };
+  }
+  if (typeof globalThis.performance.getEntries !== 'function') {
+    globalThis.performance.getEntries = function () {
       return [];
     };
   }

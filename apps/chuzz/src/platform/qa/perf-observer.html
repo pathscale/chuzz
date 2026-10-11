@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PerformanceObserver QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">PerformanceObserver waiting</p>
+  <script>
+    // Scripts that construct a PerformanceObserver and read performance.getEntries() unconditionally must
+    // run: the observer constructs, observes, disconnects and reports no supported entry types, and
+    // getEntries() is a list like getEntriesByType().
+    (function () {
+      var failures = [];
+      function check(label, ok) { if (!ok) failures.push(label); }
+      try {
+        check("getEntries", Array.isArray(performance.getEntries()));
+        check("getEntriesByType", Array.isArray(performance.getEntriesByType("navigation")));
+        check("constructor", typeof PerformanceObserver === "function");
+        var delivered = 0;
+        var observer = new PerformanceObserver(function () { delivered++; });
+        observer.observe({ entryTypes: ["resource", "paint"] });
+        observer.observe({ type: "longtask", buffered: true });
+        check("takeRecords", Array.isArray(observer.takeRecords()) && observer.takeRecords().length === 0);
+        observer.disconnect();
+        check("supportedEntryTypes", Array.isArray(PerformanceObserver.supportedEntryTypes));
+        var threw = false;
+        try { new PerformanceObserver(42); } catch (error) { threw = error instanceof TypeError; }
+        check("callback required", threw);
+        threw = false;
+        try { PerformanceObserver(function () {}); } catch (error) { threw = error instanceof TypeError; }
+        check("new required", threw);
+        setTimeout(function () {
+          check("no deliveries", delivered === 0);
+          document.getElementById("result").textContent = failures.length
+            ? "FAIL: PERFOBS " + failures.join(", ")
+            : "READY: PERFOBS PASS";
+        }, 50);
+        return;
+      } catch (error) {
+        failures.push("threw " + error.message);
+      }
+      document.getElementById("result").textContent = "FAIL: PERFOBS " + failures.join(", ");
+    })();
+  </script>
+</body>
+</html>

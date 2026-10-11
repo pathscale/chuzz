@@ -1,0 +1,13 @@
+[
+    (
+        id: "perf-observer",
+        group: "perf-observer",
+        what: "PerformanceObserver constructs, observes, disconnects and delivers nothing with no supported entry types, enforces new and a callback; performance.getEntries() returns a list",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: PERFOBS PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]
