@@ -44,7 +44,7 @@ pub fn viewer_html(url: &str, bytes: &[u8]) -> String {
         .ok()
         .and_then(|url| {
             url.path_segments()
-                .and_then(|segments| segments.rfind(|segment| !segment.is_empty()))
+                .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "PDF".to_owned());
