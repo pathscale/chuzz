@@ -2368,7 +2368,7 @@ pub async fn load_for_capture(
     let html = decode_body(&bytes);
 
     let resolved_url = Url::parse(&resolved_url)?;
-    let config = DocumentConfig {
+    let mut config = DocumentConfig {
         base_url: Some(resolved_url.to_string()),
         net_provider: Some(Arc::clone(&net_provider) as _),
         html_parser_provider: Some(Arc::new(HtmlProvider)),
@@ -2377,6 +2377,7 @@ pub async fn load_for_capture(
         viewport,
         ..Default::default()
     };
+    crate::install_headless_fonts(&mut config);
 
     #[cfg(feature = "javascript")]
     {

@@ -31,7 +31,8 @@ pub fn entry_export() -> String {
 /// The seed is not a convenience. Every operation in the ABI either creates a
 /// detached node or needs one that already exists, so without a node to start
 /// from a guest can build a whole tree and have nowhere to put it.
-pub fn empty_document(config: DocumentConfig) -> (BaseDocument, NodeId) {
+pub fn empty_document(mut config: DocumentConfig) -> (BaseDocument, NodeId) {
+    crate::install_headless_fonts(&mut config);
     let mut document = BaseDocument::new(config);
     let root_id = document.root_node().id;
 

@@ -30,6 +30,26 @@ pub fn set_device_audio_enabled(enabled: bool) {
     video::set_device_audio_enabled(enabled);
 }
 
+#[cfg(all(feature = "headless-fonts", not(feature = "system-fonts")))]
+mod headless_fonts;
+
+/// Give a document the compiled-in faces when this build has no system catalogue; a no-op
+/// otherwise, so callers invoke it unconditionally.
+#[allow(unused_variables)]
+pub(crate) fn install_headless_fonts(config: &mut blitz_dom::DocumentConfig) {
+    #[cfg(all(feature = "headless-fonts", not(feature = "system-fonts")))]
+    headless_fonts::install(config);
+}
+
+/// A CSS family list with the compiled-in stand-ins appended in a build without system fonts.
+#[cfg(feature = "javascript")]
+pub(crate) fn headless_family_list(list: &str) -> std::borrow::Cow<'_, str> {
+    #[cfg(all(feature = "headless-fonts", not(feature = "system-fonts")))]
+    return std::borrow::Cow::Owned(headless_fonts::family_list(list));
+    #[cfg(not(all(feature = "headless-fonts", not(feature = "system-fonts"))))]
+    std::borrow::Cow::Borrowed(list)
+}
+
 #[cfg(feature = "javascript")]
 pub mod audio;
 // The window and its izumo command surface. Behind `gui` because `izumo` is,

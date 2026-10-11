@@ -93,6 +93,7 @@ pub(super) fn from_html(
     html: &str,
     mut config: blitz_dom::DocumentConfig,
 ) -> blitz_script::ScriptDocument {
+    crate::install_headless_fonts(&mut config);
     let mut fonts = config.font_ctx.take().unwrap_or_else(default_fonts);
     // Fontique shares registrations, aliases and generic-family changes with
     // every clone. Blitz's later @font-face loads reach the canvas too.

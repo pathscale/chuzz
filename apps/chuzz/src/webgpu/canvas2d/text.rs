@@ -209,7 +209,8 @@ pub(super) fn shape(value: &str, shorthand: &str, fonts: &Mutex<FontContext>) ->
     let mut fonts = lock(fonts);
     let mut context = LayoutContext::<[u8; 4]>::new();
     let mut builder = context.ranged_builder(&mut fonts, &value, 1.0, false);
-    builder.push_default(StyleProperty::FontFamily(font.family.as_str().into()));
+    let family = crate::headless_family_list(&font.family);
+    builder.push_default(StyleProperty::FontFamily(family.as_ref().into()));
     builder.push_default(StyleProperty::FontSize(font.size));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(font.weight)));
     builder.push_default(StyleProperty::FontStyle(if font.italic {

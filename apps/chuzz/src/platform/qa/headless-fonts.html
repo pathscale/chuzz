@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Headless fonts QA</title>
+  <style>
+    html, body { margin: 0; background: #182335; color: #fff; }
+    h1, h2 { margin: 0 16px; font-size: 32px; font-weight: 400; line-height: 40px; }
+    .probe { display: inline-block; white-space: nowrap; font-size: 48px; }
+    #status { margin: 0 16px; font-family: Arial; font-size: 24px; }
+  </style>
+</head>
+<body>
+  <!-- Only system family names, never a generic: each must reach a compiled-in face through the
+       embedder's family fallback, since a headless build reads no fonts from the machine. -->
+  <h1 style="font-family: Georgia">Georgia serif</h1>
+  <h1 style="font-family: 'Segoe UI', Roboto">System sans</h1>
+  <h2 style="font-family: Arial; font-weight: 700">Bold sans face</h2>
+  <h2 style="font-family: Helvetica; font-style: italic">Italic sans face</h2>
+  <h1 style="font-family: Menlo, Consolas">Ui monospace</h1>
+  <h1 lang="hi" style="font-family: sans-serif">देवनागरी अक्षर</h1>
+  <canvas id="canvas-text" width="320" height="60" aria-label="Canvas Georgia text"></canvas>
+  <span id="serif-probe" class="probe" style="font-family: Georgia">WidthProbeMMMM</span>
+  <span id="sans-probe" class="probe" style="font-family: Arial">WidthProbeMMMM</span>
+  <p id="status" role="status"></p>
+  <script>
+    var status = document.getElementById("status");
+    var serif = document.getElementById("serif-probe").offsetWidth;
+    var sans = document.getElementById("sans-probe").offsetWidth;
+    var context = document.getElementById("canvas-text").getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.font = "32px Georgia";
+    context.fillText("Canvas Georgia", 8, 40);
+    var georgia = context.measureText("WidthProbeMMMM").width;
+    context.font = "32px Arial";
+    var arial = context.measureText("WidthProbeMMMM").width;
+    if (!(serif > 0 && sans > 0 && serif !== sans)) {
+      status.textContent = "FAIL: headless fonts widths " + serif + " " + sans;
+    } else if (!(georgia > 0 && arial > 0 && georgia !== arial)) {
+      status.textContent = "FAIL: headless fonts canvas widths " + georgia + " " + arial;
+    } else {
+      status.textContent = "READY: headless fonts";
+    }
+  </script>
+</body>
+</html>
