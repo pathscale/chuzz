@@ -2,7 +2,7 @@
     (
         id: "title-set",
         group: "title-set",
-        what: "strict code assigning document.title replaces the <title>, creates one in a document without",
+        what: "strict code assigning document.title replaces the <title>, creates one in a document without, and inserts <svg:title> first in an SVG document",
         open: None,
         hover: None,
         click: None,

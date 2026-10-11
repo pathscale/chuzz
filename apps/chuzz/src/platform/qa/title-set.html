@@ -13,7 +13,7 @@
   <script>
     "use strict";
     // Strict code assigning document.title: replace the existing <title>, create one in <head> of a
-    // document that has none.
+    // document that has none, and in an SVG document insert <svg:title> as the root's first child.
     function run() {
       document.title = "Replaced title";
       var titles = document.getElementsByTagName("title");
@@ -24,6 +24,15 @@
       created.title = "Created title";
       var head = created.head.getElementsByTagName("title");
       if (head.length !== 1 || head[0].textContent !== "Created title") return "created count " + head.length;
+      var svgNs = "http://www.w3.org/2000/svg";
+      var svg = document.implementation.createDocument(svgNs, "svg", null);
+      svg.documentElement.appendChild(svg.createElementNS(svgNs, "rect"));
+      svg.title = "Svg title";
+      var first = svg.documentElement.firstChild;
+      if (!first || first.localName !== "title" || first.namespaceURI !== svgNs || first.textContent !== "Svg title") {
+        return "svg first child " + (first && first.localName);
+      }
+      if (svg.title !== "Svg title") return "svg title reads " + JSON.stringify(svg.title);
       return null;
     }
     var failure;
