@@ -430,10 +430,14 @@
     });
     property("globalCompositeOperation", function (value) {
       value = String(value);
-      if (["source-over", "lighter", "multiply", "destination-out"].indexOf(value) < 0) {
-        missing("globalCompositeOperation." + value);
-      }
-      return value;
+      // Every operator in the HTML spec is drawn; other strings are ignored, as in browsers.
+      return [
+        "source-over", "source-in", "source-out", "source-atop", "destination-over",
+        "destination-in", "destination-out", "destination-atop", "lighter", "copy", "xor",
+        "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn",
+        "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color",
+        "luminosity",
+      ].indexOf(value) < 0 ? undefined : value;
     });
     property("lineWidth", positive);
     property("miterLimit", positive);

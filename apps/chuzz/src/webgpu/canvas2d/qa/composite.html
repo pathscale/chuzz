@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CANVASCOMPOSITE operators QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; background: #222; width: 320px; height: 80px; }
+  </style>
+</head>
+<body>
+  <h1>CANVASCOMPOSITE operators QA</h1>
+  <p id="result" role="status">Running</p>
+  <canvas id="glow" width="320" height="80" aria-label="CANVASCOMPOSITE glow samples"></canvas>
+  <script>
+    (function () {
+      var result = document.getElementById("result");
+      function assert(value, message) { if (!value) { throw new Error(message); } }
+      function near(a, b) { return Math.abs(a - b) <= 6; }
+      function rgba(context, x, y) { return context.getImageData(x, y, 1, 1).data; }
+      function is(context, x, y, want, message) {
+        var p = rgba(context, x, y);
+        assert(near(p[0], want[0]) && near(p[1], want[1]) && near(p[2], want[2]) && near(p[3], want[3]),
+          message + " at " + x + "," + y + ": " + Array.prototype.join.call(p, ","));
+      }
+      // A 40-square canvas with a red square at 0..20, then a blue square at 10..30 under `op`.
+      function overlap(op) {
+        var canvas = document.createElement("canvas"); canvas.width = canvas.height = 40;
+        var context = canvas.getContext("2d");
+        context.fillStyle = "#ff0000"; context.fillRect(0, 0, 20, 20);
+        context.globalCompositeOperation = op;
+        context.fillStyle = "#0000ff"; context.fillRect(10, 10, 20, 20);
+        return context;
+      }
+      var red = [255, 0, 0, 255], blue = [0, 0, 255, 255], clear = [0, 0, 0, 0];
+      try {
+        var c = overlap("source-atop");
+        is(c, 5, 5, red, "source-atop keeps the destination"); is(c, 15, 15, blue, "source-atop draws over it");
+        is(c, 25, 25, clear, "source-atop draws nothing outside it");
+        c = overlap("destination-over");
+        is(c, 15, 15, red, "destination-over keeps the destination on top"); is(c, 25, 25, blue, "destination-over fills behind");
+        c = overlap("xor");
+        is(c, 15, 15, clear, "xor clears the overlap"); is(c, 5, 5, red, "xor keeps the destination"); is(c, 25, 25, blue, "xor keeps the source");
+        c = overlap("source-in");
+        is(c, 15, 15, blue, "source-in draws inside"); is(c, 5, 5, clear, "source-in clears the destination outside the shape");
+        c = overlap("destination-in");
+        is(c, 15, 15, red, "destination-in keeps the overlap"); is(c, 5, 5, clear, "destination-in clears the rest");
+        c = overlap("copy");
+        is(c, 5, 5, clear, "copy clears outside the shape"); is(c, 25, 25, blue, "copy draws the source");
+
+        var canvas = document.createElement("canvas"); canvas.width = canvas.height = 4;
+        c = canvas.getContext("2d");
+        c.fillStyle = "#ffffff"; c.fillRect(0, 0, 4, 4);
+        c.globalCompositeOperation = "difference"; c.fillStyle = "#ff0000"; c.fillRect(0, 0, 4, 4);
+        is(c, 1, 1, [0, 255, 255, 255], "difference");
+        c.globalCompositeOperation = "bogus";
+        assert(c.globalCompositeOperation === "difference", "an unknown operator is ignored");
+        c.globalCompositeOperation = "source-over"; c.fillStyle = "#808080"; c.fillRect(0, 0, 4, 4);
+        c.globalCompositeOperation = "screen"; c.fillRect(0, 0, 4, 4);
+        assert(near(rgba(c, 1, 1)[0], 192), "screen: " + rgba(c, 1, 1)[0]);
+
+        // A cached glow: white radial alpha, tinted with source-atop, drawn scaled with "lighter".
+        var glow = document.createElement("canvas"); glow.width = glow.height = 64;
+        var g = glow.getContext("2d"), image = g.createImageData(64, 64);
+        for (var y = 0; y < 64; y++) for (var x = 0; x < 64; x++) {
+          var i = (y * 64 + x) * 4, d = Math.hypot(x - 31.5, y - 31.5) / 32;
+          image.data[i] = image.data[i + 1] = image.data[i + 2] = 255;
+          image.data[i + 3] = Math.max(0, 1 - d) * 255;
+        }
+        g.putImageData(image, 0, 0);
+        g.globalCompositeOperation = "source-atop"; g.fillStyle = "#40c0ff"; g.fillRect(0, 0, 64, 64);
+        var center = rgba(g, 32, 32);
+        assert(center[0] < 90 && center[2] > 220 && center[3] > 220, "tinted glow centre: " + Array.prototype.join.call(center, ","));
+        assert(rgba(g, 0, 0)[3] === 0, "tinted glow corner stays transparent");
+        var screen = document.getElementById("glow").getContext("2d");
+        for (var k = 0; k < 14; k++) {
+          screen.save(); screen.globalAlpha = 0.8; screen.globalCompositeOperation = "lighter";
+          screen.drawImage(glow, 10 + k * 21, 20, 40, 40); screen.restore();
+        }
+        assert(rgba(screen, 30, 40)[2] > 150, "glow drawn with lighter");
+        result.textContent = "READY: CANVASCOMPOSITE PASS";
+      } catch (error) {
+        result.textContent = "FAIL: CANVASCOMPOSITE " + String(error);
+        console.error(error);
+      }
+    })();
+  </script>
+</body>
+</html>

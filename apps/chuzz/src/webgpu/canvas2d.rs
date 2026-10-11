@@ -46,6 +46,42 @@ fn missing(member: &str) -> String {
     format!("not implemented in chuzz: CanvasRenderingContext2D.{member}")
 }
 
+/// The blend for a `globalCompositeOperation`, and whether it also clears the
+/// canvas outside the drawn shape (the HTML spec's unbounded operators).
+fn composite_blend(op: &str) -> Option<(BlendMode, bool)> {
+    let compose = |compose, unbounded| Some((BlendMode::new(Mix::Normal, compose), unbounded));
+    let mix = |mix| Some((BlendMode::new(mix, Compose::SrcOver), false));
+    match op {
+        "source-over" => compose(Compose::SrcOver, false),
+        "source-atop" => compose(Compose::SrcAtop, false),
+        "destination-over" => compose(Compose::DestOver, false),
+        "destination-out" => compose(Compose::DestOut, false),
+        "lighter" => compose(Compose::Plus, false),
+        "xor" => compose(Compose::Xor, false),
+        "source-in" => compose(Compose::SrcIn, true),
+        "source-out" => compose(Compose::SrcOut, true),
+        "destination-in" => compose(Compose::DestIn, true),
+        "destination-atop" => compose(Compose::DestAtop, true),
+        "copy" => compose(Compose::Copy, true),
+        "multiply" => mix(Mix::Multiply),
+        "screen" => mix(Mix::Screen),
+        "overlay" => mix(Mix::Overlay),
+        "darken" => mix(Mix::Darken),
+        "lighten" => mix(Mix::Lighten),
+        "color-dodge" => mix(Mix::ColorDodge),
+        "color-burn" => mix(Mix::ColorBurn),
+        "hard-light" => mix(Mix::HardLight),
+        "soft-light" => mix(Mix::SoftLight),
+        "difference" => mix(Mix::Difference),
+        "exclusion" => mix(Mix::Exclusion),
+        "hue" => mix(Mix::Hue),
+        "saturation" => mix(Mix::Saturation),
+        "color" => mix(Mix::Color),
+        "luminosity" => mix(Mix::Luminosity),
+        _ => None,
+    }
+}
+
 fn numbers(values: &[f64], count: usize) -> Result<()> {
     if values.len() != count || values.iter().any(|n| !n.is_finite() || n.abs() > 1.0e7) {
         return Err("invalid or oversized canvas coordinates in chuzz".to_owned());
@@ -560,21 +596,12 @@ impl Canvas {
             return Ok(());
         }
         let (paint, paint_transform, extra_clip) = resolve_brush(brush, inputs, state.smoothing)?;
-        let blend = if clear {
-            BlendMode::new(Mix::Normal, Compose::DestOut)
+        let (blend, unbounded) = if clear {
+            (BlendMode::new(Mix::Normal, Compose::DestOut), false)
         } else {
-            match state.composite.as_str() {
-                "source-over" => BlendMode::new(Mix::Normal, Compose::SrcOver),
-                "lighter" => BlendMode::new(Mix::Normal, Compose::Plus),
-                "multiply" => BlendMode::new(Mix::Multiply, Compose::SrcOver),
-                "destination-out" => BlendMode::new(Mix::Normal, Compose::DestOut),
-                _ => {
-                    return Err(missing(&format!(
-                        "globalCompositeOperation.{}",
-                        state.composite
-                    )));
-                }
-            }
+            composite_blend(&state.composite).ok_or_else(|| {
+                missing(&format!("globalCompositeOperation.{}", state.composite))
+            })?
         };
         let transform = if stroke {
             Affine::new(state.matrix)
@@ -587,6 +614,12 @@ impl Canvas {
         }
         if !clear {
             if let Some(effect) = effects::prepare(state)? {
+                if unbounded {
+                    return Err(missing(&format!(
+                        "globalCompositeOperation.{} with shadow or filter",
+                        state.composite
+                    )));
+                }
                 return self.draw_effect(
                     path,
                     state,
@@ -606,7 +639,10 @@ impl Canvas {
         let clips = self.clips.clone();
         let bounds = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
         let mut area = path.bounding_box().inflate(1.0, 1.0);
-        if stroke {
+        if unbounded {
+            // These operations also clear the canvas outside the shape, within the clip.
+            area = bounds;
+        } else if stroke {
             // Include caps, joins, miters and nonuniform transforms. The
             // extra pixel covers antialiasing and path flattening tolerance.
             let matrix = transform.as_coeffs();

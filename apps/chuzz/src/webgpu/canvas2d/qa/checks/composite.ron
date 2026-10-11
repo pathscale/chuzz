@@ -1,0 +1,24 @@
+[
+    (
+        id: "canvascomposite-operators",
+        group: "canvascomposite",
+        what: "source-atop, destination-over, xor, source-in, destination-in, copy, difference and screen give the spec pixels, unbounded operators clear outside the shape, an unknown operator is ignored, and a source-atop tinted glow cache draws with lighter",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: CANVASCOMPOSITE PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 20000,
+    ),
+    (
+        id: "canvascomposite-glow-paints",
+        group: "canvascomposite",
+        what: "the canvas presents the fourteen glows",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "CANVASCOMPOSITE glow samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 20000,
+    ),
+]
