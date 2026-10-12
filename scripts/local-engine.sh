@@ -76,4 +76,23 @@ restore() {
 }
 trap restore EXIT INT TERM
 
+# A [patch] is only used when the lockfile can take its version. The lock
+# pins the published engine (say 0.5.3) while the checkout is ahead (0.5.4),
+# so without this cargo reports every entry "was not used in the crate graph"
+# and quietly builds the published engine. Re-resolve just the patched crates
+# against the config first; the snapshot above restores the lock afterwards.
+patched=()
+while IFS= read -r line; do
+    if [[ "$line" =~ ^([A-Za-z0-9_-]+)[[:space:]]*=[[:space:]]*\{.*path ]]; then
+        patched+=(-p "${BASH_REMATCH[1]}")
+    fi
+done < "$config"
+if [ "${#patched[@]}" -gt 0 ] && [ -f "$lock" ]; then
+    # A patch whose crate is not in the graph makes -p fail; update each
+    # one alone so the rest still move.
+    for ((i = 1; i < ${#patched[@]}; i += 2)); do
+        cargo update --config "$config" -p "${patched[i]}" >/dev/null 2>&1 || true
+    done
+fi
+
 cargo "$1" --config "$config" "${@:2}"
