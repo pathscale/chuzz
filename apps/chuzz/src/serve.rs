@@ -1367,11 +1367,15 @@ const MAX_CATCHUP_TURNS: u32 = 64;
 /// How long `WaitForIdle` keeps running page jobs before it answers anyway.
 const IDLE_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Blitz versions only the document, so style, layout and paint stay zero.
-fn headless_revisions(document: u64) -> RevisionSet {
+/// `document` and `paint` count committed renders; `style` and `layout`
+/// count the Stylo traversals and layout passes blitz-dom actually ran.
+fn headless_revisions(rendered: u64, page: &ScriptDocument) -> RevisionSet {
+    let inner = page.inner();
     RevisionSet {
-        document,
-        ..RevisionSet::default()
+        document: rendered,
+        style: inner.style_revision(),
+        layout: inner.layout_revision(),
+        paint: rendered,
     }
 }
 
@@ -2156,8 +2160,8 @@ fn serve_page(
             }
             ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Metrics) if !policy.bot_child => {
                 DebugResponse::Metrics(RendererMetrics {
-                    revisions: headless_revisions(render_revision),
-                    queue_depth: Some(u64::from(document.has_pending_jobs())),
+                    revisions: headless_revisions(render_revision, &document),
+                    queue_depth: Some(document.pending_task_count()),
                     ..RendererMetrics::default()
                 })
             }
@@ -2171,7 +2175,7 @@ fn serve_page(
                     painted |= tick_document(&mut document, &animation_clock);
                 }
                 last_tick = std::time::Instant::now();
-                DebugResponse::Idle(headless_revisions(render_revision))
+                DebugResponse::Idle(headless_revisions(render_revision, &document))
             }
             ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
                 code: "unsupported".into(),

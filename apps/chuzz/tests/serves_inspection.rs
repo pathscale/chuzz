@@ -279,6 +279,26 @@ fn serves_a_page_over_the_inspection_socket() {
             .await,
             DebugResponse::WindowComposition(composition) if !composition.supported
         ));
+
+        // Style and layout revisions are the passes blitz-dom actually ran, so
+        // a page that rendered has run each at least once, and the queue
+        // depth is a measured count rather than absent.
+        let DebugResponse::Metrics(metrics) =
+            diagnostics(&mut stream, &mut next_id, &DiagnosticsRequest::Metrics).await
+        else {
+            panic!("metrics should answer with renderer metrics");
+        };
+        assert!(metrics.revisions.style > 0, "{:?}", metrics.revisions);
+        assert!(metrics.revisions.layout > 0, "{:?}", metrics.revisions);
+        assert_eq!(metrics.revisions.paint, metrics.revisions.document);
+        assert!(metrics.queue_depth.is_some());
+        let DebugResponse::Idle(idle) =
+            diagnostics(&mut stream, &mut next_id, &DiagnosticsRequest::WaitForIdle).await
+        else {
+            panic!("waitForIdle should answer with revisions");
+        };
+        assert!(idle.style >= metrics.revisions.style);
+        assert!(idle.layout >= metrics.revisions.layout);
         assert!(matches!(
             diagnostics(
                 &mut stream,
