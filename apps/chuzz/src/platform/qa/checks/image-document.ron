@@ -1,0 +1,14 @@
+// Run these checks with image/fixture.png itself as the qa-hosted --page target.
+[
+    (
+        id: "image-document-paints",
+        group: "image-document",
+        what: "a top-level navigation to a PNG shows the decoded image, not its bytes as text",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "fixture.png",
+        expect: VisibleInk,
+        outcome_timeout_ms: 10000,
+    ),
+]

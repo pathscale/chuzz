@@ -213,6 +213,19 @@ impl NetProvider {
         };
         #[cfg(not(feature = "pdf"))]
         let _ = requested_url;
+        let body = if crate::image_document::is_image(
+            response
+                .headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            &body,
+        ) {
+            blitz_traits::net::Bytes::from(
+                crate::image_document::viewer_html(&resolved_url).into_bytes(),
+            )
+        } else {
+            body
+        };
         // The generated HTML is parsed at the navigation's resolved URL,
         // preserving history, location and the document's base URL.
         (resolved_url, body)
