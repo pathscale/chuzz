@@ -394,7 +394,7 @@ impl Entry {
             if self.frame_key != Some(key) {
                 let pixels = Arc::new(rgba(&frame)?);
                 self.ink = pixels
-                    .chunks_exact(4)
+                    .as_chunks::<4>().0.iter()
                     .any(|pixel| pixel[..3].iter().any(|value| *value != 0));
                 frames
                     .publish(id, self.generation, frame.width, frame.height, pixels)

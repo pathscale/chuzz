@@ -506,7 +506,7 @@ impl Entry {
             "src": self.src,
             "duration": self.duration.filter(|duration| duration.is_finite()),
             "durationInfinite": self.duration == Some(f64::INFINITY),
-            "frameInk": self.pixels.chunks_exact(4).any(|pixel| {
+            "frameInk": self.pixels.as_chunks::<4>().0.iter().any(|pixel| {
                 pixel[..3].iter().any(|channel| *channel != 0)
             }),
             "time": self.position,

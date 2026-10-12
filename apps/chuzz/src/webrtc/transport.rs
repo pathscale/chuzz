@@ -83,7 +83,7 @@ impl Sink<'_> {
             decoded.position.saturating_sub(*self.next)
         };
         let mut silence_max = *self.silence_run;
-        for frame in pcm.samples().chunks_exact(2) {
+        for frame in pcm.samples().as_chunks::<2>().0 {
             if frame.iter().all(|sample| sample.abs() < 1.0e-6) {
                 *self.silence_run += 1;
                 silence_max = silence_max.max(*self.silence_run);
