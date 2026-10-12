@@ -181,7 +181,7 @@ impl Receiver {
             return Ok(());
         }
         if self.packets.len() == PACKETS {
-            return Err("OperationError: Opus receive lookahead is full".into());
+            self.packets.pop_front().expect("full Opus lookahead");
         }
         let index = self
             .packets
@@ -353,5 +353,33 @@ impl Receiver {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_lookahead_discards_oldest_packet() {
+        let mut encoder = OpusEncoder::new(RATE as i32, CHANNELS, Application::Voip).unwrap();
+        let samples = vec![0.0; FRAME * CHANNELS];
+        let mut bytes = [0; 1500];
+        let length = encoder.encode(&samples, FRAME, &mut bytes).unwrap();
+        let packet: Arc<[u8]> = Arc::from(&bytes[..length]);
+
+        let mut receiver = Receiver::new(false, 0).unwrap();
+        for index in 0..=PACKETS {
+            receiver
+                .enqueue(index as u64 * FRAME as u64, Arc::clone(&packet))
+                .unwrap();
+        }
+
+        assert_eq!(receiver.packets.len(), PACKETS);
+        assert_eq!(receiver.packets.front().unwrap().timestamp, FRAME as u64);
+        assert_eq!(
+            receiver.packets.back().unwrap().timestamp,
+            PACKETS as u64 * FRAME as u64
+        );
     }
 }
