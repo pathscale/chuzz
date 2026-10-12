@@ -355,24 +355,31 @@ impl BrowserCookieStore {
             .await
             .map_err(|error| CookieStoreError::Open(format!("{error:#}")))?;
 
-        let stored = table
-            .select(0)
-            .map(|row| serde_json::from_str::<Vec<StoredCookie<'static>>>(&row.cookies))
-            .transpose()?
-            .unwrap_or_default();
+        let joined = read_durable_snapshot(&table);
+        let stored = if joined.is_empty() {
+            Vec::new()
+        } else {
+            match serde_json::from_str::<Vec<StoredCookie<'static>>>(&joined) {
+                Ok(stored) => stored,
+                Err(error) => {
+                    // A jar torn between slice writes must not lock the
+                    // profile out of cookies; it starts empty and is rewritten.
+                    eprintln!("chuzz: stored cookies were unreadable, starting empty: {error}");
+                    Vec::new()
+                }
+            }
+        };
         let stored_count = stored.len();
         let loaded = stored
             .into_iter()
             .filter(|cookie| cookie.is_persistent() && !cookie.is_expired())
             .collect::<Vec<_>>();
 
-        if loaded.len() != stored_count {
-            table
-                .upsert(BrowserCookieRow {
-                    id: 0,
-                    cookies: serde_json::to_string(&loaded)?,
-                })
-                .await?;
+        if loaded.len() != stored_count
+            && let Some(error) =
+                apply_durable_snapshot(&table, serde_json::to_string(&loaded)?).await
+        {
+            return Err(CookieStoreError::Open(error));
         }
 
         let cookies = RfcCookieStore::from_cookies(
@@ -610,18 +617,64 @@ impl blitz_traits::net::CookieJar for BrowserCookieStore {
     }
 }
 
+/// The jar is stored as consecutive rows of at most this many bytes.
+///
+/// A worktable row has to fit one data page (about 12 KB), and a whole jar
+/// outgrows that after a few sites, so one row per jar failed every flush.
+const SNAPSHOT_SLICE: usize = 8 * 1024;
+
+fn snapshot_slices(snapshot: &str) -> Vec<&str> {
+    let mut slices = Vec::new();
+    let mut rest = snapshot;
+    while rest.len() > SNAPSHOT_SLICE {
+        let mut end = SNAPSHOT_SLICE;
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        let (slice, tail) = rest.split_at(end);
+        slices.push(slice);
+        rest = tail;
+    }
+    slices.push(rest);
+    slices
+}
+
+fn read_durable_snapshot(table: &BrowserCookieWorkTable) -> String {
+    let mut joined = String::new();
+    let mut id = 0;
+    while let Some(row) = table.select(id) {
+        joined.push_str(&row.cookies);
+        id += 1;
+    }
+    joined
+}
+
 async fn apply_durable_snapshot(
     table: &BrowserCookieWorkTable,
     snapshot: String,
 ) -> Option<String> {
-    table
-        .upsert(BrowserCookieRow {
-            id: 0,
-            cookies: snapshot,
-        })
-        .await
-        .err()
-        .map(|error| error.to_string())
+    let slices = snapshot_slices(&snapshot);
+    for (id, slice) in (0u64..).zip(slices.iter()) {
+        if let Err(error) = table
+            .upsert(BrowserCookieRow {
+                id,
+                cookies: (*slice).to_owned(),
+            })
+            .await
+        {
+            return Some(error.to_string());
+        }
+    }
+    // A shorter jar leaves the previous tail behind; reading stops at the
+    // first missing id, so every row after the new end has to go.
+    let mut stale = slices.len() as u64;
+    while table.select(stale).is_some() {
+        if let Err(error) = table.delete(stale).await {
+            return Some(error.to_string());
+        }
+        stale += 1;
+    }
+    None
 }
 
 async fn record_durable_snapshot(
