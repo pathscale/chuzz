@@ -123,7 +123,7 @@ impl Bridge {
                 state.running = true;
                 drop(state);
                 let bridge = self.clone();
-                let _ = pool().spawn(async move {
+                let _detached = pool().spawn(async move {
                     bridge.run_commands().await;
                 });
                 return;
@@ -133,7 +133,7 @@ impl Bridge {
         // Wake the window's deadline check even if native adapter discovery
         // blocks the GPU pool. This timer runs on the process Nagoya runtime.
         let owner = Arc::downgrade(&self.0);
-        let _ = nagoya::spawn(async move {
+        let _detached = nagoya::spawn(async move {
             nagoya::sleep(STARTUP_DEADLINE).await;
             if let Some(owner) = owner.upgrade() {
                 let wake = {
@@ -153,7 +153,7 @@ impl Bridge {
         // their first poll. The document executor must never steal this work.
         // Host polling owns the deadline even if the driver never yields.
         let bridge = self.clone();
-        let _ = pool().spawn(async move {
+        let _detached = pool().spawn(async move {
             let _slot = slot;
             if !bridge.request_live(id) {
                 return;
@@ -319,7 +319,7 @@ impl Bridge {
             state.devices.values().cloned().collect::<Vec<_>>()
         };
         let bridge = self.clone();
-        let _ = pool().spawn(async move {
+        let _detached = pool().spawn(async move {
             for connection in devices {
                 if let Err(error) = connection.device.poll(wgpu::PollType::Poll) {
                     post_loss(

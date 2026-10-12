@@ -271,7 +271,7 @@ impl blitz_traits::net::NetProvider for NetProvider {
         );
         let signal = request.signal.clone();
         let provider = self.clone();
-        let _ = nagoya::spawn(async move {
+        let _detached = nagoya::spawn(async move {
             let result = if let Some(signal) = signal {
                 let mut fetch = Box::pin(provider.fetch_response_async(request));
                 let mut aborted = Box::pin(async move {
