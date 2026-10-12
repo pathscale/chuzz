@@ -552,8 +552,8 @@ fn blur_layer(layer: Layer, sigma: f64) -> Result<Layer> {
         for x in 0..layer.width {
             let from = (y * layer.width + x) * 4;
             let to = (y + radius) * width + (x + radius);
-            for channel in 0..4 {
-                planes[channel][to] = layer.pixels[from + channel];
+            for (channel, plane) in planes.iter_mut().enumerate() {
+                plane[to] = layer.pixels[from + channel];
             }
         }
     }
