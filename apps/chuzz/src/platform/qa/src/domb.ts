@@ -338,10 +338,10 @@
         });
         // The fixture host is another origin than the page server, so the policy
         // (strict-origin-when-cross-origin) must send only the page origin.
-        image.src = "http://127.0.0.1:49123/referer.png?run=" + Date.now();
+        image.src = "https://127.0.0.1:49123/referer.png?run=" + Date.now();
         await imageLoaded;
 
-        const response = await fetch("http://127.0.0.1:49123/api/image-referer?run=" + Date.now());
+        const response = await fetch("https://127.0.0.1:49123/api/image-referer?run=" + Date.now());
         const referer = await response.text();
         assert(referer === location.origin + "/", "cross-origin image Referer is the page origin");
     }

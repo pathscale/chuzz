@@ -98,7 +98,7 @@
       }
       try {
         check("serve at localhost:49123/webauthn/",
-          location.origin === "http://localhost:49123"
+          location.origin === "https://localhost:49123"
           && (location.pathname === "/webauthn/" || location.pathname === "/webauthn/index.html"));
         step = "availability";
         check("availability boolean",
@@ -135,7 +135,7 @@
         var clientData = JSON.parse(new TextDecoder().decode(attestationResponse.clientDataJSON));
         check("create client type", clientData.type === "webauthn.create");
         check("create challenge", clientData.challenge === b64(challenge.buffer));
-        check("create origin", clientData.origin === "http://localhost:49123");
+        check("create origin", clientData.origin === "https://localhost:49123");
         check("create crossOrigin", clientData.crossOrigin === false);
 
         step = "attestation";
@@ -178,7 +178,7 @@
         var assertionClient = JSON.parse(new TextDecoder().decode(assertion.response.clientDataJSON));
         check("get client type", assertionClient.type === "webauthn.get");
         check("get challenge", assertionClient.challenge === b64(getChallenge.buffer));
-        check("get origin", assertionClient.origin === "http://localhost:49123");
+        check("get origin", assertionClient.origin === "https://localhost:49123");
         check("get crossOrigin", assertionClient.crossOrigin === false);
         var getData = new Uint8Array(assertion.response.authenticatorData);
         check("get data length", getData.length === 37);
