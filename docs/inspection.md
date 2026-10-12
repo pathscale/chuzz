@@ -798,3 +798,710 @@ A gap in that journal is reported as `diagnosticOverflow` with `firstSequence` a
 - **GUI** (izumo `91712dc`, chuzz `2ee8a62` `browser.rs`): every tab is a target with its own `mounted_generation`, bumped each time a new document mounts in it. Agent and diagnostics requests run against the addressed tab's mounted document. Capability flags are all true when the tab runs script and all false otherwise. Omitting `target` keeps the old default, the chrome document.
 - **Journal**: izumo keeps 4096 diagnostic records across targets. Each page script runtime keeps at most 1000 console entries and 1000 runtime errors, read in bounded batches that report how many were lost (ps-blitz `1fa32759`). A lost range shows up as `diagnosticOverflow`.
 - **ps-qa**: `--tab-id N` or `--chrome` selects a target for any command, and node guards are copied from the inspection it made. `ps-qa targets` lists targets. `page-targets <url>` drives the fixture in `apps/chuzz/tests/page-targets/` through two GUI tabs, navigation and closure. `headless-target` checks the headless single-page discovery and legacy default. `inspection-off` turns inspection off in Settings and asserts the socket and descriptor are gone.
+
+## Driver plane (TAURI_BLITZ_DRIVER)
+
+The driver plane is a second control socket. `chuzz_control::driver` reads pixels from it. `crate::client` reads the document tree and sends clicks and typing on another socket.
+
+The listener is `blitz_script::DebugController`. It owns a `blitz_debug_control::DebugServer`. They do not contain `DebugServer`'s HTTP router, session table, token generator, or descriptor writer.
+
+Izumo starts it from `run` when the crate is built with `debug-control`. `DebugController::start_from_env` gets the izumo package version as `renderer_revision`. The controller is installed with `set_debug_controller`.
+
+### Driver screenshot and diagnostics capture
+
+`GET screenshot` is handled by `DebugController::screenshot`. It calls `wait_for_idle`, then returns `latest_screenshot`. The paint path is `commit_cpu_frame`. That uses `VelloCpuImageRenderer` and `blitz_paint::paint_scene_at_time`. The buffer is RGBA8. `PngEncoder` writes a PNG. The PNG is standard base64.
+
+The CSS viewport for that paint is `TAURI_BLITZ_DRIVER_SCREENSHOT_SIZE`, or `1344` by `932`. The document scale is kept. Device width is `round(css_width * scale)` and at least 1. Device height is the same for height. The previous viewport is saved, the screenshot size is installed, the document is resolved, the PNG is painted, the previous viewport is restored, and the document is resolved again.
+
+`paint_revision` increments by 1 after a successful encode. The screenshot success value is only the base64 string. It does not include `paintRevision`.
+
+Diagnostics capture is a different request. On the agent-control bridge, `DiagnosticsRequest::Capture` calls `capture_image`, which calls `DocumentControl::capture`. That code is compiled for `diagnostics` on unix. The comment there says the capture uses `blitz_paint::paint_scene`, the window renderer's paint entry. A build without `diagnostics` answers that bridge with `diagnosticsUnavailable` and the message `this build has no diagnostics feature; rebuild with izumo/diagnostics`.
+
+Agent control and the driver start in the same `run` function on separate conditions. `--blitz-control` or `set_agent_control_enabled` starts `AgentControlServer`. The driver starts only from `TAURI_BLITZ_DRIVER` plus `TAURI_BLITZ_DRIVER_DESCRIPTOR`.
+
+### Environment variables
+
+`TAURI_BLITZ_DRIVER` is read with `var_os`. If it is unset, `start_from_env` returns `Ok(None)` and no listener starts. If it is set, the value is parsed as `SocketAddr` after a lossy string conversion. Parse failure returns `InvalidInput` and `invalid TAURI_BLITZ_DRIVER address: {error}`. Izumo's `?` then fails `run`.
+
+`TAURI_BLITZ_DRIVER_DESCRIPTOR` is required once the address is set. If it is missing, startup returns `InvalidInput` and `TAURI_BLITZ_DRIVER_DESCRIPTOR is required`. The value becomes `ServerConfig.descriptor_path`. The chuzz helper `descriptor_from_env` maps that same variable to a `PathBuf`. It does not look at `TAURI_BLITZ_DRIVER`.
+
+`TAURI_BLITZ_DRIVER_SCREENSHOT_SIZE` is optional. Izumo reads it with `var`. The value must split on one `x` into two `u32` values, and both must be greater than 0. Any miss falls through. The fallback size is `1344` by `932`. That pair is passed to `with_cpu_screenshot`. A direct `DebugController::start` leaves `screenshot_size` as `None` until something calls `with_cpu_screenshot`.
+
+The client documents this launch line:
+
+```text
+TAURI_BLITZ_DRIVER=127.0.0.1:0 \
+TAURI_BLITZ_DRIVER_DESCRIPTOR=/tmp/chuzz-driver.json \
+CHUZZ_CONTROL=1 target/release/chuzz-gui
+```
+
+
+
+### Transport and bind address
+
+The contract says loopback HTTP, a session token, and a server thread that only sends requests to the UI thread. `DebugController` says the same split. The network thread produces `ControlRequest`. `service_pending` and `service_one` run on the thread that owns `ScriptDocument`. `handle` answers one request, then sends one `ControlResponse`.
+
+`start_from_env` passes any `SocketAddr` through, but `DebugServer::start` refuses a non-loopback address with `debug control must bind to a loopback address` before it binds (`blitz-debug-control` `lib.rs`). Port 0 asks the OS for a free port. The descriptor carries the bound address.
+
+The chuzz client opens a TCP connection to the descriptor's `address` string. It does not parse that string first. Each call is one HTTP/1.1 request with `Connection: close`. Read and write timeouts are 30 seconds. The client reads until EOF, splits headers on `\r\n\r\n`, and parses the remainder as JSON. It does not read the status code.
+
+```text
+POST /session HTTP/1.1
+Host: 127.0.0.1:53177
+Content-Type: application/json
+Content-Length: 78
+Connection: close
+
+{"capabilities":{"alwaysMatch":{"blitz:token":"<token>"}}}
+```
+
+`Content-Length` is the byte length of `Value::to_string()`. GET and DELETE send that length as 0 and an empty body. `Content-Type` is still `application/json`.
+
+### Descriptor
+
+The chuzz client requires two JSON fields. `address` is a string. `token` is a string. A missing or non-string `address` fails with `the driver descriptor has no address`. The same check for `token` says `the driver descriptor has no token`.
+
+The contract example is:
+
+```json
+{
+  "pid": 12345,
+  "address": "127.0.0.1:53177",
+  "token": "<random 256-bit value>",
+  "protocolVersion": 1,
+  "renderer": "blitz",
+  "rendererRevision": "<git revision>"
+}
+```
+
+The contract says the file is owner-readable where modes exist, written atomically, written only after `GET /status` can succeed, and removed on clean shutdown. It says a stale file is rejected when its PID or health check does not match. The client comment calls it a `0600` descriptor. They do not show the write, the mode bits, the PID, or the health check. Izumo's `renderer_revision` is `CARGO_PKG_VERSION`, not a git revision.
+
+### Session
+
+`POST /session` is the chuzz create call. It is not an arm in `route`.
+
+Request:
+
+```json
+{"capabilities":{"alwaysMatch":{"blitz:token":"<token from the descriptor>"}}}
+```
+
+The client treats a success as JSON `value.sessionId`, a string. If that string is absent, the client returns `could not open a driver session ({value}). Another client may still hold the one the browser allows; restart the browser if nothing else is connected.` `{value}` is the `value` field's display text.
+
+`DELETE /session/{sessionId}` is sent from `release`, and `Drop` always calls `release`. The response is ignored. The client comment says the server allows one session and keeps it after the socket closes, until DELETE or process restart.
+
+`GET /status` needs no session and answers `{"value":{"ready":true,"message":"Blitz debug control is ready","protocolVersion":1}}`. `POST /session` compares `capabilities.alwaysMatch.blitz:token` with the server token; a mismatch is `invalid argument` / `invalid blitz:token capability`. Only one session exists at a time; a second create is `session not created` / `only one session is supported`. Every `/session/{id}/...` request checks the id, and a wrong one is `invalid session id` / `session is not active`.
+
+Later chuzz calls put the session id in the path and do not send the token again.
+
+### Commands
+
+`route` matches `request.method` and `request.path`. Paths below are those route keys. The chuzz client uses the full URL `/session/{sessionId}/screenshot` and `/session/{sessionId}/source`.path`.
+
+Success values below are the `Value` inside `ControlResponse::Success`. The chuzz client reads that payload from JSON `value` for session create, screenshot, and source.
+
+Initial counters are `document_generation` 1, `document_revision` 1, `style_revision` 0, `layout_revision` 0, `paint_revision` 0. A new document id bumps `document_generation` with wrapping add, resets those revisions to 1, 0, 0, and 0, and clears `latest_screenshot`.
+
+`document_revision` increments by 1 after a successful action sequence, sync script, async script, element click, or send-keys.
+
+Element references use the key `element-6066-11e4-a52e-4f735466cecf`. The value is `{document_generation}:{node_id.as_u64()}` in decimal, for example `1:42`. `resolve_element` accepts exactly two colon-separated `u64`s. The generation must equal `document_generation`. The node must be in the document. Anything else is a stale reference.
+
+`NodeId` JSON in snapshots is whatever `serde_json` does with `NodeId`. Examples mark those spots as `<NodeId>`.
+
+#### GET `url`
+
+No body.
+
+Success payload is a string. It is `current_url`, or `""` when there is no URL.
+
+```json
+"https://example/"
+```
+
+#### GET `source`
+
+No body.
+
+Success payload is `document.page_source()`.
+
+```json
+"<!DOCTYPE html><html><body></body></html>"
+```
+
+The chuzz `source` helper reads `value` as a string. A non-string becomes `""`.
+
+#### GET `screenshot`
+
+No body.
+
+The handler calls `wait_for_idle`. An error from that call is returned as the screenshot result. If `latest_screenshot` is then `Some`, the success payload is that base64 string. If it is `None`, the result is `ControlResponse::unsupported` with `CPU screenshots are not configured`.
+
+```json
+"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+```
+
+The chuzz helper reads `value` as a string and decodes standard base64. `=` and whitespace are skipped. Any other byte outside the standard alphabet fails with `not base64: byte {byte:#04x}`. A non-string `value` fails with `no screenshot: {value}`.
+
+Izumo always calls `with_cpu_screenshot`, so a driver started from `run` has a size configured.
+
+#### GET `window`
+
+No body. Success payload:
+
+```json
+"blitz-main"
+```
+
+#### GET `window/handles`
+
+No body. Success payload:
+
+```json
+["blitz-main"]
+```
+
+#### POST `window`
+
+Request:
+
+```json
+{"handle":"blitz-main"}
+```
+
+Success payload is `null`. Any other `handle`, including a missing one, is error `no such window` with message `only the blitz-main window exists`.
+
+#### POST `execute/sync`
+
+Request:
+
+```json
+{"script":"return 1","args":[]}
+```
+
+`script` is required. `args` defaults to `[]` and must be an array. The text evaluated is `(function() {\n{script}\n}).apply(null, {args})` with `args` inserted as JSON.
+
+Success payload is the JSON returned by `eval_json`. `document_revision` increments.
+
+Missing `script` is `invalid argument` / `missing script`. A non-array `args` is `invalid argument` / `args must be an array`. Eval failure is `javascript error` and the eval message.
+
+#### POST `execute/async`
+
+Request:
+
+```json
+{"script":"arguments[0](42)","args":[]}
+```
+
+`script` is required. `args` must be an array when present. The callback is appended after `args`. The script is applied as a function. The callback stores `{ "done": true, "value": <argument> }` on `globalThis.__blitzAsyncResult{n}`. The loop polls until `done` is true or 5 seconds pass.
+
+Success payload is that `value`, or `null` if `value` is absent. The global is deleted. `document_revision` increments.
+
+Missing `script` is `invalid argument` / `missing script`. A non-array `args` is `invalid argument` / `args must be an array`. Eval failure is `javascript error`. A missed deadline is `script timeout` / `asynchronous script callback did not run`.
+
+#### POST `actions`
+
+Request:
+
+```json
+{
+  "actions": [
+    {
+      "type": "pointer",
+      "actions": [
+        {"type": "pointerMove", "x": 10.0, "y": 20.0, "origin": "viewport"},
+        {"type": "pointerDown", "button": 0},
+        {"type": "pointerUp"}
+      ]
+    },
+    {
+      "type": "key",
+      "actions": [
+        {"type": "keyDown", "value": "a"},
+        {"type": "keyUp", "value": "a"},
+        {"type": "pause"}
+      ]
+    }
+  ]
+}
+```
+
+`actions` must be an array. Each source needs an `actions` array. `pause` does nothing. `pointerMove` requires numeric `x` and `y`. A string `origin` other than `viewport` is unsupported, message `only viewport-origin pointer actions are supported`. A missing `origin` is accepted. `pointerDown` allows missing `button` or `button` 0. Any other button is unsupported, message `only the primary pointer button is supported`. `pointerUp` uses the stored position and buttons. `keyDown` and `keyUp` require string `value`. The value `\uE003` is Backspace. `\uE007`, `\n`, and `\r` are Enter. Any other string is sent as that character. Any other pair is unsupported, message `input action is not implemented`.
+
+Pointer moves, downs, and ups are `UiEvent::PointerMove`, `PointerDown`, and `PointerUp`. Keys are `KeyDown` and `KeyUp`.
+
+Success payload is `null`. `document_revision` increments once for the whole call.
+
+`actions` missing or not an array is `invalid argument` / `actions must be an array`. A source without an actions array is `invalid argument` / `each input source requires an actions array`. Missing coordinates are `invalid argument` / `pointerMove requires x` or `pointerMove requires y`. Missing key text is `invalid argument` / `keyDown requires value` or `keyUp requires value`.
+
+#### DELETE `actions`
+
+No body. Success payload is `null`. This arm does not clear the stored pointer position or buttons.
+
+#### POST `element`
+
+Find one.
+
+Request:
+
+```json
+{"using":"css selector","value":"#main"}
+```
+
+`using` must be the string `css selector`. `value` must be a string.
+
+Success payload:
+
+```json
+{"element-6066-11e4-a52e-4f735466cecf":"1:42"}
+```
+
+No match is `no such element` with message `no element matches {selector:?}`. A bad selector is `invalid argument` / `invalid CSS selector: {error:?}`. A wrong strategy is `invalid argument` / `only the css selector locator strategy is supported`. A missing `value` is `invalid argument` / `missing selector value`.
+
+#### POST `elements`
+
+Same request as `POST element`.
+
+Success payload is an array of reference objects. No match is an empty array, not an error. A bad selector uses the same `invalid argument` message as find-one.
+
+```json
+[
+  {"element-6066-11e4-a52e-4f735466cecf":"1:42"}
+]
+```
+
+#### POST `blitz/waitForIdle`
+
+No required body.
+
+The loop calls `document.poll(None)` while it returns true. Each true result counts. At 1000 the call returns error `timeout` with message `document did not become idle within the work budget`. Otherwise it resolves style and layout, then `commit_cpu_frame`.
+
+Success payload:
+
+```json
+{
+  "documentRevision": 1,
+  "styleRevision": 0,
+  "layoutRevision": 0,
+  "paintRevision": 1,
+  "workTurns": 0
+}
+```
+
+`workTurns` is how many polls returned true. `commit_cpu_frame` with no screenshot size returns immediately and does not change `paintRevision`. With a size, a successful PNG increments `paintRevision`. PNG failure is `unknown error` / `PNG encoding failed: {encode_error}`.
+
+The contract's idle list is longer than this loop. It names runnable jobs, due timers, one animation frame, style, layout, a committed CPU paint, and a quiet final turn. It also asks a timeout to include queue sizes and last revisions. The error helper sets `error`, `message`, and an empty `stacktrace`.
+
+#### GET `blitz/getDomSnapshot`
+
+No body. This arm does not call `wait_for_idle` or `resolve`.
+
+Success payload:
+
+```json
+{
+  "documentGeneration": 1,
+  "documentRevision": 1,
+  "styleRevision": 0,
+  "layoutRevision": 0,
+  "paintRevision": 0,
+  "nodes": [
+    {
+      "nodeId": "<NodeId>",
+      "parentId": "<node.parent>",
+      "children": [],
+      "tagName": "main",
+      "attributes": {"id": "main"},
+      "text": "Hello"
+    }
+  ]
+}
+```
+
+Every tree node is included. `tagName` is the element local name, or null when the node has no element data. `attributes` is an object of local name to string. It is `{}` when there is no element data. `text` is `node.text_content()`. `children` is the child id list.
+
+#### GET or POST `blitz/getConsoleEntries`
+
+`after` is a `u64`. It defaults to 0.
+
+Request:
+
+```json
+{"after": 0}
+```
+
+Success payload:
+
+```json
+{
+  "after": 0,
+  "overflowed": false,
+  "entries": [
+    {"sequence": 1, "level": "<entry.level>", "message": "<entry.message>"}
+  ]
+}
+```
+
+`overflowed` is true when the first returned entry has `sequence` greater than `after + 1`. Entry fields are `sequence`, `level`, and `message`.
+
+#### GET or POST `blitz/getRuntimeErrors`
+
+Same `after` rule.
+
+Request:
+
+```json
+{"after": 0}
+```
+
+Success payload:
+
+```json
+{
+  "after": 0,
+  "overflowed": false,
+  "entries": [
+    {"sequence": 1, "message": "<entry.message>", "stack": "<entry.stack>"}
+  ]
+}
+```
+
+`overflowed` uses the same sequence gap test. Entry fields are `sequence`, `message`, and `stack`.
+
+#### GET or POST `blitz/traceEvent`
+
+Same `after` rule. Entries kept in the deque with `sequence` greater than `after` are returned. There is no `overflowed` field.
+
+Request:
+
+```json
+{"after": 0}
+```
+
+Success payload:
+
+```json
+{
+  "after": 0,
+  "entries": [
+    {
+      "sequence": 1,
+      "event": "click",
+      "requestedNodeId": "<NodeId>",
+      "targetNodeId": "<NodeId>",
+      "path": [],
+      "includedDocument": true,
+      "inputPath": "pointer-hit-test"
+    }
+  ]
+}
+```
+
+The only writer in this module is element `click`. The deque holds 256 entries. At capacity, the oldest is dropped before the new one is pushed. `sequence` starts at 1.
+
+`requestedNodeId` is the element that was addressed. `targetNodeId` is the hit-test node, or the requested node when hit-testing returns nothing. `path` is `node_chain` of the hit node. `includedDocument` is whether that path contains the document root id.
+
+#### GET or POST `blitz/getComputedStyle`
+
+Request:
+
+```json
+{"element": "1:42"}
+```
+
+`element` must be a string reference. The handler resolves, then reads `diagnostic_computed_style`.
+
+Success payload:
+
+```json
+{
+  "nodeId": "<NodeId>",
+  "styleRevision": 0,
+  "properties": {"color": "rgb(0, 0, 0)"}
+}
+```
+
+`properties` is an object of property name to string.
+
+A missing string `element` is `invalid argument` / `blitz/getComputedStyle requires an element reference`. A bad reference is `stale element reference` / `element is no longer attached`. Missing computed style is `unknown error` / `computed style is unavailable`.
+
+#### GET `blitz/getLayoutTree`
+
+No body. The handler resolves first. Nodes with no client rect are omitted.
+
+Success payload:
+
+```json
+{
+  "layoutRevision": 0,
+  "nodes": [
+    {"nodeId": "<NodeId>", "x": 0.0, "y": 0.0, "width": 100.0, "height": 20.0}
+  ]
+}
+```
+
+Fields per node are `nodeId`, `x`, `y`, `width`, and `height`. The contract table also names clipping and scroll offsets. This function does not emit them.
+
+#### GET `blitz/getSvgDiagnostics`
+
+No body. The handler resolves first. An entry is an in-document element whose local name is `svg` and that has inline SVG source.
+
+Success payload:
+
+```json
+{
+  "entries": [
+    {
+      "nodeId": "<NodeId>",
+      "source": "<inline svg source>",
+      "layout": {"x": 0.0, "y": 0.0, "width": 24.0, "height": 24.0},
+      "image": {
+        "kind": "svg",
+        "width": 24.0,
+        "height": 24.0,
+        "intrinsicWidth": 24.0,
+        "intrinsicHeight": 24.0,
+        "rootChildren": 1,
+        "contentBounds": {"x": 0.0, "y": 0.0, "width": 24.0, "height": 24.0}
+      }
+    }
+  ]
+}
+```
+
+`layout` is null when there is no client rect. `image` is null when there is no image data. Raster image:
+
+```json
+{"kind": "raster", "width": 24, "height": 24}
+```
+
+No image data:
+
+```json
+{"kind": "none"}
+```
+
+#### GET `blitz/getRendererMetrics`
+
+No body.
+
+Success payload:
+
+```json
+{
+  "documentRevision": 1,
+  "styleRevision": 0,
+  "layoutRevision": 0,
+  "paintRevision": 0,
+  "eventTraceEntries": 0
+}
+```
+
+`eventTraceEntries` is the current deque length.
+
+#### POST `blitz/shutdown`
+
+No body. Sets `exit_requested`. Success payload is `null`.
+
+#### Element commands
+
+The path is `element/{reference}/{command}`. `{reference}` is the `generation:id` string. A path that does not start with `element/` is unsupported, message `command is not implemented`. A path with no second slash is `invalid argument` / `invalid element command path`. A reference that fails `resolve_element` is `stale element reference` / `element is no longer attached`.
+
+GET `element/1:42/text`. Success payload is `text_content()`:
+
+```json
+"Hello"
+```
+
+GET `element/1:42/rect`. Success payload:
+
+```json
+{"x": 0.0, "y": 0.0, "width": 100.0, "height": 20.0}
+```
+
+No client rect is `stale element reference` / `element has no layout box`. This arm does not call `resolve` first.
+
+POST `element/1:42/click`. No required body. The handler resolves, takes the center of the client rect, hit-tests, then sends pointer move, pointer down, and pointer up. It records one `click` trace. Success payload is `null`. `document_revision` increments.
+
+No client rect is `element not interactable` / `element has no layout box`. Width or height at or below 0 is `element not interactable` / `element has an empty layout box`.
+
+POST `element/1:42/value`. Either body works:
+
+```json
+{"text": "hi"}
+```
+
+```json
+{"value": ["h", "i"]}
+```
+
+`value` is an array of strings, concatenated. The handler resolves, focuses the node, and commits the text as an IME commit. Success payload is `null`. `document_revision` increments. Neither field usable is `invalid argument` / `send keys requires text or a string value array`.
+
+POST `element/1:42/focus`. No body. Calls `set_focus_to`. Success payload is `null`.
+
+GET `element/1:42/displayed`. The handler resolves. Success payload is a boolean. It is true when the node is present, is not `display: none`, and has a client rect with width and height greater than 0.
+
+```json
+true
+```
+
+GET `element/1:42/enabled`. Success payload is a boolean. It is true when the node is present and no attribute local name is `disabled`.
+
+```json
+true
+```
+
+GET `element/1:42/attribute/{name}`. `{name}` is the attribute local name. Success payload is the attribute string, or `null` when it is absent.
+
+```json
+"main"
+```
+
+```json
+null
+```
+
+GET `element/1:42/property/{name}`. Known names:
+
+| `name` | Success value |
+| --- | --- |
+| `textContent` | string from `text_content()` |
+| `className` | class attribute string, or `null` |
+| `value` | text-input editor text, or `null` |
+| `checked` | checkbox bool, or `false` when that data is absent |
+
+Any other name uses the attribute lookup above. A missing node on this arm is `stale element reference` / `element is no longer attached`.
+
+Examples:
+
+```json
+"Hello"
+```
+
+```json
+"title"
+```
+
+```json
+null
+```
+
+```json
+false
+```
+
+Any other element command is unsupported, message `element command is not implemented`.
+
+### Error behaviour
+
+`ControlResponse::Error` has three fields. `error()` and `invalid()` set them. `invalid` always uses the error name `invalid argument`. `stacktrace` is always `""` on this path.
+
+```json
+{"error": "invalid argument", "message": "missing script", "stacktrace": ""}
+```
+
+Error names produced in this file:
+
+| `error` | When | `message` |
+| --- | --- | --- |
+| `invalid argument` | bad client input | the `invalid(...)` strings above |
+| `no such window` | POST `window` | `only the blitz-main window exists` |
+| `no such element` | find-one misses | `no element matches {selector:?}` |
+| `stale element reference` | bad reference, or rect with no box | `element is no longer attached` or `element has no layout box` |
+| `element not interactable` | click | `element has no layout box` or `element has an empty layout box` |
+| `javascript error` | eval failure | the eval message |
+| `script timeout` | async script | `asynchronous script callback did not run` |
+| `timeout` | idle budget | `document did not become idle within the work budget` |
+| `unknown error` | style or PNG | `computed style is unavailable` or `PNG encoding failed: {encode_error}` |
+
+`ControlResponse::unsupported` is a separate constructor. Messages from this file:
+
+- `CPU screenshots are not configured`
+- `only viewport-origin pointer actions are supported`
+- `only the primary pointer button is supported`
+- `input action is not implemented`
+- `command is not implemented`
+- `element command is not implemented`
+
+An unsupported command returns error `unsupported operation` with a message and an empty `stacktrace`.
+
+The chuzz HTTP helper fails with `the driver answered without headers` when the split is missing. A body that is not JSON fails JSON parse. Connect and read use the 30 second socket timeouts. Screenshot decode fails on non-base64 input. Session create fails when `value.sessionId` is not a string, including when `value` is an error object.
+
+`GET source` in the client turns a non-string `value` into `""`. It does not surface an error payload.
+
+Responses use WebDriver envelopes: a success is `{"value": <payload>}` and an error is `{"value":{"error":...,"message":...,"stacktrace":""}}`. The chuzz client reads the top-level `value`.
+
+### Access control
+
+The listener is off unless `TAURI_BLITZ_DRIVER` is set. A set address with no descriptor fails startup.
+
+The contract says bind only loopback, use a random 256-bit token, store it in an atomic owner-readable `0600` descriptor, require `blitz:token` on `POST /session`, and keep application data off `GET /status`. It says this endpoint can evaluate arbitrary JavaScript. It says not to enable it in a normal production build, not to log the token, not to put the token in command-line arguments, and not to expose it beyond loopback.
+
+The server generates a 256-bit random token per process (`getrandom`, hex), writes the descriptor with mode `0600`, binds loopback only, and allows one session. Anyone holding the token can run page script through `execute/sync` and `execute/async`, so treat the descriptor like a credential and never enable the driver on a shared machine.
+
+### Hosts
+
+Izumo `run` starts this plane when `debug-control` is enabled and both driver env vars are set. That block is not gated on unix. The screenshot size helper is under the same feature.
+
+The chuzz client comment names `target/release/chuzz-gui` as the process launched with those variables.
+
+Diagnostics capture is a different host feature. It needs `agent-control` and unix for the bridge, and `diagnostics` for `DiagnosticsRequest::Capture`. `Host.diagnostics` is that feature flag, reported when the agent-control server starts. `--blitz-control` starts that server during `run`. It does not start the driver.
+
+### chuzz-inspect --driver
+
+
+
+The verified client is `Driver` in `chuzz/crates/chuzz-control/src/driver.rs`.
+
+`descriptor_from_env` returns the descriptor path when `TAURI_BLITZ_DRIVER_DESCRIPTOR` is set.
+
+`Driver::connect(path)` reads the file, posts the token to `/session`, and stores `address` and `sessionId`.
+
+`screenshot` sends `GET /session/{sessionId}/screenshot` and returns PNG bytes.
+
+`source` sends `GET /session/{sessionId}/source` and returns a string.
+
+Drop sends `DELETE /session/{sessionId}` so the single session can be opened again.
+
+<!--
+Claims and sources. HTML comments cannot contain a double hyphen, so the inspect flag is written "driver flag" here.
+
+What it is. chuzz driver is a separate socket from crate::client, for painted pixels: chuzz/crates/chuzz-control/src/driver.rs:1-8. Controller type and UI-thread rule: ps-blitz/packages/blitz-script/src/debug_control.rs:28-35,170-174. DebugServer and ServerConfig come from blitz_debug_control: ps-blitz/packages/blitz-script/src/debug_control.rs:11,54-55. Izumo starts it under feature debug-control via start_from_env(CARGO_PKG_VERSION) and set_debug_controller: izumo/crates/izumo/src/runtime.rs:644-650. No service_pending in runtime.rs. Contract process boundary: izumo/docs/06-debug-control.md:11-28.
+
+Screenshot implementation. screenshot calls wait_for_idle and returns latest_screenshot or unsupported: ps-blitz/packages/blitz-script/src/debug_control.rs:819-835. commit_cpu_frame uses VelloCpuImageRenderer, paint_scene_at_time, viewport save/restore, device size from scale, RGBA8 PngEncoder, standard base64, paint_revision += 1: ps-blitz/packages/blitz-script/src/debug_control.rs:838-924. Imports: ps-blitz/packages/blitz-script/src/debug_control.rs:8-10. Default 1344x932 and env parse: izumo/crates/izumo/src/runtime.rs:648-649,708-714. with_cpu_screenshot: ps-blitz/packages/blitz-script/src/debug_control.rs:88-91. Screenshot success is only the string: ps-blitz/packages/blitz-script/src/debug_control.rs:832-834.
+
+Diagnostics capture. Handle and Capture arm, paint_scene comment: izumo/crates/izumo/src/runtime.rs:332-378,381-402. diagnosticsUnavailable: izumo/crates/izumo/src/runtime.rs:449-454. Feature cfgs unix and diagnostics: izumo/crates/izumo/src/runtime.rs:277,332,387,407,465-467. Agent server start is separate, Host.diagnostics, --blitz-control: izumo/crates/izumo/src/runtime.rs:119-127,591-631,619-630. Driver env start is the later block: izumo/crates/izumo/src/runtime.rs:644-650.
+
+Env vars. Address optional, descriptor required, SocketAddr parse errors: ps-blitz/packages/blitz-script/src/debug_control.rs:94-116. descriptor_from_env: chuzz/crates/chuzz-control/src/driver.rs:38-41. Screenshot size parse and fallback: izumo/crates/izumo/src/runtime.rs:708-714. Launch comment including CHUZZ_CONTROL and chuzz-gui: chuzz/crates/chuzz-control/src/driver.rs:10-18. screenshot_size starts None: ps-blitz/packages/blitz-script/src/debug_control.rs:65.
+
+Transport. Contract loopback and bind rules, port 0: izumo/docs/06-debug-control.md:15-32,36-39. Client calls the server loopback: chuzz/crates/chuzz-control/src/driver.rs:10-11,20-23. No loopback check before ServerConfig: ps-blitz/packages/blitz-script/src/debug_control.rs:105-115. Test bind 127.0.0.1:0: ps-blitz/packages/blitz-script/src/debug_control.rs:1047-1051. Client TCP, 30s timeouts, HTTP/1.1 close, header split, JSON body, no status read: chuzz/crates/chuzz-control/src/driver.rs:123-152. Request template fields: chuzz/crates/chuzz-control/src/driver.rs:137-142.
+
+Descriptor. Client reads address and token: chuzz/crates/chuzz-control/src/driver.rs:47-55. Error strings: chuzz/crates/chuzz-control/src/driver.rs:50,54. Contract JSON fields and 0600 wording: izumo/docs/06-debug-control.md:41-57. Client 0600 wording: chuzz/crates/chuzz-control/src/driver.rs:10-12. ServerConfig fields only: ps-blitz/packages/blitz-script/src/debug_control.rs:111-115. Izumo passes CARGO_PKG_VERSION: izumo/crates/izumo/src/runtime.rs:646. Historical note that rendererRevision in the doc example is a git revision: izumo/docs/06-debug-control.md:49-50.
+
+Session. POST body and sessionId read: chuzz/crates/chuzz-control/src/driver.rs:57-78. Failure string: chuzz/crates/chuzz-control/src/driver.rs:68-76. DELETE and Drop: chuzz/crates/chuzz-control/src/driver.rs:96-109,182-185. One session comment: chuzz/crates/chuzz-control/src/driver.rs:44-45,65-67,96-101. Contract status and blitz:token: izumo/docs/06-debug-control.md:54-57. route has no status arm: ps-blitz/packages/blitz-script/src/debug_control.rs:209-250. Token not resent on screenshot, source, or DELETE: chuzz/crates/chuzz-control/src/driver.rs:83-108,112-119.
+
+Counters and document switch: ps-blitz/packages/blitz-script/src/debug_control.rs:60-64,176-188. document_revision increments: ps-blitz/packages/blitz-script/src/debug_control.rs:430,445-446,480-481,758,783. Element key and reference format: ps-blitz/packages/blitz-script/src/debug_control.rs:23,570-577. resolve_element: ps-blitz/packages/blitz-script/src/debug_control.rs:703-720.
+
+GET url: ps-blitz/packages/blitz-script/src/debug_control.rs:210-215. GET source: ps-blitz/packages/blitz-script/src/debug_control.rs:216. Client source unwrap_or_default: chuzz/crates/chuzz-control/src/driver.rs:112-119. GET screenshot: ps-blitz/packages/blitz-script/src/debug_control.rs:217,819-835. Client screenshot path and decode: chuzz/crates/chuzz-control/src/driver.rs:83-94,159-179. GET window, handles, POST window: ps-blitz/packages/blitz-script/src/debug_control.rs:218-223.
+
+execute/sync: ps-blitz/packages/blitz-script/src/debug_control.rs:224,434-449. execute/async and 5s timeout: ps-blitz/packages/blitz-script/src/debug_control.rs:25,225,452-491.
+
+actions: ps-blitz/packages/blitz-script/src/debug_control.rs:226,362-431. Key mapping: ps-blitz/packages/blitz-script/src/debug_control.rs:994-1017. DELETE actions: ps-blitz/packages/blitz-script/src/debug_control.rs:227.
+
+POST element and elements: ps-blitz/packages/blitz-script/src/debug_control.rs:228-229,543-567.
+
+waitForIdle, MAX_IDLE_TURNS 1000: ps-blitz/packages/blitz-script/src/debug_control.rs:24,230,795-816. Contract idle steps and timeout payload: izumo/docs/06-debug-control.md:113-143. error helper fields: ps-blitz/packages/blitz-script/src/debug_control.rs:1024-1033. Empty size skips paint: ps-blitz/packages/blitz-script/src/debug_control.rs:838-841.
+
+getDomSnapshot: ps-blitz/packages/blitz-script/src/debug_control.rs:231,927-965. Console entries: ps-blitz/packages/blitz-script/src/debug_control.rs:232-234,494-508. Runtime errors: ps-blitz/packages/blitz-script/src/debug_control.rs:235-237,511-525. traceEvent and capacity 256 and click record: ps-blitz/packages/blitz-script/src/debug_control.rs:26,238,528-541,723-760,787-793. Sequence filter: ps-blitz/packages/blitz-script/src/debug_control.rs:530-538.
+
+getComputedStyle: ps-blitz/packages/blitz-script/src/debug_control.rs:239-241,253-274. getLayoutTree fields: ps-blitz/packages/blitz-script/src/debug_control.rs:242,277-295. Contract layout columns: izumo/docs/06-debug-control.md:98. getSvgDiagnostics: ps-blitz/packages/blitz-script/src/debug_control.rs:243,308-359. getRendererMetrics: ps-blitz/packages/blitz-script/src/debug_control.rs:244,298-305. shutdown and exit_requested: ps-blitz/packages/blitz-script/src/debug_control.rs:48,165-168,245-248. Izumo runtime.rs has no exit_requested use in the driver block.
+
+Element commands: ps-blitz/packages/blitz-script/src/debug_control.rs:249,579-701. text, rect, click, value, focus, displayed, enabled: ps-blitz/packages/blitz-script/src/debug_control.rs:601-645. attribute: ps-blitz/packages/blitz-script/src/debug_control.rs:594-596,650-666. property names: ps-blitz/packages/blitz-script/src/debug_control.rs:597-599,669-700. unsupported element and unknown command: ps-blitz/packages/blitz-script/src/debug_control.rs:584-586,646.
+
+Client HTTP paths: chuzz/crates/chuzz-control/src/driver.rs:59-63,83-88,103-107,112-117. Base64 test confirms PNG signature bytes: chuzz/crates/chuzz-control/src/driver.rs:201-205.
+
+Access. Contract production, token, loopback, JS warning: izumo/docs/06-debug-control.md:55-60,173-174. 256-bit token text: izumo/docs/06-debug-control.md:47,173. Opt-in code: ps-blitz/packages/blitz-script/src/debug_control.rs:94-104. JS execution arms: ps-blitz/packages/blitz-script/src/debug_control.rs:224-225. Unsupported contract wording: izumo/docs/06-debug-control.md:64-66. W3C envelope contract: izumo/docs/06-debug-control.md:64-65. Client value envelope: chuzz/crates/chuzz-control/src/driver.rs:68-76,90-93,119. Header failure: chuzz/crates/chuzz-control/src/driver.rs:148-152.
+
+Hosts. debug-control cfg is not unix on the driver block: izumo/crates/izumo/src/runtime.rs:644-650,708. Agent-control unix cfg: izumo/crates/izumo/src/runtime.rs:107,244,591. chuzz-gui launch is the client comment: chuzz/crates/chuzz-control/src/driver.rs:14-18. Driver API: chuzz/crates/chuzz-control/src/driver.rs:32-120,182-185.
+
+Minimum command list in the contract, for comparison with route: izumo/docs/06-debug-control.md:68-78,91-103. getSvgDiagnostics and blitz/shutdown are only in the route table: ps-blitz/packages/blitz-script/src/debug_control.rs:243-248.
+-->
