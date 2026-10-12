@@ -1786,6 +1786,7 @@ fn serve_page(
     let clipboard = Arc::new(HostClipboard::default());
     let animation_clock = std::time::Instant::now();
 
+    let tls_status = std::cell::RefCell::new(serde_json::Value::Null);
     let load = |url: Url, carried: Option<&StoredState>| -> Result<Box<ScriptDocument>, String> {
         // Includes HTML and external-script fetches, script execution, loader
         // pumping, shim evaluation and the initial viewport settle.
@@ -1807,28 +1808,38 @@ fn serve_page(
             prelude.push('\n');
             prelude.push_str(&script);
         }
-        let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
-            blitz_traits::net::Request::get(url.clone()),
-            Arc::clone(&net_provider),
-            &prelude,
-            Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
-        ))
-        .map_err(|error| {
-            if policy.bot_child {
-                format!(
-                    "could not load {}: network request failed",
-                    display_url(&url, policy.bot_child)
-                )
-            } else {
-                format!(
-                    "could not load {}: {error}",
-                    display_url(&url, policy.bot_child)
-                )
-            }
-        })?;
-        let mut document = loaded
-            .into_script()
-            .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?;
+        let mut document = if let Some(html) = crate::internal_pages::html_for(&url) {
+            Box::new(ScriptDocument::from_html(
+                &html,
+                blitz_dom::DocumentConfig {
+                    base_url: Some(url.to_string()),
+                    ..Default::default()
+                },
+            ))
+        } else {
+            let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
+                blitz_traits::net::Request::get(url.clone()),
+                Arc::clone(&net_provider),
+                &prelude,
+                Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
+            ))
+            .map_err(|error| {
+                if policy.bot_child {
+                    format!(
+                        "could not load {}: network request failed",
+                        display_url(&url, policy.bot_child)
+                    )
+                } else {
+                    format!(
+                        "could not load {}: {error}",
+                        display_url(&url, policy.bot_child)
+                    )
+                }
+            })?;
+            loaded
+                .into_script()
+                .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?
+        };
         let landed_url = document.inner().url().clone();
         policy
             .validate_url(&landed_url)
@@ -1854,6 +1865,7 @@ fn serve_page(
         // request's settle budget to lay out. Say so and serve it; requests
         // keep their own deadlines.
         settle_immediate(&mut document, &animation_clock, settle_deadline);
+        *tls_status.borrow_mut() = crate::tls_status::inspection_state(&landed_url);
         Ok(document)
     };
 
@@ -2088,8 +2100,14 @@ fn serve_page(
                 if !policy.bot_child =>
             {
                 revision += 1;
+                let status_only = !request.include_dom;
                 match snapshot_document(&mut *document, request, revision) {
-                    Ok(snapshot) => DebugResponse::Snapshot(snapshot),
+                    Ok(mut snapshot) => {
+                        if status_only {
+                            snapshot.dom = Some(tls_status.borrow().clone());
+                        }
+                        DebugResponse::Snapshot(snapshot)
+                    }
                     Err(error) => DebugResponse::Error(error),
                 }
             }

@@ -207,6 +207,25 @@ impl Client {
         Ok(response["value"].clone())
     }
 
+    /// Committed top-level TLS status from chuzz-headless, without collecting DOM nodes.
+    pub async fn tls_status(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        let response = self
+            .diagnostics(json!({
+                "command": "snapshot",
+                "params": {
+                    "nodeIds": [],
+                    "includeDom": false,
+                    "includeLayout": false,
+                    "includeComputedStyle": false
+                }
+            }))
+            .await?;
+        if response["result"] == "error" {
+            return Err(format!("TLS status failed: {}", response["value"]).into());
+        }
+        Ok(response["value"]["dom"].clone())
+    }
+
     /// Synthesise a click on a node.
     ///
     /// The runtime resolves layout, takes the node's centre and dispatches a
