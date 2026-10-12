@@ -703,6 +703,10 @@ fn enforce_cookie_domain(cookie: &mut StoredCookie<'_>, url: &Url) -> bool {
 mod tests {
     use super::*;
 
+    fn url(value: &str) -> Url {
+        Url::parse(value).expect("test URL parses")
+    }
+
     #[test]
     fn foreign_domain_expiry_cannot_delete_an_existing_cookie() {
         let store = BrowserCookieStore::default();
