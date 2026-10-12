@@ -300,7 +300,7 @@ fn spread(x: f64, y: f64, sigma: f64) -> f64 {
 }
 
 fn radius_for(sigma: f64) -> usize {
-    if !(sigma > 0.0) || !sigma.is_finite() {
+    if !sigma.is_finite() || sigma <= 0.0 {
         return 0;
     }
     let radius = (sigma * 3.0).ceil();
@@ -324,7 +324,7 @@ fn kernel(sigma: f64) -> Vec<f32> {
         *weight = value;
         sum += value;
     }
-    if !(sum > 0.0) || !sum.is_finite() {
+    if !sum.is_finite() || sum <= 0.0 {
         return vec![1.0];
     }
     weights
