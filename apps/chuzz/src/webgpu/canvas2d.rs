@@ -905,7 +905,7 @@ impl Canvas {
     fn composite(
         &mut self,
         layer: &effects::Layer,
-        state: &DrawState,
+        _state: &DrawState,
         blend: BlendMode,
         alpha: f32,
         unbounded: bool,
