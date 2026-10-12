@@ -840,14 +840,40 @@
       });
       Object.freeze(this);
     }
+    // The token lists of every `trusted-types` directive in the document's
+    // meta CSPs. Each is enforced on its own, as separate policies are.
+    function trustedTypesDirectives() {
+      const lists = [];
+      const doc = g.document;
+      if (!doc || typeof doc.querySelectorAll !== "function") return lists;
+      for (const meta of doc.querySelectorAll("meta[http-equiv]")) {
+        if (String(meta.getAttribute("http-equiv")).toLowerCase() !== "content-security-policy") {
+          continue;
+        }
+        for (const directive of String(meta.getAttribute("content") || "").split(";")) {
+          const tokens = directive.trim().split(/\s+/);
+          if (tokens[0].toLowerCase() === "trusted-types") lists.push(tokens.slice(1));
+        }
+      }
+      return lists;
+    }
     const trustedTypes = {
       createPolicy(name, rules = {}, options = {}) {
         name = String(name);
         if (rules === null || typeof rules !== "object") {
           throw new TypeError("Policy rules must be a dictionary");
         }
-        if (policies.has(name) && !(options && options.allowDuplicates)) {
-          throw new TypeError("A policy with this name already exists");
+        // Only an enforced CSP `trusted-types` directive refuses a policy.
+        // Without one, any name may be created any number of times.
+        const csp = trustedTypesDirectives();
+        for (const allowed of csp) {
+          const permitted = allowed.includes("*") || allowed.includes(name);
+          const duplicate = policies.has(name) && !allowed.includes("'allow-duplicates'");
+          if (allowed.includes("'none'") || !permitted || duplicate) {
+            throw new TypeError(
+              "Failed to create policy '" + name + "': refused by the trusted-types directive"
+            );
+          }
         }
         for (const key of ["createHTML", "createScript", "createScriptURL"]) {
           if (rules[key] !== undefined && typeof rules[key] !== "function") {

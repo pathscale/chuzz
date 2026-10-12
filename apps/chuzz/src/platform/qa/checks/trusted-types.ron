@@ -2,7 +2,7 @@
     (
         id: "trusted-types-behaviour",
         group: "trusted-types",
-        what: "Policy callbacks produce branded values, predicates reject ordinary strings, and duplicate names fail.",
+        what: "Policy callbacks produce branded values, predicates reject ordinary strings, and duplicate names fail only under a trusted-types directive without 'allow-duplicates'.",
         open: None,
         hover: None,
         click: Some("#run"),

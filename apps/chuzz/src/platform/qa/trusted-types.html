@@ -22,8 +22,17 @@ const policy = trustedTypes.createPolicy(name, {createHTML:value => '<b>' + valu
 const value = policy.createHTML('safe');
 assert(trustedTypes.isHTML(value) && String(value) === '<b>safe</b>', 'branded callback result');
 assert(!trustedTypes.isHTML('<b>safe</b>') && trustedTypes.getPolicy(name) === policy, 'brand and registry');
-let duplicate = false; try { trustedTypes.createPolicy(name, {}); } catch (error) { duplicate = error instanceof TypeError; }
-assert(duplicate && trustedTypes.getPolicyNames().includes(name), 'duplicate policy rejection');
+const again = trustedTypes.createPolicy(name, {});
+assert(again !== policy && again.name === name, 'duplicates are allowed without a trusted-types directive');
+const refuses = create => { try { create(); return false; } catch (error) { return error instanceof TypeError; } };
+const csp = document.createElement('meta'); csp.setAttribute('http-equiv', 'Content-Security-Policy');
+csp.setAttribute('content', 'trusted-types listed'); document.head.appendChild(csp);
+trustedTypes.createPolicy('listed', {});
+assert(refuses(() => trustedTypes.createPolicy('listed', {})), 'a listed name is refused twice without allow-duplicates');
+assert(refuses(() => trustedTypes.createPolicy('unlisted', {})), 'an unlisted name is refused');
+csp.setAttribute('content', "trusted-types listed 'allow-duplicates'");
+assert(trustedTypes.createPolicy('listed', {}).name === 'listed', 'allow-duplicates permits a repeat');
+csp.remove();
     result.textContent = "READY: TRUSTED-TYPES PASS";
   } catch (error) {
     result.textContent = "FAIL: " + String(error && error.message || error);
