@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Performance timing poll QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    * { box-sizing: border-box; }
+    body { margin: 24px; background: #182335; color: #fff; font-family: "Fira Sans", sans-serif; }
+    main { max-width: 680px; padding: 24px; border: 1px solid #52647d; border-radius: 12px; background: #223249; }
+    h1 { margin-top: 0; }
+    #result { min-height: 56px; margin-bottom: 0; padding: 16px; border: 1px solid #7f93af; border-radius: 8px; background: #101a28; color: #fff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Performance timing poll</h1>
+    <p id="result" role="status" aria-live="polite">WAITING: timing polls</p>
+  </main>
+  <script>
+    (function () {
+      var result = document.getElementById("result");
+      var fields = [
+        "domInteractive",
+        "domContentLoadedEventStart",
+        "domContentLoadedEventEnd",
+        "domComplete",
+        "loadEventStart",
+        "loadEventEnd"
+      ];
+      var pollLimit = 4;
+      var pollCount = 0;
+      var timerCount = 0;
+      var timing;
+
+      function finiteNonnegative(value) {
+        return typeof value === "number" && value === value
+          && value !== Infinity && value !== -Infinity && value >= 0;
+      }
+
+      function fail(message) {
+        result.textContent = "FAIL: timing poll " + message;
+      }
+
+      try {
+        timing = globalThis.performance && globalThis.performance.timing;
+        if (!timing || typeof timing !== "object") {
+          throw new Error("timing is not an object");
+        }
+      } catch (error) {
+        fail(error && error.message ? error.message : String(error));
+        return;
+      }
+
+      function poll() {
+        timerCount++;
+        try {
+          if (globalThis.performance.timing !== timing) {
+            throw new Error("timing object changed between polls");
+          }
+
+          var navigationStart = timing.navigationStart;
+          var fetchStart = timing.fetchStart;
+          if (!finiteNonnegative(navigationStart) || !finiteNonnegative(fetchStart)) {
+            throw new Error("origin timestamps are not finite nonnegative numbers");
+          }
+          if (navigationStart !== fetchStart) {
+            throw new Error("navigationStart and fetchStart differ");
+          }
+
+          var timeOrigin = globalThis.performance.timeOrigin;
+          if (typeof timeOrigin === "number"
+              && (!finiteNonnegative(timeOrigin) || Math.floor(timeOrigin) !== navigationStart)) {
+            throw new Error("navigationStart does not match timeOrigin");
+          }
+
+          for (var index = 0; index < fields.length; index++) {
+            var value = timing[fields[index]];
+            if (!finiteNonnegative(value)) {
+              throw new Error(fields[index] + " is not finite and nonnegative");
+            }
+          }
+
+          pollCount++;
+          if (pollCount === pollLimit) {
+            if (timerCount !== pollLimit) {
+              throw new Error("timer did not complete every poll");
+            }
+            result.textContent = "READY: TIMING POLL PASS";
+            return;
+          }
+          setTimeout(poll, 250);
+        } catch (error) {
+          fail(error && error.message ? error.message : String(error));
+        }
+      }
+
+      setTimeout(poll, 250);
+    }());
+  </script>
+</body>
+</html>

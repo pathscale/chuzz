@@ -1,0 +1,25 @@
+[
+    (
+        id: "timing-poll-completes",
+        group: "timing-poll",
+        what: "four 250 ms timer polls observe one stable timing object and finite nonnegative lifecycle timestamps",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: TIMING POLL PASS",
+        expect: PaintsNamed,
+        covers: ["READY: TIMING POLL PASS"],
+        outcome_timeout_ms: 5000,
+    ),
+    (
+        id: "timing-poll-result-painted",
+        group: "timing-poll",
+        what: "the timing poll result panel paints with the bundled font",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#result",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

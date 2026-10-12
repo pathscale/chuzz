@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Script fetch failure QA</title>
+  <style>
+    @font-face { font-family: "Fira Sans"; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    * { box-sizing: border-box; }
+    body { margin: 24px; background: #182335; color: #fff; font-family: "Fira Sans", sans-serif; }
+    main { max-width: 680px; padding: 24px; border: 1px solid #52647d; border-radius: 12px; background: #223249; }
+    h1 { margin-top: 0; }
+    #result { min-height: 56px; margin-bottom: 0; padding: 16px; border: 1px solid #7f93af; border-radius: 8px; background: #101a28; color: #fff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Script fetch failure</h1>
+    <p id="result" role="status" aria-live="polite">WAITING: script request</p>
+  </main>
+  <script>
+    globalThis.__scriptFetchProof = { inlineRan: false, timerRan: false };
+  </script>
+  <script src="./missing-script-fetch-target.js"></script>
+  <script>
+    (function () {
+      var proof = globalThis.__scriptFetchProof;
+      var result = document.getElementById("result");
+      proof.inlineRan = true;
+      result.textContent = "Inline script ran; waiting for timer";
+      setTimeout(function () {
+        proof.timerRan = true;
+        if (proof.inlineRan && proof.timerRan) {
+          result.textContent = "READY: SCRIPT FETCH FAILURE PASS";
+        } else {
+          result.textContent = "FAIL: script fetch interrupted page execution";
+        }
+      }, 250);
+    }());
+  </script>
+</body>
+</html>

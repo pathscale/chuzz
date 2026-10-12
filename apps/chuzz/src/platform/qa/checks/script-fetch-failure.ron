@@ -1,0 +1,25 @@
+[
+    (
+        id: "script-fetch-failure-continues",
+        group: "script-fetch-failure",
+        what: "a missing relative script does not prevent following inline code or its timer from completing",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: SCRIPT FETCH FAILURE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: SCRIPT FETCH FAILURE PASS"],
+        outcome_timeout_ms: 5000,
+    ),
+    (
+        id: "script-fetch-failure-result-painted",
+        group: "script-fetch-failure",
+        what: "the script failure containment result panel paints with the bundled font",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#result",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]
