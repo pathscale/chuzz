@@ -173,7 +173,7 @@ blitz-html = { workspace = true, default-features = true }
 # with, so without it every response arrives uncompressed and a page costs
 # several times the bytes it should. cache: without it every navigation is
 # cold, including a reload of the page you are already on.
-blitz-net = { workspace = true, features = ["http2", "cookies", "compression", "cache"] }
+blitz-net = { workspace = true, features = ["cookies", "compression", "cache"] }
 blitz-script = { workspace = true, optional = true }
 blitz-traits = { workspace = true, default-features = true }
 blitz-wasm = { workspace = true, optional = true }
