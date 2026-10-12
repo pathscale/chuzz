@@ -22,8 +22,6 @@ use crate::media::frame::{Plane, VideoFrame, VideoPixels};
 use crate::media::track::{Settings, Track};
 
 pub(super) const PROFILE: &str = "42e01f";
-pub(super) const FMTP: &str =
-    "packetization-mode=1;profile-level-id=42e01f;level-asymmetry-allowed=1";
 
 pub(super) struct Encoded {
     pub bytes: Vec<u8>,

@@ -262,15 +262,6 @@ pub(super) fn direction(value: &str) -> Result<Direction, String> {
     }
 }
 
-pub(super) fn name(value: Direction) -> &'static str {
-    match value {
-        Direction::SendRecv => "sendrecv",
-        Direction::SendOnly => "sendonly",
-        Direction::RecvOnly => "recvonly",
-        Direction::Inactive => "inactive",
-    }
-}
-
 pub(super) fn sends(value: &str) -> bool {
     matches!(value, "sendrecv" | "sendonly")
 }
