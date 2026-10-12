@@ -595,10 +595,10 @@ pub fn install(
         let host = host.clone();
         let mailbox = handler_mailbox.clone();
         let id = request.id;
-        let _ = nagoya::spawn(async move {
+        drop(nagoya::spawn(async move {
             let payload = host.perform(request).await;
             mailbox.post(Delivery { id, payload });
-        });
+        }));
     });
 
     document.add_poll_hook(move |document, task_context| {

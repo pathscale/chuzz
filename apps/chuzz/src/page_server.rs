@@ -55,19 +55,19 @@ pub async fn start(root: &Path) -> Result<String, String> {
         .map_err(|error| format!("could not read the bound port: {error}"))?
         .port();
 
-    let _ = nagoya::spawn(async move {
+    drop(nagoya::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
             let root = root.clone();
-            let _ = nagoya::spawn(async move {
+            drop(nagoya::spawn(async move {
                 if let Err(error) = answer(stream, &root).await {
                     eprintln!("chuzz-headless: page server: {error}");
                 }
-            });
+            }));
         }
-    });
+    }));
 
     Ok(format!("http://127.0.0.1:{port}/"))
 }

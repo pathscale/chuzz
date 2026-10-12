@@ -287,7 +287,7 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
         state.peers.insert(id, Arc::clone(&peer));
         drop(state);
         let epoch = crate::audio::media_epoch(context).map_err(|error| error.to_string())?;
-        let _ = nagoya::spawn(transport::run(peer, config, epoch));
+        drop(nagoya::spawn(transport::run(peer, config, epoch)));
         return Ok(json!(id));
     }
 

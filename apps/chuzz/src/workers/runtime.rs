@@ -193,7 +193,7 @@ fn fetch(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVal
     }
     let endpoint = Arc::clone(&host.endpoint);
     let net = Arc::clone(&host.net);
-    let _ = nagoya::spawn(async move {
+    drop(nagoya::spawn(async move {
         let result = cancellable(
             &endpoint,
             nagoya::timeout(DEADLINE, net.fetch_response_async(request)),
@@ -243,7 +243,7 @@ fn fetch(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVal
             metadata: metadata.to_string(),
             body,
         });
-    });
+    }));
     Ok(JsValue::undefined())
 }
 

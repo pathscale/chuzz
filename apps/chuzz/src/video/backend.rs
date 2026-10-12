@@ -210,7 +210,7 @@ pub(super) fn open(net: Arc<NetProvider>, url: Url, _preload: &str) -> Backend {
     let source = Arc::new(Mutex::new(None));
     let task_shared = Arc::clone(&shared);
     let task_source = Arc::clone(&source);
-    let _ = nagoya::spawn(async move {
+    drop(nagoya::spawn(async move {
         let result = initialise(&task_shared, &task_source, net, url).await;
         if let Err(error) = result
             && let Ok(state) = task_shared.lock()
@@ -219,7 +219,7 @@ pub(super) fn open(net: Arc<NetProvider>, url: Url, _preload: &str) -> Backend {
             drop(state);
             task_shared.fail(generation, error);
         }
-    });
+    }));
     Backend {
         shared,
         output: None,
@@ -412,9 +412,9 @@ async fn initialise(
         let shared = Arc::clone(shared);
         let source = Arc::clone(&source);
         let movie = Arc::clone(&movie);
-        let _ = nagoya::spawn(async move {
+        drop(nagoya::spawn(async move {
             let _ = audio_worker(&shared, &source, &movie).await;
-        });
+        }));
     }
     video_worker(shared, &source, &movie).await
 }

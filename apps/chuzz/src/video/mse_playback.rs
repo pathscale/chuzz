@@ -30,7 +30,7 @@ pub(super) fn open(source: Arc<Mutex<Presentation>>) -> Playback {
     let (backend, shared) = backend::streaming();
     let task_shared = Arc::clone(&shared);
     let task_source = Arc::clone(&source);
-    let _ = nagoya::spawn(async move {
+    drop(nagoya::spawn(async move {
         if let Err(error) = run(&task_shared, &task_source).await
             && let Ok(state) = task_shared.lock()
         {
@@ -38,7 +38,7 @@ pub(super) fn open(source: Arc<Mutex<Presentation>>) -> Playback {
             drop(state);
             task_shared.fail(generation, error);
         }
-    });
+    }));
     Playback {
         backend,
         shared,
