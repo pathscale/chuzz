@@ -97,7 +97,7 @@ pub(super) fn image(
         .map(Arc::new)
     };
     for request in incoming {
-        bridge.prepare_image_request(request, &snapshot);
+        bridge.prepare_image_request(request, snapshot);
     }
     let completion = Arc::new(Completion::default());
     bridge.prepare_image_request(
