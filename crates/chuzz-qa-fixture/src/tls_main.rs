@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nago_wss::proto::message::{Limits, Message};
-use nago_wss::stream::ByteStream;
 use nago_wss::upgrade::UpgradeOutcome;
 use nagoya::net::{TcpListener, TcpStream};
 use nagoya::reactor::{Addr, Reactor};
