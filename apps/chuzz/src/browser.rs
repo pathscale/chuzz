@@ -1455,20 +1455,39 @@ pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTa
         .snapshot())
 }
 
-pub fn close_tab(browser: Arc<Browser>, id: u64) {
-    let mut state = browser.0.state.lock().unwrap();
+fn close_tab_locked(state: &mut BrowserState, id: u64) -> bool {
     if state.tabs.len() == 1 {
-        return;
+        return false;
     }
     let Some(index) = state.tabs.iter().position(|tab| tab.id == id) else {
-        return;
+        return false;
     };
     state.tabs.remove(index);
     if state.active == id {
         state.active = state.tabs[index.min(state.tabs.len() - 1)].id;
     }
-    drop(state);
-    browser.emit_state();
+    true
+}
+
+pub fn close_tab(browser: Arc<Browser>, id: u64) {
+    let closed = {
+        let mut state = browser.0.state.lock().unwrap();
+        close_tab_locked(&mut state, id)
+    };
+    if closed {
+        browser.emit_state();
+    }
+}
+
+pub fn close_active_tab(browser: Arc<Browser>) {
+    let closed = {
+        let mut state = browser.0.state.lock().unwrap();
+        let id = state.active;
+        close_tab_locked(&mut state, id)
+    };
+    if closed {
+        browser.emit_state();
+    }
 }
 
 pub fn navigate(browser: Arc<Browser>, id: u64, input: String) -> bool {

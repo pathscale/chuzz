@@ -251,6 +251,11 @@ run_guarded qa "$qa_command_timeout" "$artifacts/qa.txt" \
   --checks "$root/tests/ps-qa" --require-paint-events \
   --pixel-artifact-dir "$artifacts/pixels"
 
+run_guarded tab-close "$qa_command_timeout" "$artifacts/tab-close-qa.txt" \
+  "$qa_bin" --descriptor "$descriptor" --app "$root/ps-qa.ron" qa \
+  --checks "$root/apps/chuzz/tests/checks/tab-close.ron" --require-paint-events \
+  --pixel-artifact-dir "$artifacts/pixels"
+
 for node_attempt in {1..10}; do
   run_guarded "nodes-$node_attempt" "$qa_command_timeout" \
     "$artifacts/nodes-$node_attempt.txt" \

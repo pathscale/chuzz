@@ -187,12 +187,16 @@ fn main() {
     #[cfg(target_os = "macos")]
     let builder = {
         let menu_handle = builder.handle();
-        builder.menu(izumo::MenuBar::new("Chuzz").on_menu_event(
-            izumo::menu_id::VIEW_SOURCE,
-            move || {
-                let _ = menu_handle.emit(izumo::menu_id::VIEW_SOURCE, ());
-            },
-        ))
+        let menu_browser = Arc::clone(&browser);
+        builder.menu(
+            izumo::MenuBar::new("Chuzz")
+                .on_menu_event(izumo::menu_id::VIEW_SOURCE, move || {
+                    let _ = menu_handle.emit(izumo::menu_id::VIEW_SOURCE, ());
+                })
+                .on_menu_override(izumo::menu_id::CLOSE, move || {
+                    browser::close_active_tab(Arc::clone(&menu_browser));
+                }),
+        )
     };
 
     let result = builder

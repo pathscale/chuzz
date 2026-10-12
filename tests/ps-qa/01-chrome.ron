@@ -56,6 +56,7 @@
         open: None,
         hover: None,
         click: Some("#chuzz-tab-1-close"),
+        press: true,
         subject: "#chuzz-tab-1",
         expect: Vanishes,
         covers: ["button:Close tab:"],

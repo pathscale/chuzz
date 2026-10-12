@@ -128,16 +128,17 @@ export function createMockApi(): BrowserApi {
     },
 
     closeTab: async (id) => {
-      // Matches `tab_strip::close_tab`: the last tab never closes, and focus
-      // falls to the tab on the left.
+      // Matches Rust: the last tab never closes, and focus falls to the right
+      // neighbor or to the left when the closed tab was last.
       if (tabs.length <= 1) return;
       const index = tabs.findIndex((tab) => tab.id === id);
       if (index < 0) return;
-      if (id === activeId) {
-        activeId = tabs[index === 0 ? 1 : index - 1].id;
+      const wasActive = id === activeId;
+      tabs = tabs.filter((tab) => tab.id !== id);
+      if (wasActive) {
+        activeId = tabs[Math.min(index, tabs.length - 1)].id;
         emit("active-tab-changed", activeId);
       }
-      tabs = tabs.filter((tab) => tab.id !== id);
       announce();
     },
 

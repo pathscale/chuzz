@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>tab-close</title>
+    <style>
+      @font-face {
+        font-family: "Fira Sans";
+        src: url("/fonts/FiraSans-Regular.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 400;
+      }
+
+      body {
+        margin: 32px;
+        color: #17212b;
+        font-family: "Fira Sans", sans-serif;
+      }
+
+      #tab-close-marker {
+        box-sizing: border-box;
+        min-height: 160px;
+        margin: 0 0 24px;
+        padding: 48px 32px;
+        border: 2px solid #17212b;
+        border-radius: 12px;
+        font-size: 32px;
+      }
+
+      label,
+      input {
+        display: block;
+        margin-top: 12px;
+      }
+
+      input {
+        min-width: 280px;
+        min-height: 36px;
+        font: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 id="tab-close-marker">Page A</h1>
+      <label for="tab-close-focus">Focusable input</label>
+      <input id="tab-close-focus" type="text" value="">
+    </main>
+    <script>
+      const label =
+        location.search.slice(1).replace(/^tab=/, "").split("&")[0].slice(0, 1) || "A";
+      const colors = {
+        A: "#f4b183",
+        B: "#8faadc",
+        C: "#a9d18e",
+        D: "#ffd966",
+        E: "#c9b2d9",
+        F: "#76c7c0",
+      };
+      const marker = document.getElementById("tab-close-marker");
+      document.title = `tab-close-${label}`;
+      marker.id = `tab-close-marker-${label}`;
+      marker.textContent = `Page ${label}`;
+      marker.style.backgroundColor = colors[label] || "#d9e2f3";
+    </script>
+  </body>
+</html>
