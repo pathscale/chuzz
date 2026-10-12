@@ -20,6 +20,7 @@ chmod 700 "$private_tmp"
 descriptor=""
 app_pid=""
 server_pid=""
+front_pid=""
 active_qa_pid=""
 active_tee_pid=""
 active_qa_fifo=""
@@ -80,6 +81,10 @@ cleanup() {
   if [[ -n "$app_pid" ]]; then
     stop_pid "$app_pid"
     app_pid=""
+  fi
+  if [[ -n "$front_pid" ]]; then
+    stop_pid "$front_pid"
+    front_pid=""
   fi
   if [[ -n "$server_pid" ]]; then
     stop_pid "$server_pid"
@@ -190,10 +195,27 @@ printf '%s\n' '{"inspection":true,"profiling":false}' \
 TMPDIR="$private_tmp"
 export TMPDIR
 
-"$fixture_bin" --port 49123 > "$artifacts/fixture.log" 2>&1 &
+"$fixture_bin" --port 49124 > "$artifacts/fixture.log" 2>&1 &
 server_pid=$!
+# Fixtures are HTTPS with ALPN h2 only, like the sites users load: HTTP/1.1
+# is for WebSocket. The test CA lives in this run's private temp dir and is
+# trusted only by the processes started here, through SSL_CERT_FILE.
+mkdir -m 700 "$private_tmp/tls"
+bun "$root/scripts/qa-h2-front.ts" --dir "$private_tmp/tls" --listen 49123 --upstream 49124 \
+  > "$artifacts/h2-front.log" 2>&1 &
+front_pid=$!
+for _ in {1..100}; do
+  grep -q '^h2 front' "$artifacts/h2-front.log" 2>/dev/null && break
+  sleep 0.1
+done
+if ! grep -q '^h2 front' "$artifacts/h2-front.log"; then
+  printf 'The HTTP/2 fixture front did not start (log: %s)\n' "$artifacts/h2-front.log" >&2
+  exit 1
+fi
+SSL_CERT_FILE="$private_tmp/tls/ca.pem"
+export SSL_CERT_FILE
 HOME="$qa_home" "$app/Contents/MacOS/chuzz-gui" \
-  http://127.0.0.1:49123/ > "$artifacts/chuzz.log" 2>&1 &
+  https://127.0.0.1:49123/ > "$artifacts/chuzz.log" 2>&1 &
 app_pid=$!
 
 descriptor_dir=$TMPDIR/tauri-blitz-agent
