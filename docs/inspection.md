@@ -83,7 +83,7 @@ The descriptor is `$TMPDIR/tauri-blitz-agent/<instance-id>.json`. The socket is 
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "pid": 12345,
   "instanceId": "instance-id",
   "address": "unix:///tmp/tauri-blitz-agent/instance-id.sock",
@@ -94,7 +94,7 @@ The descriptor is `$TMPDIR/tauri-blitz-agent/<instance-id>.json`. The socket is 
 
 Connect to the path in `address` after the `unix://` prefix. Headless `serverInfo.name` is `chuzz-headless`. The GUI server name is the izumo package name. `serverInfo.version` is that crate's package version.
 
-Frames are length-delimited JSON text. A frame larger than 16 MiB is rejected. `encode_response` also refuses a reply whose text would exceed that cap (`PayloadTooLarge`). Capture leaves about 64 KiB of that budget for the JSON around the base64 pixels.
+Frames are length-delimited JSON text. A frame larger than 16 MiB (`MAX_DEBUG_FRAME_BYTES`) is rejected. The headless supervisor uses the same constant on its worker link, so nothing is accepted on one hop and refused on the next. 16 MiB fits the largest real payload, a capture, which is itself capped to fit. `encode_response` also refuses a reply whose text would exceed that cap (`PayloadTooLarge`). Capture leaves about 64 KiB of that budget for the JSON around the base64 pixels.
 
 Several clients may connect. A slow reader does not stall the others. Observation uses a latest-value slot, so a slow client sees the newest event rather than a backlog.
 
@@ -144,7 +144,7 @@ A call wraps the typed request in `arguments`:
     "name": "blitz.agent.control",
     "arguments": {
       "command": "inspect",
-      "params": { "root": null, "max_depth": 40 }
+      "params": { "root": null, "maxDepth": 40 }
     }
   }
 }
@@ -224,13 +224,13 @@ Agent notifications use `notifications/blitz/agent` and the same `event` / `valu
 
 ## Wire shape
 
-Command enums are adjacently tagged. The tag is camelCase. Fields inside those enums stay snake_case. `{"action":"click","node_id":9}` does not decode. The node id belongs under `params`.
+Command enums are adjacently tagged. Tags and fields are camelCase (protocol 2). Hosts still accept the protocol 1 snake_case field names (`node_id`, `max_depth`, `delta_x`, `delta_y`) on input, so older clients keep working; replies and events are camelCase only. A protocol 2 client refuses a descriptor that reports protocol 1. `{"action":"click","nodeId":9}` does not decode. The node id belongs under `params`.
 
 Structs that declare their own camelCase rename do use it. Snapshot and capture fields are camelCase (`includeDom`, `nodeId`). Semantic nodes use `domId`, `focusedNode`, `viewportFixed`. Condense option fields are `previewNodes`, `summarySentences`, `maxKeywords`.
 
 Boxes on a semantic node are `[x, y, width, height]`. A layout row uses the same array shapes: `bounds` and `border` and `padding` are four numbers (edges are top, right, bottom, left), and sizes and scroll offsets are two numbers. `nodeId` on a layout row is camelCase because that row is a struct.
 
-A unit command is `{"command":"metrics"}` with no `params`. A unit result is `{"result":"ack"}` with no `value`. `max_depth` of `0` means the whole tree inside the document inspector.
+A unit command is `{"command":"metrics"}` with no `params`. A unit result is `{"result":"ack"}` with no `value`. `maxDepth` of `0` means the whole tree inside the document inspector.
 
 ## Agent requests
 
@@ -238,14 +238,14 @@ Tool name: `blitz.agent.control`. Examples below are the `arguments` object.
 
 ### inspect
 
-Semantic tree, including shadow trees flattened into it on the headless host. `root` null is the document. `max_depth` 0 walks the whole tree. Bot mode reduces a depth above 12 to 12, and leaves 0 as 0.
+Semantic tree, including shadow trees flattened into it on the headless host. `root` null is the document. `maxDepth` 0 walks the whole tree. Bot mode reduces a depth above 12 to 12, and leaves 0 as 0.
 
 ```json
-{ "command": "inspect", "params": { "root": null, "max_depth": 40 } }
+{ "command": "inspect", "params": { "root": null, "maxDepth": 40 } }
 ```
 
 ```json
-{ "command": "inspect", "params": { "root": 9, "max_depth": 2 } }
+{ "command": "inspect", "params": { "root": 9, "maxDepth": 2 } }
 ```
 
 Result `agentSnapshot`. `bounds` is omitted when the node has no box. `domId` and `slot` are omitted when absent. `viewport` is `[x, y, width, height]` in CSS pixels.
@@ -253,36 +253,36 @@ Result `agentSnapshot`. `bounds` is omitted when the node has no box. `domId` an
 ### act
 
 ```json
-{ "command": "act", "params": { "action": "focus", "params": { "node_id": 9 } } }
+{ "command": "act", "params": { "action": "focus", "params": { "nodeId": 9 } } }
 ```
 
 ```json
-{ "command": "act", "params": { "action": "click", "params": { "node_id": 9 } } }
+{ "command": "act", "params": { "action": "click", "params": { "nodeId": 9 } } }
 ```
 
 ```json
-{ "command": "act", "params": { "action": "doubleClick", "params": { "node_id": 9 } } }
+{ "command": "act", "params": { "action": "doubleClick", "params": { "nodeId": 9 } } }
 ```
 
 ```json
-{ "command": "act", "params": { "action": "hover", "params": { "node_id": 9 } } }
+{ "command": "act", "params": { "action": "hover", "params": { "nodeId": 9 } } }
 ```
 
 ```json
 {
   "command": "act",
-  "params": { "action": "setValue", "params": { "node_id": 12, "value": "fixture" } }
+  "params": { "action": "setValue", "params": { "nodeId": 12, "value": "fixture" } }
 }
 ```
 
 ```json
-{ "command": "act", "params": { "action": "scrollIntoView", "params": { "node_id": 13 } } }
+{ "command": "act", "params": { "action": "scrollIntoView", "params": { "nodeId": 13 } } }
 ```
 
 ```json
 {
   "command": "act",
-  "params": { "action": "scrollBy", "params": { "node_id": 14, "delta_x": 0.0, "delta_y": -200.0 } }
+  "params": { "action": "scrollBy", "params": { "nodeId": 14, "deltaX": 0.0, "deltaY": -200.0 } }
 }
 ```
 
@@ -330,8 +330,8 @@ Pointer phases are `move`, `down`, `up`, `cancel`.
     "action": "input",
     "params": {
       "input": "wheel",
-      "delta_x": 0.0,
-      "delta_y": 80.0,
+      "deltaX": 0.0,
+      "deltaY": 80.0,
       "phase": "moved",
       "modifiers": { "shift": false, "control": false, "alt": false, "meta": false }
     }
@@ -703,7 +703,7 @@ These fields sit beside `command` and `params`:
   "expectedGeneration": 4,
   "expectedDocumentId": 9,
   "command": "act",
-  "params": { "action": "click", "params": { "node_id": 12 } }
+  "params": { "action": "click", "params": { "nodeId": 12 } }
 }
 ```
 
