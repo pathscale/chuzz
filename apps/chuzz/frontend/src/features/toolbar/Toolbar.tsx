@@ -1,6 +1,6 @@
 import { AddressBar, NavigationBar } from "@chuzz/ui";
 import type { JSX } from "@solidjs/web";
-import { createEffect, createSignal } from "solid-js";
+import { Show, createEffect, createSignal } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 
@@ -31,7 +31,11 @@ export function Toolbar(): JSX.Element {
   );
 
   return (
+    <>
     <NavigationBar>
+      <Show when={browser.activeTab()?.tlsRsaFallback}>
+        <span title="RSA authentication fallback" style={{ color: "#b45309" }}>⚠ RSA</span>
+      </Show>
       <AddressBar
         id="chuzz-address-bar"
         value={typed()}
@@ -43,5 +47,15 @@ export function Toolbar(): JSX.Element {
         }}
       />
     </NavigationBar>
+    <Show when={browser.activeTab()?.tlsRsaFallback}>
+      <div role="status" style={{ padding: "0.5rem 1rem", background: "#fef3c7", color: "#78350f" }}>
+        {browser.activeTab()?.tlsWarning} {" "}
+        <a href="chuzz:rsa-fallback" onClick={(event: MouseEvent) => {
+          event.preventDefault();
+          void browser.navigate("chuzz:rsa-fallback");
+        }}>Why?</a>
+      </div>
+    </Show>
+    </>
   );
 }

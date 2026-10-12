@@ -39,6 +39,8 @@ export interface Tab {
   status: LoadStatus;
   canGoBack: boolean;
   canGoForward: boolean;
+  tlsRsaFallback?: boolean;
+  tlsWarning?: string | null;
 }
 
 /** Which inspector sections are open. Persisted by the shell, not the interface. */

@@ -46,6 +46,8 @@ pub struct FrontendTab {
     status: &'static str,
     can_go_back: bool,
     can_go_forward: bool,
+    tls_rsa_fallback: bool,
+    tls_warning: Option<&'static str>,
 }
 
 #[derive(Clone, Serialize)]
@@ -87,6 +89,7 @@ struct TabState {
     /// new one's address.
     outcome: PageOutcome,
     generation: u64,
+    tls_rsa_fallback: bool,
 }
 
 impl TabState {
@@ -104,6 +107,10 @@ impl TabState {
             } else {
                 self.outcome.name()
             },
+            tls_rsa_fallback: self.tls_rsa_fallback,
+            tls_warning: self
+                .tls_rsa_fallback
+                .then_some(crate::tls_status::RSA_FALLBACK_BANNER),
             can_go_back: self.current > 0,
             can_go_forward: self.current + 1 < self.history.len(),
         }
@@ -443,6 +450,7 @@ impl Browser {
                     loading: false,
                     outcome: PageOutcome::Blank,
                     generation: 0,
+                    tls_rsa_fallback: false,
                 }],
                 active: 0,
                 next_tab_id: 1,
@@ -566,6 +574,7 @@ impl Browser {
             };
             tab.generation += 1;
             tab.loading = true;
+            tab.tls_rsa_fallback = false;
             (tab.request().clone(), tab.generation)
         };
         self.emit_state();
@@ -797,6 +806,8 @@ impl Browser {
                     if let Ok(url) = Url::parse(&bundle.resolved_url) {
                         tab.history[tab.current].url = url;
                     }
+                    tab.tls_rsa_fallback = outcome != PageOutcome::Error
+                        && crate::tls_status::rsa_fallback_for(&tab.request().url);
                     tab.title = title;
                     tab.loading = false;
                     tab.outcome = outcome;
@@ -1042,6 +1053,19 @@ async fn fetch_page(
 ) -> PageBundle {
     let net = browser.net();
     browser.note("info", "nav", format!("navigating to {}", request.url));
+    if let Some(html) = crate::internal_pages::html_for(&request.url) {
+        return PageBundle {
+            tab_id,
+            generation,
+            resolved_url: request.url.to_string(),
+            source: PageSource::Html {
+                html,
+                scripts: HashMap::new(),
+                wasm: None,
+            },
+            outcome: PageOutcome::Ready,
+        };
+    }
     if request.url.scheme() == "about" {
         return PageBundle {
             tab_id,
@@ -1448,6 +1472,7 @@ pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTa
             loading: false,
             outcome: PageOutcome::Blank,
             generation: 0,
+            tls_rsa_fallback: false,
         });
         state.active = id;
         id
@@ -1875,6 +1900,7 @@ mod tests {
             loading: true,
             outcome: PageOutcome::Ready,
             generation: 0,
+            tls_rsa_fallback: false,
         };
         assert_eq!(tab.snapshot().status, "loading");
         tab.loading = false;
