@@ -199,7 +199,10 @@ impl DeviceConnection {
             }
             let mapped = range(mapping.offset, mapping.size, entry.size)?;
             // wgpu's range accessors panic for empty or misaligned ranges.
-            if !mapping.offset.is_multiple_of(8) || mapping.size == 0 || !mapping.size.is_multiple_of(4) {
+            if !mapping.offset.is_multiple_of(8)
+                || mapping.size == 0
+                || !mapping.size.is_multiple_of(4)
+            {
                 return Err(GpuError::validation(
                     "GPUBuffer.mapAsync requires an 8-byte offset and a nonempty 4-byte size",
                 ));
