@@ -2767,7 +2767,7 @@ impl CapturedDocument {
 /// These evaluate it the way a page does and read the answers back.
 #[cfg(all(test, feature = "javascript"))]
 mod tests {
-    use super::{NetProvider, WEB_API_SHIM, install_web_api_shim, load_for_capture};
+    use super::{NetProvider, WEB_API_SHIM, install_web_api_shim};
 
     fn shimmed() -> blitz_script::ScriptDocument {
         let mut document = blitz_script::ScriptDocument::from_html(
