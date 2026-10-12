@@ -215,7 +215,7 @@ impl Registry {
         drop(state);
 
         let registry = Arc::downgrade(self);
-        let _ = nagoya::spawn(async move {
+        let _detached = nagoya::spawn(async move {
             nagoya::sleep(LIFETIME).await;
             if let Some(registry) = registry.upgrade()
                 && let Err(error) = registry.finish(id)

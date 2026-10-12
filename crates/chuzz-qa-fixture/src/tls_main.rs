@@ -117,7 +117,7 @@ fn run() -> Result<(), String> {
             let (stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
             let config = Arc::clone(&config);
             let version = options.version_name;
-            let _ = nagoya::spawn(async move {
+            let _detached = nagoya::spawn(async move {
                 match nagoya::timeout(Duration::from_secs(60), serve(stream, config, version)).await
                 {
                     Ok(Ok(())) => {}

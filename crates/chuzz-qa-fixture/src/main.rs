@@ -109,7 +109,7 @@ fn main() -> io::Result<()> {
         loop {
             let (stream, _) = listener.accept().await.map_err(io_error)?;
             let echoes = Arc::clone(&echoes);
-            let _ = nagoya::spawn(async move {
+            let _detached = nagoya::spawn(async move {
                 match nagoya::timeout(Duration::from_secs(15), serve(stream, echoes, scheme, port))
                     .await
                 {
