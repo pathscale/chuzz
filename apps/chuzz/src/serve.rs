@@ -2005,7 +2005,7 @@ fn serve_page(
                     } else {
                         max_depth
                     };
-                    let response = inspect_document(&mut *document, root, depth, revision);
+                    let response = inspect_document(&mut document, root, depth, revision);
                     let response = shadow_inspect::flatten(
                         &mut document,
                         response,
@@ -2018,7 +2018,7 @@ fn serve_page(
                 AgentControlRequest::Act(action) => {
                     let _action = supervisor::operation(supervisor::Operation::Action);
                     match authorize_action(&policy, &document, &action) {
-                        Ok(()) => match control.act(&mut *document, action) {
+                        Ok(()) => match control.act(&mut document, action) {
                             Ok(()) => settle_response(
                                 &mut document,
                                 &animation_clock,
@@ -2061,7 +2061,7 @@ fn serve_page(
                 AgentControlRequest::Condense { level, options } => {
                     condense_response(&policy, level, options, || {
                         revision += 1;
-                        let response = inspect_document(&mut *document, None, 0, revision);
+                        let response = inspect_document(&mut document, None, 0, revision);
                         shadow_inspect::flatten(&mut document, response, None, 0, |document, id| {
                             inspect_document(document, Some(id), 1, revision)
                         })
@@ -2090,7 +2090,7 @@ fn serve_page(
                         message: "capture scale must be finite and between 0.25 and 8".into(),
                     })
                 } else {
-                    match capture.capture(&mut *document, request) {
+                    match capture.capture(&mut document, request) {
                         Ok(captured) => DebugResponse::Captured(captured),
                         Err(error) => DebugResponse::Error(error),
                     }
@@ -2101,7 +2101,7 @@ fn serve_page(
             {
                 revision += 1;
                 let status_only = !request.include_dom;
-                match snapshot_document(&mut *document, request, revision) {
+                match snapshot_document(&mut document, request, revision) {
                     Ok(mut snapshot) => {
                         if status_only {
                             snapshot.dom = Some(tls_status.borrow().clone());
