@@ -1,0 +1,25 @@
+[
+    (
+        id: "speech-synthesis-behaviour",
+        group: "speech-synthesis",
+        what: "Voices and queue state stay empty, cancellation suppresses pending errors, and unsupported speech reports an asynchronous error.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: SPEECH-SYNTHESIS PASS",
+        expect: PaintsNamed,
+        covers: ["READY: SPEECH-SYNTHESIS PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "speech-synthesis-visible-ink",
+        group: "speech-synthesis",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]
