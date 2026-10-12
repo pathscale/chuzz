@@ -18,7 +18,6 @@
   }
   function matrix(value) {
     value = value || {};
-    if (value.is2D === false) { missing("setTransform.3d"); }
     var aliases = ["m11", "m12", "m21", "m22", "m41", "m42"];
     return ["a", "b", "c", "d", "e", "f"].map(function (name, index) {
       var a = value[name], b = value[aliases[index]];
@@ -256,11 +255,28 @@
     }).join(" ");
     return { css: css, ops: ops };
   }
+  function path2D(value) {
+    return typeof globalThis.__chuzzPath2DCommands === "function"
+      ? globalThis.__chuzzPath2DCommands(value) : null;
+  }
+  function pathSnapshot(value) {
+    var commands = path2D(value);
+    if (commands === null) { throw new TypeError("expected Path2D"); }
+    if (commands.length > 1048576) { throw new RangeError("Path2D command limit reached"); }
+    return commands;
+  }
   function fillRule(value) {
     if (value === undefined || value === "nonzero") { return 0; }
     if (value === "evenodd") { return 1; }
-    if (typeof value === "object") { return missing("fill.Path2D"); }
     throw new TypeError("invalid canvas fill rule");
+  }
+  function drawPathArgs(args) {
+    var supplied = path2D(args[0]) !== null;
+    if (supplied) { return { path: pathSnapshot(args[0]), rule: fillRule(args[1]) }; }
+    if (args[0] !== undefined && typeof args[0] === "object") {
+      throw new TypeError("expected Path2D or fill rule");
+    }
+    return { path: undefined, rule: fillRule(args[0]) };
   }
 
   globalThis.__chuzzMake2D = function (canvas, id, pixelsOf) {
@@ -278,7 +294,10 @@
         fillStyle: "#000000", strokeStyle: "#000000", globalAlpha: 1,
         globalCompositeOperation: "source-over", lineWidth: 1, lineCap: "butt",
         lineJoin: "miter", miterLimit: 10, lineDashOffset: 0, dash: [],
-        font: "10px sans-serif", textAlign: "start", textBaseline: "alphabetic",
+        font: "10px sans-serif", fontKerning: "auto", fontStretch: "normal",
+        fontVariantCaps: "normal", letterSpacing: "0px", letterSpacingPx: 0,
+        wordSpacing: "0px", wordSpacingPx: 0, textRendering: "auto",
+        textAlign: "start", textBaseline: "alphabetic",
         direction: "inherit", imageSmoothingEnabled: true,
         imageSmoothingQuality: "low", matrix: identity.slice(),
         shadowBlur: 0, shadowColor: "rgba(0, 0, 0, 0)", shadowOffsetX: 0, shadowOffsetY: 0,
@@ -308,7 +327,10 @@
         composite: state.globalCompositeOperation, width: state.lineWidth,
         cap: state.lineCap, join: state.lineJoin, miter: state.miterLimit,
         dash: state.dash.slice(), dashOffset: state.lineDashOffset,
-        font: state.font, align: state.textAlign, baseline: state.textBaseline,
+        font: state.font, kerning: state.fontKerning, fontStretch: state.fontStretch,
+        fontVariantCaps: state.fontVariantCaps, letterSpacing: state.letterSpacingPx,
+        wordSpacing: state.wordSpacingPx, textRendering: state.textRendering,
+        align: state.textAlign, baseline: state.textBaseline,
         direction: direction, smoothing: state.imageSmoothingEnabled,
         shadowBlur: state.shadowBlur, shadowColor: state.shadowColor,
         shadowOffsetX: state.shadowOffsetX, shadowOffsetY: state.shadowOffsetY,
@@ -392,11 +414,12 @@
         stops: resource.stops.map(function (stop) { return stop.slice(); })
       };
     }
-    function record(op, n, drawing, value, text) {
+    function record(op, n, drawing, value, text, path) {
       order();
       ensure();
       room(0);
       var command = { op: op, n: n || [], matrix: state.matrix.slice() };
+      if (path !== undefined) { command.path = path; }
       if (drawing) {
         command.state = snapshot();
         command.brush = brush(value);
@@ -489,13 +512,42 @@
       state.filterOps = parsed.ops;
       return parsed.css;
     });
-    ["fontKerning", "fontStretch", "fontVariantCaps", "letterSpacing", "wordSpacing",
-     "textRendering"].forEach(function (name) {
+    property("fontKerning", enumeration(["auto", "normal", "none"]));
+    property("fontStretch", enumeration(["ultra-condensed", "extra-condensed", "condensed",
+      "semi-condensed", "normal", "semi-expanded", "expanded", "extra-expanded", "ultra-expanded"]));
+    property("fontVariantCaps", enumeration(["normal", "small-caps", "all-small-caps",
+      "petite-caps", "all-petite-caps", "unicase", "titling-caps"]));
+    property("textRendering", enumeration(["auto", "optimizeSpeed", "optimizeLegibility", "geometricPrecision"]));
+    function spacing(value) {
+      value = String(value).trim();
+      if (value === "normal" || value === "0") { return { css: "0px", px: 0 }; }
+      var match = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(px|pt|pc|in|cm|mm|q|em|rem)$/i.exec(value);
+      if (!match) { return null; }
+      var amount = Number(match[1]), unit = match[2].toLowerCase();
+      var sizeMatch = /([0-9]*\.?[0-9]+)px/.exec(state.font);
+      var em = sizeMatch ? Number(sizeMatch[1]) : 10;
+      var root = typeof getComputedStyle === "function"
+        ? parseFloat(getComputedStyle(document.documentElement).fontSize) || 16 : 16;
+      var factor = unit === "px" ? 1 : unit === "pt" ? 96 / 72 : unit === "pc" ? 16
+        : unit === "in" ? 96 : unit === "cm" ? 96 / 2.54 : unit === "mm" ? 96 / 25.4
+        : unit === "q" ? 96 / 101.6 : unit === "em" ? em : root;
+      var px = amount * factor;
+      if (!Number.isFinite(px) || Math.abs(px) > 1e6) { return null; }
+      return { css: px === 0 ? "0px" : String(px) + "px", px: px };
+    }
+    function spacingProperty(name, pixels) {
       Object.defineProperty(context, name, {
-        get: function () { return missing(name); },
-        set: function () { return missing(name); }
+        enumerable: true,
+        get: function () { ensure(); return state[name]; },
+        set: function (value) {
+          ensure();
+          var parsed = spacing(value);
+          if (parsed) { state[name] = parsed.css; state[pixels] = parsed.px; }
+        }
       });
-    });
+    }
+    spacingProperty("letterSpacing", "letterSpacingPx");
+    spacingProperty("wordSpacing", "wordSpacingPx");
     context.beginPath = function () { record("beginPath"); };
     context.closePath = function () { record("closePath"); };
     [["moveTo", 2], ["lineTo", 2], ["rect", 4], ["quadraticCurveTo", 4],
@@ -545,12 +597,18 @@
       corners.forEach(function (r) { n.push(r[0], r[1]); });
       record("roundRect", n);
     };
-    context.fill = function (value) { record("fill", [fillRule(value)], true, state.fillStyle); };
-    context.stroke = function (path) {
-      if (path !== undefined) { return missing("stroke.Path2D"); }
-      record("stroke", [], true, state.strokeStyle);
+    context.fill = function () {
+      var resolved = drawPathArgs(arguments);
+      record("fill", [resolved.rule], true, state.fillStyle, undefined, resolved.path);
     };
-    context.clip = function (value) { record("clip", [fillRule(value)]); };
+    context.stroke = function (path) {
+      var commands = path === undefined ? undefined : pathSnapshot(path);
+      record("stroke", [], true, state.strokeStyle, undefined, commands);
+    };
+    context.clip = function () {
+      var resolved = drawPathArgs(arguments);
+      record("clip", [resolved.rule], false, undefined, undefined, resolved.path);
+    };
     ["fillRect", "strokeRect", "clearRect"].forEach(function (name) {
       context[name] = function (x, y, w, h) {
         var n = [x, y, w, h].map(Number);
@@ -701,8 +759,26 @@
       dirty.add(context);
     };
     context.getContextAttributes = function () { return { alpha: true, colorSpace: "srgb" }; };
-    ["createConicGradient", "isPointInPath", "isPointInStroke", "drawFocusIfNeeded",
-     "scrollPathIntoView"].forEach(function (name) {
+    context.isPointInPath = function () {
+      var args = arguments, path, offset = 0;
+      if (path2D(args[0]) !== null) { path = pathSnapshot(args[0]); offset = 1; }
+      var rule = fillRule(args[offset + 2]);
+      var x = Number(args[offset]), y = Number(args[offset + 1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) { return false; }
+      return flush("hit", { query: {
+        kind: "path", n: [x, y], fillRule: rule, path: path, state: snapshot()
+      } });
+    };
+    context.isPointInStroke = function () {
+      var args = arguments, path, offset = 0;
+      if (path2D(args[0]) !== null) { path = pathSnapshot(args[0]); offset = 1; }
+      var x = Number(args[offset]), y = Number(args[offset + 1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) { return false; }
+      return flush("hit", { query: {
+        kind: "stroke", n: [x, y], path: path, state: snapshot()
+      } });
+    };
+    ["createConicGradient", "drawFocusIfNeeded", "scrollPathIntoView"].forEach(function (name) {
       context[name] = function () { return missing(name); };
     });
     Object.defineProperties(context, {

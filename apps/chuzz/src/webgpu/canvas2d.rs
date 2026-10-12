@@ -19,7 +19,7 @@ use peniko::{
     BlendMode, Blob, Color, Compose, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData,
     ImageFormat, ImageQuality, ImageSampler, Mix,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Bridge, lock};
 
@@ -179,10 +179,21 @@ struct Request {
     font_base: f64,
     #[serde(default = "font_base")]
     root_base: f64,
+    query: Option<HitQuery>,
 }
 
 fn font_base() -> f64 {
     16.0
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PathCommand {
+    op: String,
+    #[serde(default)]
+    n: Vec<f64>,
+    #[serde(default = "identity")]
+    matrix: [f64; 6],
 }
 
 #[derive(Deserialize)]
@@ -195,9 +206,26 @@ struct Command {
     matrix: [f64; 6],
     state: Option<DrawState>,
     brush: Option<Brush>,
+    path: Option<Vec<PathCommand>>,
     #[serde(default)]
     text: String,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HitQuery {
+    kind: String,
+    #[serde(default)]
+    n: Vec<f64>,
+    #[serde(default)]
+    fill_rule: f64,
+    path: Option<Vec<PathCommand>>,
+    state: DrawState,
+}
+
+fn default_auto() -> String { "auto".to_owned() }
+fn default_normal() -> String { "normal".to_owned() }
+fn default_zero() -> f64 { 0.0 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -212,6 +240,18 @@ struct DrawState {
     dash: Vec<f64>,
     dash_offset: f64,
     font: String,
+    #[serde(default = "default_auto")]
+    kerning: String,
+    #[serde(default = "default_normal")]
+    font_stretch: String,
+    #[serde(default = "default_normal")]
+    font_variant_caps: String,
+    #[serde(default = "default_zero")]
+    letter_spacing: f64,
+    #[serde(default = "default_zero")]
+    word_spacing: f64,
+    #[serde(default = "default_auto")]
+    text_rendering: String,
     align: String,
     baseline: String,
     direction: String,
@@ -587,14 +627,10 @@ impl Canvas {
         if !state.alpha.is_finite() || !(0.0..=1.0).contains(&state.alpha) {
             return Err("invalid canvas globalAlpha".to_owned());
         }
-        if path.elements().is_empty()
-            || self
-                .clips
-                .iter()
-                .any(|clip| clip.path.elements().is_empty())
-        {
+        if self.clips.iter().any(|clip| clip.path.elements().is_empty()) {
             return Ok(());
         }
+        let empty_path = path.elements().is_empty();
         let (paint, paint_transform, extra_clip) = resolve_brush(brush, inputs, state.smoothing)?;
         let (blend, unbounded) = if clear {
             (BlendMode::new(Mix::Normal, Compose::DestOut), false)
@@ -603,37 +639,37 @@ impl Canvas {
                 missing(&format!("globalCompositeOperation.{}", state.composite))
             })?
         };
+        let effect = if clear { None } else { effects::prepare(state)? };
+        if empty_path {
+            if unbounded {
+                return self.composite(&effects::Layer::empty(), state, blend, state.alpha, true);
+            }
+            return Ok(());
+        }
         let transform = if stroke {
             Affine::new(state.matrix)
         } else {
             Affine::IDENTITY
         };
-        if transform.determinant().abs() < 1.0e-20 || paint_transform.determinant().abs() < 1.0e-20
-        {
+        if transform.determinant().abs() < 1.0e-20 || paint_transform.determinant().abs() < 1.0e-20 {
+            if unbounded {
+                return self.composite(&effects::Layer::empty(), state, blend, state.alpha, true);
+            }
             return Ok(());
         }
-        if !clear {
-            if let Some(effect) = effects::prepare(state)? {
-                if unbounded {
-                    return Err(missing(&format!(
-                        "globalCompositeOperation.{} with shadow or filter",
-                        state.composite
-                    )));
-                }
-                return self.draw_effect(
-                    path,
-                    state,
-                    &style,
-                    &paint,
-                    paint_transform,
-                    &extra_clip,
-                    transform,
-                    stroke,
-                    fill,
-                    blend,
-                    &effect,
-                );
-            }
+        if let Some(effect) = effect.as_ref() {
+            return self.draw_effect(
+                path, state, &style, &paint, paint_transform, &extra_clip,
+                transform, stroke, fill, blend, unbounded, effect,
+            );
+        }
+        if unbounded {
+            let canvas = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
+            let layer = self.raster_layer(
+                path, &style, &paint, paint_transform, &extra_clip, transform,
+                stroke, fill, canvas,
+            )?;
+            return self.composite(&layer, state, blend, state.alpha, true);
         }
         let shape = transform.inverse() * path.clone();
         let clips = self.clips.clone();
@@ -719,6 +755,7 @@ impl Canvas {
         stroke: bool,
         fill: Fill,
         blend: BlendMode,
+        unbounded: bool,
         effect: &effects::Prepared,
     ) -> Result<()> {
         let mut area = path.bounding_box().inflate(1.0, 1.0);
@@ -746,27 +783,21 @@ impl Canvas {
         }
         let margin = effects::margin(effect);
         area = area.intersect(visible.inflate(margin, margin));
-        if area.x1 <= area.x0 || area.y1 <= area.y0 {
-            return Ok(());
-        }
-        let raster = self.raster_layer(
-            path,
-            style,
-            paint,
-            paint_transform,
-            extra_clip,
-            transform,
-            stroke,
-            fill,
-            area,
-        )?;
+        let area_empty = area.x1 <= area.x0 || area.y1 <= area.y0;
+        if area_empty && !unbounded { return Ok(()); }
+        let mut raster = if area_empty {
+            effects::Layer::empty()
+        } else {
+            self.raster_layer(path, style, paint, paint_transform, extra_clip,
+                transform, stroke, fill, area)?
+        };
+        raster.scale_alpha(state.alpha);
         match effects::apply(raster, effect)? {
             effects::Outcome::Separate { shadow, shape } => {
-                self.composite(&shadow, state, blend)?;
-                self.composite(&shape, state, blend)?;
-            }
-            effects::Outcome::Filtered { layer } => {
-                self.composite(&layer, state, blend)?;
+                if let Some(shadow) = shadow {
+                    self.composite(&shadow, state, blend, 1.0, unbounded)?;
+                }
+                self.composite(&shape, state, blend, 1.0, unbounded)?;
             }
         }
         Ok(())
@@ -834,10 +865,16 @@ impl Canvas {
         layer: &effects::Layer,
         state: &DrawState,
         blend: BlendMode,
+        alpha: f32,
+        unbounded: bool,
     ) -> Result<()> {
-        if layer.is_empty() {
-            return Ok(());
-        }
+        if layer.is_empty() && !unbounded { return Ok(()); }
+        let layer = if unbounded {
+            layer.padded_to(0, 0, self.width as usize, self.height as usize)?
+        } else {
+            layer.clone()
+        };
+        if layer.is_empty() { return Ok(()); }
         let bytes = Arc::new(layer.premul_bytes());
         let image = ImageData {
             data: Blob::new(Arc::clone(&bytes) as Arc<dyn AsRef<[u8]> + Send + Sync>),
@@ -853,14 +890,17 @@ impl Canvas {
             f64::from(layer.x) + layer.width as f64,
             f64::from(layer.y) + layer.height as f64,
         );
-        let mut area = rect;
+        let mut area = if unbounded {
+            Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height))
+        } else {
+            rect
+        };
         for clip in &self.clips {
             area = area.intersect(clip.path.bounding_box().inflate(1.0, 1.0));
         }
         let clips = self.clips.clone();
         let canvas_width = self.width as f64;
         let canvas_height = self.height as f64;
-        let alpha = state.alpha;
         let paint_transform = Affine::translate((f64::from(layer.x), f64::from(layer.y)));
         let drawn = self
             .backing
@@ -959,10 +999,11 @@ impl Canvas {
                 if self.clips.len() >= STACK_LIMIT {
                     return Err("canvas clip limit reached in chuzz".to_owned());
                 }
-                self.clips.push(Clip {
-                    path: Arc::new(self.path.path.clone()),
-                    rule: rule(command.n[0]),
-                });
+                let path = match &command.path {
+                    Some(commands) => Affine::new(command.matrix) * paths::decode(commands)?,
+                    None => self.path.path.clone(),
+                };
+                self.clips.push(Clip { path: Arc::new(path), rule: rule(command.n[0]) });
                 return Ok(());
             }
             "putImageData" => return self.put(command, inputs),
@@ -981,16 +1022,18 @@ impl Canvas {
         let mut stroke = false;
         let mut clear = false;
         let mut image_paint = None;
+        let explicit_path = command.path.as_deref().map(paths::decode).transpose()?
+            .map(|path| matrix * path);
         let path = match command.op.as_str() {
             "fill" => {
                 numbers(&command.n, 1)?;
                 fill = rule(command.n[0]);
-                self.path.path.clone()
+                explicit_path.clone().unwrap_or_else(|| self.path.path.clone())
             }
             "stroke" => {
                 numbers(&command.n, 0)?;
                 stroke = true;
-                self.path.path.clone()
+                explicit_path.clone().unwrap_or_else(|| self.path.path.clone())
             }
             "fillRect" | "strokeRect" | "clearRect" => {
                 numbers(&command.n, 4)?;
@@ -1001,7 +1044,7 @@ impl Canvas {
             "fillText" | "strokeText" => {
                 numbers(&command.n, 3)?;
                 stroke = command.op == "strokeText";
-                let shaped = text::shape(&command.text, &state.font, &fonts.0)?;
+                let shaped = text::shape(&command.text, state, &fonts.0)?;
                 let scale = if command.n[2] > 0.0 && shaped.width > command.n[2] {
                     command.n[2] / shaped.width
                 } else {
@@ -1079,6 +1122,34 @@ impl Canvas {
             fill,
             clear,
         )
+    }
+
+    fn hit_test(&self, query: &HitQuery) -> Result<bool> {
+        numbers(&query.n, 2)?;
+        numbers(&query.state.matrix, 6)?;
+        if query.kind == "path" && query.fill_rule != 0.0 && query.fill_rule != 1.0 {
+            return Err("invalid canvas fill rule".to_owned());
+        }
+        let point = blitz_dom::kurbo::Point::new(query.n[0], query.n[1]);
+        let matrix = Affine::new(query.state.matrix);
+        let supplied = query.path.is_some();
+        let path = match &query.path {
+            Some(commands) => paths::decode(commands)?,
+            None => self.path.path.clone(),
+        };
+        match query.kind.as_str() {
+            "path" => {
+                let path = if supplied { matrix * path } else { path };
+                Ok(paths::contains_fill(&path, point, rule(query.fill_rule)))
+            }
+            "stroke" => {
+                if matrix.determinant().abs() < 1.0e-20 { return Ok(false); }
+                let inverse = matrix.inverse();
+                let path = if supplied { path } else { inverse * path };
+                paths::contains_stroke(&path, inverse * point, &query.state)
+            }
+            _ => Err("invalid canvas hit test query".to_owned()),
+        }
     }
 
     fn read(&mut self, n: &[f64]) -> Result<Vec<u8>> {
@@ -1165,6 +1236,13 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
     }
     let mut request: Request = serde_json::from_str(&json)
         .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+    if request.action == "path" {
+        let commands = paths::svg_commands(&request.value)
+            .map_err(|error| JsNativeError::typ().with_message(error))?;
+        let json = serde_json::to_string(&commands)
+            .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+        return Ok(JsString::from(json).into());
+    }
     if request.action == "color" {
         return Ok(JsValue::from(color(&request.value).is_ok()));
     }
@@ -1398,11 +1476,15 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
             }
             "measure" => {
                 let state = request.state.as_ref().ok_or("measureText requires state")?;
-                let shaped = text::shape(&request.text, &state.font, &host.fonts.0)?;
+                let shaped = text::shape(&request.text, state, &host.fonts.0)?;
                 let metrics = shaped.metrics(state)?;
                 serde_json::to_string(&metrics)
                     .map(|value| JsString::from(value).into())
                     .map_err(|error| error.to_string())
+            }
+            "hit" => {
+                let query = request.query.as_ref().ok_or("hit test requires query")?;
+                Ok(JsValue::from(canvas.hit_test(query)?))
             }
             member => Err(missing(member)),
         }

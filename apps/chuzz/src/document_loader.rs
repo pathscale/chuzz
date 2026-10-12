@@ -2360,31 +2360,128 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   }
 
   if (typeof globalThis.Path2D === 'undefined') {
-    // The path is really accumulated; what is missing is anything that reads
-    // it. A page constructing a Path2D is about to hand it to a canvas context,
-    // and that is the part the engine does not have, so this keeps the
-    // construction from throwing and no more.
-    globalThis.Path2D = function (path) {
-      this.commands = path && path.commands ? path.commands.slice() : [];
-      var record = function (name) {
-        return function () {
-          this.commands.push([name].concat(Array.prototype.slice.call(arguments)));
-        };
+    // Commands live only in this WeakMap. Canvas calls receive copies, so a
+    // later mutation cannot change an already queued draw.
+    var path2dCommands = new WeakMap();
+    var pathIdentity = [1, 0, 0, 1, 0, 0];
+    function pathMatrix(value) {
+      value = value == null ? {} : value;
+      var aliases = ['m11', 'm12', 'm21', 'm22', 'm41', 'm42'];
+      var result = ['a', 'b', 'c', 'd', 'e', 'f'].map(function (name, index) {
+        var first = value[name], second = value[aliases[index]];
+        if (first !== undefined && second !== undefined && Number(first) !== Number(second)) {
+          throw new TypeError('inconsistent transform matrix');
+        }
+        return Number(first !== undefined ? first : second !== undefined ? second : pathIdentity[index]);
+      });
+      if (!result.every(Number.isFinite)) { throw new TypeError('invalid transform matrix'); }
+      return result;
+    }
+    function pathMultiply(a, b) {
+      return [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]];
+    }
+    function pathCopy(command) {
+      return { op: command.op, n: command.n.slice(), matrix: command.matrix.slice() };
+    }
+    function pathRecord(path, op, n) {
+      var commands = path2dCommands.get(path);
+      if (!commands) { throw new TypeError('Path2D method called on an incompatible object'); }
+      if (commands.length >= 1048576) { throw new RangeError('Path2D command limit reached'); }
+      commands.push({ op: op, n: n, matrix: pathIdentity.slice() });
+    }
+    function pathNumbers(args, count) {
+      if (args.length < count) { throw new TypeError('not enough Path2D arguments'); }
+      var n = Array.prototype.slice.call(args, 0, count).map(Number);
+      return n.every(Number.isFinite) ? n : null;
+    }
+    function pathMethod(op, count) {
+      return function () {
+        var n = pathNumbers(arguments, count);
+        if (!n) { return; }
+        if ((op === 'arc' && n[2] < 0) || (op === 'ellipse' && (n[2] < 0 || n[3] < 0)) ||
+            (op === 'arcTo' && n[4] < 0)) {
+          throw new DOMException('negative radius', 'IndexSizeError');
+        }
+        if (op === 'arc') { n.push(arguments[5] ? 1 : 0); }
+        if (op === 'ellipse') { n.push(arguments[7] ? 1 : 0); }
+        pathRecord(this, op, n);
       };
-      this.addPath = function (other) {
-        if (other && other.commands) { this.commands = this.commands.concat(other.commands); }
-      };
-      this.closePath = record('closePath');
-      this.moveTo = record('moveTo');
-      this.lineTo = record('lineTo');
-      this.bezierCurveTo = record('bezierCurveTo');
-      this.quadraticCurveTo = record('quadraticCurveTo');
-      this.arc = record('arc');
-      this.arcTo = record('arcTo');
-      this.ellipse = record('ellipse');
-      this.rect = record('rect');
-      this.roundRect = record('roundRect');
+    }
+    function pathRoundRect(x, y, width, height, radii) {
+      var n = pathNumbers([x, y, width, height], 4);
+      if (!n) { return; }
+      radii = radii === undefined ? [0] : Array.isArray(radii) ? radii : [radii];
+      if (!radii.length || radii.length > 4) { throw new RangeError('invalid roundRect radii'); }
+      var points = radii.map(function (radius) {
+        return radius && typeof radius === 'object'
+          ? [Number(radius.x), Number(radius.y)] : [Number(radius), Number(radius)];
+      });
+      if (points.some(function (radius) { return radius[0] < 0 || radius[1] < 0; })) {
+        throw new RangeError('negative radius');
+      }
+      if (!points.every(function (radius) { return radius.every(Number.isFinite); })) { return; }
+      var corners = points.length === 1 ? [points[0], points[0], points[0], points[0]]
+        : points.length === 2 ? [points[0], points[1], points[0], points[1]]
+        : points.length === 3 ? [points[0], points[1], points[2], points[1]] : points;
+      if (n[2] < 0) {
+        n[0] += n[2]; n[2] = -n[2];
+        corners = [corners[1], corners[0], corners[3], corners[2]];
+      }
+      if (n[3] < 0) {
+        n[1] += n[3]; n[3] = -n[3];
+        corners = [corners[3], corners[2], corners[1], corners[0]];
+      }
+      corners.forEach(function (radius) { n.push(radius[0], radius[1]); });
+      pathRecord(this, 'roundRect', n);
+    }
+    globalThis.Path2D = function Path2D(path) {
+      if (!new.target) { throw new TypeError("Failed to construct 'Path2D': use 'new'"); }
+      var commands = [];
+      if (path != null) {
+        if (path2dCommands.has(path)) {
+          commands = path2dCommands.get(path).map(pathCopy);
+        } else if (typeof path === 'string') {
+          var parsed = globalThis.__chuzzCanvas2D(JSON.stringify({ action: 'path', value: path }), []);
+          commands = JSON.parse(String(parsed));
+        } else {
+          throw new TypeError('Path2D constructor requires a Path2D or SVG path string');
+        }
+      }
+      path2dCommands.set(this, commands);
     };
+    globalThis.Path2D.prototype.closePath = function () { pathRecord(this, 'closePath', []); };
+    globalThis.Path2D.prototype.moveTo = pathMethod('moveTo', 2);
+    globalThis.Path2D.prototype.lineTo = pathMethod('lineTo', 2);
+    globalThis.Path2D.prototype.bezierCurveTo = pathMethod('bezierCurveTo', 6);
+    globalThis.Path2D.prototype.quadraticCurveTo = pathMethod('quadraticCurveTo', 4);
+    globalThis.Path2D.prototype.arc = pathMethod('arc', 5);
+    globalThis.Path2D.prototype.arcTo = pathMethod('arcTo', 5);
+    globalThis.Path2D.prototype.ellipse = pathMethod('ellipse', 7);
+    globalThis.Path2D.prototype.rect = pathMethod('rect', 4);
+    globalThis.Path2D.prototype.roundRect = function (x, y, w, h, radii) {
+      return pathRoundRect.call(this, x, y, w, h, radii);
+    };
+    globalThis.Path2D.prototype.addPath = function (other, transform) {
+      var source = path2dCommands.get(other);
+      if (!source) { throw new TypeError('addPath requires a Path2D'); }
+      var matrix = pathMatrix(transform);
+      var target = path2dCommands.get(this);
+      if (target.length + source.length > 1048576) { throw new RangeError('Path2D command limit reached'); }
+      source.forEach(function (command) {
+        var copy = pathCopy(command);
+        copy.matrix = pathMultiply(matrix, copy.matrix);
+        target.push(copy);
+      });
+    };
+    Object.defineProperty(globalThis, '__chuzzPath2DCommands', {
+      configurable: true,
+      value: function (path) {
+        var commands = path2dCommands.get(path);
+        return commands ? commands.map(pathCopy) : null;
+      }
+    });
   }
   if (typeof globalThis.ShadowRoot === 'undefined') {
     // Declared so `node instanceof ShadowRoot` and `x.constructor === ShadowRoot`

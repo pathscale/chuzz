@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas text style QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; background: white; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <h1>Canvas text style checks</h1>
+  <button id="run" type="button">Run text style checks</button>
+  <p id="result" role="status">Ready</p>
+  <p>Budget: 30000 ms</p>
+  <canvas id="text" width="480" height="180" aria-label="Canvas text style samples"></canvas>
+  <script>
+    (function () {
+      var canvas = document.getElementById("text");
+      var context = canvas.getContext("2d");
+      var result = document.getElementById("result");
+      context.fillStyle = "#2040c0";
+      context.fillRect(2, 2, 8, 8);
+      function check(value, label) { if (!value) { throw new Error(label); } }
+      function clear() { context.clearRect(0, 0, canvas.width, canvas.height); }
+      function run() {
+        clear();
+        check(context.fontKerning === "auto", "fontKerning default");
+        check(context.fontStretch === "normal", "fontStretch default");
+        check(context.fontVariantCaps === "normal", "fontVariantCaps default");
+        check(context.letterSpacing === "0px", "letterSpacing default");
+        check(context.wordSpacing === "0px", "wordSpacing default");
+        check(context.textRendering === "auto", "textRendering default");
+
+        context.fontKerning = "none";
+        context.fontStretch = "condensed";
+        context.fontVariantCaps = "small-caps";
+        context.textRendering = "optimizeLegibility";
+        context.letterSpacing = "2px";
+        context.wordSpacing = "5px";
+        context.save();
+        context.fontKerning = "normal";
+        context.fontStretch = "expanded";
+        context.fontVariantCaps = "titling-caps";
+        context.letterSpacing = "7px";
+        context.wordSpacing = "9px";
+        context.restore();
+        check(context.fontKerning === "none", "save and restore kerning");
+        check(context.fontStretch === "condensed", "save and restore stretch");
+        check(context.fontVariantCaps === "small-caps", "save and restore caps");
+        check(context.letterSpacing === "2px", "save and restore letter spacing");
+        check(context.wordSpacing === "5px", "save and restore word spacing");
+        context.fontKerning = "not-a-value";
+        context.fontStretch = "wider";
+        context.fontVariantCaps = "not-a-value";
+        context.textRendering = "not-a-value";
+        context.letterSpacing = "3ch";
+        context.wordSpacing = "NaNpx";
+        check(context.fontKerning === "none", "invalid enum assignment ignored");
+        check(context.fontStretch === "condensed", "invalid stretch ignored");
+        check(context.fontVariantCaps === "small-caps", "invalid caps ignored");
+        check(context.textRendering === "optimizeLegibility", "invalid rendering hint ignored");
+        check(context.letterSpacing === "2px", "invalid letter spacing ignored");
+        check(context.wordSpacing === "5px", "invalid word spacing ignored");
+
+        context.font = "32px Fixture";
+        context.fontKerning = "none";
+        var noKerning = context.measureText("AV").width;
+        context.fontKerning = "normal";
+        var withKerning = context.measureText("AV").width;
+        check(Math.abs(noKerning - withKerning) > 0.1, "kerning changes measured width");
+
+        context.letterSpacing = "0px";
+        var plainLetters = context.measureText("Fira").width;
+        context.letterSpacing = "3px";
+        check(context.measureText("Fira").width > plainLetters + 8, "letter spacing changes measured width");
+        context.wordSpacing = "0px";
+        var plainWords = context.measureText("A V").width;
+        context.wordSpacing = "5px";
+        check(context.measureText("A V").width > plainWords + 4, "word spacing changes measured width");
+
+        context.font = "small-caps condensed 28px Fixture";
+        check(context.font.indexOf("small-caps") >= 0 && context.font.indexOf("condensed") >= 0,
+          "font shorthand retains caps and stretch");
+        var shorthandWidth = context.measureText("Fira").width;
+        context.font = "28px Fixture";
+        context.fontStretch = "normal";
+        var normalWidth = context.measureText("Fira").width;
+        // The fixture font has a single normal-width face and stretch is never
+        // synthesized, so a condensed request can only match or narrow the width.
+        check(shorthandWidth <= normalWidth, "font shorthand stretch never widens");
+        context.font = "28px Fixture";
+        context.fontStretch = "condensed";
+        var condensed = context.measureText("Fira").width;
+        context.fontStretch = "normal";
+        var normal = context.measureText("Fira").width;
+        check(condensed <= normal, "fontStretch never widens");
+
+        context.font = "32px Fixture";
+        context.fontKerning = "normal";
+        context.fontStretch = "normal";
+        context.fontVariantCaps = "normal";
+        context.letterSpacing = "0px";
+        context.wordSpacing = "0px";
+        context.textRendering = "auto";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        var metrics = context.measureText("Fira");
+        var x = 24, baseline = 92;
+        context.fillStyle = "#d02020";
+        context.fillText("Fira", x, baseline);
+        var left = Math.max(0, Math.floor(x - metrics.actualBoundingBoxLeft));
+        var top = Math.max(0, Math.floor(baseline - metrics.actualBoundingBoxAscent));
+        var right = Math.min(canvas.width, Math.ceil(x + metrics.actualBoundingBoxRight));
+        var bottom = Math.min(canvas.height, Math.ceil(baseline + metrics.actualBoundingBoxDescent));
+        var pixels = context.getImageData(left, top, right - left, bottom - top).data;
+        var ink = false;
+        for (var i = 3; i < pixels.length; i += 4) { if (pixels[i] > 0) { ink = true; break; } }
+        check(ink, "painted glyphs lie inside measured bounds");
+
+        canvas.width = canvas.width;
+        check(context.fontKerning === "auto", "canvas reset kerning");
+        check(context.fontStretch === "normal", "canvas reset stretch");
+        check(context.fontVariantCaps === "normal", "canvas reset caps");
+        check(context.letterSpacing === "0px", "canvas reset letter spacing");
+        check(context.wordSpacing === "0px", "canvas reset word spacing");
+        check(context.textRendering === "auto", "canvas reset rendering hint");
+        context.fillStyle = "#2040c0";
+        context.fillRect(2, 2, 8, 8);
+      }
+      document.getElementById("run").addEventListener("click", function () {
+        this.disabled = true;
+        try { run(); result.textContent = "READY: CANVASTEXTSTYLES PASS"; }
+        catch (error) { result.textContent = "FAIL: CANVASTEXTSTYLES " + (error.message || String(error)); }
+      });
+    })();
+  </script>
+</body>
+</html>

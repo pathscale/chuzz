@@ -1,0 +1,25 @@
+[
+    (
+        id: "canvas-text-styles-pixels",
+        group: "canvas-text-styles",
+        what: "canvas text defaults, validation, state restoration, spacing, kerning, caps, stretch, and measured painted bounds pass",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CANVASTEXTSTYLES PASS",
+        expect: PaintsNamed,
+        covers: ["Budget: 30000 ms"],
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "canvas-text-styles-ink",
+        group: "canvas-text-styles",
+        what: "the text style fixture presents visible canvas ink before and after its checks",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "Canvas text style samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 30000,
+    ),
+]

@@ -1,0 +1,25 @@
+[
+    (
+        id: "canvas-composite-effects-pixels",
+        group: "canvas-composite-effects",
+        what: "five unbounded operators with shadows, filters and both preserve clipping, alpha, empty/offscreen semantics, and tile edges",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CANVASCOMPOSITEFX PASS",
+        expect: PaintsNamed,
+        covers: ["Budget: 30000 ms"],
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "canvas-composite-effects-ink",
+        group: "canvas-composite-effects",
+        what: "the composite fixture presents visible samples before and after its checks",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "Canvas composite effect samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 30000,
+    ),
+]

@@ -1,0 +1,25 @@
+[
+    (
+        id: "canvas-path2d-pixels",
+        group: "canvas-path2d",
+        what: "Path2D fill, stroke, clipping, both fill rules, SVG construction, copies, transformed addPath, queued snapshots, and current-path preservation match sampled pixels",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CANVASPATH2D PASS",
+        expect: PaintsNamed,
+        covers: ["Budget: 30000 ms"],
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "canvas-path2d-ink",
+        group: "canvas-path2d",
+        what: "the Path2D fixture presents visible canvas ink before and after its checks",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "Canvas path samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 30000,
+    ),
+]

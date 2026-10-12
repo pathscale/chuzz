@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas hit test QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; background: white; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <h1>Canvas hit test checks</h1>
+  <button id="run" type="button">Run hit test checks</button>
+  <p id="result" role="status">Ready</p>
+  <p>Budget: 30000 ms</p>
+  <canvas id="hits" width="360" height="210" aria-label="Canvas hit test samples"></canvas>
+  <script>
+    (function () {
+      var canvas = document.getElementById("hits");
+      var context = canvas.getContext("2d");
+      var result = document.getElementById("result");
+      context.fillStyle = "#2040c0";
+      context.fillRect(2, 2, 8, 8);
+      function check(value, label) { if (!value) { throw new Error(label); } }
+      function run() {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.beginPath();
+        context.rect(10, 10, 40, 40);
+        check(context.isPointInPath(30, 30), "current path interior");
+        check(context.isPointInPath(10, 30), "fill boundary is included");
+        check(!context.isPointInPath(55, 30), "outside current path");
+
+        var ring = new Path2D();
+        ring.rect(70, 10, 70, 70);
+        ring.rect(90, 30, 30, 30);
+        check(context.isPointInPath(ring, 100, 40), "nonzero nested winding");
+        check(!context.isPointInPath(ring, 100, 40, "evenodd"), "even-odd hole");
+        var open = new Path2D();
+        open.moveTo(160, 10); open.lineTo(210, 10); open.lineTo(185, 60);
+        check(context.isPointInPath(open, 185, 25), "open fill is implicitly closed");
+
+        context.setTransform({ a: 1, b: 0, c: 0, d: 1, e: 100, f: 0, is2D: false });
+        var translated = new Path2D();
+        translated.rect(0, 90, 24, 24);
+        check(context.isPointInPath(translated, 110, 100), "Path2D current transform");
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        var inconsistent = false;
+        try { context.setTransform({ a: 1, m11: 2 }); }
+        catch (error) { inconsistent = error instanceof TypeError; }
+        check(inconsistent, "matrix alias consistency error");
+
+        context.beginPath();
+        context.moveTo(10, 120); context.lineTo(80, 120);
+        context.lineWidth = 6;
+        context.setLineDash([10, 10]);
+        check(context.isPointInStroke(15, 120), "dash painted segment");
+        check(!context.isPointInStroke(25, 120), "dash gap");
+        context.setLineDash([]);
+        context.lineCap = "butt";
+        context.beginPath(); context.moveTo(100, 120); context.lineTo(130, 120);
+        check(!context.isPointInStroke(96, 120), "butt cap endpoint");
+        context.lineCap = "round";
+        check(context.isPointInStroke(98, 120), "round cap endpoint");
+        context.lineCap = "square";
+        check(context.isPointInStroke(98, 120), "square cap endpoint");
+
+        context.lineJoin = "round";
+        context.beginPath(); context.moveTo(150, 120); context.lineTo(175, 120); context.lineTo(175, 145);
+        check(context.isPointInStroke(173, 122), "round join area");
+        var strokePath = new Path2D();
+        strokePath.moveTo(220, 120); strokePath.lineTo(280, 120);
+        check(context.isPointInStroke(strokePath, 240, 120), "Path2D stroke overload");
+
+        context.beginPath(); context.rect(10, 160, 42, 28);
+        var separate = new Path2D(); separate.rect(80, 160, 42, 28);
+        check(context.isPointInPath(30, 170), "current path before separate query");
+        check(context.isPointInPath(separate, 90, 170), "Path2D path overload");
+        check(!context.isPointInPath(NaN, 170), "nonfinite path coordinate");
+        check(!context.isPointInStroke(Infinity, 120), "nonfinite stroke coordinate");
+        context.fillStyle = "#2080c0";
+        context.fill();
+        var pixel = context.getImageData(20, 170, 1, 1).data;
+        check(pixel[2] > 150 && pixel[3] > 240, "hit queries changed current path");
+        context.fillStyle = "#2040c0";
+        context.fillRect(2, 2, 8, 8);
+      }
+      document.getElementById("run").addEventListener("click", function () {
+        this.disabled = true;
+        try { run(); result.textContent = "READY: CANVASHITTEST PASS"; }
+        catch (error) { result.textContent = "FAIL: CANVASHITTEST " + (error.message || String(error)); }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas composite effects QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; background: white; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <h1>Canvas composite effect checks</h1>
+  <button id="run" type="button">Run composite effect checks</button>
+  <p id="result" role="status">Ready</p>
+  <p>Budget: 30000 ms</p>
+  <canvas id="composite" width="600" height="330" aria-label="Canvas composite effect samples"></canvas>
+  <script>
+    (function () {
+      var canvas = document.getElementById("composite");
+      var context = canvas.getContext("2d");
+      var result = document.getElementById("result");
+      var operators = ["source-in", "source-out", "destination-in", "destination-atop", "copy"];
+      var effects = ["shadow", "filter", "both"];
+      context.fillStyle = "#2040c0";
+      context.fillRect(2, 2, 8, 8);
+      function check(value, label) { if (!value) { throw new Error(label); } }
+      function alpha(x, y) { return context.getImageData(x, y, 1, 1).data[3]; }
+      function rgba(x, y) { return context.getImageData(x, y, 1, 1).data; }
+      function near(x, y, expected, tolerance, label) {
+        var actual = rgba(x, y);
+        for (var i = 0; i < 4; i++) {
+          if (Math.abs(actual[i] - expected[i]) > tolerance) {
+            throw new Error(label + " " + Array.from(actual));
+          }
+        }
+      }
+      function run() {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        for (var row = 0; row < effects.length; row++) {
+          for (var column = 0; column < operators.length; column++) {
+            var x = 8 + column * 118, y = 8 + row * 72;
+            var op = operators[column], effect = effects[row];
+            context.save();
+            context.beginPath();
+            context.rect(x, y, 108, 62);
+            context.clip();
+            context.fillStyle = "#2040c0";
+            context.fillRect(x, y, 108, 62);
+            context.globalCompositeOperation = op;
+            context.globalAlpha = 0.5;
+            if (effect !== "filter") {
+              context.shadowColor = "#00c040";
+              context.shadowOffsetX = 8;
+              context.shadowBlur = 2;
+            }
+            if (effect !== "shadow") { context.filter = "blur(1px) brightness(1.1)"; }
+            context.fillStyle = "#e02020";
+            context.fillRect(x + 32, y + 24, 24, 20);
+            context.restore();
+            check(alpha(x + 5, y + 8) === 0, op + " " + effect + " left transparent coverage");
+            check(alpha(x + 112, y + 8) === 0, op + " " + effect + " escaped clip");
+            if (op === "source-out" && effect === "filter") {
+              check(alpha(x + 42, y + 32) === 0, "source-out interior");
+            } else if (op === "source-out") {
+              // The shadow and the shape composite separately: the shadow clears the
+              // destination under its offset, so the shape then lands on transparency.
+              check(alpha(x + 42, y + 32) > 0, "source-out " + effect + " shape over cleared shadow");
+            } else {
+              check(alpha(x + 42, y + 32) > 0, op + " " + effect + " source");
+            }
+          }
+        }
+
+        context.clearRect(0, 230, 600, 100);
+        context.globalCompositeOperation = "source-over";
+        context.globalAlpha = 1;
+        context.filter = "none";
+        context.shadowColor = "rgba(0, 0, 0, 0)";
+        context.shadowOffsetX = 0;
+        context.shadowOffsetY = 0;
+        context.shadowBlur = 0;
+        context.fillStyle = "#0000ff";
+        context.fillRect(20, 238, 40, 24);
+        context.globalAlpha = 0.5;
+        context.fillStyle = "#ff0000";
+        context.fillRect(20, 238, 40, 24);
+        near(30, 246, [128, 0, 128, 255], 4, "fractional alpha");
+
+        context.globalAlpha = 1;
+        context.filter = "blur(2px)";
+        context.fillStyle = "#ff0000";
+        context.fillRect(240, 270, 40, 24);
+        near(254, 280, [255, 0, 0, 255], 4, "tile seam left");
+        near(257, 280, [255, 0, 0, 255], 4, "tile seam right");
+
+        context.filter = "blur(2px)";
+        context.shadowColor = "#00ff00";
+        context.shadowOffsetX = 8;
+        context.globalCompositeOperation = "copy";
+        context.fillStyle = "#2040c0";
+        context.fillRect(400, 238, 40, 24);
+        context.beginPath();
+        context.fill();
+        check(alpha(410, 246) === 0, "empty source did not clear unbounded coverage");
+
+        context.globalCompositeOperation = "source-over";
+        context.fillStyle = "#2040c0";
+        context.fillRect(420, 238, 40, 24);
+        context.globalCompositeOperation = "destination-in";
+        context.fillRect(900, 900, 12, 12);
+        check(alpha(430, 246) === 0, "offscreen source did not clear unbounded coverage");
+        context.globalCompositeOperation = "source-over";
+        context.filter = "none";
+        context.shadowColor = "rgba(0, 0, 0, 0)";
+        context.shadowOffsetX = 0;
+        context.shadowBlur = 0;
+        context.fillStyle = "#2040c0";
+        context.fillRect(2, 2, 8, 8);
+      }
+      document.getElementById("run").addEventListener("click", function () {
+        this.disabled = true;
+        try { run(); result.textContent = "READY: CANVASCOMPOSITEFX PASS"; }
+        catch (error) { result.textContent = "FAIL: CANVASCOMPOSITEFX " + (error.message || String(error)); }
+      });
+    })();
+  </script>
+</body>
+</html>

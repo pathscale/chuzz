@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Canvas Path2D QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font-family: Fixture; }
+    canvas { display: block; margin: 12px 0; background: white; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <h1>Canvas Path2D checks</h1>
+  <button id="run" type="button">Run Path2D checks</button>
+  <p id="result" role="status">Ready</p>
+  <p>Budget: 30000 ms</p>
+  <canvas id="paths" width="400" height="180" aria-label="Canvas path samples"></canvas>
+  <script>
+    (function () {
+      var canvas = document.getElementById("paths");
+      var context = canvas.getContext("2d");
+      var result = document.getElementById("result");
+      context.fillStyle = "#2040c0";
+      context.fillRect(2, 2, 8, 8);
+      function check(value, label) { if (!value) { throw new Error(label); } }
+      function pixel(x, y) { return context.getImageData(x, y, 1, 1).data; }
+      function color(x, y, expected, label) {
+        var actual = pixel(x, y);
+        for (var i = 0; i < 4; i++) {
+          if (Math.abs(actual[i] - expected[i]) > 3) {
+            throw new Error(label + " pixel " + Array.from(actual));
+          }
+        }
+      }
+      function clear() {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.beginPath();
+      }
+      function run() {
+        clear();
+        var basic = new Path2D();
+        basic.rect(10, 10, 40, 40);
+        context.fillStyle = "#e02020";
+        context.fill(basic);
+        color(20, 20, [224, 32, 32, 255], "fill Path2D");
+        context.lineWidth = 4;
+        context.strokeStyle = "#2040d0";
+        context.stroke(basic);
+        color(10, 30, [32, 64, 208, 255], "stroke Path2D");
+
+        var ring = new Path2D();
+        ring.rect(70, 10, 70, 70);
+        ring.rect(90, 30, 30, 30);
+        context.fillStyle = "#20a040";
+        context.fill(ring);
+        check(pixel(100, 40)[3] > 240, "nonzero nested winding");
+        context.clearRect(70, 10, 70, 70);
+        context.fill(ring, "evenodd");
+        color(78, 18, [32, 160, 64, 255], "even-odd outer");
+        check(pixel(100, 40)[3] === 0, "even-odd hole");
+
+        var svg = new Path2D("M 160 10 h 40 v 40 h -40 z");
+        context.fillStyle = "#d08020";
+        context.fill(svg);
+        color(170, 20, [208, 128, 32, 255], "SVG path");
+        var copied = new Path2D(svg);
+        var shifted = new Path2D();
+        shifted.addPath(copied, { a: 1, b: 0, c: 0, d: 1, e: 50, f: 0, is2D: false });
+        context.fillStyle = "#8030b0";
+        context.fill(shifted);
+        color(220, 20, [128, 48, 176, 255], "copy and transformed addPath");
+
+        var queued = new Path2D();
+        queued.rect(290, 10, 24, 24);
+        context.fillStyle = "#202020";
+        context.fill(queued);
+        queued.rect(330, 10, 24, 24);
+        color(300, 20, [32, 32, 32, 255], "queued snapshot");
+        check(pixel(340, 20)[3] === 0, "Path2D mutation changed a queued snapshot");
+
+        var clipPath = new Path2D();
+        clipPath.rect(10, 95, 70, 50);
+        context.save();
+        context.clip(clipPath);
+        context.fillStyle = "#20a0c0";
+        context.fillRect(0, 90, 100, 65);
+        context.restore();
+        color(20, 110, [32, 160, 192, 255], "Path2D clip interior");
+        check(pixel(90, 110)[3] === 0, "Path2D clip leaked outside");
+
+        context.beginPath();
+        context.rect(110, 95, 34, 34);
+        var independent = new Path2D();
+        independent.rect(160, 95, 34, 34);
+        context.fillStyle = "#c020a0";
+        context.fill(independent);
+        check(context.isPointInPath(120, 105), "current path was replaced by Path2D");
+        context.fill();
+        color(120, 105, [192, 32, 160, 255], "current path preserved");
+        context.fillStyle = "#2040c0";
+        context.fillRect(2, 2, 8, 8);
+      }
+      document.getElementById("run").addEventListener("click", function () {
+        this.disabled = true;
+        try { run(); result.textContent = "READY: CANVASPATH2D PASS"; }
+        catch (error) { result.textContent = "FAIL: CANVASPATH2D " + (error.message || String(error)); }
+      });
+    })();
+  </script>
+</body>
+</html>

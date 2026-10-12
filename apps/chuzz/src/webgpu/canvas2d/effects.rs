@@ -63,8 +63,7 @@ pub(super) struct Prepared {
 }
 
 pub(super) enum Outcome {
-    Separate { shadow: Layer, shape: Layer },
-    Filtered { layer: Layer },
+    Separate { shadow: Option<Layer>, shape: Layer },
 }
 
 #[derive(Clone)]
@@ -148,24 +147,12 @@ pub(super) fn bounded(value: f64) -> Result<i32> {
     Ok(value as i32)
 }
 
-pub(super) fn apply(shape: Layer, effect: &Prepared) -> Result<Outcome> {
-    if effect.filter.is_empty() {
-        let shadow = effect
-            .shadow
-            .ok_or_else(|| "invalid canvas shadow".to_owned())?;
-        let shadow = make_shadow(&shape, &shadow)?;
-        return Ok(Outcome::Separate { shadow, shape });
-    }
-    let mut layer = if let Some(shadow) = effect.shadow {
-        let under = make_shadow(&shape, &shadow)?;
-        source_over(&under, &shape)?
-    } else {
-        shape
-    };
+pub(super) fn apply(mut shape: Layer, effect: &Prepared) -> Result<Outcome> {
     for op in &effect.filter {
-        layer = apply_op(layer, op)?;
+        shape = apply_op(shape, op)?;
     }
-    Ok(Outcome::Filtered { layer })
+    let shadow = effect.shadow.map(|shadow| make_shadow(&shape, &shadow)).transpose()?;
+    Ok(Outcome::Separate { shadow, shape })
 }
 
 impl Layer {
@@ -215,6 +202,27 @@ impl Layer {
 
     pub(super) fn premul_bytes(&self) -> Vec<u8> {
         self.pixels.iter().copied().map(byte).collect()
+    }
+
+    pub(super) fn scale_alpha(&mut self, alpha: f32) {
+        for value in &mut self.pixels { *value *= alpha; }
+    }
+
+    /// Expand to transparent canvas coverage for unbounded composite operators.
+    pub(super) fn padded_to(&self, x: i32, y: i32, width: usize, height: usize) -> Result<Self> {
+        check_extent(width, height)?;
+        if width == 0 || height == 0 { return Ok(Self::empty()); }
+        let mut pixels = vec![0.0; width * height * 4];
+        for row in 0..height {
+            for column in 0..width {
+                let device_x = x.saturating_add(column as i32);
+                let device_y = y.saturating_add(row as i32);
+                let sample = self.sample(device_x, device_y);
+                let index = (row * width + column) * 4;
+                pixels[index..index + 4].copy_from_slice(&sample);
+            }
+        }
+        Ok(Self { x, y, width, height, pixels })
     }
 
     fn sample(&self, x: i32, y: i32) -> [f32; 4] {

@@ -1,8 +1,10 @@
+use std::borrow::Cow;
 use std::sync::Mutex;
 
 use blitz_dom::kurbo::{Affine, BezPath, Point, Rect, Shape};
 use parley::style::{FontStyle, FontWeight, StyleProperty};
-use parley::{FontContext, Layout, LayoutContext, PositionedLayoutItem};
+use parley::{FontContext, FontFeature, FontFeatures, FontWidth, Layout, LayoutContext, PositionedLayoutItem};
+use parley::setting::Tag;
 use serde_json::{Value, json};
 use skrifa::instance::{NormalizedCoord, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
@@ -14,6 +16,8 @@ struct Font {
     size: f32,
     weight: f32,
     italic: bool,
+    stretch: f32,
+    caps: String,
     family: String,
 }
 
@@ -43,6 +47,8 @@ fn font(value: &str, base: f64, root: f64) -> Result<Font> {
     }
     let mut weight = 400.0;
     let mut italic = false;
+    let mut stretch = 1.0;
+    let mut caps = "normal".to_owned();
     let mut consumed = 0;
     for word in value.split_whitespace() {
         let offset = value[consumed..].find(word).ok_or("invalid canvas font")? + consumed;
@@ -64,6 +70,8 @@ fn font(value: &str, base: f64, root: f64) -> Result<Font> {
                 size: size as f32,
                 weight,
                 italic,
+                stretch,
+                caps,
                 family: family.to_owned(),
             });
         }
@@ -72,11 +80,15 @@ fn font(value: &str, base: f64, root: f64) -> Result<Font> {
             "italic" | "oblique" => italic = true,
             "bold" | "bolder" => weight = 700.0,
             "lighter" => weight = 300.0,
-            "small-caps" => return Err(missing("font.small-caps")),
-            "condensed" | "expanded" | "semi-condensed" | "semi-expanded" | "ultra-condensed"
-            | "ultra-expanded" | "extra-condensed" | "extra-expanded" => {
-                return Err(missing("font.stretch"));
-            }
+            "small-caps" => caps = "small-caps".to_owned(),
+            "ultra-condensed" => stretch = 0.5,
+            "extra-condensed" => stretch = 0.625,
+            "condensed" => stretch = 0.75,
+            "semi-condensed" => stretch = 0.875,
+            "semi-expanded" => stretch = 1.125,
+            "expanded" => stretch = 1.25,
+            "extra-expanded" => stretch = 1.5,
+            "ultra-expanded" => stretch = 2.0,
             _ => {
                 weight = word
                     .parse::<f32>()
@@ -91,13 +103,22 @@ fn font(value: &str, base: f64, root: f64) -> Result<Font> {
 
 pub(super) fn parse_font(value: &str, base: f64, root: f64) -> Result<String> {
     let font = font(value, base, root)?;
-    Ok(format!(
-        "{}{} {}px {}",
-        if font.italic { "italic " } else { "" },
-        font.weight,
-        font.size,
-        font.family,
-    ))
+    let stretch = match font.stretch {
+        0.5 => "ultra-condensed",
+        0.625 => "extra-condensed",
+        0.75 => "condensed",
+        0.875 => "semi-condensed",
+        1.125 => "semi-expanded",
+        1.25 => "expanded",
+        1.5 => "extra-expanded",
+        2.0 => "ultra-expanded",
+        _ => "",
+    };
+    let mut prefix = String::new();
+    if font.italic { prefix.push_str("italic "); }
+    if font.caps != "normal" { prefix.push_str(&font.caps); prefix.push(' '); }
+    if !stretch.is_empty() { prefix.push_str(stretch); prefix.push(' '); }
+    Ok(format!("{}{} {}px {}", prefix, font.weight, font.size, font.family))
 }
 
 struct Pen<'a> {
@@ -196,11 +217,54 @@ impl Text {
     }
 }
 
-pub(super) fn shape(value: &str, shorthand: &str, fonts: &Mutex<FontContext>) -> Result<Text> {
+fn stretch_width(value: &str, shorthand: f32) -> Result<f32> {
+    match value {
+        "normal" => Ok(shorthand),
+        "ultra-condensed" => Ok(0.5),
+        "extra-condensed" => Ok(0.625),
+        "condensed" => Ok(0.75),
+        "semi-condensed" => Ok(0.875),
+        "semi-expanded" => Ok(1.125),
+        "expanded" => Ok(1.25),
+        "extra-expanded" => Ok(1.5),
+        "ultra-expanded" => Ok(2.0),
+        _ => Err("invalid canvas fontStretch".to_owned()),
+    }
+}
+
+fn push_feature(features: &mut Vec<FontFeature>, tag: &[u8; 4], value: u16) {
+    features.push(FontFeature { tag: Tag::from_bytes(*tag), value });
+}
+
+fn caps_features(caps: &str, features: &mut Vec<FontFeature>) -> Result<()> {
+    match caps {
+        "normal" => {}
+        "small-caps" => push_feature(features, b"smcp", 1),
+        "all-small-caps" => {
+            push_feature(features, b"smcp", 1);
+            push_feature(features, b"c2sc", 1);
+        }
+        "petite-caps" => push_feature(features, b"pcap", 1),
+        "all-petite-caps" => {
+            push_feature(features, b"pcap", 1);
+            push_feature(features, b"c2pc", 1);
+        }
+        "unicase" => push_feature(features, b"unic", 1),
+        "titling-caps" => push_feature(features, b"titl", 1),
+        _ => return Err("invalid canvas fontVariantCaps".to_owned()),
+    }
+    Ok(())
+}
+
+pub(super) fn shape(value: &str, state: &DrawState, fonts: &Mutex<FontContext>) -> Result<Text> {
     if value.len() > 65_536 {
         return Err("canvas text limit reached in chuzz".to_owned());
     }
-    let font = font(shorthand, 16.0, 16.0)?;
+    if !state.letter_spacing.is_finite() || state.letter_spacing.abs() > 1.0e6
+        || !state.word_spacing.is_finite() || state.word_spacing.abs() > 1.0e6 {
+        return Err("invalid canvas text spacing".to_owned());
+    }
+    let font = font(&state.font, 16.0, 16.0)?;
     // Canvas text replaces ASCII whitespace with spaces and never wraps.
     let value = value
         .chars()
@@ -218,6 +282,25 @@ pub(super) fn shape(value: &str, shorthand: &str, fonts: &Mutex<FontContext>) ->
     } else {
         FontStyle::Normal
     }));
+    let width = stretch_width(&state.font_stretch, font.stretch)?;
+    builder.push_default(StyleProperty::FontWidth(FontWidth::from_percentage(width)));
+    let caps = if state.font_variant_caps == "normal" { font.caps.as_str() } else { state.font_variant_caps.as_str() };
+    let mut features = Vec::new();
+    caps_features(caps, &mut features)?;
+    match state.kerning.as_str() {
+        "none" => push_feature(&mut features, b"kern", 0),
+        "normal" => push_feature(&mut features, b"kern", 1),
+        "auto" => match state.text_rendering.as_str() {
+            "optimizeSpeed" => push_feature(&mut features, b"kern", 0),
+            "optimizeLegibility" => push_feature(&mut features, b"kern", 1),
+            "auto" | "geometricPrecision" => {}
+            _ => return Err("invalid canvas textRendering".to_owned()),
+        },
+        _ => return Err("invalid canvas fontKerning".to_owned()),
+    }
+    builder.push_default(StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(features))));
+    builder.push_default(StyleProperty::LetterSpacing(state.letter_spacing as f32));
+    builder.push_default(StyleProperty::WordSpacing(state.word_spacing as f32));
     let mut layout: Layout<[u8; 4]> = builder.build(&value);
     layout.break_all_lines(None);
     drop(fonts);

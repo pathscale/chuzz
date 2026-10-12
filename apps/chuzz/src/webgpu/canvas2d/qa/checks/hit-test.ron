@@ -1,0 +1,25 @@
+[
+    (
+        id: "canvas-hit-test-pixels",
+        group: "canvas-hit-test",
+        what: "current and Path2D overloads cover holes, open paths, boundaries, transforms, dash gaps, cap and join geometry, nonfinite points, and current-path preservation",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CANVASHITTEST PASS",
+        expect: PaintsNamed,
+        covers: ["Budget: 30000 ms"],
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "canvas-hit-test-ink",
+        group: "canvas-hit-test",
+        what: "the hit test fixture presents visible samples before and after its checks",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "Canvas hit test samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 30000,
+    ),
+]
