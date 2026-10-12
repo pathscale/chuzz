@@ -423,6 +423,7 @@ impl BrowserCookieStore {
                     continue;
                 };
                 if cookie.name().is_empty()
+                    || oversized_cookie(&cookie)
                     || (cookie.secure().unwrap_or(false) && !is_secure_url(url))
                     || !valid_cookie_prefix(&cookie, url)
                     || !enforce_cookie_domain(&mut cookie, url)
@@ -516,6 +517,7 @@ impl BrowserCookieStore {
         let key = cookie_key(&cookie);
 
         if cookie.name().is_empty()
+            || oversized_cookie(&cookie)
             || cookie.http_only().unwrap_or(false)
             || (cookie.secure().unwrap_or(false) && !is_secure_url(url))
             || !valid_cookie_prefix(&cookie, url)
@@ -706,6 +708,14 @@ fn durable_snapshot(store: &RfcCookieStore) -> Result<String, serde_json::Error>
             .filter(|cookie| cookie.is_persistent() && !cookie.is_expired())
             .collect::<Vec<_>>(),
     )
+}
+
+/// RFC 6265bis and every shipping browser cap the name plus value of a cookie
+/// at 4096 bytes and ignore the whole Set-Cookie line beyond that.
+const MAX_COOKIE_NAME_VALUE: usize = 4096;
+
+fn oversized_cookie(cookie: &StoredCookie<'_>) -> bool {
+    cookie.name().len() + cookie.value().len() > MAX_COOKIE_NAME_VALUE
 }
 
 fn is_secure_url(url: &Url) -> bool {
