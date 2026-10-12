@@ -31,7 +31,10 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// ten seconds is a budget for local fixtures, not for the web.
 const REMOTE_LOAD_DEADLINE: Duration = Duration::from_secs(60);
 const IO_SLICE: Duration = Duration::from_millis(8);
-const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// The worker link carries the same answers the public socket sends, so it
+/// takes the public frame limit. A larger worker frame could only be refused
+/// one hop later, by the encoder that writes it to the client.
+const MAX_FRAME_BYTES: usize = blitz_control_protocol::MAX_DEBUG_FRAME_BYTES;
 
 type Answer = Arc<Once<DebugResponse>>;
 type DocumentRequest = (ControlBridgeRequest, Answer);
