@@ -161,7 +161,11 @@ fn decode_encoded(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
     if blitz_dom::net::is_jxl(data) {
         let (width, height, rgba) = blitz_dom::net::decode_jxl(data)
             .map_err(|error| GpuError::validation(format!("JPEG XL: {error}")))?;
-        return Ok(Arc::new(RasterImageData::new(width, height, Arc::new(rgba))));
+        return Ok(Arc::new(RasterImageData::new(
+            width,
+            height,
+            Arc::new(rgba),
+        )));
     }
     match decode_raster(data) {
         Ok(image) => Ok(image),

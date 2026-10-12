@@ -89,7 +89,8 @@ impl Receiver {
             {
                 return Err("OperationError: unsupported H.264 picture dimensions".into());
             }
-            let y = Plane::new(Arc::from(picture.y), 0, w, w, h).map_err(|error| failure(error.message))?;
+            let y = Plane::new(Arc::from(picture.y), 0, w, w, h)
+                .map_err(|error| failure(error.message))?;
             let u = Plane::new(Arc::from(picture.u), 0, w / 2, w / 2, h / 2)
                 .map_err(|error| failure(error.message))?;
             let v = Plane::new(Arc::from(picture.v), 0, w / 2, w / 2, h / 2)
@@ -98,11 +99,8 @@ impl Receiver {
                 VideoFrame::new(
                     source,
                     [width, height],
-                    MediaTime::new(
-                        i64::try_from(timestamp).map_err(failure)?,
-                        90_000,
-                    )
-                    .map_err(|error| failure(error.message))?,
+                    MediaTime::new(i64::try_from(timestamp).map_err(failure)?, 90_000)
+                        .map_err(|error| failure(error.message))?,
                     MediaTime::new(duration as i64, 90_000)
                         .map_err(|error| failure(error.message))?,
                     generation.clone(),
@@ -118,4 +116,3 @@ impl Receiver {
         Ok(Decoded { frames, keyframe })
     }
 }
-

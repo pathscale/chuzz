@@ -2,9 +2,11 @@ use std::borrow::Cow;
 use std::sync::Mutex;
 
 use blitz_dom::kurbo::{Affine, BezPath, Point, Rect, Shape};
-use parley::style::{FontStyle, FontWeight, StyleProperty};
-use parley::{FontContext, FontFeature, FontFeatures, FontWidth, Layout, LayoutContext, PositionedLayoutItem};
 use parley::setting::Tag;
+use parley::style::{FontStyle, FontWeight, StyleProperty};
+use parley::{
+    FontContext, FontFeature, FontFeatures, FontWidth, Layout, LayoutContext, PositionedLayoutItem,
+};
 use serde_json::{Value, json};
 use skrifa::instance::{NormalizedCoord, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
@@ -115,10 +117,21 @@ pub(super) fn parse_font(value: &str, base: f64, root: f64) -> Result<String> {
         _ => "",
     };
     let mut prefix = String::new();
-    if font.italic { prefix.push_str("italic "); }
-    if font.caps != "normal" { prefix.push_str(&font.caps); prefix.push(' '); }
-    if !stretch.is_empty() { prefix.push_str(stretch); prefix.push(' '); }
-    Ok(format!("{}{} {}px {}", prefix, font.weight, font.size, font.family))
+    if font.italic {
+        prefix.push_str("italic ");
+    }
+    if font.caps != "normal" {
+        prefix.push_str(&font.caps);
+        prefix.push(' ');
+    }
+    if !stretch.is_empty() {
+        prefix.push_str(stretch);
+        prefix.push(' ');
+    }
+    Ok(format!(
+        "{}{} {}px {}",
+        prefix, font.weight, font.size, font.family
+    ))
 }
 
 struct Pen<'a> {
@@ -233,7 +246,10 @@ fn stretch_width(value: &str, shorthand: f32) -> Result<f32> {
 }
 
 fn push_feature(features: &mut Vec<FontFeature>, tag: &[u8; 4], value: u16) {
-    features.push(FontFeature { tag: Tag::from_bytes(*tag), value });
+    features.push(FontFeature {
+        tag: Tag::from_bytes(*tag),
+        value,
+    });
 }
 
 fn caps_features(caps: &str, features: &mut Vec<FontFeature>) -> Result<()> {
@@ -260,8 +276,11 @@ pub(super) fn shape(value: &str, state: &DrawState, fonts: &Mutex<FontContext>) 
     if value.len() > 65_536 {
         return Err("canvas text limit reached in chuzz".to_owned());
     }
-    if !state.letter_spacing.is_finite() || state.letter_spacing.abs() > 1.0e6
-        || !state.word_spacing.is_finite() || state.word_spacing.abs() > 1.0e6 {
+    if !state.letter_spacing.is_finite()
+        || state.letter_spacing.abs() > 1.0e6
+        || !state.word_spacing.is_finite()
+        || state.word_spacing.abs() > 1.0e6
+    {
         return Err("invalid canvas text spacing".to_owned());
     }
     let font = font(&state.font, 16.0, 16.0)?;
@@ -284,7 +303,11 @@ pub(super) fn shape(value: &str, state: &DrawState, fonts: &Mutex<FontContext>) 
     }));
     let width = stretch_width(&state.font_stretch, font.stretch)?;
     builder.push_default(StyleProperty::FontWidth(FontWidth::from_percentage(width)));
-    let caps = if state.font_variant_caps == "normal" { font.caps.as_str() } else { state.font_variant_caps.as_str() };
+    let caps = if state.font_variant_caps == "normal" {
+        font.caps.as_str()
+    } else {
+        state.font_variant_caps.as_str()
+    };
     let mut features = Vec::new();
     caps_features(caps, &mut features)?;
     match state.kerning.as_str() {
@@ -298,7 +321,9 @@ pub(super) fn shape(value: &str, state: &DrawState, fonts: &Mutex<FontContext>) 
         },
         _ => return Err("invalid canvas fontKerning".to_owned()),
     }
-    builder.push_default(StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(features))));
+    builder.push_default(StyleProperty::FontFeatures(FontFeatures::List(Cow::Owned(
+        features,
+    ))));
     builder.push_default(StyleProperty::LetterSpacing(state.letter_spacing as f32));
     builder.push_default(StyleProperty::WordSpacing(state.word_spacing as f32));
     let mut layout: Layout<[u8; 4]> = builder.build(&value);

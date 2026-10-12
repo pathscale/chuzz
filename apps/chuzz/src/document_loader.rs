@@ -68,14 +68,21 @@ fn dump_script_for_debugging(response: &blitz_traits::platform::FetchResponse) {
         response.url.path()
     )
     .chars()
-    .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+    .map(|c| {
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+            c
+        } else {
+            '_'
+        }
+    })
     .take(120)
     .collect();
     let path = std::path::Path::new(&dir).join(format!(
         "{}-{name}.js",
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &response.body));
+    let written =
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &response.body));
     match written {
         Ok(()) => eprintln!("chuzz: dumped {} to {}", response.url, path.display()),
         Err(error) => eprintln!("chuzz: CHUZZ_DEBUG_DUMP {}: {error}", path.display()),

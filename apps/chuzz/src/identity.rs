@@ -198,7 +198,12 @@ pub fn stamp_request_headers(
             set("sec-fetch-site", site.to_owned());
             set(
                 "sec-fetch-mode",
-                if site == "same-origin" { "same-origin" } else { "cors" }.to_owned(),
+                if site == "same-origin" {
+                    "same-origin"
+                } else {
+                    "cors"
+                }
+                .to_owned(),
             );
             set("accept", "*/*".to_owned());
             set("sec-fetch-dest", "empty".to_owned());

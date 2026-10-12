@@ -464,4 +464,3 @@ pub(crate) fn install(document: &mut blitz_script::ScriptDocument) {
         }
     });
 }
-

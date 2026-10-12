@@ -25,8 +25,15 @@ fn build() -> blitz_dom::FontContext {
     font_fallback::register_face(&mut ctx, blitz_dom::BULLET_FONT);
     let mut family = |name: &str| {
         let mut id = None;
-        for face in headless_fonts::FACES.iter().filter(|face| face.family == name) {
-            id = id.or(font_fallback::register_family(&mut ctx, face.family, face.data));
+        for face in headless_fonts::FACES
+            .iter()
+            .filter(|face| face.family == name)
+        {
+            id = id.or(font_fallback::register_family(
+                &mut ctx,
+                face.family,
+                face.data,
+            ));
         }
         id.unwrap_or_else(|| panic!("headless-fonts has no faces for {name}"))
     };
@@ -42,7 +49,11 @@ fn build() -> blitz_dom::FontContext {
 /// document (canvas), which never reaches blitz-dom's family fallback.
 pub(crate) fn family_list(list: &str) -> String {
     let mut out = Vec::new();
-    for name in list.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+    for name in list
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
         out.push(name.to_owned());
         if let Some(fallback) = headless_fonts::resolve(name) {
             out.push(format!("\"{fallback}\""));

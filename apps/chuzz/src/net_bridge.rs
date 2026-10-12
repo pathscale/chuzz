@@ -165,7 +165,10 @@ impl FetchHandler for Completion {
     }
 }
 
-pub(crate) async fn fetch_response(provider: &blitz_net::Provider, request: FetchRequest) -> FetchResult {
+pub(crate) async fn fetch_response(
+    provider: &blitz_net::Provider,
+    request: FetchRequest,
+) -> FetchResult {
     let completion = Completion::default();
     FetchProvider::fetch(provider, request, Box::new(completion.clone()));
     poll_fn(|context| {

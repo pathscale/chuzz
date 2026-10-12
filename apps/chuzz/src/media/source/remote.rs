@@ -81,13 +81,7 @@ impl Video {
         let height = frame.height as usize;
         let chroma_width = width.div_ceil(2);
         let chroma_height = height.div_ceil(2);
-        let y = Plane::new(
-            Arc::from(vec![16; width * height]),
-            0,
-            width,
-            width,
-            height,
-        )?;
+        let y = Plane::new(Arc::from(vec![16; width * height]), 0, width, width, height)?;
         let u = Plane::new(
             Arc::from(vec![128; chroma_width * chroma_height]),
             0,
@@ -101,11 +95,7 @@ impl Video {
             frame.presentation,
             frame.duration,
             frame.generation,
-            VideoPixels::I420 {
-                y,
-                v: u.clone(),
-                u,
-            },
+            VideoPixels::I420 { y, v: u.clone(), u },
         )
     }
 }
@@ -141,4 +131,3 @@ impl Host {
         Ok(descriptor)
     }
 }
-

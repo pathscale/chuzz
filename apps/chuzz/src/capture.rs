@@ -115,9 +115,13 @@ pub async fn capture(
         ),
     );
     // No prelude: a capture loads one page and has nothing to carry into it.
-    let mut document =
-        crate::document_loader::load_for_capture(request, std::sync::Arc::clone(&net_provider), "", None)
-            .await?;
+    let mut document = crate::document_loader::load_for_capture(
+        request,
+        std::sync::Arc::clone(&net_provider),
+        "",
+        None,
+    )
+    .await?;
 
     // Images are fetched asynchronously and applied through the document's
     // message channel, which only drains inside `resolve`. Resolving once

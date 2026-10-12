@@ -15,4 +15,3 @@ pub(crate) fn install(document: &mut blitz_script::ScriptDocument) {
     qa::install(document);
     host::install(document);
 }
-

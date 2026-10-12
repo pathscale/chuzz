@@ -151,7 +151,10 @@ pub(super) fn apply(mut shape: Layer, effect: &Prepared) -> Result<Outcome> {
     for op in &effect.filter {
         shape = apply_op(shape, op)?;
     }
-    let shadow = effect.shadow.map(|shadow| make_shadow(&shape, &shadow)).transpose()?;
+    let shadow = effect
+        .shadow
+        .map(|shadow| make_shadow(&shape, &shadow))
+        .transpose()?;
     Ok(Outcome::Separate { shadow, shape })
 }
 
@@ -205,13 +208,17 @@ impl Layer {
     }
 
     pub(super) fn scale_alpha(&mut self, alpha: f32) {
-        for value in &mut self.pixels { *value *= alpha; }
+        for value in &mut self.pixels {
+            *value *= alpha;
+        }
     }
 
     /// Expand to transparent canvas coverage for unbounded composite operators.
     pub(super) fn padded_to(&self, x: i32, y: i32, width: usize, height: usize) -> Result<Self> {
         check_extent(width, height)?;
-        if width == 0 || height == 0 { return Ok(Self::empty()); }
+        if width == 0 || height == 0 {
+            return Ok(Self::empty());
+        }
         let mut pixels = vec![0.0; width * height * 4];
         for row in 0..height {
             for column in 0..width {
@@ -222,7 +229,13 @@ impl Layer {
                 pixels[index..index + 4].copy_from_slice(&sample);
             }
         }
-        Ok(Self { x, y, width, height, pixels })
+        Ok(Self {
+            x,
+            y,
+            width,
+            height,
+            pixels,
+        })
     }
 
     fn sample(&self, x: i32, y: i32) -> [f32; 4] {

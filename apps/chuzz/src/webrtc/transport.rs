@@ -220,7 +220,8 @@ impl Engine {
                         .codecs
                         .iter()
                         .find(|remote| {
-                            remote.payload_type == codec.payload_type && remote.name() == codec.name()
+                            remote.payload_type == codec.payload_type
+                                && remote.name() == codec.name()
                         })
                         .cloned()
                         .unwrap_or(codec)
@@ -512,13 +513,11 @@ impl Engine {
                         .iter()
                         .find(|slot| slot.mid.is_some_and(|mid| mid.to_string() == section.mid))
                         .or_else(|| {
-                            self.slots
-                                .iter()
-                                .find(|slot| {
-                                    slot.mid.is_none()
-                                        && slot.kind == section.kind
-                                        && !used.contains(&slot.id)
-                                })
+                            self.slots.iter().find(|slot| {
+                                slot.mid.is_none()
+                                    && slot.kind == section.kind
+                                    && !used.contains(&slot.id)
+                            })
                         });
                     let id = existing.map(|slot| slot.id).unwrap_or_else(|| {
                         self.slots.len() as u64
@@ -1003,8 +1002,7 @@ impl Engine {
             let Some(pt) = writer
                 .payload_params()
                 .find(|params| {
-                    params.pt() == codec.payload_type.into()
-                        && params.spec().codec == Codec::H264
+                    params.pt() == codec.payload_type.into() && params.spec().codec == Codec::H264
                 })
                 .map(|params| params.pt())
             else {
@@ -1042,9 +1040,10 @@ impl Engine {
             && !(192..=223).contains(&bytes[1])
             && self.slots.iter().any(|slot| {
                 slot.kind == "video"
-                    && slot.codecs.iter().any(|codec| {
-                        codec.h264 && codec.payload_type == bytes[1] & 0x7f
-                    })
+                    && slot
+                        .codecs
+                        .iter()
+                        .any(|codec| codec.h264 && codec.payload_type == bytes[1] & 0x7f)
             })
     }
 
@@ -1085,9 +1084,10 @@ impl Engine {
                     return Ok(());
                 };
                 if !slot.current.as_deref().is_some_and(sdp::receives)
-                    || !slot.codecs.iter().any(|codec| {
-                        codec.h264 && data.params.pt() == codec.payload_type.into()
-                    })
+                    || !slot
+                        .codecs
+                        .iter()
+                        .any(|codec| codec.h264 && data.params.pt() == codec.payload_type.into())
                 {
                     return Ok(());
                 }
@@ -1442,9 +1442,8 @@ async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String
                 // two seconds; recovery must use a newer keyframe.
                 let video = engine.is_video_rtp(&buffer[..length]);
                 if video && engine.connected {
-                    let timestamp = u32::from_be_bytes([
-                        buffer[4], buffer[5], buffer[6], buffer[7],
-                    ]);
+                    let timestamp =
+                        u32::from_be_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]);
                     let now = Instant::now();
                     if engine.video_drop {
                         engine.video_drop = false;

@@ -247,7 +247,10 @@ fn execute(page: &Arc<Page>, command: Command) -> Result<Value, String> {
             });
             state.contexts.insert(id, Arc::clone(&engine));
             drop(state);
-            drop(nagoya::spawn(run(Arc::downgrade(&engine), Arc::downgrade(page))));
+            drop(nagoya::spawn(run(
+                Arc::downgrade(&engine),
+                Arc::downgrade(page),
+            )));
             Ok(json!({"context": id, "destination": 1, "sampleRate": sample_rate}))
         }
         Command::CreateNode {

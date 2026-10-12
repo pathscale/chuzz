@@ -209,7 +209,11 @@ fn video_codecs(mapping: Mapping) -> Result<Vec<AudioCodec>, String> {
         }
         let fmtp = mapping.formats.get(&number).cloned().unwrap_or_default();
         let mut parameters = BTreeMap::new();
-        for entry in fmtp.split(';').map(str::trim).filter(|entry| !entry.is_empty()) {
+        for entry in fmtp
+            .split(';')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
             let (key, value) = entry
                 .split_once('=')
                 .ok_or("OperationError: incomplete H.264 format parameter")?;
@@ -349,7 +353,9 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
                 || fields[1] == "0"
                 || fields[2] != "UDP/TLS/RTP/SAVPF"
             {
-                return Err("NotSupportedError: active DTLS audio or video sections are required".into());
+                return Err(
+                    "NotSupportedError: active DTLS audio or video sections are required".into(),
+                );
             }
             if sections.len() == SLOT_LIMIT {
                 return Err("OperationError: too many SDP sections".into());
@@ -366,7 +372,11 @@ pub(super) fn sections(description: &Description) -> Result<Vec<Section>, String
                 ..Mapping::default()
             });
             let mut section = defaults.clone();
-            section.kind = if fields[0] == "m=video" { "video" } else { "audio" };
+            section.kind = if fields[0] == "m=video" {
+                "video"
+            } else {
+                "audio"
+            };
             sections.push(section);
         } else {
             attributes(sections.last_mut().unwrap_or(&mut defaults), line)?;
@@ -564,4 +574,3 @@ pub(super) fn answer(original: &str, entries: &[(&str, Option<&str>, Option<&str
     }
     result
 }
-

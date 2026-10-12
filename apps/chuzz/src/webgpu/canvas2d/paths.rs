@@ -264,11 +264,19 @@ pub(super) fn decode(commands: &[super::PathCommand]) -> Result<BezPath> {
 }
 
 fn svg_point(abs: bool, x: f64, y: f64, current: Point) -> Point {
-    if abs { Point::new(x, y) } else { current + Vec2::new(x, y) }
+    if abs {
+        Point::new(x, y)
+    } else {
+        current + Vec2::new(x, y)
+    }
 }
 
 fn svg_command(op: &str, n: Vec<f64>) -> super::PathCommand {
-    super::PathCommand { op: op.to_owned(), n, matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] }
+    super::PathCommand {
+        op: op.to_owned(),
+        n,
+        matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    }
 }
 
 fn svg_arc(
@@ -280,10 +288,14 @@ fn svg_arc(
     large_arc: bool,
     sweep: bool,
 ) -> Option<Vec<f64>> {
-    if from == to { return None; }
+    if from == to {
+        return None;
+    }
     rx = rx.abs();
     ry = ry.abs();
-    if rx == 0.0 || ry == 0.0 { return None; }
+    if rx == 0.0 || ry == 0.0 {
+        return None;
+    }
     let phi = rotation.to_radians();
     let (sin_phi, cos_phi) = phi.sin_cos();
     let half = (from - to) * 0.5;
@@ -297,7 +309,9 @@ fn svg_arc(
     let xp2 = xp * xp;
     let yp2 = yp * yp;
     let denominator = rx2 * yp2 + ry2 * xp2;
-    if denominator == 0.0 { return None; }
+    if denominator == 0.0 {
+        return None;
+    }
     let numerator = (rx2 * ry2 - rx2 * yp2 - ry2 * xp2).max(0.0);
     let sign = if large_arc == sweep { -1.0 } else { 1.0 };
     let coefficient = sign * (numerator / denominator).sqrt();
@@ -311,9 +325,22 @@ fn svg_arc(
     let v = Vec2::new((-xp - cxp) / rx, (-yp - cyp) / ry);
     let start = u.y.atan2(u.x);
     let mut end = start + u.cross(v).atan2(u.dot(v));
-    if sweep && end < start { end += std::f64::consts::TAU; }
-    if !sweep && end > start { end -= std::f64::consts::TAU; }
-    Some(vec![center.x, center.y, rx, ry, phi, start, end, if sweep { 0.0 } else { 1.0 }])
+    if sweep && end < start {
+        end += std::f64::consts::TAU;
+    }
+    if !sweep && end > start {
+        end -= std::f64::consts::TAU;
+    }
+    Some(vec![
+        center.x,
+        center.y,
+        rx,
+        ry,
+        phi,
+        start,
+        end,
+        if sweep { 0.0 } else { 1.0 },
+    ])
 }
 
 /// Parse SVG path data in Rust and normalize relative and smooth commands.
@@ -360,14 +387,25 @@ pub(super) fn svg_commands(value: &str) -> Result<Vec<super::PathCommand>> {
                 quadratic_control = None;
                 svg_command("lineTo", vec![point.x, point.y])
             }
-            PathSegment::CurveTo { abs, x1, y1, x2, y2, x, y } => {
+            PathSegment::CurveTo {
+                abs,
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => {
                 let first = svg_point(abs, x1, y1, current);
                 let second = svg_point(abs, x2, y2, current);
                 let end = svg_point(abs, x, y, current);
                 current = end;
                 cubic_control = Some(second);
                 quadratic_control = None;
-                svg_command("bezierCurveTo", vec![first.x, first.y, second.x, second.y, end.x, end.y])
+                svg_command(
+                    "bezierCurveTo",
+                    vec![first.x, first.y, second.x, second.y, end.x, end.y],
+                )
             }
             PathSegment::SmoothCurveTo { abs, x2, y2, x, y } => {
                 let first = cubic_control.map_or(current, |control: Point| {
@@ -378,7 +416,10 @@ pub(super) fn svg_commands(value: &str) -> Result<Vec<super::PathCommand>> {
                 current = end;
                 cubic_control = Some(second);
                 quadratic_control = None;
-                svg_command("bezierCurveTo", vec![first.x, first.y, second.x, second.y, end.x, end.y])
+                svg_command(
+                    "bezierCurveTo",
+                    vec![first.x, first.y, second.x, second.y, end.x, end.y],
+                )
             }
             PathSegment::Quadratic { abs, x1, y1, x, y } => {
                 let control = svg_point(abs, x1, y1, current);
@@ -398,7 +439,16 @@ pub(super) fn svg_commands(value: &str) -> Result<Vec<super::PathCommand>> {
                 cubic_control = None;
                 svg_command("quadraticCurveTo", vec![control.x, control.y, end.x, end.y])
             }
-            PathSegment::EllipticalArc { abs, rx, ry, x_axis_rotation, large_arc, sweep, x, y } => {
+            PathSegment::EllipticalArc {
+                abs,
+                rx,
+                ry,
+                x_axis_rotation,
+                large_arc,
+                sweep,
+                x,
+                y,
+            } => {
                 let end = svg_point(abs, x, y, current);
                 cubic_control = None;
                 quadratic_control = None;
@@ -432,12 +482,17 @@ fn midpoint(a: Point, b: Point) -> Point {
 fn distance_to_line(point: Point, a: Point, b: Point) -> f64 {
     let edge = b - a;
     let length = edge.hypot();
-    if length <= f64::EPSILON { return (point - a).hypot(); }
+    if length <= f64::EPSILON {
+        return (point - a).hypot();
+    }
     edge.cross(point - a).abs() / length
 }
 
 fn flatten_quad(a: Point, control: Point, b: Point, out: &mut Vec<Point>, depth: u8) {
-    if depth >= 12 || distance_to_line(control, a, b) <= 0.1 { out.push(b); return; }
+    if depth >= 12 || distance_to_line(control, a, b) <= 0.1 {
+        out.push(b);
+        return;
+    }
     let ac = midpoint(a, control);
     let cb = midpoint(control, b);
     let middle = midpoint(ac, cb);
@@ -461,7 +516,10 @@ fn flatten_cubic(a: Point, c1: Point, c2: Point, b: Point, out: &mut Vec<Point>,
 }
 
 #[derive(Default)]
-struct Contour { points: Vec<Point>, closed: bool }
+struct Contour {
+    points: Vec<Point>,
+    closed: bool,
+}
 
 fn contours(path: &BezPath) -> Vec<Contour> {
     let mut result = Vec::new();
@@ -470,11 +528,19 @@ fn contours(path: &BezPath) -> Vec<Contour> {
     for element in path.elements() {
         match *element {
             PathEl::MoveTo(point) => {
-                if !active.points.is_empty() { result.push(active); }
-                active = Contour { points: vec![point], closed: false };
+                if !active.points.is_empty() {
+                    result.push(active);
+                }
+                active = Contour {
+                    points: vec![point],
+                    closed: false,
+                };
                 current = point;
             }
-            PathEl::LineTo(point) => { active.points.push(point); current = point; }
+            PathEl::LineTo(point) => {
+                active.points.push(point);
+                current = point;
+            }
             PathEl::QuadTo(control, end) => {
                 flatten_quad(current, control, end, &mut active.points, 0);
                 current = end;
@@ -485,22 +551,30 @@ fn contours(path: &BezPath) -> Vec<Contour> {
             }
             PathEl::ClosePath => {
                 if let Some(first) = active.points.first().copied() {
-                    if active.points.last() != Some(&first) { active.points.push(first); }
+                    if active.points.last() != Some(&first) {
+                        active.points.push(first);
+                    }
                     current = first;
                     active.closed = true;
                 }
             }
         }
     }
-    if !active.points.is_empty() { result.push(active); }
+    if !active.points.is_empty() {
+        result.push(active);
+    }
     result
 }
 
 fn on_segment(point: Point, a: Point, b: Point) -> bool {
     let edge = b - a;
     let relative = point - a;
-    if edge.hypot2() <= f64::EPSILON { return relative.hypot2() <= 1.0e-14; }
-    if edge.cross(relative).abs() > 1.0e-7 * edge.hypot().max(1.0) { return false; }
+    if edge.hypot2() <= f64::EPSILON {
+        return relative.hypot2() <= 1.0e-14;
+    }
+    if edge.cross(relative).abs() > 1.0e-7 * edge.hypot().max(1.0) {
+        return false;
+    }
     let projection = relative.dot(edge);
     projection >= -1.0e-7 && projection <= edge.dot(edge) + 1.0e-7
 }
@@ -509,11 +583,15 @@ pub(super) fn contains_fill(path: &BezPath, point: Point, fill: peniko::Fill) ->
     let mut winding = 0i32;
     let mut crossings = 0usize;
     for contour in contours(path) {
-        if contour.points.len() < 2 { continue; }
+        if contour.points.len() < 2 {
+            continue;
+        }
         for index in 0..contour.points.len() {
             let a = contour.points[index];
             let b = contour.points[(index + 1) % contour.points.len()];
-            if on_segment(point, a, b) { return true; }
+            if on_segment(point, a, b) {
+                return true;
+            }
             if (a.y <= point.y && b.y > point.y) || (a.y > point.y && b.y <= point.y) {
                 let side = (b - a).cross(point - a);
                 if (b.y > a.y && side > 0.0) || (b.y < a.y && side < 0.0) {
@@ -523,7 +601,11 @@ pub(super) fn contains_fill(path: &BezPath, point: Point, fill: peniko::Fill) ->
             }
         }
     }
-    if matches!(fill, peniko::Fill::EvenOdd) { crossings % 2 == 1 } else { winding != 0 }
+    if matches!(fill, peniko::Fill::EvenOdd) {
+        crossings % 2 == 1
+    } else {
+        winding != 0
+    }
 }
 
 fn triangle_contains(point: Point, a: Point, b: Point, c: Point) -> bool {
@@ -534,28 +616,59 @@ fn triangle_contains(point: Point, a: Point, b: Point, c: Point) -> bool {
         || (ab <= 1.0e-7 && bc <= 1.0e-7 && ca <= 1.0e-7)
 }
 
-fn line_contains(point: Point, a: Point, b: Point, radius: f64, cap: &str, first: bool, last: bool) -> bool {
+fn line_contains(
+    point: Point,
+    a: Point,
+    b: Point,
+    radius: f64,
+    cap: &str,
+    first: bool,
+    last: bool,
+) -> bool {
     let edge = b - a;
     let length = edge.hypot();
-    if length <= f64::EPSILON { return cap != "butt" && (point - a).hypot() <= radius; }
+    if length <= f64::EPSILON {
+        return cap != "butt" && (point - a).hypot() <= radius;
+    }
     let direction = edge / length;
     let along = (point - a).dot(direction);
     let across = direction.cross(point - a).abs();
-    let lower = if first && cap == "square" { -radius } else { 0.0 };
+    let lower = if first && cap == "square" {
+        -radius
+    } else {
+        0.0
+    };
     let upper = length + if last && cap == "square" { radius } else { 0.0 };
-    if along >= lower && along <= upper && across <= radius { return true; }
-    cap == "round" && ((first && (point - a).hypot() <= radius) || (last && (point - b).hypot() <= radius))
+    if along >= lower && along <= upper && across <= radius {
+        return true;
+    }
+    cap == "round"
+        && ((first && (point - a).hypot() <= radius) || (last && (point - b).hypot() <= radius))
 }
 
-fn join_contains(point: Point, before: Point, at: Point, after: Point, radius: f64, join: &str, limit: f64) -> bool {
+fn join_contains(
+    point: Point,
+    before: Point,
+    at: Point,
+    after: Point,
+    radius: f64,
+    join: &str,
+    limit: f64,
+) -> bool {
     let incoming = at - before;
     let outgoing = after - at;
     let (a_len, b_len) = (incoming.hypot(), outgoing.hypot());
-    if a_len <= f64::EPSILON || b_len <= f64::EPSILON { return false; }
+    if a_len <= f64::EPSILON || b_len <= f64::EPSILON {
+        return false;
+    }
     let (a, b) = (incoming / a_len, outgoing / b_len);
     let turn = a.cross(b);
-    if turn.abs() < 1.0e-10 { return false; }
-    if join == "round" { return (point - at).hypot() <= radius; }
+    if turn.abs() < 1.0e-10 {
+        return false;
+    }
+    if join == "round" {
+        return (point - at).hypot() <= radius;
+    }
     let side = if turn > 0.0 { -1.0 } else { 1.0 };
     let p1 = at + Vec2::new(-a.y, a.x) * (radius * side);
     let p2 = at + Vec2::new(-b.y, b.x) * (radius * side);
@@ -569,32 +682,68 @@ fn join_contains(point: Point, before: Point, at: Point, after: Point, radius: f
 }
 
 fn stroke_piece(points: &[Point], closed: bool, point: Point, state: &super::DrawState) -> bool {
-    if points.is_empty() { return false; }
+    if points.is_empty() {
+        return false;
+    }
     let radius = state.width * 0.5;
-    if points.len() == 1 { return state.cap != "butt" && (point - points[0]).hypot() <= radius; }
+    if points.len() == 1 {
+        return state.cap != "butt" && (point - points[0]).hypot() <= radius;
+    }
     let count = points.len() - 1;
     for index in 0..count {
-        if line_contains(point, points[index], points[index + 1], radius, &state.cap,
-            !closed && index == 0, !closed && index + 1 == count) { return true; }
+        if line_contains(
+            point,
+            points[index],
+            points[index + 1],
+            radius,
+            &state.cap,
+            !closed && index == 0,
+            !closed && index + 1 == count,
+        ) {
+            return true;
+        }
     }
     for index in 1..count {
-        if join_contains(point, points[index - 1], points[index], points[index + 1], radius,
-            &state.join, state.miter) { return true; }
+        if join_contains(
+            point,
+            points[index - 1],
+            points[index],
+            points[index + 1],
+            radius,
+            &state.join,
+            state.miter,
+        ) {
+            return true;
+        }
     }
-    closed && points.len() >= 4 && join_contains(
-        point, points[points.len() - 2], points[0], points[1], radius, &state.join, state.miter,
-    )
+    closed
+        && points.len() >= 4
+        && join_contains(
+            point,
+            points[points.len() - 2],
+            points[0],
+            points[1],
+            radius,
+            &state.join,
+            state.miter,
+        )
 }
 
 fn dashed_pieces(points: &[Point], pattern: &[f64], offset: f64) -> Vec<Vec<Point>> {
-    if points.len() < 2 { return Vec::new(); }
+    if points.len() < 2 {
+        return Vec::new();
+    }
     let total: f64 = pattern.iter().sum();
-    if total <= f64::EPSILON { return vec![points.to_vec()]; }
+    if total <= f64::EPSILON {
+        return vec![points.to_vec()];
+    }
     let mut index = 0usize;
     let mut phase = offset.rem_euclid(total);
     let mut guard = 0usize;
     while phase >= pattern[index] && guard < pattern.len() * 2 {
-        if pattern[index] > 0.0 { phase -= pattern[index]; }
+        if pattern[index] > 0.0 {
+            phase -= pattern[index];
+        }
         index = (index + 1) % pattern.len();
         guard += 1;
     }
@@ -606,40 +755,58 @@ fn dashed_pieces(points: &[Point], pattern: &[f64], offset: f64) -> Vec<Vec<Poin
         let a = segment[0];
         let edge = segment[1] - a;
         let length = edge.hypot();
-        if length <= f64::EPSILON { continue; }
+        if length <= f64::EPSILON {
+            continue;
+        }
         let direction = edge / length;
         let mut traveled = 0.0;
         while traveled < length {
             if remaining <= f64::EPSILON {
-                if piece.len() > 1 { pieces.push(std::mem::take(&mut piece)); }
+                if piece.len() > 1 {
+                    pieces.push(std::mem::take(&mut piece));
+                }
                 index = (index + 1) % pattern.len();
                 active = index.is_multiple_of(2);
                 remaining = pattern[index];
-                if remaining <= f64::EPSILON { continue; }
+                if remaining <= f64::EPSILON {
+                    continue;
+                }
             }
             let step = remaining.min(length - traveled);
             let from = a + direction * traveled;
             let to = a + direction * (traveled + step);
             if active {
-                if piece.is_empty() { piece.push(from); }
+                if piece.is_empty() {
+                    piece.push(from);
+                }
                 piece.push(to);
             }
             traveled += step;
             remaining -= step;
         }
     }
-    if piece.len() > 1 { pieces.push(piece); }
+    if piece.len() > 1 {
+        pieces.push(piece);
+    }
     pieces
 }
 
-pub(super) fn contains_stroke(path: &BezPath, point: Point, state: &super::DrawState) -> Result<bool> {
+pub(super) fn contains_stroke(
+    path: &BezPath,
+    point: Point,
+    state: &super::DrawState,
+) -> Result<bool> {
     state.stroke()?;
     for contour in contours(path) {
         if state.dash.is_empty() || state.dash.iter().all(|length| *length == 0.0) {
-            if stroke_piece(&contour.points, contour.closed, point, state) { return Ok(true); }
+            if stroke_piece(&contour.points, contour.closed, point, state) {
+                return Ok(true);
+            }
         } else {
             for piece in dashed_pieces(&contour.points, &state.dash, state.dash_offset) {
-                if stroke_piece(&piece, false, point, state) { return Ok(true); }
+                if stroke_piece(&piece, false, point, state) {
+                    return Ok(true);
+                }
             }
         }
     }

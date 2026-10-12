@@ -60,15 +60,24 @@ impl Error {
     }
 
     fn denied() -> Self {
-        Self::new("NotAllowedError", "The authenticator did not allow the request")
+        Self::new(
+            "NotAllowedError",
+            "The authenticator did not allow the request",
+        )
     }
 
     fn unknown() -> Self {
-        Self::new("UnknownError", "The authenticator could not complete the request")
+        Self::new(
+            "UnknownError",
+            "The authenticator could not complete the request",
+        )
     }
 
     fn security() -> Self {
-        Self::new("SecurityError", "The relying party is not valid for this origin")
+        Self::new(
+            "SecurityError",
+            "The relying party is not valid for this origin",
+        )
     }
 
     fn wire(self) -> Json {
@@ -158,8 +167,7 @@ struct Prepared {
 }
 
 fn base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let word = (u32::from(chunk[0]) << 16)
@@ -197,14 +205,14 @@ fn effective_rp(origin: &str, secure: bool, requested: Option<&str>) -> Result<S
             label.is_empty()
                 || label.starts_with('-')
                 || label.ends_with('-')
-                || !label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
     {
         return Err(Error::security());
     }
-    if rp == host
-        || (host.ends_with(&format!(".{rp}")) && psl::domain(rp.as_bytes()).is_some())
-    {
+    if rp == host || (host.ends_with(&format!(".{rp}")) && psl::domain(rp.as_bytes()).is_some()) {
         Ok(rp)
     } else {
         Err(Error::security())
@@ -223,7 +231,10 @@ fn descriptors(values: &[Descriptor]) -> Result<Out<'_>> {
     let mut result = Vec::with_capacity(values.len());
     for descriptor in values {
         if descriptor.kind != "public-key" {
-            return Err(Error::new("TypeError", "Invalid credential descriptor type"));
+            return Err(Error::new(
+                "TypeError",
+                "Invalid credential descriptor type",
+            ));
         }
         result.push(Out::Map(vec![
             (Out::Text("type"), Out::Text("public-key")),
@@ -263,7 +274,10 @@ fn command(command: u8, parameters: Out<'_>) -> Result<Bytes> {
     let mut request = vec![command];
     request.extend(encode(&parameters));
     if request.len() > AuthenticatorConfig::default().max_msg_size as usize {
-        return Err(Error::new("ConstraintError", "The authenticator request is too large"));
+        return Err(Error::new(
+            "ConstraintError",
+            "The authenticator request is too large",
+        ));
     }
     Ok(Bytes::from(request))
 }
@@ -271,7 +285,10 @@ fn command(command: u8, parameters: Out<'_>) -> Result<Bytes> {
 fn prepare_create(origin: &str, secure: bool, options: CreationOptions) -> Result<Prepared> {
     let rp_id = effective_rp(origin, secure, options.rp.id.as_deref())?;
     if options.user.id.is_empty() || options.user.id.len() > 64 {
-        return Err(Error::new("TypeError", "user.id must contain 1 through 64 bytes"));
+        return Err(Error::new(
+            "TypeError",
+            "user.id must contain 1 through 64 bytes",
+        ));
     }
     if !options.pub_key_cred_params.is_empty()
         && !options
@@ -285,7 +302,12 @@ fn prepare_create(origin: &str, secure: bool, options: CreationOptions) -> Resul
     match selection.authenticator_attachment.as_deref() {
         None | Some("platform") => {}
         Some("cross-platform") => return Err(Error::denied()),
-        Some(_) => return Err(Error::new("TypeError", "Invalid authenticatorAttachment value")),
+        Some(_) => {
+            return Err(Error::new(
+                "TypeError",
+                "Invalid authenticatorAttachment value",
+            ));
+        }
     }
     let resident = match selection.resident_key.as_deref() {
         Some("required" | "preferred") => true,
@@ -298,8 +320,7 @@ fn prepare_create(origin: &str, secure: bool, options: CreationOptions) -> Resul
         "direct" | "enterprise" => false,
         _ => return Err(Error::new("TypeError", "Invalid attestation value")),
     };
-    let (client_data, client_hash) =
-        client_data("webauthn.create", &options.challenge, origin)?;
+    let (client_data, client_hash) = client_data("webauthn.create", &options.challenge, origin)?;
     let request = command(
         ctap2::command::MAKE_CREDENTIAL,
         Out::Map(vec![
@@ -316,7 +337,10 @@ fn prepare_create(origin: &str, secure: bool, options: CreationOptions) -> Resul
                 Out::Map(vec![
                     (Out::Text("id"), Out::Bytes(&options.user.id)),
                     (Out::Text("name"), Out::Text(&options.user.name)),
-                    (Out::Text("displayName"), Out::Text(&options.user.display_name)),
+                    (
+                        Out::Text("displayName"),
+                        Out::Text(&options.user.display_name),
+                    ),
                 ]),
             ),
             (
@@ -353,8 +377,7 @@ fn prepare_create(origin: &str, secure: bool, options: CreationOptions) -> Resul
 fn prepare_get(origin: &str, secure: bool, options: RequestOptions) -> Result<Prepared> {
     let rp_id = effective_rp(origin, secure, options.rp_id.as_deref())?;
     let require_uv = require_uv(options.user_verification.as_deref())?;
-    let (client_data, client_hash) =
-        client_data("webauthn.get", &options.challenge, origin)?;
+    let (client_data, client_hash) = client_data("webauthn.get", &options.challenge, origin)?;
     let request = command(
         ctap2::command::GET_ASSERTION,
         Out::Map(vec![
@@ -379,7 +402,11 @@ fn prepare_get(origin: &str, secure: bool, options: RequestOptions) -> Result<Pr
         create: false,
         anonymize: false,
         require_uv,
-        allow: options.allow_credentials.into_iter().map(|descriptor| descriptor.id).collect(),
+        allow: options
+            .allow_credentials
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect(),
         timeout: options.timeout,
     })
 }
@@ -544,24 +571,14 @@ impl Job {
     }
 }
 
-pub(crate) fn create(
-    owner: u64,
-    origin: &str,
-    secure: bool,
-    options: CreationOptions,
-) -> Json {
+pub(crate) fn create(owner: u64, origin: &str, secure: bool, options: CreationOptions) -> Json {
     match prepare_create(origin, secure, options) {
         Ok(prepared) => begin(owner, prepared),
         Err(error) => error.wire(),
     }
 }
 
-pub(crate) fn get(
-    owner: u64,
-    origin: &str,
-    secure: bool,
-    options: RequestOptions,
-) -> Json {
+pub(crate) fn get(owner: u64, origin: &str, secure: bool, options: RequestOptions) -> Json {
     match prepare_get(origin, secure, options) {
         Ok(prepared) => begin(owner, prepared),
         Err(error) => error.wire(),
@@ -577,8 +594,7 @@ fn begin(owner: u64, prepared: Prepared) -> Json {
     let job = Arc::new(Job {
         id,
         owner,
-        deadline: Instant::now()
-            + Duration::from_millis(prepared.timeout.clamp(1, 120_000)),
+        deadline: Instant::now() + Duration::from_millis(prepared.timeout.clamp(1, 120_000)),
         discarded: AtomicBool::new(false),
         result: Mutex::new(None),
     });
@@ -643,7 +659,12 @@ fn perform(prepared: &Prepared, job: &Job) -> Result<Json> {
 
 pub(crate) fn status(owner: u64, id: u64) -> Json {
     let mut requests = lock(&REQUESTS);
-    let Some(job) = requests.jobs.get(&id).filter(|job| job.owner == owner).cloned() else {
+    let Some(job) = requests
+        .jobs
+        .get(&id)
+        .filter(|job| job.owner == owner)
+        .cloned()
+    else {
         return Error::denied().wire();
     };
     let result = lock(&job.result).take();
@@ -750,7 +771,10 @@ fn registration(prepared: &Prepared, body: &Value) -> Result<Json> {
     let format = text(field(body, 1)?)?;
     let statement = field(body, 3)?;
     if format != "packed"
-        || statement.get_text("alg").and_then(|value| value.as_int().ok()) != Some(-7)
+        || statement
+            .get_text("alg")
+            .and_then(|value| value.as_int().ok())
+            != Some(-7)
         || statement.get_text("x5c").is_some()
     {
         return Err(Error::unknown());
@@ -794,7 +818,10 @@ fn assertion(prepared: &Prepared, body: &Value) -> Result<Json> {
     let raw_id = bytes(descriptor.get_text("id").ok_or_else(Error::unknown)?)?;
     if raw_id.is_empty()
         || (!prepared.allow.is_empty()
-            && !prepared.allow.iter().any(|allowed| allowed.as_slice() == &raw_id[..]))
+            && !prepared
+                .allow
+                .iter()
+                .any(|allowed| allowed.as_slice() == &raw_id[..]))
     {
         return Err(Error::unknown());
     }
@@ -824,4 +851,3 @@ fn assertion(prepared: &Prepared, body: &Value) -> Result<Json> {
         "authenticatorAttachment": "platform",
     }))
 }
-

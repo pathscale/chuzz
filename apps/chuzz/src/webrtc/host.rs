@@ -372,7 +372,10 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
             let Some(video) = leased.source.remote_video() else {
                 return Err("InvalidAccessError: receiver is not remote video".into());
             };
-            if !lock(&peer.videos).iter().any(|owned| Arc::ptr_eq(owned, video)) {
+            if !lock(&peer.videos)
+                .iter()
+                .any(|owned| Arc::ptr_eq(owned, video))
+            {
                 return Err("InvalidAccessError: video receiver belongs to another peer".into());
             }
         } else {
@@ -382,7 +385,9 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
                 .source
                 .audio()
                 .is_some_and(|source| Arc::ptr_eq(source, &audio))
-                || !lock(&peer.outputs).iter().any(|owned| Arc::ptr_eq(owned, &audio))
+                || !lock(&peer.outputs)
+                    .iter()
+                    .any(|owned| Arc::ptr_eq(owned, &audio))
             {
                 return Err("InvalidAccessError: receiver PCM registration does not match".into());
             }
@@ -478,4 +483,3 @@ pub(super) fn install(document: &mut ScriptDocument) {
         true
     });
 }
-

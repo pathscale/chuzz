@@ -99,13 +99,20 @@ impl Sender {
         epoch: Instant,
         now: Instant,
     ) -> Result<(Option<Encoded>, Instant, u64), String> {
-        let Settings::Video { frame_rate, .. } = track.settings().map_err(|error| failure(format!("{error:?}")))? else {
+        let Settings::Video { frame_rate, .. } = track
+            .settings()
+            .map_err(|error| failure(format!("{error:?}")))?
+        else {
             return Err("InvalidAccessError: video sender needs a video track".into());
         };
         // A NaN rate keeps the old min/max outcome, the 10 fps ceiling, because
         // clamp would pass NaN through to the frame period.
         let fps = frame_rate.min(self.max_frame_rate);
-        let fps = if fps.is_nan() { 10.0 } else { fps.clamp(0.25, 10.0) };
+        let fps = if fps.is_nan() {
+            10.0
+        } else {
+            fps.clamp(0.25, 10.0)
+        };
         let period = Duration::from_secs_f64(1.0 / fps);
         let mut dropped = 0;
         if now >= self.capture_due {
@@ -113,7 +120,11 @@ impl Sender {
             let frame = track
                 .video_at(now.saturating_duration_since(epoch))
                 .map_err(|error| failure(format!("{error:?}")))?;
-            let identity = (frame.source, frame.presentation.ticks, frame.presentation.rate);
+            let identity = (
+                frame.source,
+                frame.presentation.ticks,
+                frame.presentation.rate,
+            );
             if self.last_capture != Some(identity) {
                 self.last_capture = Some(identity);
                 if self.pending.len() == 2 {
@@ -130,9 +141,8 @@ impl Sender {
         {
             if frame.generation.is_current() {
                 let unit = self.encode(&frame, fps)?;
-                let debt = Duration::from_secs_f64(
-                    unit.wire_bytes as f64 * 8.0 / f64::from(self.bitrate),
-                );
+                let debt =
+                    Duration::from_secs_f64(unit.wire_bytes as f64 * 8.0 / f64::from(self.bitrate));
                 // No accumulated credit: lateness cannot cause a catch-up burst.
                 self.send_due = now + period.max(debt);
                 encoded = Some(unit);
@@ -199,7 +209,8 @@ impl Sender {
             .as_ref()
             .is_none_or(|(current, _)| *current != dimensions)
         {
-            let (initial, encoder) = LessEncoder::new(&image).map_err(|error| failure(format!("{error:?}")))?;
+            let (initial, encoder) =
+                LessEncoder::new(&image).map_err(|error| failure(format!("{error:?}")))?;
             let mut sps = initial.sps.to_nal_unit();
             if sps.len() < 4 || sps[0] & 31 != 7 || sps[1] != 66 {
                 return Err("OperationError: encoder did not emit baseline H.264".into());
@@ -245,4 +256,3 @@ impl Sender {
         })
     }
 }
-
