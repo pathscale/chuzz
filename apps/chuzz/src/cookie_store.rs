@@ -339,10 +339,48 @@ impl Default for BrowserCookieStore {
 impl BrowserCookieStore {
     /// Opens the cookie table below `directory`, creating an empty table when
     /// the directory has no cookie data yet.
+    ///
+    /// A table that WorkTable cannot load (a torn page, an index that names a
+    /// row the data file no longer decodes) must not lock the profile out of
+    /// browsing.  It is moved aside as `browser_cookie.corrupt-<unix secs>`
+    /// in the same directory, so it can still be inspected, and the jar starts
+    /// empty.
     pub async fn open(directory: impl AsRef<Path>) -> Result<Self, CookieStoreError> {
-        std::fs::create_dir_all(directory.as_ref())
+        let directory = directory.as_ref();
+        let error = match Self::open_table(directory).await {
+            Err(CookieStoreError::Open(error)) => error,
+            result => return result,
+        };
+        let table_name = BrowserCookieWorkTable::name_snake_case().to_string();
+        let table_directory = directory.join(&table_name);
+        if !table_directory.exists() {
+            return Err(CookieStoreError::Open(error));
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let mut aside = directory.join(format!("{table_name}.corrupt-{stamp}"));
+        let mut attempt = 1;
+        while aside.exists() {
+            aside = directory.join(format!("{table_name}.corrupt-{stamp}-{attempt}"));
+            attempt += 1;
+        }
+        std::fs::rename(&table_directory, &aside).map_err(|rename| {
+            CookieStoreError::Open(format!(
+                "{error}; moving the unreadable table aside also failed: {rename}"
+            ))
+        })?;
+        eprintln!(
+            "chuzz: the cookie table was unreadable, moved it to {} and starting empty: {error}",
+            aside.display()
+        );
+        Self::open_table(directory).await
+    }
+
+    async fn open_table(directory: &Path) -> Result<Self, CookieStoreError> {
+        std::fs::create_dir_all(directory)
             .map_err(|error| CookieStoreError::Open(error.to_string()))?;
-        let directory = directory.as_ref().to_string_lossy().into_owned();
+        let directory = directory.to_string_lossy().into_owned();
         let config = DiskConfig::new_with_table_name(
             directory,
             BrowserCookieWorkTable::name_snake_case(),
@@ -872,5 +910,93 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    fn scratch_profile(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let directory = std::env::temp_dir().join(format!(
+            "chuzz-cookie-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("scratch profile");
+        directory
+    }
+
+    fn corrupt_copies(directory: &Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(directory)
+            .expect("profile lists")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("browser_cookie.corrupt-"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_unloadable_table_is_moved_aside_and_the_jar_starts_empty() {
+        let directory = scratch_profile("corrupt");
+        nagoya::block_on(async {
+            let store = BrowserCookieStore::open(&directory)
+                .await
+                .expect("fresh jar");
+            store
+                .add_response_cookies(
+                    &url("https://site.example/"),
+                    ["kept=1; Path=/; Max-Age=86400"],
+                )
+                .expect("cookie stored");
+            store.close().await.expect("jar closes");
+        });
+
+        let table = directory.join("browser_cookie");
+        for entry in std::fs::read_dir(&table).expect("table files") {
+            let path = entry.expect("table entry").path();
+            let length = std::fs::metadata(&path).expect("table file").len();
+            std::fs::write(&path, vec![0xa5; length.max(64) as usize]).expect("corrupt file");
+        }
+
+        let reopened = nagoya::block_on(BrowserCookieStore::open(&directory))
+            .expect("a corrupt table falls back to an empty jar");
+        assert_eq!(reopened.cookie_header(&url("https://site.example/")), None);
+        let aside = corrupt_copies(&directory);
+        assert_eq!(
+            aside.len(),
+            1,
+            "the unreadable table is kept aside: {aside:?}"
+        );
+
+        reopened
+            .add_response_cookies(
+                &url("https://site.example/"),
+                ["fresh=1; Path=/; Max-Age=86400"],
+            )
+            .expect("the fresh jar accepts cookies");
+        nagoya::block_on(reopened.close()).expect("fresh jar closes");
+        let again =
+            nagoya::block_on(BrowserCookieStore::open(&directory)).expect("fresh jar reopens");
+        assert_eq!(
+            again
+                .cookie_header(&url("https://site.example/"))
+                .as_deref(),
+            Some("fresh=1")
+        );
+        nagoya::block_on(again.close()).expect("jar closes");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Opens a copy of a real damaged profile named by
+    /// `CHUZZ_COOKIE_REPRO_DIR`.  The directory is changed in place, so point it
+    /// at a copy, never at the live profile.
+    #[test]
+    #[ignore = "needs CHUZZ_COOKIE_REPRO_DIR pointing at a copied cookies directory"]
+    fn a_copied_damaged_profile_opens_empty() {
+        let directory = std::env::var_os("CHUZZ_COOKIE_REPRO_DIR").expect("repro directory");
+        let store = nagoya::block_on(BrowserCookieStore::open(&directory)).expect("profile opens");
+        nagoya::block_on(store.close()).expect("jar closes");
     }
 }
