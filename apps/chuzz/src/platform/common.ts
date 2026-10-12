@@ -712,7 +712,32 @@
     });
   }
 
+  function installOptionReflection() {
+    const prototype = g.HTMLOptionElement && g.HTMLOptionElement.prototype;
+    if (!prototype) return;
+    if (!("text" in prototype)) {
+      Object.defineProperty(prototype, "text", {
+        configurable: true, enumerable: true,
+        get: function () {
+          return String(this.textContent || "").replace(/[\t\n\f\r ]+/g, " ").trim();
+        },
+        set: function (value) { this.textContent = String(value); }
+      });
+    }
+    if (!("defaultSelected" in prototype)) {
+      Object.defineProperty(prototype, "defaultSelected", {
+        configurable: true, enumerable: true,
+        get: function () { return this.hasAttribute("selected"); },
+        set: function (value) {
+          if (value) this.setAttribute("selected", "");
+          else this.removeAttribute("selected");
+        }
+      });
+    }
+  }
+
   function installOptionConstructor() {
+    installOptionReflection();
     if ("Option" in g || !g.document) return;
     function Option(text, value, defaultSelected, selected) {
       const option = g.document.createElement("option");
