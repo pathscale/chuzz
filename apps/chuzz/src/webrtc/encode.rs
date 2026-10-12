@@ -102,7 +102,10 @@ impl Sender {
         let Settings::Video { frame_rate, .. } = track.settings().map_err(|error| failure(format!("{error:?}")))? else {
             return Err("InvalidAccessError: video sender needs a video track".into());
         };
-        let fps = frame_rate.min(self.max_frame_rate).min(10.0).max(0.25);
+        // A NaN rate keeps the old min/max outcome, the 10 fps ceiling, because
+        // clamp would pass NaN through to the frame period.
+        let fps = frame_rate.min(self.max_frame_rate);
+        let fps = if fps.is_nan() { 10.0 } else { fps.clamp(0.25, 10.0) };
         let period = Duration::from_secs_f64(1.0 / fps);
         let mut dropped = 0;
         if now >= self.capture_due {
