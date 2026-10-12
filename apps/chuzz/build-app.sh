@@ -8,19 +8,40 @@
 # up as "chuzz" with a generic icon and cannot be given a Dock position.
 set -eu
 
-profile="${1:-release}"
-case "$profile" in
-  debug)
-    cargo_args=""
+profile=release
+case "${1:-}" in
+  debug|release)
+    profile=$1
+    shift
     ;;
-  release)
-    cargo_args="--release"
+  ""|--*)
     ;;
   *)
-    echo "usage: $0 [debug|release]" >&2
+    echo "usage: $0 [debug|release] [--config VALUE]..." >&2
     exit 2
     ;;
 esac
+
+validate_build_options() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --config)
+        if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+          echo "missing value for --config" >&2
+          return 2
+        fi
+        shift 2
+        ;;
+      *)
+        echo "unknown build option: $1" >&2
+        echo "usage: $0 [debug|release] [--config VALUE]..." >&2
+        return 2
+        ;;
+    esac
+  done
+}
+
+validate_build_options "$@" || exit $?
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
@@ -30,8 +51,11 @@ macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
 
 cd "$repo_dir"
-# shellcheck disable=SC2086
-cargo build -p chuzz --bin chuzz-gui $cargo_args
+if [ "$profile" = release ]; then
+  cargo "$@" build -p chuzz --bin chuzz-gui --release
+else
+  cargo "$@" build -p chuzz --bin chuzz-gui
+fi
 
 # Removed rather than overwritten: a stale file left inside Contents from an
 # earlier layout would be signed along with everything else and shipped.
