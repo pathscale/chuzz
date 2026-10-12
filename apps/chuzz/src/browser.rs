@@ -306,6 +306,8 @@ struct QueuedRedrawShell {
     inner: Arc<dyn ShellProvider>,
     app: ChuzzAppHandle,
     redraw_pending: Arc<AtomicBool>,
+    /// The thread that built this shell, which is the document thread.
+    document_thread: std::thread::ThreadId,
 }
 
 impl QueuedRedrawShell {
@@ -314,12 +316,20 @@ impl QueuedRedrawShell {
             inner,
             app,
             redraw_pending: Arc::new(AtomicBool::new(false)),
+            document_thread: std::thread::current().id(),
         }
     }
 }
 
 impl ShellProvider for QueuedRedrawShell {
     fn request_redraw(&self) {
+        // On the document thread there is no worker to unblock, and queueing
+        // would hand the script queue a task that counts as runnable work, so
+        // an eval in any poll hook would keep a settling document busy forever.
+        if std::thread::current().id() == self.document_thread {
+            self.inner.request_redraw();
+            return;
+        }
         if self.redraw_pending.swap(true, Ordering::AcqRel) {
             return;
         }
