@@ -493,7 +493,7 @@ On the headless host, `includeDom: false` still fills `dom` with the committed T
 }
 ```
 
-Unmeasured metric fields are omitted rather than sent as zero. `style`, `layout`, and `paint` revisions stay 0 because Blitz versions the document as one number.
+Unmeasured metric fields are omitted rather than sent as zero. On the headless host `style` and `layout` count the Stylo traversals and layout passes blitz-dom actually ran (an idle resolve leaves them alone), and `paint` counts committed renders. The GUI host still reports 0 for `style`, `layout` and `paint` until izumo reads the same counters.
 
 ### metrics
 
@@ -501,7 +501,7 @@ Unmeasured metric fields are omitted rather than sent as zero. `style`, `layout`
 { "command": "metrics" }
 ```
 
-Result `metrics`. The GUI fills frame, script, and snapshot costs from the running renderer. Empty `Option` fields mean the runtime did not measure them. Headless returns document revision equal to its paint counter, `queueDepth` of 0 or 1 from whether script jobs are pending, and the other fields at their empty defaults.
+Result `metrics`. The GUI fills frame, script, and snapshot costs from the running renderer. Empty `Option` fields mean the runtime did not measure them. Headless returns `document` and `paint` equal to its committed-render count, real `style` and `layout` revisions, and `queueDepth` as the page's pending task count: every due timer and animation-frame callback, plus one while any promise job is runnable (Boa exposes only whether its job queues are empty). Other fields keep their empty defaults.
 
 ### waitForIdle
 
