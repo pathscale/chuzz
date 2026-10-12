@@ -176,3 +176,4 @@ ps-str0m-rust-crypto = { path = "../ps-str0m/crypto/rust-crypto" }
 ps-str0m = { path = "../ps-str0m" }
 ps-dimpl = { path = "../ps-dimpl" }
 ps-anyrender = { path = "../ps-anyrender/crates/anyrender" }
+izumo = { path = "../izumo/crates/izumo" }
