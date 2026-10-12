@@ -21,7 +21,12 @@ struct Tile {
 }
 
 fn unpremultiply(source: &[u8], target: &mut [u8]) {
-    for (source, target) in source.as_chunks::<4>().0.iter().zip(target.chunks_exact_mut(4)) {
+    for (source, target) in source
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(target.chunks_exact_mut(4))
+    {
         let alpha = u32::from(source[3]);
         target[3] = source[3];
         for index in 0..3 {
