@@ -164,6 +164,10 @@ impl Shared {
             .map_err(|_| MediaError::decode("media decode state was poisoned"))
     }
 
+    #[cfg(all(
+        feature = "device-audio",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     pub fn try_lock(&self) -> Option<MutexGuard<'_, State>> {
         self.state.try_lock().ok()
     }
