@@ -187,7 +187,15 @@ async fn serve(
                     .close(None)
                     .await
                     .map_err(|error| error.to_string())?;
-                return Err("fixture upgrade policy rejected request".to_owned());
+                let origin = request
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("origin"))
+                    .map(|(_, value)| value.as_str());
+                return Err(format!(
+                    "fixture upgrade policy rejected request: path {:?}, origin {:?}, protocols {:?}",
+                    request.path, origin, request.protocols
+                ));
             }
             let provider = ps_rustcrypto::provider();
             let mut entropy = [0u8; 16];
