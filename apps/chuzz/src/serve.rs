@@ -1786,7 +1786,7 @@ fn serve_page(
     let clipboard = Arc::new(HostClipboard::default());
     let animation_clock = std::time::Instant::now();
 
-    let tls_status = std::cell::RefCell::new(serde_json::Value::Null);
+    let tls_status = std::cell::RefCell::new(None::<Url>);
     let load = |url: Url, carried: Option<&StoredState>| -> Result<Box<ScriptDocument>, String> {
         // Includes HTML and external-script fetches, script execution, loader
         // pumping, shim evaluation and the initial viewport settle.
@@ -1865,7 +1865,7 @@ fn serve_page(
         // request's settle budget to lay out. Say so and serve it; requests
         // keep their own deadlines.
         settle_immediate(&mut document, &animation_clock, settle_deadline);
-        *tls_status.borrow_mut() = crate::tls_status::inspection_state(&landed_url);
+        *tls_status.borrow_mut() = Some(landed_url.clone());
         Ok(document)
     };
 
@@ -2104,7 +2104,11 @@ fn serve_page(
                 match snapshot_document(&mut document, request, revision) {
                     Ok(mut snapshot) => {
                         if status_only {
-                            snapshot.dom = Some(tls_status.borrow().clone());
+                            // Read now, not at load: counters keep moving.
+                            snapshot.dom = tls_status
+                                .borrow()
+                                .as_ref()
+                                .map(crate::tls_status::inspection_state);
                         }
                         DebugResponse::Snapshot(snapshot)
                     }

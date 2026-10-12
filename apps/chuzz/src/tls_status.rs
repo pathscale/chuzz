@@ -14,6 +14,17 @@ pub fn rsa_fallback_for(url: &Url) -> bool {
 pub fn inspection_state(url: &Url) -> serde_json::Value {
     serde_json::json!({
         "tls_rsa_fallback": rsa_fallback_for(url),
+        "connections": blitz_net::connection_stats()
+            .into_iter()
+            .map(|(host, stats)| {
+                serde_json::json!({
+                    "host": host,
+                    "connections": stats.connections,
+                    "refusals": stats.refusals,
+                    "fallbacks": stats.fallbacks,
+                })
+            })
+            .collect::<Vec<_>>(),
         "tls_host": if url.scheme() == "https" { url.host_str() } else { None },
     })
 }
