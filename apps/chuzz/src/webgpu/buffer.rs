@@ -114,7 +114,7 @@ impl DeviceConnection {
         }
         let usage = wgpu::BufferUsages::from_bits(options.usage)
             .ok_or_else(|| GpuError::validation("invalid GPUBufferUsage"))?;
-        if options.mapped_at_creation && options.size % 4 != 0 {
+        if options.mapped_at_creation && !options.size.is_multiple_of(4) {
             return Err(GpuError::validation(
                 "mappedAtCreation buffer size must be a multiple of 4",
             ));
@@ -160,7 +160,7 @@ impl DeviceConnection {
                 ));
             }
             range(write.offset, write.data.len() as u64, entry.size)?;
-            if write.offset % 4 != 0 || write.data.len() % 4 != 0 {
+            if !write.offset.is_multiple_of(4) || !write.data.len().is_multiple_of(4) {
                 return Err(GpuError::validation(
                     "GPUQueue.writeBuffer offset and size must be multiples of 4",
                 ));
@@ -199,7 +199,7 @@ impl DeviceConnection {
             }
             let mapped = range(mapping.offset, mapping.size, entry.size)?;
             // wgpu's range accessors panic for empty or misaligned ranges.
-            if mapping.offset % 8 != 0 || mapping.size == 0 || mapping.size % 4 != 0 {
+            if !mapping.offset.is_multiple_of(8) || mapping.size == 0 || !mapping.size.is_multiple_of(4) {
                 return Err(GpuError::validation(
                     "GPUBuffer.mapAsync requires an 8-byte offset and a nonempty 4-byte size",
                 ));
