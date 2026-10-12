@@ -168,8 +168,8 @@ fn picture(
         .filter(|pixels| {
             picture.width >= 2
                 && picture.height >= 2
-                && picture.width % 2 == 0
-                && picture.height % 2 == 0
+                && picture.width.is_multiple_of(2)
+                && picture.height.is_multiple_of(2)
                 && *pixels <= 3840 * 2160
         })
         .ok_or_else(|| MediaError::unsupported("unsupported MSE video dimensions"))?;

@@ -533,7 +533,7 @@ async fn queue_picture(
     let pixels = width
         .checked_mul(height)
         .filter(|pixels| {
-            width >= 2 && height >= 2 && width % 2 == 0 && height % 2 == 0 && *pixels <= 3840 * 2160
+            width >= 2 && height >= 2 && width.is_multiple_of(2) && height.is_multiple_of(2) && *pixels <= 3840 * 2160
         })
         .ok_or_else(|| MediaError::unsupported("unsupported decoded video dimensions"))?;
     if picture.y.len() != pixels || picture.u.len() != pixels / 4 || picture.v.len() != pixels / 4 {

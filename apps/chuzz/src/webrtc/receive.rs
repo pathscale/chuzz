@@ -81,8 +81,8 @@ impl Receiver {
             let h = height as usize;
             if !(2..=1920).contains(&width)
                 || !(2..=1080).contains(&height)
-                || width % 2 != 0
-                || height % 2 != 0
+                || !width.is_multiple_of(2)
+                || !height.is_multiple_of(2)
                 || picture.y.len() != w * h
                 || picture.u.len() != w * h / 4
                 || picture.v.len() != w * h / 4
