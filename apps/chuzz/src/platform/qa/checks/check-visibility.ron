@@ -1,0 +1,25 @@
+[
+    (
+        id: "check-visibility-behaviour",
+        group: "check-visibility",
+        what: "Visibility follows ancestor display, visibility, opacity options, display:contents descendants, and detached nodes.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CHECK-VISIBILITY PASS",
+        expect: PaintsNamed,
+        covers: ["READY: CHECK-VISIBILITY PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "check-visibility-visible-ink",
+        group: "check-visibility",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

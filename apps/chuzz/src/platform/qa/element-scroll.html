@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>ELEMENT-SCROLL</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible ELEMENT-SCROLL fixture sample</p>
+<p id="result" role="status">READY: ELEMENT-SCROLL</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const box = document.createElement('div'); box.style.cssText = 'width:40px;height:40px;overflow:auto'; const child = document.createElement('div'); child.style.cssText = 'width:240px;height:240px'; box.appendChild(child); document.body.appendChild(box);
+box.scroll(12,15); assert(box.scrollLeft === 12 && box.scrollTop === 15, 'numeric overload');
+box.scroll({left:20,top:25}); assert(box.scrollLeft === 20 && box.scrollTop === 25, 'dictionary overload');
+    result.textContent = "READY: ELEMENT-SCROLL PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

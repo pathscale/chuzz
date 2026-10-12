@@ -1,0 +1,25 @@
+[
+    (
+        id: "element-animate-behaviour",
+        group: "element-animate",
+        what: "The numeric animation subset changes computed style, finishes, and restores inline styles on cancellation.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: ELEMENT-ANIMATE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: ELEMENT-ANIMATE PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "element-animate-visible-ink",
+        group: "element-animate",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

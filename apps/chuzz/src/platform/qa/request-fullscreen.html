@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>REQUEST-FULLSCREEN</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible REQUEST-FULLSCREEN fixture sample</p>
+<p id="result" role="status">READY: REQUEST-FULLSCREEN</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const element = document.createElement('div'); document.body.appendChild(element); const before = document.fullscreenElement; let change = 0;
+document.addEventListener('fullscreenchange', () => change++);
+let error; try { await element.requestFullscreen(); } catch (value) { error = value; }
+assert(error && error.name === 'NotSupportedError', 'unavailable fullscreen rejects');
+assert(document.fullscreenElement === before && change === 0, 'no false fullscreen state or event');
+    result.textContent = "READY: REQUEST-FULLSCREEN PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>PART</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible PART fixture sample</p>
+<p id="result" role="status">READY: PART</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const element = document.createElement('div'); const list = element.part; element.setAttribute('part','one one two');
+assert(element.part === list && list.length === 2 && list[0] === 'one' && list.contains('two'), 'stable live tokens');
+list.add('two','three'); assert(element.getAttribute('part') === 'one two three', 'deduplicating add');
+assert(list.replace('three','four') && list.toggle('two') === false && list.toggle('five',true), 'replace and toggle');
+assert(Array.from(list).join(' ') === 'one four five', 'iteration');
+let invalid = false; try { list.add('bad token'); } catch (error) { invalid = error.name === 'InvalidCharacterError'; }
+assert(invalid, 'invalid token rejected');
+    result.textContent = "READY: PART PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>ELEMENT-GET-ANIMATIONS</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible ELEMENT-GET-ANIMATIONS fixture sample</p>
+<p id="result" role="status">READY: ELEMENT-GET-ANIMATIONS</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const root = document.createElement('div'); const child = document.createElement('div'); root.appendChild(child); document.body.appendChild(root);
+const animation = child.animate([{opacity:'0'},{opacity:'1'}], {duration:100,fill:'forwards'});
+assert(root.getAnimations().length === 0, 'default excludes descendant effects');
+assert(root.getAnimations({subtree:true}).includes(animation), 'subtree includes active child effect');
+animation.finish(); assert(!root.getAnimations({subtree:true}).includes(animation), 'finished effect filtered');
+const canceled = child.animate([{opacity:'0'},{opacity:'1'}], {duration:100}); canceled.cancel();
+assert(!root.getAnimations({subtree:true}).includes(canceled), 'canceled effect filtered');
+    result.textContent = "READY: ELEMENT-GET-ANIMATIONS PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

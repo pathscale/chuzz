@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>OFFSET-PARENT</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible OFFSET-PARENT fixture sample</p>
+<p id="result" role="status">READY: OFFSET-PARENT</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const parent = document.createElement('div'); parent.style.cssText = 'position:relative;width:80px;height:80px'; const child = document.createElement('div'); child.style.cssText = 'width:10px;height:10px'; parent.appendChild(child); document.body.appendChild(parent);
+assert(child.offsetParent === parent, 'positioned ancestor');
+const detached = document.createElement('div'); assert(detached.offsetParent === null, 'detached');
+const hidden = document.createElement('div'); hidden.style.display = 'none'; parent.appendChild(hidden); assert(hidden.offsetParent === null, 'display none');
+const fixed = document.createElement('div'); fixed.style.cssText = 'position:fixed;width:10px;height:10px'; parent.appendChild(fixed); assert(fixed.offsetParent === null, 'fixed position');
+    result.textContent = "READY: OFFSET-PARENT PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

@@ -1,0 +1,25 @@
+[
+    (
+        id: "crypto-subtle-behaviour",
+        group: "crypto-subtle",
+        what: "Secure-context crypto remains unavailable until vetted primitive dependencies and realm-owned key handling are added.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CRYPTO-SUBTLE BLOCKED",
+        expect: PaintsNamed,
+        covers: ["READY: CRYPTO-SUBTLE BLOCKED"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "crypto-subtle-visible-ink",
+        group: "crypto-subtle",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

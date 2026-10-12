@@ -663,6 +663,1378 @@
         hex.slice(16, 20), hex.slice(20)].join("-");
     };
   }
+  function installPermissions() {
+    if (!g.navigator || "permissions" in g.navigator) return;
+    const stateByStatus = new WeakMap();
+    const names = new Set([
+      "camera", "clipboard-read", "clipboard-write", "geolocation", "local-fonts",
+      "microphone", "midi", "notifications", "persistent-storage", "push",
+      "screen-wake-lock", "storage-access", "window-management"
+    ]);
+    class PermissionStatus extends Target {
+      constructor(token, name, state) {
+        super();
+        if (token !== stateByStatus) throw new TypeError("Illegal constructor");
+        stateByStatus.set(this, { name, state });
+        this.onchange = null;
+      }
+      get name() {
+        const state = stateByStatus.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.name;
+      }
+      get state() {
+        const state = stateByStatus.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.state;
+      }
+    }
+    Object.defineProperty(PermissionStatus.prototype, Symbol.toStringTag, {
+      value: "PermissionStatus"
+    });
+    const permissions = {
+      query(descriptor) {
+        if (this !== permissions) throw new TypeError("Illegal invocation");
+        if (descriptor === null || typeof descriptor !== "object") {
+          return Promise.reject(new TypeError("A permission descriptor is required"));
+        }
+        const name = String(descriptor.name);
+        if (!names.has(name)) return Promise.reject(new TypeError("Unknown permission name"));
+        return Promise.resolve(new PermissionStatus(
+          stateByStatus, name, "denied"
+        ));
+      }
+    };
+    Object.defineProperty(permissions, Symbol.toStringTag, { value: "Permissions" });
+    g.PermissionStatus = PermissionStatus;
+    Object.defineProperty(g.navigator, "permissions", {
+      configurable: true, enumerable: true, value: permissions
+    });
+  }
+
+  function installOptionConstructor() {
+    if ("Option" in g || !g.document) return;
+    function Option(text, value, defaultSelected, selected) {
+      const option = g.document.createElement("option");
+      option.text = text === undefined ? "" : String(text);
+      if (arguments.length > 1 && value !== undefined) option.value = String(value);
+      option.defaultSelected = arguments.length > 2 ? !!defaultSelected : false;
+      option.selected = arguments.length > 3 ? !!selected : option.defaultSelected;
+      return option;
+    }
+    if (g.HTMLOptionElement && g.HTMLOptionElement.prototype) {
+      Option.prototype = g.HTMLOptionElement.prototype;
+    }
+    Object.defineProperty(Option, Symbol.toStringTag, { value: "Option" });
+    g.Option = Option;
+  }
+
+  function installQueryCommandSupported() {
+    if (!g.document) return;
+    const prototype = g.Document && g.Document.prototype
+      ? g.Document.prototype : g.document;
+    if ("queryCommandSupported" in prototype) return;
+    Object.defineProperty(prototype, "queryCommandSupported", {
+      configurable: true, writable: true,
+      value: function queryCommandSupported(command) {
+        if (!(this && this.nodeType === 9)) throw new TypeError("Illegal invocation");
+        String(command);
+        return false;
+      }
+    });
+  }
+
+  function installReportingObserver() {
+    if ("ReportingObserver" in g) return;
+    const states = new WeakMap();
+    class ReportingObserver extends Target {
+      constructor(callback, options = {}) {
+        super();
+        if (typeof callback !== "function") throw new TypeError("A callback is required");
+        states.set(this, { callback, options, observed: false });
+        this.onreport = null;
+      }
+      observe(options = {}) {
+        const state = states.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (options === null || typeof options !== "object") {
+          throw new TypeError("Observer options must be a dictionary");
+        }
+        const types = options.types === undefined
+          ? options.type === undefined ? [] : [String(options.type)]
+          : Array.from(options.types, String);
+        if (!types.length || types.some(type =>
+          !ReportingObserver.supportedEntryTypes.includes(type))) {
+          throw new TypeError("Unsupported report type");
+        }
+        state.observed = true;
+      }
+      disconnect() {
+        const state = states.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        state.observed = false;
+      }
+      takeRecords() {
+        if (!states.has(this)) throw new TypeError("Illegal invocation");
+        return [];
+      }
+    }
+    Object.defineProperty(ReportingObserver, "supportedEntryTypes", {
+      value: Object.freeze(["deprecation", "intervention", "crash"])
+    });
+    Object.defineProperty(ReportingObserver.prototype, Symbol.toStringTag, {
+      value: "ReportingObserver"
+    });
+    g.ReportingObserver = ReportingObserver;
+  }
+
+  function installTrustedTypes() {
+    if ("trustedTypes" in g) return;
+    const brands = new WeakMap();
+    const policies = new Map();
+    const names = [];
+    function makeTrusted(kind, value) {
+      const trusted = Object.create(null);
+      brands.set(trusted, { kind, value: String(value) });
+      Object.defineProperties(trusted, {
+        toString: { value: function () { return brands.get(this).value; } },
+        valueOf: { value: function () { return brands.get(this).value; } },
+        [Symbol.toStringTag]: { value: "Trusted" + kind }
+      });
+      return Object.freeze(trusted);
+    }
+    function TrustedTypePolicy(name, rules) {
+      Object.defineProperties(this, {
+        name: { enumerable: true, value: name },
+        createHTML: { value: value => makeTrusted("HTML",
+          rules.createHTML ? rules.createHTML(String(value)) : String(value)) },
+        createScript: { value: value => makeTrusted("Script",
+          rules.createScript ? rules.createScript(String(value)) : String(value)) },
+        createScriptURL: { value: value => makeTrusted("ScriptURL",
+          rules.createScriptURL ? rules.createScriptURL(String(value)) : String(value)) }
+      });
+      Object.freeze(this);
+    }
+    const trustedTypes = {
+      createPolicy(name, rules = {}, options = {}) {
+        name = String(name);
+        if (rules === null || typeof rules !== "object") {
+          throw new TypeError("Policy rules must be a dictionary");
+        }
+        if (policies.has(name) && !(options && options.allowDuplicates)) {
+          throw new TypeError("A policy with this name already exists");
+        }
+        for (const key of ["createHTML", "createScript", "createScriptURL"]) {
+          if (rules[key] !== undefined && typeof rules[key] !== "function") {
+            throw new TypeError(key + " must be callable");
+          }
+        }
+        const policy = new TrustedTypePolicy(name, rules);
+        if (!policies.has(name)) names.push(name);
+        policies.set(name, policy);
+        return policy;
+      },
+      getPolicy(name) { return policies.get(String(name)) || null; },
+      getPolicyNames() { return names.slice(); },
+      isHTML(value) { return brands.has(value) && brands.get(value).kind === "HTML"; },
+      isScript(value) { return brands.has(value) && brands.get(value).kind === "Script"; },
+      isScriptURL(value) {
+        return brands.has(value) && brands.get(value).kind === "ScriptURL";
+      },
+      emptyHTML: makeTrusted("HTML", ""),
+      emptyScript: makeTrusted("Script", "")
+    };
+    Object.defineProperty(trustedTypes, Symbol.toStringTag, { value: "TrustedTypePolicyFactory" });
+    g.trustedTypes = Object.freeze(trustedTypes);
+    g.TrustedTypePolicy = TrustedTypePolicy;
+  }
+
+  function installSpeechSynthesis() {
+    if ("speechSynthesis" in g) return;
+    const utteranceStates = new WeakMap();
+    class SpeechSynthesisUtterance extends Target {
+      constructor(text = "") {
+        super();
+        this.text = String(text);
+        this.lang = "";
+        this.voice = null;
+        this.volume = 1;
+        this.rate = 1;
+        this.pitch = 1;
+        this.onstart = this.onend = this.onerror = null;
+        utteranceStates.set(this, { timer: null });
+      }
+    }
+    Object.defineProperty(SpeechSynthesisUtterance.prototype, Symbol.toStringTag, {
+      value: "SpeechSynthesisUtterance"
+    });
+    class SpeechSynthesis extends Target {
+      constructor(token) {
+        super();
+        if (token !== utteranceStates) throw new TypeError("Illegal constructor");
+        this.onvoiceschanged = null;
+      }
+      get pending() { return false; }
+      get speaking() { return false; }
+      get paused() { return false; }
+      get onvoiceschanged() { return this._onvoiceschanged || null; }
+      set onvoiceschanged(value) { this._onvoiceschanged = value; }
+      getVoices() { return []; }
+      speak(utterance) {
+        if (!(utterance instanceof SpeechSynthesisUtterance)) {
+          throw new TypeError("A SpeechSynthesisUtterance is required");
+        }
+        const state = utteranceStates.get(utterance);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.timer !== null) g.clearTimeout(state.timer);
+        state.timer = g.setTimeout(() => {
+          state.timer = null;
+          utterance.dispatchEvent(event("error", { error: "synthesis-unavailable" }));
+        }, 0);
+      }
+      cancel() {
+        // There is no audio queue. Pending unavailable errors are canceled.
+        for (const utterance of []) utterance.dispatchEvent(event("end"));
+      }
+      pause() {}
+      resume() {}
+    }
+    Object.defineProperty(SpeechSynthesis.prototype, Symbol.toStringTag, {
+      value: "SpeechSynthesis"
+    });
+    g.SpeechSynthesisUtterance = SpeechSynthesisUtterance;
+    g.SpeechSynthesis = SpeechSynthesis;
+    Object.defineProperty(g, "speechSynthesis", {
+      configurable: true, enumerable: true,
+      value: new SpeechSynthesis(utteranceStates)
+    });
+  }
+
+  function installElementScrolling(elementPrototype) {
+    function scrollElement(element, x, y, relative) {
+      if (!element || element.nodeType !== 1) throw new TypeError("Illegal invocation");
+      let left;
+      let top;
+      let behavior = "auto";
+      if (x !== null && typeof x === "object") {
+        const options = x;
+        behavior = options.behavior === undefined ? "auto" : String(options.behavior);
+        left = options.left === undefined ? element.scrollLeft : Number(options.left);
+        top = options.top === undefined ? element.scrollTop : Number(options.top);
+      } else {
+        left = x === undefined ? 0 : Number(x);
+        top = y === undefined ? 0 : Number(y);
+        if (relative) {
+          left += element.scrollLeft;
+          top += element.scrollTop;
+        }
+      }
+      if (!["auto", "instant", "smooth"].includes(behavior)) {
+        throw new TypeError("Invalid scroll behavior");
+      }
+      if (!Number.isFinite(left)) left = 0;
+      if (!Number.isFinite(top)) top = 0;
+      // Smooth scrolling is unavailable; valid requests move immediately.
+      element.scrollLeft = left;
+      element.scrollTop = top;
+    }
+    function scrollElementTo(x, y) { return scrollElement(this, x, y, false); }
+    function scrollElementBy(x, y) { return scrollElement(this, x, y, true); }
+    function scrollElementAlias(x, y) { return scrollElementTo.call(this, x, y); }
+    if (!("scrollTo" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "scrollTo", {
+        configurable: true, writable: true, value: scrollElementTo
+      });
+    }
+    if (!("scrollBy" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "scrollBy", {
+        configurable: true, writable: true, value: scrollElementBy
+      });
+    }
+    if (!("scroll" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "scroll", {
+        configurable: true, writable: true, value: scrollElementAlias
+      });
+    }
+  }
+
+  function installRequestFullscreen(elementPrototype) {
+    if ("requestFullscreen" in elementPrototype) return;
+    Object.defineProperty(elementPrototype, "requestFullscreen", {
+      configurable: true, writable: true,
+      value: function requestElementFullscreen() {
+        if (!(this && this.nodeType === 1)) {
+          return Promise.reject(new TypeError("Illegal invocation"));
+        }
+        return Promise.reject(exception(
+          "NotSupportedError", "Fullscreen integration is unavailable"
+        ));
+      }
+    });
+  }
+
+  function checkElementVisibility(element, options = {}) {
+    if (!(element && element.nodeType === 1)) throw new TypeError("Illegal invocation");
+    if (!g.document.documentElement.contains(element)) return false;
+    let node = element;
+    while (node && node.nodeType === 1) {
+      const style = g.getComputedStyle(node);
+      if (style.display === "none") return false;
+      if (node === element && style.visibility !== "visible") return false;
+      if (options.checkOpacity && Number(style.opacity) === 0) return false;
+      node = node.parentElement;
+    }
+    const ownStyle = g.getComputedStyle(element);
+    if (ownStyle.display === "contents") {
+      return Array.from(element.querySelectorAll("*")).some(child =>
+        child.getClientRects().length > 0
+        && g.getComputedStyle(child).display !== "none"
+        && g.getComputedStyle(child).visibility === "visible");
+    }
+    return element.getClientRects().length > 0;
+  }
+
+  function installCheckVisibility(elementPrototype) {
+    if ("checkVisibility" in elementPrototype) return;
+    Object.defineProperty(elementPrototype, "checkVisibility", {
+      configurable: true, writable: true,
+      value: function checkVisibility(options = {}) {
+        if (options === null || typeof options !== "object") {
+          throw new TypeError("Visibility options must be a dictionary");
+        }
+        return checkElementVisibility(this, options);
+      }
+    });
+  }
+
+  function installElementAnimations(elementPrototype) {
+    if (typeof g.requestAnimationFrame !== "function"
+        || typeof g.cancelAnimationFrame !== "function") return;
+    const active = new WeakMap();
+    const animationState = new WeakMap();
+    function cssProperty(name) {
+      return String(name).replace(/[A-Z]/g, character => "-" + character.toLowerCase());
+    }
+    function framePairs(keyframes) {
+      if (!Array.isArray(keyframes) || keyframes.length !== 2
+          || !keyframes[0] || !keyframes[1]) {
+        throw exception("NotSupportedError", "Only two-frame keyframes are supported");
+      }
+      const first = keyframes[0];
+      const last = keyframes[1];
+      const properties = Object.keys(first).filter(key =>
+        Object.prototype.hasOwnProperty.call(last, key));
+      if (!properties.length) throw exception("NotSupportedError", "No animatable properties");
+      return properties.map(name => {
+        const start = String(first[name]).trim();
+        const end = String(last[name]).trim();
+        const a = /^(-?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+))([a-z%]*)$/i.exec(start);
+        const b = /^(-?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+))([a-z%]*)$/i.exec(end);
+        if (!a || !b || a[2] !== b[2]) {
+          throw exception("NotSupportedError", "Only matching numeric CSS values are supported");
+        }
+        return { name: cssProperty(name), from: Number(a[1]), to: Number(b[1]), unit: a[2] };
+      });
+    }
+    function deferred() {
+      let resolve;
+      let reject;
+      const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+      promise.catch(() => {});
+      return { promise, resolve, reject };
+    }
+    function removeActive(state) {
+      const set = active.get(state.element);
+      if (set) set.delete(state.animation);
+    }
+    function restore(state) {
+      for (const item of state.properties) {
+        if (item.value) state.element.style.setProperty(item.name, item.value, item.priority);
+        else state.element.style.removeProperty(item.name);
+      }
+    }
+    function apply(state, progress) {
+      for (const item of state.properties) {
+        const value = item.from + (item.to - item.from) * progress;
+        state.element.style.setProperty(item.name, String(value) + item.unit);
+      }
+    }
+    class Animation extends Target {
+      constructor(element, keyframes, options) {
+        super();
+        if (!element || element.nodeType !== 1) throw new TypeError("Illegal invocation");
+        options = typeof options === "number" ? { duration: options } : options || {};
+        const duration = options.duration === undefined ? 0 : Number(options.duration);
+        if (!Number.isFinite(duration) || duration < 0) throw new TypeError("Invalid duration");
+        if (options.iterations !== undefined && Number(options.iterations) !== 1) {
+          throw exception("NotSupportedError", "Only one animation iteration is supported");
+        }
+        if (options.easing !== undefined && String(options.easing) !== "linear") {
+          throw exception("NotSupportedError", "Only linear easing is supported");
+        }
+        const fill = options.fill === undefined ? "none" : String(options.fill);
+        if (fill !== "none" && fill !== "forwards") {
+          throw exception("NotSupportedError", "Only none and forwards fill are supported");
+        }
+        const pairs = framePairs(keyframes);
+        const properties = pairs.map(pair => ({
+          name: pair.name,
+          from: pair.from,
+          to: pair.to,
+          unit: pair.unit,
+          value: element.style.getPropertyValue(pair.name),
+          priority: element.style.getPropertyPriority(pair.name)
+        }));
+        const state = {
+          animation: this, element, properties, duration, fill,
+          currentTime: 0, startTime: null, frame: null, playState: "idle",
+          finished: deferred()
+        };
+        animationState.set(this, state);
+        this.onfinish = this.oncancel = null;
+        this.ready = Promise.resolve(this);
+      }
+      get currentTime() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.currentTime;
+      }
+      set currentTime(value) {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        state.currentTime = Number(value);
+        if (state.playState === "running") apply(state, Math.max(0, Math.min(1,
+          state.currentTime / Math.max(1, state.duration))));
+      }
+      get playState() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.playState;
+      }
+      get finished() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.finished.promise;
+      }
+      play() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.playState === "finished" || state.playState === "idle") {
+          state.finished = deferred();
+          state.currentTime = 0;
+          state.startTime = null;
+        }
+        state.playState = "running";
+        let set = active.get(state.element);
+        if (!set) { set = new Set(); active.set(state.element, set); }
+        set.add(this);
+        const tick = timestamp => {
+          if (state.playState !== "running") return;
+          if (state.startTime === null) state.startTime = timestamp - state.currentTime;
+          state.currentTime = Math.max(0, timestamp - state.startTime);
+          const progress = state.duration === 0 ? 1
+            : Math.min(1, state.currentTime / state.duration);
+          apply(state, progress);
+          if (progress >= 1) {
+            state.playState = "finished";
+            state.frame = null;
+            removeActive(state);
+            if (state.fill !== "forwards") restore(state);
+            state.finished.resolve(this);
+            this.dispatchEvent(event("finish"));
+          } else {
+            state.frame = g.requestAnimationFrame(tick);
+          }
+        };
+        state.frame = g.requestAnimationFrame(tick);
+        return this;
+      }
+      pause() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.playState === "running") {
+          if (state.frame !== null) g.cancelAnimationFrame(state.frame);
+          state.frame = null;
+          state.playState = "paused";
+        }
+      }
+      cancel() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.frame !== null) g.cancelAnimationFrame(state.frame);
+        state.frame = null;
+        state.currentTime = 0;
+        state.startTime = null;
+        const wasActive = state.playState === "running" || state.playState === "paused";
+        state.playState = "idle";
+        removeActive(state);
+        restore(state);
+        if (wasActive) {
+          state.finished.reject(exception("AbortError", "The animation was canceled"));
+          this.dispatchEvent(event("cancel"));
+        }
+      }
+      finish() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.frame !== null) g.cancelAnimationFrame(state.frame);
+        state.frame = null;
+        state.currentTime = state.duration;
+        apply(state, 1);
+        state.playState = "finished";
+        removeActive(state);
+        if (state.fill !== "forwards") restore(state);
+        state.finished.resolve(this);
+        this.dispatchEvent(event("finish"));
+      }
+    }
+    Object.defineProperty(Animation.prototype, Symbol.toStringTag, { value: "Animation" });
+    function animateElement(element, keyframes, options) {
+      const animation = new Animation(element, keyframes, options);
+      animation.play();
+      return animation;
+    }
+    function getElementAnimations(element, options = {}) {
+      if (!(element && element.nodeType === 1)) throw new TypeError("Illegal invocation");
+      const elements = [element];
+      if (options && options.subtree) elements.push(...element.querySelectorAll("*"));
+      const result = [];
+      for (const node of elements) {
+        const set = active.get(node);
+        if (set) for (const animation of set) {
+          if (animation.playState === "running" || animation.playState === "paused") {
+            result.push(animation);
+          }
+        }
+      }
+      return result;
+    }
+    if (!("animate" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "animate", {
+        configurable: true, writable: true,
+        value: function (keyframes, options) { return animateElement(this, keyframes, options); }
+      });
+    }
+    if (!("getAnimations" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "getAnimations", {
+        configurable: true, writable: true,
+        value: function (options) { return getElementAnimations(this, options); }
+      });
+    }
+    if (!("Animation" in g)) g.Animation = Animation;
+  }
+
+  function installPartTokens(elementPrototype) {
+    if ("part" in elementPrototype || typeof g.Proxy !== "function") return;
+    const lists = new WeakMap();
+    function read(element) {
+      const value = element.getAttribute("part") || "";
+      return value.trim() ? Array.from(new Set(value.trim().split(/[\\t\\n\\f\\r ]+/))) : [];
+    }
+    function write(element, values) {
+      if (values.length) element.setAttribute("part", values.join(" "));
+      else element.removeAttribute("part");
+    }
+    function validate(value) {
+      value = String(value);
+      if (!value) throw exception("SyntaxError", "A token cannot be empty");
+      if (/[\\t\\n\\f\\r ]/.test(value)) {
+        throw exception("InvalidCharacterError", "A token cannot contain whitespace");
+      }
+      return value;
+    }
+    function partTokens(element) {
+      if (!(element && element.nodeType === 1)) throw new TypeError("Illegal invocation");
+      if (lists.has(element)) return lists.get(element);
+      const methods = {
+        item(index) { return read(element)[Number(index)] || null; },
+        contains(token) { return read(element).includes(validate(token)); },
+        add(...tokens) {
+          const current = read(element);
+          for (const token of tokens.map(validate)) if (!current.includes(token)) current.push(token);
+          write(element, current);
+        },
+        remove(...tokens) {
+          const remove = new Set(tokens.map(validate));
+          write(element, read(element).filter(token => !remove.has(token)));
+        },
+        toggle(token, force) {
+          token = validate(token);
+          const current = read(element);
+          const exists = current.includes(token);
+          const add = force === undefined ? !exists : !!force;
+          if (add && !exists) current.push(token);
+          if (!add && exists) current.splice(current.indexOf(token), 1);
+          write(element, current);
+          return add;
+        },
+        replace(oldToken, newToken) {
+          oldToken = validate(oldToken);
+          newToken = validate(newToken);
+          const current = read(element);
+          const index = current.indexOf(oldToken);
+          if (index < 0) return false;
+          if (!current.includes(newToken)) current[index] = newToken;
+          else current.splice(index, 1);
+          write(element, current);
+          return true;
+        },
+        supports(token) { validate(token); return true; },
+        forEach(callback, thisArg) {
+          if (typeof callback !== "function") throw new TypeError("Callback must be callable");
+          read(element).forEach((token, index) => callback.call(thisArg, token, index, proxy));
+        },
+        toString() { return element.getAttribute("part") || ""; }
+      };
+      const proxy = new g.Proxy({}, {
+        get(target, key) {
+          const current = read(element);
+          if (key === "length") return current.length;
+          if (key === "value") return element.getAttribute("part") || "";
+          if (key === Symbol.iterator) return function () { return current[Symbol.iterator](); };
+          if (key === "keys") return function () { return current.keys(); };
+          if (key === "values") return function () { return current.values(); };
+          if (key === "entries") return function () { return current.entries(); };
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key)) {
+            return current[Number(key)];
+          }
+          return methods[key];
+        },
+        set(target, key, value) {
+          if (key !== "value") return false;
+          const tokens = String(value).trim().split(/[\\t\\n\\f\\r ]+/).filter(Boolean);
+          write(element, Array.from(new Set(tokens)));
+          return true;
+        },
+        ownKeys() { return read(element).map((_, index) => String(index)); },
+        getOwnPropertyDescriptor(target, key) {
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key)) {
+            const token = read(element)[Number(key)];
+            if (token !== undefined) return { configurable: true, enumerable: true, value: token };
+          }
+          return undefined;
+        }
+      });
+      lists.set(element, proxy);
+      return proxy;
+    }
+    Object.defineProperty(elementPrototype, "part", {
+      configurable: true, enumerable: true,
+      get: function () { return partTokens(this); }
+    });
+  }
+
+  if (typeof g.document !== "undefined") {
+    installPermissions();
+    installOptionConstructor();
+    installQueryCommandSupported();
+    installReportingObserver();
+    installTrustedTypes();
+    installSpeechSynthesis();
+    const elementPrototype = g.Element && g.Element.prototype;
+    if (elementPrototype) {
+      installElementScrolling(elementPrototype);
+      installRequestFullscreen(elementPrototype);
+      installCheckVisibility(elementPrototype);
+      installElementAnimations(elementPrototype);
+      installPartTokens(elementPrototype);
+    }
+  }
+
+  function installPermissions() {
+    if (!g.navigator || "permissions" in g.navigator) return;
+    const stateByStatus = new WeakMap();
+    const names = new Set([
+      "camera", "clipboard-read", "clipboard-write", "geolocation", "local-fonts",
+      "microphone", "midi", "notifications", "persistent-storage", "push",
+      "screen-wake-lock", "storage-access", "window-management"
+    ]);
+    class PermissionStatus extends Target {
+      constructor(token, name, state) {
+        super();
+        if (token !== stateByStatus) throw new TypeError("Illegal constructor");
+        stateByStatus.set(this, { name, state });
+        this.onchange = null;
+      }
+      get name() {
+        const state = stateByStatus.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.name;
+      }
+      get state() {
+        const state = stateByStatus.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.state;
+      }
+    }
+    Object.defineProperty(PermissionStatus.prototype, Symbol.toStringTag, {
+      value: "PermissionStatus"
+    });
+    const permissions = {
+      query(descriptor) {
+        if (this !== permissions) throw new TypeError("Illegal invocation");
+        if (descriptor === null || typeof descriptor !== "object") {
+          return Promise.reject(new TypeError("A permission descriptor is required"));
+        }
+        const name = String(descriptor.name);
+        if (!names.has(name)) return Promise.reject(new TypeError("Unknown permission name"));
+        return Promise.resolve(new PermissionStatus(
+          stateByStatus, name, "denied"
+        ));
+      }
+    };
+    Object.defineProperty(permissions, Symbol.toStringTag, { value: "Permissions" });
+    g.PermissionStatus = PermissionStatus;
+    Object.defineProperty(g.navigator, "permissions", {
+      configurable: true, enumerable: true, value: permissions
+    });
+  }
+
+  function installOptionConstructor() {
+    if ("Option" in g || !g.document) return;
+    function Option(text, value, defaultSelected, selected) {
+      const option = g.document.createElement("option");
+      option.text = text === undefined ? "" : String(text);
+      if (arguments.length > 1 && value !== undefined) option.value = String(value);
+      option.defaultSelected = arguments.length > 2 ? !!defaultSelected : false;
+      option.selected = arguments.length > 3 ? !!selected : option.defaultSelected;
+      return option;
+    }
+    if (g.HTMLOptionElement && g.HTMLOptionElement.prototype) {
+      Option.prototype = g.HTMLOptionElement.prototype;
+    }
+    Object.defineProperty(Option, Symbol.toStringTag, { value: "Option" });
+    g.Option = Option;
+  }
+
+  function installQueryCommandSupported() {
+    if (!g.document) return;
+    const prototype = g.Document && g.Document.prototype
+      ? g.Document.prototype : g.document;
+    if ("queryCommandSupported" in prototype) return;
+    Object.defineProperty(prototype, "queryCommandSupported", {
+      configurable: true, writable: true,
+      value: function queryCommandSupported(command) {
+        if (!(this && this.nodeType === 9)) throw new TypeError("Illegal invocation");
+        String(command);
+        return false;
+      }
+    });
+  }
+
+  function installReportingObserver() {
+    if ("ReportingObserver" in g) return;
+    const states = new WeakMap();
+    class ReportingObserver extends Target {
+      constructor(callback, options = {}) {
+        super();
+        if (typeof callback !== "function") throw new TypeError("A callback is required");
+        states.set(this, { callback, options, observed: false });
+        this.onreport = null;
+      }
+      observe(options = {}) {
+        const state = states.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (options === null || typeof options !== "object") {
+          throw new TypeError("Observer options must be a dictionary");
+        }
+        const types = options.types === undefined
+          ? options.type === undefined ? [] : [String(options.type)]
+          : Array.from(options.types, String);
+        if (!types.length || types.some(type =>
+          !ReportingObserver.supportedEntryTypes.includes(type))) {
+          throw new TypeError("Unsupported report type");
+        }
+        state.observed = true;
+      }
+      disconnect() {
+        const state = states.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        state.observed = false;
+      }
+      takeRecords() {
+        if (!states.has(this)) throw new TypeError("Illegal invocation");
+        return [];
+      }
+    }
+    Object.defineProperty(ReportingObserver, "supportedEntryTypes", {
+      value: Object.freeze(["deprecation", "intervention", "crash"])
+    });
+    Object.defineProperty(ReportingObserver.prototype, Symbol.toStringTag, {
+      value: "ReportingObserver"
+    });
+    g.ReportingObserver = ReportingObserver;
+  }
+
+  function installTrustedTypes() {
+    if ("trustedTypes" in g) return;
+    const brands = new WeakMap();
+    const policies = new Map();
+    const names = [];
+    function makeTrusted(kind, value) {
+      const trusted = Object.create(null);
+      brands.set(trusted, { kind, value: String(value) });
+      Object.defineProperties(trusted, {
+        toString: { value: function () { return brands.get(this).value; } },
+        valueOf: { value: function () { return brands.get(this).value; } },
+        [Symbol.toStringTag]: { value: "Trusted" + kind }
+      });
+      return Object.freeze(trusted);
+    }
+    function TrustedTypePolicy(name, rules) {
+      Object.defineProperties(this, {
+        name: { enumerable: true, value: name },
+        createHTML: { value: value => makeTrusted("HTML",
+          rules.createHTML ? rules.createHTML(String(value)) : String(value)) },
+        createScript: { value: value => makeTrusted("Script",
+          rules.createScript ? rules.createScript(String(value)) : String(value)) },
+        createScriptURL: { value: value => makeTrusted("ScriptURL",
+          rules.createScriptURL ? rules.createScriptURL(String(value)) : String(value)) }
+      });
+      Object.freeze(this);
+    }
+    const trustedTypes = {
+      createPolicy(name, rules = {}, options = {}) {
+        name = String(name);
+        if (rules === null || typeof rules !== "object") {
+          throw new TypeError("Policy rules must be a dictionary");
+        }
+        if (policies.has(name) && !(options && options.allowDuplicates)) {
+          throw new TypeError("A policy with this name already exists");
+        }
+        for (const key of ["createHTML", "createScript", "createScriptURL"]) {
+          if (rules[key] !== undefined && typeof rules[key] !== "function") {
+            throw new TypeError(key + " must be callable");
+          }
+        }
+        const policy = new TrustedTypePolicy(name, rules);
+        if (!policies.has(name)) names.push(name);
+        policies.set(name, policy);
+        return policy;
+      },
+      getPolicy(name) { return policies.get(String(name)) || null; },
+      getPolicyNames() { return names.slice(); },
+      isHTML(value) { return brands.has(value) && brands.get(value).kind === "HTML"; },
+      isScript(value) { return brands.has(value) && brands.get(value).kind === "Script"; },
+      isScriptURL(value) {
+        return brands.has(value) && brands.get(value).kind === "ScriptURL";
+      },
+      emptyHTML: makeTrusted("HTML", ""),
+      emptyScript: makeTrusted("Script", "")
+    };
+    Object.defineProperty(trustedTypes, Symbol.toStringTag, { value: "TrustedTypePolicyFactory" });
+    g.trustedTypes = Object.freeze(trustedTypes);
+    g.TrustedTypePolicy = TrustedTypePolicy;
+  }
+
+  function installSpeechSynthesis() {
+    if ("speechSynthesis" in g) return;
+    const utteranceStates = new WeakMap();
+    const pending = new Set();
+    class SpeechSynthesisUtterance extends Target {
+      constructor(text = "") {
+        super();
+        this.text = String(text);
+        this.lang = "";
+        this.voice = null;
+        this.volume = 1;
+        this.rate = 1;
+        this.pitch = 1;
+        this.onstart = this.onend = this.onerror = null;
+        utteranceStates.set(this, { timer: null });
+      }
+    }
+    Object.defineProperty(SpeechSynthesisUtterance.prototype, Symbol.toStringTag, {
+      value: "SpeechSynthesisUtterance"
+    });
+    class SpeechSynthesis extends Target {
+      constructor(token) {
+        super();
+        if (token !== utteranceStates) throw new TypeError("Illegal constructor");
+        this.onvoiceschanged = null;
+      }
+      get pending() { return false; }
+      get speaking() { return false; }
+      get paused() { return false; }
+      get onvoiceschanged() { return this._onvoiceschanged || null; }
+      set onvoiceschanged(value) { this._onvoiceschanged = value; }
+      getVoices() { return []; }
+      speak(utterance) {
+        if (!(utterance instanceof SpeechSynthesisUtterance)) {
+          throw new TypeError("A SpeechSynthesisUtterance is required");
+        }
+        const state = utteranceStates.get(utterance);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.timer !== null) g.clearTimeout(state.timer);
+        pending.add(utterance);
+        state.timer = g.setTimeout(() => {
+          state.timer = null;
+          pending.delete(utterance);
+          utterance.dispatchEvent(event("error", { error: "synthesis-unavailable" }));
+        }, 0);
+      }
+      cancel() {
+        // There is no audio queue. Pending unavailable errors are canceled.
+        for (const utterance of pending) {
+          const state = utteranceStates.get(utterance);
+          if (state && state.timer !== null) g.clearTimeout(state.timer);
+          if (state) state.timer = null;
+        }
+        pending.clear();
+      }
+      pause() {}
+      resume() {}
+    }
+    Object.defineProperty(SpeechSynthesis.prototype, Symbol.toStringTag, {
+      value: "SpeechSynthesis"
+    });
+    g.SpeechSynthesisUtterance = SpeechSynthesisUtterance;
+    g.SpeechSynthesis = SpeechSynthesis;
+    Object.defineProperty(g, "speechSynthesis", {
+      configurable: true, enumerable: true,
+      value: new SpeechSynthesis(utteranceStates)
+    });
+  }
+
+  function installElementScrolling(elementPrototype) {
+    function scrollElement(element, x, y, relative) {
+      if (!element || element.nodeType !== 1) throw new TypeError("Illegal invocation");
+      let left;
+      let top;
+      let behavior = "auto";
+      if (x !== null && typeof x === "object") {
+        const options = x;
+        behavior = options.behavior === undefined ? "auto" : String(options.behavior);
+        left = options.left === undefined ? element.scrollLeft
+          : Number(options.left) + (relative ? element.scrollLeft : 0);
+        top = options.top === undefined ? element.scrollTop
+          : Number(options.top) + (relative ? element.scrollTop : 0);
+      } else {
+        left = x === undefined ? 0 : Number(x);
+        top = y === undefined ? 0 : Number(y);
+        if (relative) {
+          left += element.scrollLeft;
+          top += element.scrollTop;
+        }
+      }
+      if (!["auto", "instant", "smooth"].includes(behavior)) {
+        throw new TypeError("Invalid scroll behavior");
+      }
+      if (!Number.isFinite(left)) left = 0;
+      if (!Number.isFinite(top)) top = 0;
+      // Smooth scrolling is unavailable; valid requests move immediately.
+      element.scrollLeft = left;
+      element.scrollTop = top;
+    }
+    function scrollElementTo(x, y) { return scrollElement(this, x, y, false); }
+    function scrollElementBy(x, y) { return scrollElement(this, x, y, true); }
+    function scrollElementAlias(x, y) { return scrollElementTo.call(this, x, y); }
+    if (!("scrollTo" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "scrollTo", {
+        configurable: true, writable: true, value: scrollElementTo
+      });
+    }
+    if (!("scrollBy" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "scrollBy", {
+        configurable: true, writable: true, value: scrollElementBy
+      });
+    }
+    if (!("scroll" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "scroll", {
+        configurable: true, writable: true, value: scrollElementAlias
+      });
+    }
+  }
+
+  function installRequestFullscreen(elementPrototype) {
+    if ("requestFullscreen" in elementPrototype) return;
+    Object.defineProperty(elementPrototype, "requestFullscreen", {
+      configurable: true, writable: true,
+      value: function requestElementFullscreen() {
+        if (!(this && this.nodeType === 1)) {
+          return Promise.reject(new TypeError("Illegal invocation"));
+        }
+        return Promise.reject(exception(
+          "NotSupportedError", "Fullscreen integration is unavailable"
+        ));
+      }
+    });
+  }
+
+  function checkElementVisibility(element, options = {}) {
+    if (!(element && element.nodeType === 1)) throw new TypeError("Illegal invocation");
+    if (!g.document.documentElement.contains(element)) return false;
+    let node = element;
+    while (node && node.nodeType === 1) {
+      const style = g.getComputedStyle(node);
+      if (style.display === "none") return false;
+      if (node === element && style.visibility !== "visible") return false;
+      if (options.checkOpacity && Number(style.opacity) === 0) return false;
+      node = node.parentElement;
+    }
+    const ownStyle = g.getComputedStyle(element);
+    if (ownStyle.display === "contents") {
+      return Array.from(element.querySelectorAll("*")).some(child =>
+        child.getClientRects().length > 0
+        && g.getComputedStyle(child).display !== "none"
+        && g.getComputedStyle(child).visibility === "visible");
+    }
+    return element.getClientRects().length > 0;
+  }
+
+  function installCheckVisibility(elementPrototype) {
+    if ("checkVisibility" in elementPrototype) return;
+    Object.defineProperty(elementPrototype, "checkVisibility", {
+      configurable: true, writable: true,
+      value: function checkVisibility(options = {}) {
+        if (options === null || typeof options !== "object") {
+          throw new TypeError("Visibility options must be a dictionary");
+        }
+        return checkElementVisibility(this, options);
+      }
+    });
+  }
+
+  function installElementAnimations(elementPrototype) {
+    if (typeof g.requestAnimationFrame !== "function"
+        || typeof g.cancelAnimationFrame !== "function") return;
+    const active = new WeakMap();
+    const animationState = new WeakMap();
+    function cssProperty(name) {
+      return String(name).replace(/[A-Z]/g, character => "-" + character.toLowerCase());
+    }
+    function framePairs(keyframes) {
+      if (!Array.isArray(keyframes) || keyframes.length !== 2
+          || !keyframes[0] || !keyframes[1]) {
+        throw exception("NotSupportedError", "Only two-frame keyframes are supported");
+      }
+      const first = keyframes[0];
+      const last = keyframes[1];
+      const properties = Object.keys(first).filter(key =>
+        Object.prototype.hasOwnProperty.call(last, key));
+      if (!properties.length) throw exception("NotSupportedError", "No animatable properties");
+      return properties.map(name => {
+        const start = String(first[name]).trim();
+        const end = String(last[name]).trim();
+        const a = /^(-?(?:[0-9]+\.?[0-9]*|\.[0-9]+))([a-z%]*)$/i.exec(start);
+        const b = /^(-?(?:[0-9]+\.?[0-9]*|\.[0-9]+))([a-z%]*)$/i.exec(end);
+        if (!a || !b || a[2] !== b[2]) {
+          throw exception("NotSupportedError", "Only matching numeric CSS values are supported");
+        }
+        return { name: cssProperty(name), from: Number(a[1]), to: Number(b[1]), unit: a[2] };
+      });
+    }
+    function deferred() {
+      let resolve;
+      let reject;
+      const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+      promise.catch(() => {});
+      return { promise, resolve, reject };
+    }
+    function removeActive(state) {
+      const set = active.get(state.element);
+      if (set) set.delete(state.animation);
+    }
+    function restore(state) {
+      for (const item of state.properties) {
+        if (item.value) state.element.style.setProperty(item.name, item.value, item.priority);
+        else state.element.style.removeProperty(item.name);
+      }
+    }
+    function apply(state, progress) {
+      for (const item of state.properties) {
+        const value = item.from + (item.to - item.from) * progress;
+        state.element.style.setProperty(item.name, String(value) + item.unit);
+      }
+    }
+    class Animation extends Target {
+      constructor(element, keyframes, options) {
+        super();
+        if (!element || element.nodeType !== 1) throw new TypeError("Illegal invocation");
+        options = typeof options === "number" ? { duration: options } : options || {};
+        const duration = options.duration === undefined ? 0 : Number(options.duration);
+        if (options.delay !== undefined && Number(options.delay) !== 0) {
+          throw exception("NotSupportedError", "Animation delay is unsupported");
+        }
+        if (options.direction !== undefined && String(options.direction) !== "normal") {
+          throw exception("NotSupportedError", "Animation direction is unsupported");
+        }
+        if (!Number.isFinite(duration) || duration < 0) throw new TypeError("Invalid duration");
+        if (options.iterations !== undefined && Number(options.iterations) !== 1) {
+          throw exception("NotSupportedError", "Only one animation iteration is supported");
+        }
+        if (options.easing !== undefined && String(options.easing) !== "linear") {
+          throw exception("NotSupportedError", "Only linear easing is supported");
+        }
+        const fill = options.fill === undefined ? "none" : String(options.fill);
+        if (fill !== "none" && fill !== "forwards") {
+          throw exception("NotSupportedError", "Only none and forwards fill are supported");
+        }
+        const pairs = framePairs(keyframes);
+        const properties = pairs.map(pair => ({
+          name: pair.name,
+          from: pair.from,
+          to: pair.to,
+          unit: pair.unit,
+          value: element.style.getPropertyValue(pair.name),
+          priority: element.style.getPropertyPriority(pair.name)
+        }));
+        const state = {
+          animation: this, element, properties, duration, fill,
+          currentTime: 0, startTime: null, frame: null, playState: "idle",
+          finished: deferred()
+        };
+        animationState.set(this, state);
+        this.onfinish = this.oncancel = null;
+        this.ready = Promise.resolve(this);
+      }
+      get currentTime() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.currentTime;
+      }
+      set currentTime(value) {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        state.currentTime = Number(value);
+        if (state.playState === "running") apply(state, Math.max(0, Math.min(1,
+          state.currentTime / Math.max(1, state.duration))));
+      }
+      get playState() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.playState;
+      }
+      get finished() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        return state.finished.promise;
+      }
+      play() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.playState === "finished" || state.playState === "idle") {
+          state.finished = deferred();
+          state.currentTime = 0;
+          state.startTime = null;
+        }
+        state.playState = "running";
+        let set = active.get(state.element);
+        if (!set) { set = new Set(); active.set(state.element, set); }
+        set.add(this);
+        const tick = timestamp => {
+          if (state.playState !== "running") return;
+          if (state.startTime === null) state.startTime = timestamp - state.currentTime;
+          state.currentTime = Math.max(0, timestamp - state.startTime);
+          const progress = state.duration === 0 ? 1
+            : Math.min(1, state.currentTime / state.duration);
+          apply(state, progress);
+          if (progress >= 1) {
+            state.playState = "finished";
+            state.frame = null;
+            removeActive(state);
+            if (state.fill !== "forwards") restore(state);
+            state.finished.resolve(this);
+            this.dispatchEvent(event("finish"));
+          } else {
+            state.frame = g.requestAnimationFrame(tick);
+          }
+        };
+        state.frame = g.requestAnimationFrame(tick);
+        return this;
+      }
+      pause() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.playState === "running") {
+          if (state.frame !== null) g.cancelAnimationFrame(state.frame);
+          state.frame = null;
+          state.playState = "paused";
+        }
+      }
+      cancel() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.frame !== null) g.cancelAnimationFrame(state.frame);
+        state.frame = null;
+        state.currentTime = 0;
+        state.startTime = null;
+        const wasActive = state.playState === "running" || state.playState === "paused";
+        state.playState = "idle";
+        removeActive(state);
+        restore(state);
+        if (wasActive) {
+          state.finished.reject(exception("AbortError", "The animation was canceled"));
+          this.dispatchEvent(event("cancel"));
+        }
+      }
+      finish() {
+        const state = animationState.get(this);
+        if (!state) throw new TypeError("Illegal invocation");
+        if (state.frame !== null) g.cancelAnimationFrame(state.frame);
+        state.frame = null;
+        state.currentTime = state.duration;
+        apply(state, 1);
+        state.playState = "finished";
+        removeActive(state);
+        if (state.fill !== "forwards") restore(state);
+        state.finished.resolve(this);
+        this.dispatchEvent(event("finish"));
+      }
+    }
+    Object.defineProperty(Animation.prototype, Symbol.toStringTag, { value: "Animation" });
+    function animateElement(element, keyframes, options) {
+      const animation = new Animation(element, keyframes, options);
+      animation.play();
+      return animation;
+    }
+    function getElementAnimations(element, options = {}) {
+      if (!(element && element.nodeType === 1)) throw new TypeError("Illegal invocation");
+      const elements = [element];
+      if (options && options.subtree) elements.push(...element.querySelectorAll("*"));
+      const result = [];
+      for (const node of elements) {
+        const set = active.get(node);
+        if (set) for (const animation of set) {
+          if (animation.playState === "running" || animation.playState === "paused") {
+            result.push(animation);
+          }
+        }
+      }
+      return result;
+    }
+    if (!("animate" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "animate", {
+        configurable: true, writable: true,
+        value: function (keyframes, options) { return animateElement(this, keyframes, options); }
+      });
+    }
+    if (!("getAnimations" in elementPrototype)) {
+      Object.defineProperty(elementPrototype, "getAnimations", {
+        configurable: true, writable: true,
+        value: function (options) { return getElementAnimations(this, options); }
+      });
+    }
+    if (!("Animation" in g)) g.Animation = Animation;
+  }
+
+  function installPartTokens(elementPrototype) {
+    if ("part" in elementPrototype || typeof g.Proxy !== "function") return;
+    const lists = new WeakMap();
+    function read(element) {
+      const value = element.getAttribute("part") || "";
+      return value.trim() ? Array.from(new Set(value.trim().split(/[\t\n\f\r ]+/))) : [];
+    }
+    function write(element, values) {
+      if (values.length) element.setAttribute("part", values.join(" "));
+      else element.removeAttribute("part");
+    }
+    function validate(value) {
+      value = String(value);
+      if (!value) throw exception("SyntaxError", "A token cannot be empty");
+      if (/[\t\n\f\r ]/.test(value)) {
+        throw exception("InvalidCharacterError", "A token cannot contain whitespace");
+      }
+      return value;
+    }
+    function partTokens(element) {
+      if (!(element && element.nodeType === 1)) throw new TypeError("Illegal invocation");
+      if (lists.has(element)) return lists.get(element);
+      const methods = {
+        item(index) { return read(element)[Number(index)] || null; },
+        contains(token) { return read(element).includes(validate(token)); },
+        add(...tokens) {
+          const current = read(element);
+          for (const token of tokens.map(validate)) if (!current.includes(token)) current.push(token);
+          write(element, current);
+        },
+        remove(...tokens) {
+          const remove = new Set(tokens.map(validate));
+          write(element, read(element).filter(token => !remove.has(token)));
+        },
+        toggle(token, force) {
+          token = validate(token);
+          const current = read(element);
+          const exists = current.includes(token);
+          const add = force === undefined ? !exists : !!force;
+          if (add && !exists) current.push(token);
+          if (!add && exists) current.splice(current.indexOf(token), 1);
+          write(element, current);
+          return add;
+        },
+        replace(oldToken, newToken) {
+          oldToken = validate(oldToken);
+          newToken = validate(newToken);
+          const current = read(element);
+          const index = current.indexOf(oldToken);
+          if (index < 0) return false;
+          if (!current.includes(newToken)) current[index] = newToken;
+          else current.splice(index, 1);
+          write(element, current);
+          return true;
+        },
+        supports(token) { validate(token); return true; },
+        forEach(callback, thisArg) {
+          if (typeof callback !== "function") throw new TypeError("Callback must be callable");
+          read(element).forEach((token, index) => callback.call(thisArg, token, index, proxy));
+        },
+        toString() { return element.getAttribute("part") || ""; }
+      };
+      const proxy = new g.Proxy({}, {
+        get(target, key) {
+          const current = read(element);
+          if (key === "length") return current.length;
+          if (key === "value") return element.getAttribute("part") || "";
+          if (key === Symbol.iterator) return function () { return current[Symbol.iterator](); };
+          if (key === "keys") return function () { return current.keys(); };
+          if (key === "values") return function () { return current.values(); };
+          if (key === "entries") return function () { return current.entries(); };
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key)) {
+            return current[Number(key)];
+          }
+          return methods[key];
+        },
+        set(target, key, value) {
+          if (key !== "value") return false;
+          const tokens = String(value).trim().split(/[\t\n\f\r ]+/).filter(Boolean);
+          write(element, Array.from(new Set(tokens)));
+          return true;
+        },
+        ownKeys() { return read(element).map((_, index) => String(index)); },
+        getOwnPropertyDescriptor(target, key) {
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key)) {
+            const token = read(element)[Number(key)];
+            if (token !== undefined) return { configurable: true, enumerable: true, value: token };
+          }
+          return undefined;
+        }
+      });
+      lists.set(element, proxy);
+      return proxy;
+    }
+    Object.defineProperty(elementPrototype, "part", {
+      configurable: true, enumerable: true,
+      get: function () { return partTokens(this); }
+    });
+  }
+
+  if (typeof g.document !== "undefined") {
+    installPermissions();
+    installOptionConstructor();
+    installQueryCommandSupported();
+    installReportingObserver();
+    installTrustedTypes();
+    installSpeechSynthesis();
+    const elementPrototype = g.Element && g.Element.prototype;
+    if (elementPrototype) {
+      installElementScrolling(elementPrototype);
+      installRequestFullscreen(elementPrototype);
+      installCheckVisibility(elementPrototype);
+      installElementAnimations(elementPrototype);
+      installPartTokens(elementPrototype);
+    }
+  }
+
   Object.defineProperty(g, "__chuzzPlatform", {
     value: Object.freeze({ Target, exception, event, message, info })
   });

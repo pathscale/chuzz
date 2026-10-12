@@ -1,0 +1,25 @@
+[
+    (
+        id: "outer-text-behaviour",
+        group: "outer-text",
+        what: "The native outerText getter is rendered text and its setter replaces only the target while preserving siblings.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: OUTER-TEXT PASS",
+        expect: PaintsNamed,
+        covers: ["READY: OUTER-TEXT PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "outer-text-visible-ink",
+        group: "outer-text",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

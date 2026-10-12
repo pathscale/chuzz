@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>TRUSTED-TYPES</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible TRUSTED-TYPES fixture sample</p>
+<p id="result" role="status">READY: TRUSTED-TYPES</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const name = 'fixture-' + Math.random();
+const policy = trustedTypes.createPolicy(name, {createHTML:value => '<b>' + value + '</b>'});
+const value = policy.createHTML('safe');
+assert(trustedTypes.isHTML(value) && String(value) === '<b>safe</b>', 'branded callback result');
+assert(!trustedTypes.isHTML('<b>safe</b>') && trustedTypes.getPolicy(name) === policy, 'brand and registry');
+let duplicate = false; try { trustedTypes.createPolicy(name, {}); } catch (error) { duplicate = error instanceof TypeError; }
+assert(duplicate && trustedTypes.getPolicyNames().includes(name), 'duplicate policy rejection');
+    result.textContent = "READY: TRUSTED-TYPES PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

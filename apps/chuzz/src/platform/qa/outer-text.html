@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>OUTER-TEXT</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible OUTER-TEXT fixture sample</p>
+<p id="result" role="status">READY: OUTER-TEXT</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const parent = document.createElement('div'); parent.innerHTML = '<span id="before">before</span><b id="target">target</b><span id="after">after</span>'; document.body.appendChild(parent);
+const target = parent.querySelector('#target'); assert(target.outerText.includes('target'), 'rendered getter');
+target.outerText = 'replacement\nline'; assert(parent.textContent.includes('replacement') && parent.textContent.includes('line'), 'replacement text');
+assert(parent.querySelector('#before') && parent.querySelector('#after') && !parent.querySelector('#target'), 'siblings preserved');
+let detachedError = false; try { document.createElement('b').outerText = 'x'; } catch (error) { detachedError = true; }
+assert(detachedError, 'parentless setter fails');
+    result.textContent = "READY: OUTER-TEXT PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

@@ -1,0 +1,25 @@
+[
+    (
+        id: "part-behaviour",
+        group: "part",
+        what: "Element.part returns a stable live token list with validation, mutation methods, and iteration.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: PART PASS",
+        expect: PaintsNamed,
+        covers: ["READY: PART PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "part-visible-ink",
+        group: "part",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

@@ -1,0 +1,25 @@
+[
+    (
+        id: "request-fullscreen-behaviour",
+        group: "request-fullscreen",
+        what: "Fullscreen rejection leaves fullscreenElement unchanged and emits no success event.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: REQUEST-FULLSCREEN PASS",
+        expect: PaintsNamed,
+        covers: ["READY: REQUEST-FULLSCREEN PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "request-fullscreen-visible-ink",
+        group: "request-fullscreen",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

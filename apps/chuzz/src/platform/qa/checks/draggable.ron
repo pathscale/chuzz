@@ -1,0 +1,25 @@
+[
+    (
+        id: "draggable-behaviour",
+        group: "draggable",
+        what: "The native draggable reflection handles image and link defaults plus explicit and invalid values.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: DRAGGABLE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: DRAGGABLE PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "draggable-visible-ink",
+        group: "draggable",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

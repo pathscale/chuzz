@@ -1,0 +1,25 @@
+[
+    (
+        id: "performance-memory-behaviour",
+        group: "performance-memory",
+        what: "The boundary fixture rejects fabricated heap counters when no public heap metrics hook exists.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: PERFORMANCE-MEMORY ABSENT",
+        expect: PaintsNamed,
+        covers: ["READY: PERFORMANCE-MEMORY ABSENT"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "performance-memory-visible-ink",
+        group: "performance-memory",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

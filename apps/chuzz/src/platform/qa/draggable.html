@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>DRAGGABLE</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible DRAGGABLE fixture sample</p>
+<p id="result" role="status">READY: DRAGGABLE</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const image = document.createElement('img'); image.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+const link = document.createElement('a'); link.href = '#target'; const plain = document.createElement('div');
+assert(image.draggable === true && link.draggable === true && plain.draggable === false, 'native defaults');
+plain.draggable = true; assert(plain.draggable === true && plain.getAttribute('draggable') === 'true', 'explicit true');
+plain.draggable = false; assert(plain.draggable === false && plain.getAttribute('draggable') === 'false', 'explicit false');
+plain.setAttribute('draggable','invalid'); assert(plain.draggable === false, 'invalid defaults to false');
+    result.textContent = "READY: DRAGGABLE PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

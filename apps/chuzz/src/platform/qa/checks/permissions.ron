@@ -1,0 +1,25 @@
+[
+    (
+        id: "permissions-behaviour",
+        group: "permissions",
+        what: "Known permissions return conservative denied statuses, fresh queries, and unknown names reject.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: PERMISSIONS PASS",
+        expect: PaintsNamed,
+        covers: ["READY: PERMISSIONS PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "permissions-visible-ink",
+        group: "permissions",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

@@ -1,0 +1,25 @@
+[
+    (
+        id: "computed-style-map-behaviour",
+        group: "computed-style-map",
+        what: "The boundary fixture confirms the API stays absent until typed CSS value objects can be returned.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: COMPUTED-STYLE-MAP ABSENT",
+        expect: PaintsNamed,
+        covers: ["READY: COMPUTED-STYLE-MAP ABSENT"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "computed-style-map-visible-ink",
+        group: "computed-style-map",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

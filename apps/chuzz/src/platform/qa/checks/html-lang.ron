@@ -1,0 +1,25 @@
+[
+    (
+        id: "html-lang-behaviour",
+        group: "html-lang",
+        what: "HTMLElement.prototype owns lang and the instance reflects the lang attribute.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: HTML-LANG PASS",
+        expect: PaintsNamed,
+        covers: ["READY: HTML-LANG PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "html-lang-visible-ink",
+        group: "html-lang",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

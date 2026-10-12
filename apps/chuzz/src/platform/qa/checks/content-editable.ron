@@ -1,0 +1,25 @@
+[
+    (
+        id: "content-editable-behaviour",
+        group: "content-editable",
+        what: "The native contentEditable property reflects true, false, plaintext-only, inherit, and invalid values.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: CONTENT-EDITABLE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: CONTENT-EDITABLE PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "content-editable-visible-ink",
+        group: "content-editable",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

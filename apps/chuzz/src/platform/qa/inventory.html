@@ -15,10 +15,29 @@
 <script>
 // Reports every listed web platform name that is missing, as aria-labelled <p> lines "MISSING: name".
 var missing = [];
+function descriptor(object, name) {
+  while (object !== null && object !== undefined) {
+    var found = Object.getOwnPropertyDescriptor(object, name);
+    if (found) return found;
+    object = Object.getPrototypeOf(object);
+  }
+  return null;
+}
 function has(path) {
   try {
-    var v = (0, eval)(path);
-    if (v === undefined || v === null) missing.push(path);
+    var parts = path.split('.');
+    if (parts[0] === 'window') parts.shift();
+    var object = globalThis;
+    for (var i = 0; i < parts.length; i++) {
+      var found = descriptor(object, parts[i]);
+      if (!found) { missing.push(path); return; }
+      if (i === parts.length - 1) return;
+      // Do not invoke accessors. Finding one proves that this path is exposed,
+      // but any deeper part cannot be inspected without running its getter.
+      if (!Object.prototype.hasOwnProperty.call(found, 'value')) return;
+      object = found.value;
+      if (object === null || object === undefined) { missing.push(path); return; }
+    }
   } catch (e) { missing.push(path + ' (' + e.message + ')'); }
 }
 [
@@ -45,10 +64,12 @@ function has(path) {
  'Element.prototype.requestFullscreen', 'Element.prototype.animate', 'Element.prototype.getAnimations', 'Element.prototype.attachShadow',
  'Element.prototype.shadowRoot', 'Element.prototype.slot', 'Element.prototype.assignedSlot', 'Element.prototype.part',
  'Element.prototype.setPointerCapture', 'Element.prototype.releasePointerCapture', 'Element.prototype.hasPointerCapture',
- 'Element.prototype.checkVisibility', 'Element.prototype.computedStyleMap', 'Element.prototype.outerHTML', 'Element.prototype.innerText',
- 'Element.prototype.outerText', 'Element.prototype.hidden', 'Element.prototype.tabIndex', 'Element.prototype.title', 'Element.prototype.lang',
- 'Element.prototype.dir', 'Element.prototype.draggable', 'Element.prototype.contentEditable', 'Element.prototype.isContentEditable',
- 'Element.prototype.offsetParent', 'Element.prototype.click', 'Element.prototype.role', 'Element.prototype.ariaLabel',
+ 'Element.prototype.checkVisibility', 'Element.prototype.computedStyleMap', 'Element.prototype.outerHTML',
+ 'HTMLElement.prototype.innerText', 'HTMLElement.prototype.outerText', 'HTMLElement.prototype.hidden',
+ 'HTMLElement.prototype.tabIndex', 'HTMLElement.prototype.title', 'HTMLElement.prototype.lang',
+ 'HTMLElement.prototype.dir', 'HTMLElement.prototype.draggable', 'HTMLElement.prototype.contentEditable',
+ 'HTMLElement.prototype.isContentEditable', 'HTMLElement.prototype.offsetParent',
+ 'HTMLElement.prototype.click', 'Element.prototype.role', 'Element.prototype.ariaLabel',
  'Node.prototype.textContent', 'Node.prototype.nodeValue', 'Node.prototype.cloneNode', 'Node.prototype.contains', 'Node.prototype.isConnected',
  'Node.prototype.getRootNode', 'Node.prototype.compareDocumentPosition', 'Node.prototype.isEqualNode', 'Node.prototype.isSameNode',
  'Node.prototype.normalize', 'Node.prototype.hasChildNodes', 'Node.prototype.childNodes', 'Node.prototype.ownerDocument',

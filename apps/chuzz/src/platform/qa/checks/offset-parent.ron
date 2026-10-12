@@ -1,0 +1,25 @@
+[
+    (
+        id: "offset-parent-behaviour",
+        group: "offset-parent",
+        what: "The native offsetParent getter resolves positioned ancestors and returns null for detached, hidden, and fixed cases.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: OFFSET-PARENT PASS",
+        expect: PaintsNamed,
+        covers: ["READY: OFFSET-PARENT PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "offset-parent-visible-ink",
+        group: "offset-parent",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

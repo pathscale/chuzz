@@ -1,0 +1,25 @@
+[
+    (
+        id: "element-get-animations-behaviour",
+        group: "element-get-animations",
+        what: "getAnimations returns active effects, includes descendant effects when requested, and filters finished or canceled effects.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: ELEMENT-GET-ANIMATIONS PASS",
+        expect: PaintsNamed,
+        covers: ["READY: ELEMENT-GET-ANIMATIONS PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "element-get-animations-visible-ink",
+        group: "element-get-animations",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

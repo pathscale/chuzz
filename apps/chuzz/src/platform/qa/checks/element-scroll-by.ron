@@ -1,0 +1,25 @@
+[
+    (
+        id: "element-scroll-by-behaviour",
+        group: "element-scroll-by",
+        what: "scrollBy applies numeric and dictionary deltas, preserves omitted dictionary axes, and clamps at boundaries.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: ELEMENT-SCROLL-BY PASS",
+        expect: PaintsNamed,
+        covers: ["READY: ELEMENT-SCROLL-BY PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "element-scroll-by-visible-ink",
+        group: "element-scroll-by",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

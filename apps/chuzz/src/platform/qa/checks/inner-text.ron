@@ -1,0 +1,25 @@
+[
+    (
+        id: "inner-text-behaviour",
+        group: "inner-text",
+        what: "The native innerText getter uses rendered whitespace and hidden descendants; its setter converts line breaks.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: INNER-TEXT PASS",
+        expect: PaintsNamed,
+        covers: ["READY: INNER-TEXT PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "inner-text-visible-ink",
+        group: "inner-text",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

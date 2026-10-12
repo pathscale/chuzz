@@ -1,0 +1,25 @@
+[
+    (
+        id: "html-tab-index-behaviour",
+        group: "html-tab-index",
+        what: "HTMLElement.prototype owns tabIndex and the instance reflects its numeric tabindex attribute.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: HTML-TAB-INDEX PASS",
+        expect: PaintsNamed,
+        covers: ["READY: HTML-TAB-INDEX PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "html-tab-index-visible-ink",
+        group: "html-tab-index",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

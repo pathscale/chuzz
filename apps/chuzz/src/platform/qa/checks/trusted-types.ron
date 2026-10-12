@@ -1,0 +1,25 @@
+[
+    (
+        id: "trusted-types-behaviour",
+        group: "trusted-types",
+        what: "Policy callbacks produce branded values, predicates reject ordinary strings, and duplicate names fail.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: TRUSTED-TYPES PASS",
+        expect: PaintsNamed,
+        covers: ["READY: TRUSTED-TYPES PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "trusted-types-visible-ink",
+        group: "trusted-types",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

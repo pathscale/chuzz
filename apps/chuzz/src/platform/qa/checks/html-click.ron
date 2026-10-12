@@ -1,0 +1,25 @@
+[
+    (
+        id: "html-click-behaviour",
+        group: "html-click",
+        what: "HTMLElement.prototype owns click and invoking it dispatches a click event on a real button.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: HTML-CLICK PASS",
+        expect: PaintsNamed,
+        covers: ["READY: HTML-CLICK PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "html-click-visible-ink",
+        group: "html-click",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

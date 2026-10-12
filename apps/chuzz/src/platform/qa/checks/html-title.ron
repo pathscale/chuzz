@@ -1,0 +1,25 @@
+[
+    (
+        id: "html-title-behaviour",
+        group: "html-title",
+        what: "HTMLElement.prototype owns title and the instance reflects the title attribute.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: HTML-TITLE PASS",
+        expect: PaintsNamed,
+        covers: ["READY: HTML-TITLE PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "html-title-visible-ink",
+        group: "html-title",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

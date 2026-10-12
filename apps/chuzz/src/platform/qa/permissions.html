@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>PERMISSIONS</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible PERMISSIONS fixture sample</p>
+<p id="result" role="status">READY: PERMISSIONS</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const first = await navigator.permissions.query({name:'geolocation'});
+const second = await navigator.permissions.query({name:'geolocation'});
+assert(first.name === 'geolocation' && first.state === 'denied', 'conservative status');
+assert(first !== second && first instanceof PermissionStatus, 'fresh branded status');
+let unknown = false; try { await navigator.permissions.query({name:'made-up'}); } catch (error) { unknown = error instanceof TypeError; }
+assert(unknown && first.onchange === null && typeof first.addEventListener === 'function', 'unknown name and event surface');
+    result.textContent = "READY: PERMISSIONS PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>

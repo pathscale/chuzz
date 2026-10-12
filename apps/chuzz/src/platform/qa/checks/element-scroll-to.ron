@@ -1,0 +1,25 @@
+[
+    (
+        id: "element-scroll-to-behaviour",
+        group: "element-scroll-to",
+        what: "scrollTo preserves omitted dictionary axes, normalizes nonfinite values, and relies on native clamping.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: ELEMENT-SCROLL-TO PASS",
+        expect: PaintsNamed,
+        covers: ["READY: ELEMENT-SCROLL-TO PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "element-scroll-to-visible-ink",
+        group: "element-scroll-to",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

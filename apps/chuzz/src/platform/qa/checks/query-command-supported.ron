@@ -1,0 +1,25 @@
+[
+    (
+        id: "query-command-supported-behaviour",
+        group: "query-command-supported",
+        what: "Unsupported editing commands return false and invalid receivers throw.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: QUERY-COMMAND-SUPPORTED PASS",
+        expect: PaintsNamed,
+        covers: ["READY: QUERY-COMMAND-SUPPORTED PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "query-command-supported-visible-ink",
+        group: "query-command-supported",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

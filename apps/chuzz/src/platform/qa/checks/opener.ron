@@ -1,0 +1,25 @@
+[
+    (
+        id: "opener-behaviour",
+        group: "opener",
+        what: "Window opener is present and separately reports null.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: OPENER PASS",
+        expect: PaintsNamed,
+        covers: ["READY: OPENER PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "opener-visible-ink",
+        group: "opener",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

@@ -1,0 +1,25 @@
+[
+    (
+        id: "html-hidden-behaviour",
+        group: "html-hidden",
+        what: "HTMLElement.prototype owns hidden and the instance reflects the attribute and suppresses rendering.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: HTML-HIDDEN PASS",
+        expect: PaintsNamed,
+        covers: ["READY: HTML-HIDDEN PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "html-hidden-visible-ink",
+        group: "html-hidden",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

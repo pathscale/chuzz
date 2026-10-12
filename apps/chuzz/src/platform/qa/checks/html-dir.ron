@@ -1,0 +1,25 @@
+[
+    (
+        id: "html-dir-behaviour",
+        group: "html-dir",
+        what: "HTMLElement.prototype owns dir and the instance reflects the direction attribute.",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: HTML-DIR PASS",
+        expect: PaintsNamed,
+        covers: ["READY: HTML-DIR PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "html-dir-visible-ink",
+        group: "html-dir",
+        what: "The visible fixture sample reaches page painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#samples",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

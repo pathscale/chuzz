@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>CONTENT-EDITABLE</title>
+<style>
+@font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+body { margin: 20px; color: #102030; background: #fff; font: 16px Fixture, sans-serif; }
+button { font: inherit; padding: 8px 20px; }
+#samples { display: block; min-width: 280px; min-height: 24px; margin: 12px 0; border: 1px solid #304050; }
+#result { display: block; min-height: 24px; font-size: 18px; }
+</style></head><body>
+<button id="run" type="button">Run checks</button>
+<p id="samples">Visible CONTENT-EDITABLE fixture sample</p>
+<p id="result" role="status">READY: CONTENT-EDITABLE</p>
+<script>
+document.getElementById("run").addEventListener("click", async function () {
+  this.disabled = true;
+  const result = document.getElementById("result");
+  try {
+    await document.fonts.ready;
+    const assert = (value, message) => { if (!value) throw new Error(message); };
+    const element = document.createElement('div');
+element.contentEditable = 'true'; assert(element.contentEditable === 'true' && element.getAttribute('contenteditable') === 'true', 'true reflection');
+element.contentEditable = 'false'; assert(element.contentEditable === 'false', 'false reflection');
+element.contentEditable = 'plaintext-only'; assert(element.contentEditable === 'plaintext-only', 'plaintext-only reflection');
+element.contentEditable = 'inherit'; assert(element.contentEditable === 'inherit', 'inherit reflection');
+element.setAttribute('contenteditable','invalid'); assert(element.contentEditable === 'inherit', 'invalid value canonicalizes to inherit');
+    result.textContent = "READY: CONTENT-EDITABLE PASS";
+  } catch (error) {
+    result.textContent = "FAIL: " + String(error && error.message || error);
+  }
+});
+</script></body></html>
