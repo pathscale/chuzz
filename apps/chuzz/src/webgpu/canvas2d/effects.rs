@@ -188,7 +188,7 @@ impl Layer {
             return Err("canvas filter extent reached in chuzz".to_owned());
         }
         let mut pixels = Vec::with_capacity(expected);
-        for chunk in bytes.chunks_exact(4) {
+        for chunk in bytes.as_chunks::<4>().0 {
             pixels.push(f32::from(chunk[0]));
             pixels.push(f32::from(chunk[1]));
             pixels.push(f32::from(chunk[2]));
@@ -576,7 +576,7 @@ fn blur_layer(layer: Layer, sigma: f64) -> Result<Layer> {
 }
 
 fn map_colors(mut layer: Layer, matrix: [f32; 20]) -> Layer {
-    for pixel in layer.pixels.chunks_exact_mut(4) {
+    for pixel in layer.pixels.as_chunks_mut::<4>().0 {
         let alpha = pixel[3];
         if alpha <= 0.0 {
             pixel[0] = 0.0;

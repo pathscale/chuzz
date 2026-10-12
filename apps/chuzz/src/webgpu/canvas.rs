@@ -149,7 +149,7 @@ impl DeviceConnection {
         // This supplies the replaced-element image path before the first submit.
         let mut rgba = vec![0; bytes as usize];
         if configuration.alpha_mode == "opaque" {
-            for pixel in rgba.chunks_exact_mut(4) {
+            for pixel in rgba.as_chunks_mut::<4>().0 {
                 pixel[3] = 255;
             }
         }
@@ -285,7 +285,7 @@ impl DeviceConnection {
         let mut rgba = Vec::with_capacity(row as usize * height as usize);
         let bgra = configuration.format == "bgra8unorm";
         for source in readback.chunks_exact(padded as usize) {
-            for pixel in source[..row as usize].chunks_exact(4) {
+            for pixel in source[..row as usize].as_chunks::<4>().0 {
                 let mut pixel = [pixel[0], pixel[1], pixel[2], pixel[3]];
                 if bgra {
                     pixel.swap(0, 2);

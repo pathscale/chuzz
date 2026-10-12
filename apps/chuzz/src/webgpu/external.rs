@@ -118,7 +118,7 @@ fn svg_pixels(value: f32) -> Result<u32, GpuError> {
 }
 
 fn unpremultiply(source: &[u8], target: &mut [u8]) {
-    for (source, target) in source.chunks_exact(4).zip(target.chunks_exact_mut(4)) {
+    for (source, target) in source.as_chunks::<4>().0.iter().zip(target.chunks_exact_mut(4)) {
         let alpha = u32::from(source[3]);
         target[3] = source[3];
         for index in 0..3 {
@@ -661,7 +661,7 @@ impl DeviceConnection {
         buffer.unmap();
         let mut rgba = Vec::with_capacity(byte_count(width, height)?);
         for row in bytes.chunks_exact(padded as usize) {
-            for pixel in row[..width as usize * 4].chunks_exact(4) {
+            for pixel in row[..width as usize * 4].as_chunks::<4>().0 {
                 let mut pixel = [pixel[0], pixel[1], pixel[2], pixel[3]];
                 if bgra {
                     pixel.swap(0, 2);
@@ -767,7 +767,7 @@ impl DeviceConnection {
             for row in 0..height {
                 let row = y + if copy.flip_y { height - row - 1 } else { row };
                 let start = (row as usize * image.width as usize + x as usize) * 4;
-                for pixel in image.data.data()[start..start + width as usize * 4].chunks_exact(4) {
+                for pixel in image.data.data()[start..start + width as usize * 4].as_chunks::<4>().0 {
                     let mut pixel = [pixel[0], pixel[1], pixel[2], pixel[3]];
                     if copy.premultiplied_alpha {
                         let alpha = u32::from(pixel[3]);

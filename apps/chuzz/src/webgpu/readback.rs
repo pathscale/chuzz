@@ -597,7 +597,7 @@ impl DeviceConnection {
             let row_bytes = &source[..row as usize];
             match layout {
                 StoredPixels::Unorm8 { .. } => {
-                    for pixel in row_bytes.chunks_exact(4) {
+                    for pixel in row_bytes.as_chunks::<4>().0 {
                         let mut pixel = [pixel[0], pixel[1], pixel[2], pixel[3]];
                         if bgra {
                             pixel.swap(0, 2);
@@ -607,7 +607,7 @@ impl DeviceConnection {
                     }
                 }
                 StoredPixels::Float16 => {
-                    for pixel in row_bytes.chunks_exact(8) {
+                    for pixel in row_bytes.as_chunks::<8>().0 {
                         let mut out = [0u8; 4];
                         for channel in 0..4 {
                             let bits =
