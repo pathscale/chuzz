@@ -93,7 +93,8 @@ fn mime(value: &str) -> Option<Mime> {
     for codec in codecs.split(',').map(str::trim) {
         if codec == "mp4a.40.2" && !result.audio {
             result.audio = true;
-        } else if let Some(profile) = codec.strip_prefix("avc1.") {
+        } else {
+            let profile = codec.strip_prefix("avc1.")?;
             if result.video
                 || container == "audio/mp4"
                 || profile.len() != 6
@@ -106,8 +107,6 @@ fn mime(value: &str) -> Option<Mime> {
                 return None;
             }
             result.video = true;
-        } else {
-            return None;
         }
     }
     (result.video || result.audio).then_some(result)
