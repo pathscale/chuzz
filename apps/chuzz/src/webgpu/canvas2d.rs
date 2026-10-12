@@ -619,6 +619,7 @@ impl Canvas {
         self.backing.flush();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
         path: &BezPath,
@@ -774,6 +775,7 @@ impl Canvas {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_effect(
         &mut self,
         path: &BezPath,
@@ -845,6 +847,7 @@ impl Canvas {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn raster_layer(
         &mut self,
         path: &BezPath,
