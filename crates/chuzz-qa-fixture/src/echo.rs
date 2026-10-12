@@ -121,7 +121,11 @@ impl Session {
 
         let mut child = lock(&self.child);
         if let Some(process) = child.as_mut() {
-            if process.try_wait().map_err(|error| error.to_string())?.is_none() {
+            if process
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
                 process.kill().map_err(|error| error.to_string())?;
                 process.wait().map_err(|error| error.to_string())?;
             }
@@ -157,14 +161,17 @@ struct State {
 
 pub struct Registry {
     program: Option<PathBuf>,
+    /// `https` behind the h2 front, so helpers load over HTTP/2 like the page.
+    scheme: &'static str,
     port: u16,
     state: Mutex<State>,
 }
 
 impl Registry {
-    pub fn new(program: Option<PathBuf>, port: u16) -> Arc<Self> {
+    pub fn new(program: Option<PathBuf>, scheme: &'static str, port: u16) -> Arc<Self> {
         Arc::new(Self {
             program,
+            scheme,
             port,
             state: Mutex::new(State::default()),
         })
@@ -182,8 +189,8 @@ impl Registry {
         state.next += 1;
         let id = state.next;
         let target = format!(
-            "http://127.0.0.1:{}/echo/helper.html?session={id}",
-            self.port,
+            "{}://127.0.0.1:{}/echo/helper.html?session={id}",
+            self.scheme, self.port,
         );
         let child = Command::new(program)
             .arg(target)
@@ -322,4 +329,3 @@ impl Registry {
 fn failure(status: &'static str, message: &str) -> (&'static str, Value) {
     (status, json!({"error": message}))
 }
-

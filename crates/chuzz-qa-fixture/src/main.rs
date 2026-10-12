@@ -13,27 +13,21 @@ const INDEX_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site
 const FIRST_JS: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/first.js");
 const SECOND_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/second.html");
 const SECOND_JS: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/second.js");
-const TAB_CLOSE_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/tab-close.html");
+const TAB_CLOSE_HTML: &[u8] =
+    include_bytes!("../../../apps/chuzz/tests/fixture-site/tab-close.html");
 const SITES_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/sites.html");
 const SITES_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/src/sites.ts");
-const FONT: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/video/qa/fonts/FiraSans-Regular.woff2");
-const UDP_HTML: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/index.html");
-const UDP_SCRIPT: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/src/udp.ts");
-const ECHO_HTML: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/index.html");
+const FONT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/fonts/FiraSans-Regular.woff2");
+const UDP_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/index.html");
+const UDP_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/src/udp.ts");
+const ECHO_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/index.html");
 const ECHO_HELPER_HTML: &[u8] =
     include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/helper.html");
-const ECHO_COMMON: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/common.ts");
-const ECHO_SCRIPT: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/echo.ts");
+const ECHO_COMMON: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/common.ts");
+const ECHO_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/echo.ts");
 const ECHO_HELPER_SCRIPT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/helper.ts");
-const WEBAUTHN_HTML: &[u8] =
-    include_bytes!("../../../apps/chuzz/src/platform/qa/webauthn.html");
+const WEBAUTHN_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/platform/qa/webauthn.html");
 const WEBAUTHN_FONT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/platform/qa/fonts/FiraSans-Regular.woff2");
 /// The Referer the last `/referer.png` request carried, for the domb fixture.
@@ -55,12 +49,13 @@ static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 fn main() -> io::Result<()> {
     let mut port = 49_123;
     let mut echo_host = None;
+    let mut front_port = None;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         let value = args.next().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: chuzz-qa-fixture [--port PORT] [--echo-host ABSOLUTE_PATH]",
+                "usage: chuzz-qa-fixture [--port PORT] [--front-port PORT] [--echo-host ABSOLUTE_PATH]",
             )
         })?;
         match argument.as_str() {
@@ -71,6 +66,16 @@ fn main() -> io::Result<()> {
                         format!("invalid port: {error}"),
                     )
                 })?;
+            }
+            // The public HTTPS port of the h2 front that proxies to this
+            // server: echo helpers and same-origin checks use that origin.
+            "--front-port" if front_port.is_none() => {
+                front_port = Some(value.parse::<u16>().map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid front port: {error}"),
+                    )
+                })?);
             }
             "--echo-host" if echo_host.is_none() => {
                 let path = PathBuf::from(value);
@@ -84,7 +89,7 @@ fn main() -> io::Result<()> {
             }
             _ => {
                 eprintln!(
-                    "usage: chuzz-qa-fixture [--port PORT] [--echo-host ABSOLUTE_PATH]"
+                    "usage: chuzz-qa-fixture [--port PORT] [--front-port PORT] [--echo-host ABSOLUTE_PATH]"
                 );
                 std::process::exit(2);
             }
@@ -92,21 +97,21 @@ fn main() -> io::Result<()> {
     }
 
     let reactor = Reactor::start().map_err(io_error)?;
-    let listener =
-        TcpListener::bind(Addr::localhost(port), &reactor.handle()).map_err(io_error)?;
+    let listener = TcpListener::bind(Addr::localhost(port), &reactor.handle()).map_err(io_error)?;
     let port = listener.local_addr().map_err(io_error)?.port();
-    let echoes = echo::Registry::new(echo_host, port);
+    let (scheme, port) = match front_port {
+        Some(front) => ("https", front),
+        None => ("http", port),
+    };
+    let echoes = echo::Registry::new(echo_host, scheme, port);
 
     nagoya::block_on(async {
         loop {
             let (stream, _) = listener.accept().await.map_err(io_error)?;
             let echoes = Arc::clone(&echoes);
             let _ = nagoya::spawn(async move {
-                match nagoya::timeout(
-                    Duration::from_secs(15),
-                    serve(stream, echoes, port),
-                )
-                .await
+                match nagoya::timeout(Duration::from_secs(15), serve(stream, echoes, scheme, port))
+                    .await
                 {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => eprintln!("fixture request failed: {error}"),
@@ -124,6 +129,7 @@ async fn delay(duration: Duration) {
 async fn serve(
     mut stream: TcpStream,
     echoes: Arc<echo::Registry>,
+    scheme: &'static str,
     port: u16,
 ) -> io::Result<()> {
     let mut head = Vec::new();
@@ -196,9 +202,9 @@ async fn serve(
     let length = if header("content-length").is_empty() {
         0
     } else {
-        header("content-length").parse::<usize>().map_err(|error| {
-            io::Error::new(io::ErrorKind::InvalidData, error.to_string())
-        })?
+        header("content-length")
+            .parse::<usize>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
     };
     let is_echo_api = path == "/api/echo" || path.starts_with("/api/echo/");
     let body_limit = if is_echo_api { 192 * 1024 } else { 65_536 };
@@ -227,13 +233,12 @@ async fn serve(
     if is_echo_api {
         let local_host = format!("127.0.0.1:{port}");
         let localhost_host = format!("localhost:{port}");
-        let local_origin = format!("http://{local_host}");
-        let localhost_origin = format!("http://{localhost_host}");
+        let local_origin = format!("{scheme}://{local_host}");
+        let localhost_origin = format!("{scheme}://{localhost_host}");
         if header("x-chuzz-echo") != "w09"
             || ![local_host.as_str(), localhost_host.as_str()].contains(&header("host"))
             || (!header("origin").is_empty()
-                && ![local_origin.as_str(), localhost_origin.as_str()]
-                    .contains(&header("origin")))
+                && ![local_origin.as_str(), localhost_origin.as_str()].contains(&header("origin")))
         {
             return respond(
                 &mut stream,
@@ -269,9 +274,10 @@ async fn serve(
         "/echo/helper.html" => ("text/html; charset=utf-8", ECHO_HELPER_HTML.to_vec()),
         "/echo/src/common.ts" => ("text/javascript; charset=utf-8", ECHO_COMMON.to_vec()),
         "/echo/src/echo.ts" => ("text/javascript; charset=utf-8", ECHO_SCRIPT.to_vec()),
-        "/echo/src/helper.ts" => {
-            ("text/javascript; charset=utf-8", ECHO_HELPER_SCRIPT.to_vec())
-        }
+        "/echo/src/helper.ts" => (
+            "text/javascript; charset=utf-8",
+            ECHO_HELPER_SCRIPT.to_vec(),
+        ),
         "/echo/fonts/FiraSans-Regular.woff2" => ("font/woff2", FONT.to_vec()),
         "/webauthn/" | "/webauthn/index.html" => {
             ("text/html; charset=utf-8", WEBAUTHN_HTML.to_vec())
@@ -289,13 +295,8 @@ async fn serve(
             }
             match udp::run() {
                 Ok(report) => {
-                    return respond(
-                        &mut stream,
-                        "200 OK",
-                        "application/json",
-                        report.as_bytes(),
-                    )
-                    .await;
+                    return respond(&mut stream, "200 OK", "application/json", report.as_bytes())
+                        .await;
                 }
                 Err(error) => {
                     return respond(
@@ -361,7 +362,13 @@ async fn serve(
                 .lock()
                 .map(|recorded| recorded.clone().unwrap_or_default())
                 .unwrap_or_default();
-            return respond(&mut stream, "200 OK", "text/plain; charset=utf-8", referer.as_bytes()).await;
+            return respond(
+                &mut stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                referer.as_bytes(),
+            )
+            .await;
         }
         path if path.starts_with("/slow-image/") => {
             delay(Duration::from_millis(50)).await;
@@ -401,4 +408,3 @@ async fn respond(
     stream.write_all(head.as_bytes()).await.map_err(io_error)?;
     stream.write_all(body).await.map_err(io_error)
 }
-
