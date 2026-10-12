@@ -63,7 +63,7 @@ enum WorkerFrame {
     Begin(Operation),
     End,
     Ready(String),
-    Reply(DebugResponse),
+    Reply(Box<DebugResponse>),
     Paint,
     Failed(String),
 }
@@ -230,7 +230,7 @@ pub(super) fn start_worker(sender: mpsc::SyncSender<DocumentRequest>) -> Result<
                 }
                 let response = nagoya::block_on(answer.recv())
                     .unwrap_or_else(|| page_error("the page document loop closed its reply"));
-                send(&WorkerFrame::Reply(response));
+                send(&WorkerFrame::Reply(Box::new(response)));
             }
         })
         .map_err(|error| format!("could not start the page worker control reader: {error}"))?;
@@ -474,6 +474,7 @@ impl Supervisor {
                 }
             }
             WorkerFrame::Reply(response) => {
+                let response = *response;
                 if let DebugResponse::Error(error) = &response
                     && error.code == "pageUnresponsive"
                 {
