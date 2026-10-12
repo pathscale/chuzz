@@ -13,8 +13,9 @@ else
   artifacts=$(mktemp -d "$root/patches/out/visible-qa-XXXXXX")
 fi
 qa_home="$artifacts/home"
-private_tmp="$artifacts/tmp"
-mkdir -p "$private_tmp"
+# A short private TMPDIR: the control socket lives under it, and a unix socket
+# path longer than about 104 bytes is refused, which a checkout artifact dir exceeds.
+private_tmp=$(mktemp -d /tmp/chuzz-qa-XXXXXX)
 chmod 700 "$private_tmp"
 descriptor=""
 app_pid=""
@@ -84,6 +85,7 @@ cleanup() {
     stop_pid "$server_pid"
     server_pid=""
   fi
+  rm -rf "$private_tmp"
   exit "$exit_status"
 }
 
