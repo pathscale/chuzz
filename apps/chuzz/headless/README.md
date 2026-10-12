@@ -37,3 +37,5 @@ particular, file and data resource URLs do not pass through the egress filter,
 and the engine's disk cache is not disabled here. Those provider behaviors need
 integrator verification before this launch mode is treated as a complete
 network and persistence boundary.
+
+Every control request, the descriptor and socket, and the headless and GUI differences are documented in [docs/inspection.md](../../../docs/inspection.md).
