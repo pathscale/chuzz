@@ -191,10 +191,11 @@ fn parse_capture_target(target: &str) -> Result<ParsedTarget, GpuError> {
         if !label.is_empty() {
             return Ok(ParsedTarget::Texture(label.to_owned()));
         }
-    } else if let Some(id) = target.strip_prefix("canvas:#") {
-        if !id.is_empty() && !id.chars().any(char::is_whitespace) {
-            return Ok(ParsedTarget::Canvas);
-        }
+    } else if let Some(id) = target.strip_prefix("canvas:#")
+        && !id.is_empty()
+        && !id.chars().any(char::is_whitespace)
+    {
+        return Ok(ParsedTarget::Canvas);
     }
     Err(GpuError::validation(format!(
         "unknown WebGPU capture target: {target}"
