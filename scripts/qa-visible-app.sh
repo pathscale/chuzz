@@ -3,7 +3,21 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 app=${1:-"$root/target/release/bundle/macos/Chuzz.app"}
-qa_bin=${PS_QA_BIN:-$(command -v ps-qa || true)}
+# ps-qa must speak the same debug protocol as the Chuzz build under test. A
+# sibling ps-observability checkout is built in place (its own target dir, never
+# installed), so local engine work and the harness move together. PS_QA_BIN
+# overrides; without a checkout, a ps-qa on PATH is used (CI installs one).
+observability_dir=${PS_OBSERVABILITY_DIR:-"$root/../ps-observability"}
+if [[ -n "${PS_QA_BIN:-}" ]]; then
+  qa_bin=$PS_QA_BIN
+elif [[ -f "$observability_dir/crates/ps-qa/Cargo.toml" ]]; then
+  cargo build --release --quiet -p ps-qa \
+    --manifest-path "$observability_dir/Cargo.toml" \
+    --target-dir "$observability_dir/target"
+  qa_bin="$observability_dir/target/release/ps-qa"
+else
+  qa_bin=$(command -v ps-qa || true)
+fi
 fixture_bin=${CHUZZ_QA_FIXTURE_BIN:-"$root/target/release/chuzz-qa-fixture"}
 if [[ -n "${QA_ARTIFACT_DIR:-}" ]]; then
   artifacts=$QA_ARTIFACT_DIR
@@ -36,7 +50,7 @@ if [[ ! -x "$app/Contents/MacOS/chuzz-gui" ]]; then
   exit 1
 fi
 if [[ -z "$qa_bin" || ! -x "$qa_bin" ]]; then
-  printf "ps-qa is missing; set PS_QA_BIN or install ps-qa '^0.7'\n" >&2
+  printf "ps-qa is missing; set PS_QA_BIN, set PS_OBSERVABILITY_DIR to a ps-observability checkout, or install ps-qa '^0.7'\n" >&2
   exit 1
 fi
 if [[ ! -x "$fixture_bin" ]]; then
