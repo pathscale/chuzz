@@ -196,12 +196,12 @@ impl Pair {
         }
         let mut deadlines = [self.now; 2];
         let mut progressed = false;
-        for side in 0..2 {
+        for (side, deadline) in deadlines.iter_mut().enumerate() {
             let mut reached_timeout = false;
             for _ in 0..OUTPUT_LIMIT {
                 match self.peers[side].poll_output()? {
-                    Output::Timeout(deadline) => {
-                        deadlines[side] = deadline;
+                    Output::Timeout(at) => {
+                        *deadline = at;
                         reached_timeout = true;
                         break;
                     }
