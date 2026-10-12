@@ -1595,6 +1595,28 @@ fn commit_render(events: &Latest<DebugEvent>, revision: &mut u64) {
     supervisor::painted();
 }
 
+/// A data: page that names the URL that failed and why.
+///
+/// The text is escaped for HTML, and a percent sign is written as an entity so
+/// the data: URL decoder cannot read it as an escape.
+fn failure_page_url(url: &str, error: &str) -> Result<Url, String> {
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('%', "&#37;")
+    };
+    let html = format!(
+        "<!doctype html><title>Page failed to load</title><h1>This page could not be loaded</h1><p>{}</p><p id=chuzz-load-error>{}</p>",
+        escape(url),
+        escape(error),
+    );
+    let mut page =
+        Url::parse("data:text/html;charset=utf-8,").map_err(|error| error.to_string())?;
+    page.set_path(&format!("text/html;charset=utf-8,{html}"));
+    Ok(page)
+}
+
 fn follow_navigation(
     destination: Url,
     document: &mut ScriptDocument,
@@ -1853,7 +1875,30 @@ fn serve_page(
             })
         }
     };
-    let mut document = load(url, seed.as_ref())?;
+    let failed_url = display_url(&url, policy.bot_child);
+    let mut document = match load(url, seed.as_ref()) {
+        Ok(document) => document,
+        // A page that cannot load is still a page, as in any browser: show why
+        // and keep the inspection socket up, so the caller can read the reason,
+        // navigate elsewhere or close. A bot child keeps the exit its
+        // supervisor expects.
+        Err(error) if !policy.bot_child => {
+            trace(&format!("top-level load failed: {error}"));
+            let page = failure_page_url(&failed_url, &error)?;
+            nagoya::block_on(crate::document_loader::load_for_capture(
+                blitz_traits::net::Request::get(page),
+                Arc::clone(&net_provider),
+                "",
+                Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
+            ))
+            .map_err(|page_error| {
+                format!("{error}; the failure page did not load either: {page_error}")
+            })?
+            .into_script()
+            .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?
+        }
+        Err(error) => return Err(error),
+    };
     let mut origin = document.inner().url().origin().ascii_serialization();
     trace("document ready");
     // Debugging aid for real sites: CHUZZ_DEBUG_EVAL names a script file that
