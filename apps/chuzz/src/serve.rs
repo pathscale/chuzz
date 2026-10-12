@@ -62,7 +62,7 @@ use blitz_control_protocol::latest::{Latest, Once};
 use blitz_control_protocol::server::ControlBridgeRequest;
 use blitz_control_protocol::{
     AgentAction, AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
-    WindowComposition,
+    RendererMetrics, RevisionSet, WindowComposition,
 };
 use blitz_dom::Document as _;
 use blitz_dom::NodeId;
@@ -1364,6 +1364,17 @@ const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(8);
 /// starvation this fixes pointed the other way.
 const MAX_CATCHUP_TURNS: u32 = 64;
 
+/// How long `WaitForIdle` keeps running page jobs before it answers anyway.
+const IDLE_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Blitz versions only the document, so style, layout and paint stay zero.
+fn headless_revisions(document: u64) -> RevisionSet {
+    RevisionSet {
+        document,
+        ..RevisionSet::default()
+    }
+}
+
 /// Let the page get on with what it started, while nothing is being asked of it.
 ///
 /// Without this the document only advances inside a request. A page whose
@@ -2131,11 +2142,40 @@ fn serve_page(
                     Err(error) => DebugResponse::Error(error),
                 }
             }
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Evaluate { script })
+                if !policy.bot_child =>
+            {
+                painted = true;
+                match document.eval_json(&script) {
+                    Ok(value) => DebugResponse::Evaluated(value),
+                    Err(message) => DebugResponse::Error(DebugError {
+                        code: "scriptError".into(),
+                        message,
+                    }),
+                }
+            }
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Metrics) if !policy.bot_child => {
+                DebugResponse::Metrics(RendererMetrics {
+                    revisions: headless_revisions(render_revision),
+                    queue_depth: Some(u64::from(document.has_pending_jobs())),
+                    ..RendererMetrics::default()
+                })
+            }
+            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WaitForIdle)
+                if !policy.bot_child =>
+            {
+                // Run queued jobs until the page has none left, bounded so a
+                // page that reschedules forever still gets an answer.
+                let deadline = std::time::Instant::now() + IDLE_WAIT_LIMIT;
+                while document.has_pending_jobs() && std::time::Instant::now() < deadline {
+                    painted |= tick_document(&mut document, &animation_clock);
+                }
+                last_tick = std::time::Instant::now();
+                DebugResponse::Idle(headless_revisions(render_revision))
+            }
             ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
                 code: "unsupported".into(),
-                message: "the headless page serves diagnostics Capture, Snapshot, \
-                          WindowComposition, WebGpuInspect and WebGpuCapture only"
-                    .into(),
+                message: "the bot browser page serves no diagnostics".into(),
             }),
         };
         if policy.bot_child && navigation.take_refusal() {
