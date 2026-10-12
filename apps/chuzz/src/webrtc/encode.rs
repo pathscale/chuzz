@@ -162,8 +162,8 @@ impl Sender {
             && width > 16
             && height > 16
         {
-            width = (width / 2 & !1).max(2);
-            height = (height / 2 & !1).max(2);
+            width = ((width / 2) & !1).max(2);
+            height = ((height / 2) & !1).max(2);
         }
 
         let w = width as usize;
