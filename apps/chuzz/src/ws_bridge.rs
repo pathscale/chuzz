@@ -157,6 +157,10 @@ struct Command {
     url: Option<String>,
     #[serde(default)]
     protocols: Vec<String>,
+    /// The page origin, sent as the handshake `Origin` header as a browser
+    /// must (RFC 6455 4.1). Servers that check it refuse a handshake without it.
+    #[serde(default)]
+    origin: Option<String>,
     #[serde(default)]
     data: Option<String>,
     #[serde(default)]
@@ -240,7 +244,14 @@ impl Bridge {
 
         let bridge = self.clone();
         nagoya::spawn(async move {
-            let connected = match open_socket(&url, &command.protocols, Arc::clone(&outbox)).await {
+            let connected = match open_socket(
+                &url,
+                &command.protocols,
+                command.origin.as_deref(),
+                Arc::clone(&outbox),
+            )
+            .await
+            {
                 Ok(connected) => connected,
                 Err(error) => {
                     // The page is told the same thing a browser tells it: the
@@ -420,6 +431,7 @@ fn closed(code: u16, reason: &str) -> serde_json::Value {
 async fn open_socket(
     url: &str,
     protocols: &[String],
+    origin: Option<&str>,
     outbox: Arc<Outbox>,
 ) -> Result<Connected<Transport>, String> {
     let url = url::Url::parse(url).map_err(|error| error.to_string())?;
@@ -475,15 +487,19 @@ async fn open_socket(
     } else {
         None
     };
+    let headers: Vec<(&str, &str)> = origin
+        .map(|origin| ("Origin", origin))
+        .into_iter()
+        .collect();
     let options = ClientOptions {
         protocols: &offered,
+        headers: &headers,
         entropy,
         limits: Limits {
             max_frame: MAX_FRAME_BYTES as u64,
             max_message: MAX_MESSAGE_BYTES,
         },
         tls,
-        ..Default::default()
     };
 
     let reactor = REACTOR
@@ -661,7 +677,7 @@ pub const WEBSOCKET_SHIM: &str = r#"
     else if (protocols && protocols.length) {
       for (var i = 0; i < protocols.length; i++) { offered.push(String(protocols[i])); }
     }
-    post({ ws: "connect", id: id, url: this.url, protocols: offered });
+    post({ ws: "connect", id: id, url: this.url, protocols: offered, origin: (typeof location !== "undefined" && location.origin) || "null" });
   }
 
   WebSocketShim.CONNECTING = 0;
