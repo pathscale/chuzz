@@ -7,11 +7,9 @@
 //! strength of log lines instead.
 //!
 //! Requests are built as JSON here rather than reusing this crate's own request
-//! types. They are not the same shape: the wire enum's `rename_all =
-//! "camelCase"` renames variants and leaves fields alone, so `max_depth` stays
-//! snake_case on the wire while `AttrScope` in [`crate`] is a chuzz-side
-//! extension the running runtime does not have. Encoding by hand keeps this
-//! honest about what the browser actually accepts.
+//! types, because `AttrScope` in [`crate`] is a chuzz-side extension the
+//! running runtime does not have. Field names are camelCase, as protocol 2
+//! defines them; version 1 hosts read only snake_case.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -192,13 +190,14 @@ impl Client {
         root: Option<u64>,
         max_depth: u32,
     ) -> Result<Value, Box<dyn std::error::Error>> {
-        // `max_depth`, not `maxDepth`. Getting this wrong is answered with a
+        // `maxDepth` under protocol 2, with `max_depth` as the version 1 alias.
+        // Getting this wrong is answered with a
         // JSON-RPC -32600 naming the missing field, which is at least a legible
         // way to be told.
         let response = self
             .call(json!({
                 "command": "inspect",
-                "params": {"root": root, "max_depth": max_depth},
+                "params": {"root": root, "maxDepth": max_depth},
             }))
             .await?;
         if response["result"] == "error" {
@@ -236,7 +235,7 @@ impl Client {
     pub async fn click(&mut self, node_id: u64) -> Result<Value, Box<dyn std::error::Error>> {
         self.call(json!({
             "command": "act",
-            "params": {"action": "click", "params": {"node_id": node_id}},
+            "params": {"action": "click", "params": {"nodeId": node_id}},
         }))
         .await
     }
@@ -256,7 +255,7 @@ impl Client {
             "command": "act",
             "params": {
                 "action": "setValue",
-                "params": {"node_id": node_id, "value": value},
+                "params": {"nodeId": node_id, "value": value},
             },
         }))
         .await
