@@ -122,16 +122,14 @@ fn unpremultiply(source: &[u8], target: &mut [u8]) {
         .as_chunks::<4>()
         .0
         .iter()
-        .zip(target.chunks_exact_mut(4))
+        .zip(target.as_chunks_mut::<4>().0)
     {
         let alpha = u32::from(source[3]);
         target[3] = source[3];
-        for index in 0..3 {
-            target[index] = if alpha == 0 {
-                0
-            } else {
-                ((u32::from(source[index]) * 255 + alpha / 2) / alpha).min(255) as u8
-            };
+        for (out, &value) in target[..3].iter_mut().zip(&source[..3]) {
+            *out = (u32::from(value) * 255 + alpha / 2)
+                .checked_div(alpha)
+                .map_or(0, |value| value.min(255) as u8);
         }
     }
 }
@@ -674,11 +672,9 @@ impl DeviceConnection {
                 if premultiplied {
                     let alpha = u32::from(pixel[3]);
                     for channel in &mut pixel[..3] {
-                        *channel = if alpha == 0 {
-                            0
-                        } else {
-                            ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
-                        };
+                        *channel = (u32::from(*channel) * 255 + alpha / 2)
+                            .checked_div(alpha)
+                            .map_or(0, |value| value.min(255) as u8);
                     }
                 } else {
                     // Texture sources are live WebGPU canvases. The other
