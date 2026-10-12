@@ -96,6 +96,7 @@ pub mod page_server;
 pub mod pdf;
 pub mod script_fetch;
 mod tls;
+pub mod tls_status;
 #[cfg(feature = "javascript")]
 mod video;
 #[cfg(feature = "javascript")]

@@ -36,3 +36,23 @@ pub(crate) fn source_html(text: &str) -> String {
 <body style="{INTERNAL_PAGE_STYLE}"><pre style="margin:0;padding:1rem;font:13px ui-monospace,monospace;white-space:pre-wrap;word-break:break-word">{escaped}</pre></body></html>"#
     )
 }
+
+/// Resolve browser-owned pages before handing a URL to the network.
+pub(crate) fn html_for(url: &blitz_traits::net::Url) -> Option<String> {
+    (url.as_str() == crate::tls_status::RSA_FALLBACK_WHY_URL).then(rsa_fallback_html)
+}
+
+fn rsa_fallback_html() -> String {
+    format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Why RSA fallback?</title></head>
+<body style="{INTERNAL_PAGE_STYLE};padding:2rem;font:16px system-ui,sans-serif;max-width:48rem">
+<h1>Why RSA fallback?</h1>
+<p>This site's certificate chain uses RSA, in the server certificate or a certificate authority (CA) key.</p>
+<p>On every new connection, chuzz tries ECC-only first. When it receives an RSA chain, it refuses it and sends alert 43 (unsupported_certificate), visible in the site's logs. Some servers instead reject the ECC-only hello with alert 40 (handshake_failure).</p>
+<p>Then chuzz opens a separate connection allowing RSA only for authentication: RSA-PSS verifies the server handshake signature, and PKCS#1 v1.5 verifies certificate signatures. RSA is never used for key exchange or decryption.</p>
+<p>Key exchange stays ECDHE (X25519 or P-256), and encryption stays ChaCha20-Poly1305 or AES-GCM. Forward secrecy is preserved.</p>
+<p>RSA chains depend on RSA CA keys and larger, older algorithms. The concern is authentication strength and chuzz's policy preference for ECC, not a loss of forward secrecy.</p>
+<p>Nothing is required of you. Prefer sites with ECDSA certificates, and tell the site you would like an ECC certificate chain.</p>
+</body></html>"#
+    )
+}
