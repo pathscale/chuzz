@@ -870,7 +870,7 @@ impl Engine {
     }
 
     fn playout(&mut self, peer: &Peer, now: Instant) -> Result<Option<Instant>, String> {
-        if !self.connected || self.signaling != "stable" {
+        if !self.connected {
             return Ok(None);
         }
         let generation = self.cancellation.generation();
@@ -1341,10 +1341,12 @@ async fn drive(peer: &Peer, config: Config, epoch: Instant) -> Result<(), String
             nagoya::yield_now().await;
             continue;
         };
-        if engine.connected && engine.signaling == "stable" {
-            deadline = deadline.min(engine.audio_deadline);
-            if let Some(video_deadline) = video_deadline {
-                deadline = deadline.min(video_deadline);
+        if engine.connected {
+            if engine.signaling == "stable" {
+                deadline = deadline.min(engine.audio_deadline);
+                if let Some(video_deadline) = video_deadline {
+                    deadline = deadline.min(video_deadline);
+                }
             }
             if let Some(playout_deadline) = playout_deadline {
                 deadline = deadline.min(playout_deadline);
