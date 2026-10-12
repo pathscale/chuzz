@@ -109,6 +109,10 @@ sha2 = { version = "^0.10", default-features = false }
 # The transport must not enable a second crypto backend through crate features.
 nago-wss = { version = "^0.3", default-features = false, features = ["tls", "simd-utf8"] }
 nago-rustls = { version = "^0.1.3", default-features = false }
+bytes = "^1"
+h2 = "^0.4"
+http = "^1"
+tokio = { version = "^1", default-features = false }
 rustls-native-certs = "^0.8.4"
 ps-rustcrypto = { version = "^0.4", default-features = false, features = ["std", "tls12", "zeroize"] }
 rustls = { version = "^0.23.27", default-features = false, features = [

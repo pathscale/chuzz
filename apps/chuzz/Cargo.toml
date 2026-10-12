@@ -206,6 +206,11 @@ sha2 = { workspace = true, optional = true }
 rustls.workspace = true
 rustls-native-certs.workspace = true
 ps-rustcrypto.workspace = true
+bytes.workspace = true
+h2.workspace = true
+http.workspace = true
+nago-rustls.workspace = true
+tokio.workspace = true
 cursor-icon.workspace = true
 cookie_store.workspace = true
 psl.workspace = true
