@@ -75,8 +75,8 @@ impl Receiver {
             .unwrap_or(9000);
         let mut frames = Vec::with_capacity(pictures.len());
         for picture in pictures {
-            let width = picture.width as u32;
-            let height = picture.height as u32;
+            let width = picture.width;
+            let height = picture.height;
             let w = width as usize;
             let h = height as usize;
             if !(2..=1920).contains(&width)

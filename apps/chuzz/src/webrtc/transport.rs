@@ -1183,7 +1183,7 @@ impl Engine {
                         .time
                         .rebase(str0m::media::Frequency::FORTY_EIGHT_KHZ)
                         .numer();
-                    if let Err(error) = receive.enqueue(timestamp, data.data.into()) {
+                    if let Err(error) = receive.enqueue(timestamp, data.data) {
                         eprintln!(
                             "WebRTC Opus enqueue failed at RTP timestamp {timestamp}: {error}"
                         );
