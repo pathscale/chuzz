@@ -26,6 +26,12 @@ assert(animation.playState === 'finished' && Math.abs(Number(getComputedStyle(el
 element.style.opacity = '0.3'; const canceled = element.animate([{opacity:'0.3'},{opacity:'0.9'}], {duration:100,fill:'forwards'});
 const rejected = canceled.finished.then(() => false, error => error.name === 'AbortError'); canceled.cancel();
 assert(await rejected && element.style.opacity === '0.3', 'cancel rejects finished and restores style');
+const empty = document.documentElement.animate([], 0);
+assert(empty && typeof empty.cancel === 'function' && typeof empty.finish === 'function', 'empty keyframes make a no-op animation');
+const indexed = element.animate({opacity:['0.1','0.7']}, {duration:100,fill:'forwards'});
+await indexed.ready; indexed.currentTime = 50;
+assert(Math.abs(Number(getComputedStyle(element).opacity) - 0.4) < 0.02, 'property-indexed keyframes interpolate');
+indexed.cancel();
     result.textContent = "READY: ELEMENT-ANIMATE PASS";
   } catch (error) {
     result.textContent = "FAIL: " + String(error && error.message || error);

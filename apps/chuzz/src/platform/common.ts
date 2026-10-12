@@ -1076,7 +1076,27 @@
     function cssProperty(name) {
       return String(name).replace(/[A-Z]/g, character => "-" + character.toLowerCase());
     }
+    // `{opacity: ["0", "1"]}` is the same effect as two keyframe objects.
+    function propertyIndexedFrames(indexed) {
+      const frames = [];
+      for (const name of Object.keys(indexed)) {
+        if (name === "offset" || name === "easing" || name === "composite") continue;
+        const values = Array.isArray(indexed[name]) ? indexed[name] : [indexed[name]];
+        values.forEach((value, index) => {
+          frames[index] = frames[index] || {};
+          frames[index][name] = value;
+        });
+      }
+      return frames;
+    }
     function framePairs(keyframes) {
+      // No keyframes is a valid effect that changes nothing; feature tests
+      // such as `element.animate([], 0)` rely on it.
+      if (keyframes === null || keyframes === undefined) return [];
+      if (!Array.isArray(keyframes) && typeof keyframes === "object") {
+        keyframes = propertyIndexedFrames(keyframes);
+      }
+      if (Array.isArray(keyframes) && keyframes.length === 0) return [];
       if (!Array.isArray(keyframes) || keyframes.length !== 2
           || !keyframes[0] || !keyframes[1]) {
         throw exception("NotSupportedError", "Only two-frame keyframes are supported");
