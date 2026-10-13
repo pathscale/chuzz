@@ -127,7 +127,6 @@ nagoya = { version = "^0.1.14", features = ["reactor"] }
 rusty_alloc = { package = "ps-rusty_alloc", version = "^2.3.3" }
 url = "2.5"
 worktable = "^1.11.0"
-tauri = { version = "^2", default-features = false }
 # `diagnostics`, always, rather than behind a cargo feature.
 #
 # It is two runtime planes, and neither costs anything until it is switched on

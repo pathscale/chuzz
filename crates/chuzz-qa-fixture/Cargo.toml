@@ -21,7 +21,6 @@ path = "src/tls_main.rs"
 rusty_alloc.workspace = true
 nagoya.workspace = true
 nago-wss.workspace = true
-nago-rustls.workspace = true
 rustls.workspace = true
 ps-rustcrypto.workspace = true
 serde.workspace = true
