@@ -218,6 +218,7 @@ blitz-control-protocol = { workspace = true, features = ["engine", "server", "ca
 base64 = "^0.22"
 izumo = { workspace = true, optional = true }
 nago-wss.workspace = true
+ps-spsc = { version = "^0.5.1", path = "../../../ps-spsc" }
 worktable.workspace = true
 mp4parse = { version = "^0.17", optional = true }
 # The VIDEORUST brief explicitly selects this synchronous local fork.
