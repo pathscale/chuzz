@@ -2,7 +2,7 @@
     (
         id: "webapi-all",
         group: "webapi",
-        what: "fetch bodies, multipart forms, files, streams, compression, broadcasts, locks and window APIs exercise real behaviour",
+        what: "native fetch bytes and bodies, multipart forms, files, streams, compression, broadcasts, locks and window APIs exercise real behaviour",
         open: None,
         hover: None,
         click: Some("#run"),
