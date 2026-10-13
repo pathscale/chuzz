@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.43
+
 - Require ps-blitz ^0.6 and show a shared TLS refusal page with typed diagnostics; remove the RSA fallback banner and explainer.
 
 ## 0.1.42
