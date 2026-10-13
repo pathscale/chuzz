@@ -357,7 +357,7 @@ Resolved against the standing document URL. The headless host loads the result i
 { "command": "navigate", "params": { "url": "https://example.com/next" } }
 ```
 
-Success is `ack`. An unresolvable URL is `invalidArgument`. A load that fails is `navigationFailed`. The GUI runtime returns `unsupportedRequest` for this command.
+Success is `ack`. An unresolvable URL is `invalidArgument`. An ordinary load failure is `navigationFailed`. In the normal headless host, a TLS policy refusal commits a Page not available document at the requested address and returns `ack`; inspect its DOM or TLS snapshot for the reason and explainer link. Bot-child mode retains its load-failure behavior. The GUI runtime returns `unsupportedRequest` for this command.
 
 ### condense
 
@@ -460,6 +460,35 @@ Event payloads:
 ```
 
 Omit `nodeIds` or pass `[]` for the whole document. `includeComputedStyle` adds the legibility properties only.
+
+In the headless host, a snapshot with `includeDom: false` returns TLS status in
+`value.dom`, as used by `chuzz-control`'s `tls_status()` client method. For a
+committed TLS refusal it contains `tls_host` (the requested host), the original
+`url`, `tls_explainer: "chuzz:tls-refused"`, and `tls_policy_error`:
+
+```json
+{
+  "kind": "RsaCertificateChain",
+  "message": "RSA certificate chain forbidden; ECDSA/Ed25519 keys required throughout the chain (alert 43 unsupported_certificate)",
+  "alert": 43,
+  "alert_direction": "sent"
+}
+```
+
+`PeerRejectedAlgorithms` with alert 40 has `alert_direction: "received"`: the
+server sent `handshake_failure`. That alert does not establish that the site
+requires RSA or AES. Refusals without a known alert use null for `alert` and
+`alert_direction`. The top-level `tls_policy_error` is null after a successful
+load or an explainer navigation. It records the committed load, so later
+connections do not erase a failed page's reason. Source navigations report the
+host of the URL inside `view-source:`.
+
+The `connections` array remains live. Each entry contains `host`, `connections`,
+`refusals`, `handshakes`, `last_alpn`, and `last_tls_policy_error` in the same
+shape as above. A host's latest error is cleared by its next TLS attempt. The
+transport does not supply the failing redirect URL with a typed error, so the
+page and top-level `tls_host` label the requested host; per-host entries expose
+the latest observed refusal for each connection host.
 
 On the headless host, `includeDom: false` still fills `dom` with the committed TLS state of the loaded URL. That object is the TLS inspection record, not a DOM tree. The GUI uses `includeDom: false` to skip DOM collection.
 

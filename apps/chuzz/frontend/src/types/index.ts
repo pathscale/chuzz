@@ -39,8 +39,6 @@ export interface Tab {
   status: LoadStatus;
   canGoBack: boolean;
   canGoForward: boolean;
-  tlsRsaFallback?: boolean;
-  tlsWarning?: string | null;
 }
 
 /** Which inspector sections are open. Persisted by the shell, not the interface. */
@@ -109,7 +107,7 @@ export interface ThemeSettings {
   /** Colour washed into the workspace surfaces. Empty keeps them neutral. */
   surface: string;
   /**
-   * Accent as `#rrggbb`. Empty means the palette's own yellow — deliberately
+   * Accent as `#rrggbb`. Empty means the palette's own yellow, deliberately
    * not the literal, so the record cannot drift from the stylesheet.
    */
   accent: string;

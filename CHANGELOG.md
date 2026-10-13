@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require ps-blitz ^0.6 and show a shared TLS refusal page with typed diagnostics; remove the RSA fallback banner and explainer.
+
 ## 0.1.42
 
 - Require blitz-control-protocol ^0.7.0 for inspection protocol 2 and the headless Evaluate response.

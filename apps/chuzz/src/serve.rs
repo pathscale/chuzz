@@ -1801,7 +1801,7 @@ fn serve_page(
     let clipboard = Arc::new(HostClipboard::default());
     let animation_clock = std::time::Instant::now();
 
-    let tls_status = std::cell::RefCell::new(None::<Url>);
+    let tls_status = std::cell::RefCell::new(None::<(Url, Option<blitz_net::TlsPolicyError>)>);
     let load = |url: Url, carried: Option<&StoredState>| -> Result<Box<ScriptDocument>, String> {
         // Includes HTML and external-script fetches, script execution, loader
         // pumping, shim evaluation and the initial viewport settle.
@@ -1823,6 +1823,7 @@ fn serve_page(
             prelude.push('\n');
             prelude.push_str(&script);
         }
+        let mut policy_error = None;
         let mut document = if let Some(html) = crate::internal_pages::html_for(&url) {
             Box::new(ScriptDocument::from_html(
                 &html,
@@ -1837,23 +1838,40 @@ fn serve_page(
                 Arc::clone(&net_provider),
                 &prelude,
                 Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
-            ))
-            .map_err(|error| {
-                if policy.bot_child {
-                    format!(
-                        "could not load {}: network request failed",
-                        display_url(&url, policy.bot_child)
-                    )
-                } else {
-                    format!(
-                        "could not load {}: {error}",
-                        display_url(&url, policy.bot_child)
-                    )
+            ));
+            match loaded {
+                Ok(loaded) => loaded.into_script().ok_or(
+                    "this build cannot run scripts, so it cannot host a page worth inspecting",
+                )?,
+                Err(error) => {
+                    if !policy.bot_child
+                        && let Some(blitz_traits::platform::FetchError::TlsPolicy(reason)) =
+                            error.downcast_ref::<blitz_traits::platform::FetchError>()
+                    {
+                        policy_error = Some(*reason);
+                        trace(&format!("TLS refused for {url}: {reason}"));
+                        Box::new(ScriptDocument::from_html(
+                            &crate::internal_pages::tls_refused_html(&url, *reason),
+                            blitz_dom::DocumentConfig {
+                                base_url: Some(url.to_string()),
+                                ..Default::default()
+                            },
+                        ))
+                    } else {
+                        return Err(if policy.bot_child {
+                            format!(
+                                "could not load {}: network request failed",
+                                display_url(&url, policy.bot_child)
+                            )
+                        } else {
+                            format!(
+                                "could not load {}: {error}",
+                                display_url(&url, policy.bot_child)
+                            )
+                        });
+                    }
                 }
-            })?;
-            loaded
-                .into_script()
-                .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?
+            }
         };
         let landed_url = document.inner().url().clone();
         policy
@@ -1880,7 +1898,7 @@ fn serve_page(
         // request's settle budget to lay out. Say so and serve it; requests
         // keep their own deadlines.
         settle_immediate(&mut document, &animation_clock, settle_deadline);
-        *tls_status.borrow_mut() = Some(landed_url.clone());
+        *tls_status.borrow_mut() = Some((landed_url.clone(), policy_error));
         Ok(document)
     };
 
@@ -2120,10 +2138,10 @@ fn serve_page(
                     Ok(mut snapshot) => {
                         if status_only {
                             // Read now, not at load: counters keep moving.
-                            snapshot.dom = tls_status
-                                .borrow()
-                                .as_ref()
-                                .map(crate::tls_status::inspection_state);
+                            snapshot.dom =
+                                tls_status.borrow().as_ref().map(|(url, policy_error)| {
+                                    crate::tls_status::inspection_state(url, *policy_error)
+                                });
                         }
                         DebugResponse::Snapshot(snapshot)
                     }

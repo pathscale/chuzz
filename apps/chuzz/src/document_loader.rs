@@ -41,6 +41,15 @@ pub struct NetProvider {
 
 const DEFAULT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 
+fn document_fetch_error(error: blitz_net::ProviderError) -> blitz_traits::platform::FetchError {
+    match error {
+        blitz_net::ProviderError::TlsPolicy(reason) => {
+            blitz_traits::platform::FetchError::TlsPolicy(reason)
+        }
+        error => blitz_traits::platform::FetchError::Network(format!("{error:?}")),
+    }
+}
+
 /// Debugging aid for real sites: with `CHUZZ_DEBUG_DUMP=<dir>`, every script
 /// response is written there as `<n>-<host><path>.js`, the exact bytes the page
 /// ran, so an error's `line:column` on an obfuscated or per-request script (a
@@ -161,7 +170,7 @@ impl NetProvider {
     pub async fn fetch_document_async(
         &self,
         mut request: blitz_traits::net::Request,
-    ) -> Result<(String, blitz_traits::net::Bytes), String> {
+    ) -> Result<(String, blitz_traits::net::Bytes), blitz_traits::platform::FetchError> {
         let initiator = request
             .headers
             .get("referer")
@@ -183,15 +192,13 @@ impl NetProvider {
             // response headers until document-type detection has run.
             self.fetch_response_async(request)
                 .await
-                .map_err(|error| format!("{error:?}"))?
+                .map_err(document_fetch_error)?
         } else {
             let request = Self::with_default_language(request);
             let mut wire =
                 blitz_traits::platform::FetchRequest::get(request.url).method(request.method);
             wire.headers = request.headers;
-            crate::net_bridge::fetch_response(&self.inner, wire)
-                .await
-                .map_err(|error| format!("{error:?}"))?
+            crate::net_bridge::fetch_response(&self.inner, wire).await?
         };
         Ok(Self::document_response(&requested_url, response))
     }
@@ -2609,7 +2616,7 @@ pub async fn load_for_capture(
         let (_, bytes) = net_provider
             .fetch_async(Request::get(url))
             .await
-            .map_err(|error| format!("could not fetch {inner}: {error:?}"))?;
+            .map_err(document_fetch_error)?;
         let html = crate::internal_pages::source_html(&decode_body(&bytes));
         return Ok(CapturedDocument::Html(Box::new(
             blitz_html::HtmlDocument::from_html(

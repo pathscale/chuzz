@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::internal_pages::{INTERNAL_PAGE_STYLE, source_html};
+use crate::internal_pages::{error_html, source_html};
 use blitz_dom::{Document as _, DocumentConfig, FontContext, NodeId};
 use blitz_html::HtmlProvider;
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
@@ -25,16 +25,6 @@ const BLANK_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><ti
 
 const EMPTY_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Empty response</title></head><body style="margin:0;background:#f6f6f7;color:#16181d"><h1>Empty response</h1><p>The server returned no content.</p></body></html>"#;
 
-fn error_html(error: &str) -> String {
-    let escaped = error
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>Page not available</title></head><body style="{INTERNAL_PAGE_STYLE};padding:2rem;font:14px system-ui,sans-serif"><h1>Page not available</h1><p>{escaped}</p></body></html>"#
-    )
-}
-
 pub type ChuzzAppHandle = izumo::AppHandle;
 
 #[derive(Clone, Serialize)]
@@ -46,8 +36,6 @@ pub struct FrontendTab {
     status: &'static str,
     can_go_back: bool,
     can_go_forward: bool,
-    tls_rsa_fallback: bool,
-    tls_warning: Option<&'static str>,
 }
 
 #[derive(Clone, Serialize)]
@@ -89,7 +77,6 @@ struct TabState {
     /// new one's address.
     outcome: PageOutcome,
     generation: u64,
-    tls_rsa_fallback: bool,
 }
 
 impl TabState {
@@ -107,10 +94,7 @@ impl TabState {
             } else {
                 self.outcome.name()
             },
-            tls_rsa_fallback: self.tls_rsa_fallback,
-            tls_warning: self
-                .tls_rsa_fallback
-                .then_some(crate::tls_status::RSA_FALLBACK_BANNER),
+
             can_go_back: self.current > 0,
             can_go_forward: self.current + 1 < self.history.len(),
         }
@@ -450,7 +434,6 @@ impl Browser {
                     loading: false,
                     outcome: PageOutcome::Blank,
                     generation: 0,
-                    tls_rsa_fallback: false,
                 }],
                 active: 0,
                 next_tab_id: 1,
@@ -574,7 +557,7 @@ impl Browser {
             };
             tab.generation += 1;
             tab.loading = true;
-            tab.tls_rsa_fallback = false;
+
             (tab.request().clone(), tab.generation)
         };
         self.emit_state();
@@ -806,8 +789,7 @@ impl Browser {
                     if let Ok(url) = Url::parse(&bundle.resolved_url) {
                         tab.history[tab.current].url = url;
                     }
-                    tab.tls_rsa_fallback = outcome != PageOutcome::Error
-                        && crate::tls_status::rsa_fallback_for(&tab.request().url);
+
                     tab.title = title;
                     tab.loading = false;
                     tab.outcome = outcome;
@@ -1089,7 +1071,7 @@ async fn fetch_page(
         // failure is a red tab showing what went wrong, which is the same
         // reading as an ordinary failed page.
         let (source, outcome) = match Url::parse(&inner) {
-            Ok(url) => match net.fetch_async(Request::get(url)).await {
+            Ok(url) => match net.fetch_async(Request::get(url.clone())).await {
                 Ok((_, bytes)) => {
                     browser.note(
                         "info",
@@ -1104,6 +1086,19 @@ async fn fetch_page(
                         "net",
                         format!("could not fetch {inner}: {error:?}"),
                     );
+                    if let blitz_net::ProviderError::TlsPolicy(reason) = &error {
+                        return PageBundle {
+                            tab_id,
+                            generation,
+                            resolved_url: request.url.to_string(),
+                            source: PageSource::Html {
+                                html: crate::internal_pages::tls_refused_html(&url, *reason),
+                                scripts: HashMap::new(),
+                                wasm: None,
+                            },
+                            outcome: PageOutcome::Error,
+                        };
+                    }
                     (
                         format!("could not fetch {inner}: {error:?}"),
                         PageOutcome::Error,
@@ -1136,9 +1131,15 @@ async fn fetch_page(
             return PageBundle {
                 tab_id,
                 generation,
-                resolved_url: requested_url,
+                resolved_url: requested_url.clone(),
                 source: PageSource::Html {
-                    html: error_html(&format!("{error:?}")),
+                    html: match &error {
+                        blitz_traits::platform::FetchError::TlsPolicy(reason) => {
+                            let url = Url::parse(&requested_url).expect("request URL is valid");
+                            crate::internal_pages::tls_refused_html(&url, *reason)
+                        }
+                        _ => error_html(&format!("{error:?}")),
+                    },
                     scripts: HashMap::new(),
                     wasm: None,
                 },
@@ -1472,7 +1473,6 @@ pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTa
             loading: false,
             outcome: PageOutcome::Blank,
             generation: 0,
-            tls_rsa_fallback: false,
         });
         state.active = id;
         id
@@ -1900,7 +1900,6 @@ mod tests {
             loading: true,
             outcome: PageOutcome::Ready,
             generation: 0,
-            tls_rsa_fallback: false,
         };
         assert_eq!(tab.snapshot().status, "loading");
         tab.loading = false;

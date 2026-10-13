@@ -37,22 +37,57 @@ pub(crate) fn source_html(text: &str) -> String {
     )
 }
 
-/// Resolve browser-owned pages before handing a URL to the network.
-pub(crate) fn html_for(url: &blitz_traits::net::Url) -> Option<String> {
-    (url.as_str() == crate::tls_status::RSA_FALLBACK_WHY_URL).then(rsa_fallback_html)
+#[cfg(feature = "gui")]
+pub(crate) fn error_html(error: &str) -> String {
+    load_error_html(error, "")
 }
 
-fn rsa_fallback_html() -> String {
+fn load_error_html(error: &str, details: &str) -> String {
+    let escaped = error
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
     format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Why RSA fallback?</title></head>
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>Page not available</title></head><body style="{INTERNAL_PAGE_STYLE};padding:2rem;font:14px system-ui,sans-serif"><h1>Page not available</h1><p>{escaped}</p>{details}</body></html>"#
+    )
+}
+
+/// A policy refusal is the error document for this navigation, with its address retained.
+pub(crate) fn tls_refused_html(
+    url: &blitz_traits::net::Url,
+    reason: blitz_net::TlsPolicyError,
+) -> String {
+    let url = crate::tls_status::navigation_url(url);
+    let host = url
+        .host_str()
+        .unwrap_or("unknown")
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let alert = crate::tls_status::alert_description(reason);
+    let explainer = crate::tls_status::TLS_REFUSED_WHY_URL;
+    let details = format!(
+        r#"<p>Requested host: <strong>{host}</strong></p><p>{alert}</p><p>The requested page was not loaded. chuzz does not retry with weaker algorithms.</p><p><a href="{explainer}">Why chuzz refused this TLS connection</a></p>"#
+    );
+    load_error_html(&reason.to_string(), &details)
+}
+
+/// Resolve browser-owned pages before handing a URL to the network.
+pub(crate) fn html_for(url: &blitz_traits::net::Url) -> Option<String> {
+    (url.as_str() == crate::tls_status::TLS_REFUSED_WHY_URL).then(tls_refused_explainer_html)
+}
+
+fn tls_refused_explainer_html() -> String {
+    format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Why TLS was refused</title></head>
 <body style="{INTERNAL_PAGE_STYLE};padding:2rem;font:16px system-ui,sans-serif;max-width:48rem">
-<h1>Why RSA fallback?</h1>
-<p>This site's certificate chain uses RSA, in the server certificate or a certificate authority (CA) key.</p>
-<p>On every new connection, chuzz tries ECC-only first. When it receives an RSA chain, it refuses it and sends alert 43 (unsupported_certificate), visible in the site's logs. Some servers instead reject the ECC-only hello with alert 40 (handshake_failure).</p>
-<p>Then chuzz opens a separate connection allowing RSA only for authentication: RSA-PSS verifies the server handshake signature, and PKCS#1 v1.5 verifies certificate signatures. RSA is never used for key exchange or decryption.</p>
-<p>Key exchange stays ECDHE (X25519 or P-256), and encryption stays ChaCha20-Poly1305 or AES-GCM. Forward secrecy is preserved.</p>
-<p>RSA chains depend on RSA CA keys and larger, older algorithms. The concern is authentication strength and chuzz's policy preference for ECC, not a loss of forward secrecy.</p>
-<p>Nothing is required of you. Prefer sites with ECDSA certificates, and tell the site you would like an ECC certificate chain.</p>
+<h1>Why TLS was refused</h1>
+<p>chuzz requires ECDSA or Ed25519 authentication throughout the certificate chain and in TLS handshake signatures, ECDHE key exchange, and ChaCha20-Poly1305 encryption only. RSA and AES are forbidden.</p>
+<p>A TLS policy refusal ends the load. chuzz does not retry with weaker algorithms.</p>
+<p>If chuzz refuses an RSA certificate chain or another unsupported certificate key, it sends alert 43 unsupported_certificate. That is the alert the server can see in its logs.</p>
+<p>Some servers instead reject the permitted TLS offer and send alert 40 handshake_failure to chuzz. Others send alert 71 insufficient_security. These server alerts do not establish whether the server requires RSA, AES, or another unsupported algorithm. The error page reports the observed reason and alert direction.</p>
+<p>The site operator can fix an RSA certificate-chain refusal by serving an ECDSA certificate chain, including compatible intermediate and trust-anchor keys and signatures. The server must also support ECDHE and a ChaCha20-Poly1305 cipher suite. An ECDSA leaf alone does not fix a chain that still requires RSA.</p>
+<p>Ask the site operator to provide that TLS configuration. chuzz cannot load the site until its TLS configuration satisfies this policy.</p>
 </body></html>"#
     )
 }

@@ -32,14 +32,14 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same range gets the same crate rather than a second copy. To build against
 # a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
 # exercises what a release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.5" }
-blitz-html = { package = "ps-blitz-html", version = "^0.5" }
-blitz-net = { package = "ps-blitz-net", version = "^0.5" }
-blitz-script = { package = "ps-blitz-script", version = "^0.5" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.5" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.6" }
+blitz-html = { package = "ps-blitz-html", version = "^0.6" }
+blitz-net = { package = "ps-blitz-net", version = "^0.6" }
+blitz-script = { package = "ps-blitz-script", version = "^0.6" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.6" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.5" }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6" }
 # The MCP framing the control server speaks, same source and feature as
 # izumo uses for its agent-control surface.
 # The one control surface: wire vocabulary, the document core, and both
@@ -86,7 +86,7 @@ anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.3",
 anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15", default-features = false, features = ["image_format_png", "image_format_jpeg", "image_format_gif", "image_format_webp"] }
 # Compiled-in open fonts for headless renders that must not depend on the machine.
 headless-fonts = "^0.1"
-blitz-paint = { package = "ps-blitz-paint", version = "^0.5" }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.6" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
