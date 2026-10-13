@@ -171,13 +171,3 @@ strip = "none"
 # The fork is published as `ps-usvg` now and ps-blitz depends on it by version,
 # so the requirement travels with the dependency instead of being restated by
 # every consumer.
-
-# Crates whose required versions are not on crates.io yet. A workspace patch,
-# not a path on each dependency, so ps-blitz resolves to the same copies.
-[patch.crates-io]
-ps-anyrender-vello-cpu = { path = "../ps-anyrender/crates/anyrender_vello_cpu" }
-ps-str0m-rust-crypto = { path = "../ps-str0m/crypto/rust-crypto" }
-ps-str0m = { path = "../ps-str0m" }
-ps-dimpl = { path = "../ps-dimpl" }
-ps-anyrender = { path = "../ps-anyrender/crates/anyrender" }
-izumo = { path = "../izumo/crates/izumo" }
