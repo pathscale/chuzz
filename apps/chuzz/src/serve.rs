@@ -1642,6 +1642,11 @@ fn follow_navigation(
     render_revision: &mut u64,
 ) -> Result<(), String> {
     let _navigation = supervisor::operation(supervisor::Operation::Load);
+    policy.validate_url(&destination)?;
+    document.eval(
+        "globalThis.dispatchEvent(new Event('pagehide')); \
+         globalThis.dispatchEvent(new Event('unload'));",
+    );
     let carried = if policy.bot_child {
         None
     } else {

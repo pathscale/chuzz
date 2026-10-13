@@ -1,0 +1,14 @@
+[
+    (
+        id: "media-unload-navigation",
+        group: "media-unload",
+        what: "navigation pauses media elements, closes Web Audio graphs and peer connections, and releases page media sinks",
+        open: None,
+        hover: None,
+        click: Some("#start"),
+        subject: "READY: media unload sinks=0 graphs=0 peer=closed",
+        expect: PaintsNamed,
+        covers: ["READY: media unload sinks=0 graphs=0 peer=closed"],
+        outcome_timeout_ms: 30000,
+    ),
+]

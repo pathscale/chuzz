@@ -428,6 +428,12 @@
     return context._call({ op: "inspect" });
   };
 
+  g.addEventListener("pagehide", function () {
+    Array.from(contexts.values()).forEach(function (context) {
+      context.close();
+    });
+  }, { once: true });
+
   g.AudioContext = AudioContext;
   g.AudioNode = AudioNode;
   g.AudioParam = AudioParam;

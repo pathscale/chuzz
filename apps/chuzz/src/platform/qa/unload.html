@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Document media unload QA</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+    button { font: inherit; padding: 6px 12px; }
+    video, audio { display: block; width: 240px; height: 135px; }
+  </style>
+</head>
+<body>
+  <button id="start" type="button">Start media and navigate</button>
+  <p id="status" role="status">Media waiting</p>
+  <video id="movie" muted playsinline></video>
+  <audio id="sound"></audio>
+  <script>
+    const status = document.getElementById("status");
+    const movie = document.getElementById("movie");
+    const sound = document.getElementById("sound");
+    let context;
+    let peer;
+    let source;
+
+    async function append(buffer, bytes) {
+      await new Promise((resolve, reject) => {
+        buffer.addEventListener("updateend", resolve, { once: true });
+        buffer.addEventListener("error", reject, { once: true });
+        buffer.appendBuffer(bytes);
+      });
+    }
+
+    document.getElementById("start").addEventListener("click", async () => {
+      try {
+        context = new AudioContext({ sampleRate: 48000 });
+        const oscillator = context.createOscillator();
+        const destination = context.createMediaStreamDestination();
+        oscillator.connect(destination);
+        oscillator.start();
+        await context.resume();
+        sound.srcObject = destination.stream;
+        await sound.play();
+
+        peer = new RTCPeerConnection();
+        peer.addTrack(destination.stream.getAudioTracks()[0], destination.stream);
+
+        const manifest = await (await fetch("../../video/qa/clip.json")).json();
+        const media = new MediaSource();
+        movie.src = URL.createObjectURL(media);
+        await new Promise(resolve => media.addEventListener("sourceopen", resolve, { once: true }));
+        for (const track of manifest.tracks) {
+          const buffer = media.addSourceBuffer(track.type);
+          const init = await (await fetch("../../video/qa/" + track.init.slice(2))).arrayBuffer();
+          await append(buffer, init);
+          for (const segment of track.segments) {
+            const bytes = await (await fetch("../../video/qa/" + segment.slice(2))).arrayBuffer();
+            await append(buffer, bytes);
+          }
+        }
+        media.endOfStream();
+        await movie.play();
+        sessionStorage.removeItem("media-unload-report");
+        status.textContent = "Media active; navigating";
+        location.href = "./unload-next.html";
+      } catch (error) {
+        status.textContent = "FAIL: media setup " + error;
+      }
+    });
+
+    window.addEventListener("pagehide", () => {
+      const report = {
+        activeMediaSinks: Number(!movie.paused) + Number(!sound.paused),
+        activeAudioGraphs: context && __chuzzAudioInspect(context).state === "closed" ? 0 : 1,
+        peerClosed: !!peer && peer.connectionState === "closed"
+      };
+      sessionStorage.setItem("media-unload-report", JSON.stringify(report));
+    }, { once: true });
+  </script>
+</body>
+</html>

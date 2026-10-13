@@ -718,6 +718,22 @@
     }
   };
 
+  globalThis.addEventListener('pagehide', function () {
+    states.forEach(function (state) {
+      state.element.pause();
+      rejectPending(state, exception('The document was unloaded', 'AbortError'));
+      send(state, 'release');
+      if (globalThis.__chuzzMseDetach) globalThis.__chuzzMseDetach(state.element);
+      state.generation++;
+      state.requested = null;
+      state.srcObject = null;
+      state.paused = true;
+      state.playing = false;
+    });
+    states.clear();
+    commands = [];
+  }, { once: true });
+
   globalThis.__chuzzVideoGetStream = function (element) {
     return stateFor(element).srcObject;
   };

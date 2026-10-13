@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Document media unload destination</title>
+  <style>
+    @font-face { font-family: Fixture; src: url("./fonts/FiraSans-Regular.woff2") format("woff2"); }
+    body { margin: 24px; background: #151923; color: white; font-family: Fixture; }
+  </style>
+</head>
+<body>
+  <p id="result" role="status">Checking unloaded media</p>
+  <script>
+    let report;
+    try {
+      report = JSON.parse(sessionStorage.getItem("media-unload-report"));
+    } catch (error) {}
+    document.getElementById("result").textContent = report
+      && report.activeMediaSinks === 0
+      && report.activeAudioGraphs === 0
+      && report.peerClosed
+      ? "READY: media unload sinks=0 graphs=0 peer=closed"
+      : "FAIL: media unload " + JSON.stringify(report);
+  </script>
+</body>
+</html>

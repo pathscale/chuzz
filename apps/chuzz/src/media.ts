@@ -403,6 +403,12 @@
   };
 
   g.MediaStream = MediaStream;
+  g.addEventListener('pagehide', function () {
+    Array.from(liveTracks.values()).forEach(function (track) {
+      track.stop();
+    });
+  }, { once: true });
+
   g.MediaStreamTrack = MediaStreamTrack;
   g.MediaDeviceInfo = MediaDeviceInfo;
   g.InputDeviceInfo = InputDeviceInfo;

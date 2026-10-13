@@ -735,6 +735,12 @@
   g.RTCRtpSender = RTCRtpSender;
   g.RTCRtpReceiver = RTCRtpReceiver;
   g.RTCRtpTransceiver = RTCRtpTransceiver;
+  g.addEventListener('pagehide', function () {
+    Array.from(peers.values()).forEach(function (peer) {
+      shutdown(peer, false);
+    });
+  }, { once: true });
+
   g.RTCPeerConnection = RTCPeerConnection;
 })(globalThis);
 
