@@ -66,8 +66,18 @@ pub struct StatusReadout {
     transferred: &'static str,
 }
 
+struct MountedPage {
+    owner_document_id: u64,
+    mount_node_id: u64,
+    viewport_node_id: Option<u64>,
+    document_id: u64,
+    script: bool,
+}
+
 struct TabState {
     id: u64,
+    mounted_generation: u64,
+    mounted: Option<MountedPage>,
     history: Vec<Request>,
     current: usize,
     title: String,
@@ -428,6 +438,8 @@ impl Browser {
             state: Mutex::new(BrowserState {
                 tabs: vec![TabState {
                     id: 0,
+                    mounted_generation: 0,
+                    mounted: None,
                     history: vec![Request::get(first)],
                     current: 0,
                     title: String::new(),
@@ -469,6 +481,91 @@ impl Browser {
     }
 
     pub fn install_document_lifecycle(&self, document: &mut blitz_script::ScriptDocument) {
+        #[cfg(unix)]
+        {
+            let weak = Arc::downgrade(&self.0);
+            izumo::set_page_target_provider(move || {
+                let Some(inner) = weak.upgrade() else {
+                    return Vec::new();
+                };
+                let state = inner.state.lock().unwrap();
+                state
+                    .tabs
+                    .iter()
+                    .map(|tab| {
+                        let mounted = tab.mounted.as_ref();
+                        let script = mounted.is_some_and(|page| page.script);
+                        izumo::PageTarget {
+                            owner_document_id: mounted.map(|page| page.owner_document_id),
+                            mount_node_id: mounted.map(|page| page.mount_node_id),
+                            viewport_node_id: mounted.and_then(|page| page.viewport_node_id),
+                            info: blitz_control_protocol::TargetInfo {
+                                id: blitz_control_protocol::TargetId::Tab(tab.id),
+                                url: tab.request().url.to_string(),
+                                title: display_title(&tab.title, &tab.request().url),
+                                active: state.active == tab.id,
+                                generation: tab.mounted_generation,
+                                document_id: mounted.map(|page| page.document_id),
+                                capabilities: blitz_control_protocol::TargetCapabilities {
+                                    agent: script,
+                                    diagnostics: script,
+                                    capture: script,
+                                    console: script,
+                                    runtime_errors: script,
+                                    web_gpu: script,
+                                },
+                            },
+                        }
+                    })
+                    .collect()
+            });
+            let weak = Arc::downgrade(&self.0);
+            izumo::set_page_navigation_handler(move |id, url| {
+                let inner = weak.upgrade().ok_or("the browser stopped")?;
+                let browser = Browser(inner);
+                let destination = {
+                    let state = browser.0.state.lock().unwrap();
+                    let tab = state
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == id)
+                        .ok_or("the tab closed")?;
+                    tab.request()
+                        .url
+                        .join(url)
+                        .map_err(|error| error.to_string())?
+                };
+                if browser.navigate_request(id, Request::get(destination)) {
+                    Ok(())
+                } else {
+                    Err("the tab closed".into())
+                }
+            });
+            izumo::set_page_diagnostics_handler(|document, request| {
+                use blitz_control_protocol::{DebugResponse, DiagnosticsRequest};
+                match request {
+                    DiagnosticsRequest::WebGpuInspect => crate::webgpu::inspect_gpu(document)
+                        .map(DebugResponse::WebGpu)
+                        .unwrap_or_else(DebugResponse::Error),
+                    DiagnosticsRequest::WebGpuCapture { target } => {
+                        crate::webgpu::capture_gpu(document, &target)
+                            .map(DebugResponse::Captured)
+                            .unwrap_or_else(DebugResponse::Error)
+                    }
+                    DiagnosticsRequest::WebGpuBuffer {
+                        target,
+                        offset,
+                        length,
+                    } => crate::webgpu::capture_gpu_buffer(document, &target, offset, length)
+                        .map(DebugResponse::WebGpuBuffer)
+                        .unwrap_or_else(DebugResponse::Error),
+                    _ => DebugResponse::Error(blitz_control_protocol::target::error(
+                        "unsupportedRequest",
+                        "unsupported page diagnostic",
+                    )),
+                }
+            });
+        }
         let browser = self.clone();
         let mut pending = VecDeque::new();
         document.add_poll_hook(move |document, _| browser.poll_document(document, &mut pending));
@@ -781,19 +878,36 @@ impl Browser {
                     outcome.name()
                 ),
             );
-            ui.inner_mut().set_sub_document(target, page);
-
+            let mounted = MountedPage {
+                owner_document_id: ui.inner().id() as u64,
+                mount_node_id: target.as_u64(),
+                viewport_node_id: ui
+                    .inner()
+                    .query_selector(".page-stack")
+                    .ok()
+                    .flatten()
+                    .map(NodeId::as_u64),
+                document_id: page.id() as u64,
+                script: (&*page as &dyn std::any::Any).is::<blitz_script::ScriptDocument>(),
+            };
             {
                 let mut state = self.0.state.lock().unwrap();
-                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == bundle.tab_id) {
-                    if let Ok(url) = Url::parse(&bundle.resolved_url) {
-                        tab.history[tab.current].url = url;
-                    }
-
-                    tab.title = title;
-                    tab.loading = false;
-                    tab.outcome = outcome;
+                let Some(tab) = state
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.id == bundle.tab_id && tab.generation == bundle.generation)
+                else {
+                    continue;
+                };
+                ui.inner_mut().set_sub_document(target, page);
+                tab.mounted_generation += 1;
+                tab.mounted = Some(mounted);
+                if let Ok(url) = Url::parse(&bundle.resolved_url) {
+                    tab.history[tab.current].url = url;
                 }
+                tab.title = title;
+                tab.loading = false;
+                tab.outcome = outcome;
             }
             changed = true;
         }
@@ -1467,6 +1581,8 @@ pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTa
         state.next_tab_id += 1;
         state.tabs.push(TabState {
             id,
+            mounted_generation: 0,
+            mounted: None,
             history: vec![request],
             current: 0,
             title: String::new(),
@@ -1511,6 +1627,7 @@ pub fn close_tab(browser: Arc<Browser>, id: u64) {
     };
     if closed {
         browser.emit_state();
+        browser.wake_document();
     }
 }
 
@@ -1522,6 +1639,7 @@ pub fn close_active_tab(browser: Arc<Browser>) {
     };
     if closed {
         browser.emit_state();
+        browser.wake_document();
     }
 }
 
@@ -1894,6 +2012,8 @@ mod tests {
     fn loading_outranks_the_previous_outcome() {
         let mut tab = TabState {
             id: 0,
+            mounted_generation: 0,
+            mounted: None,
             history: vec![Request::get(Url::parse("https://example.com/").unwrap())],
             current: 0,
             title: String::new(),

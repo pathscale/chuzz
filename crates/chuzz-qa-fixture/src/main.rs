@@ -15,6 +15,7 @@ const SECOND_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-sit
 const SECOND_JS: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/second.js");
 const TAB_CLOSE_HTML: &[u8] =
     include_bytes!("../../../apps/chuzz/tests/fixture-site/tab-close.html");
+const PAGE_TARGET_HTML: &[u8] = include_bytes!("../../../apps/chuzz/fixtures/page-targets.html");
 const SITES_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/sites.html");
 const SITES_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/src/sites.ts");
 const GPU_BUFFERS_HTML: &[u8] =
@@ -280,6 +281,7 @@ async fn serve(
         "/second.html" => ("text/html; charset=utf-8", SECOND_HTML.to_vec()),
         "/second.js" => ("text/javascript; charset=utf-8", SECOND_JS.to_vec()),
         "/tab-close.html" => ("text/html; charset=utf-8", TAB_CLOSE_HTML.to_vec()),
+        "/page-targets.html" => ("text/html; charset=utf-8", PAGE_TARGET_HTML.to_vec()),
         "/sites.html" => ("text/html; charset=utf-8", SITES_HTML.to_vec()),
         "/src/sites.ts" => ("text/javascript; charset=utf-8", SITES_SCRIPT.to_vec()),
         "/fonts/FiraSans-Regular.woff2" => ("font/woff2", FONT.to_vec()),

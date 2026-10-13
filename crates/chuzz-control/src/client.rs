@@ -79,6 +79,11 @@ pub struct Client {
     // to be generic over a type it can never write down.
     stream: Box<dyn MessageStream>,
     next_id: i64,
+    target: Option<Value>,
+    identity: Option<Value>,
+    explicit_identity: bool,
+    notifications: std::collections::VecDeque<Value>,
+    lost_notifications: u64,
 }
 
 /// The reactor every control connection lives on.
@@ -114,7 +119,77 @@ impl Client {
                 NagoyaStream::new(stream),
             ))),
             next_id: 1,
+            target: None,
+            identity: None,
+            explicit_identity: false,
+            notifications: std::collections::VecDeque::new(),
+            lost_notifications: 0,
         })
+    }
+
+    pub fn select_tab(&mut self, id: u64) {
+        self.target = Some(json!({"tabId": id}));
+        self.identity = None;
+        self.explicit_identity = false;
+    }
+
+    pub fn select_chrome(&mut self) {
+        self.target = Some(json!("chrome"));
+        self.identity = None;
+        self.explicit_identity = false;
+    }
+
+    pub fn set_expected_identity(&mut self, generation: u64, document_id: u64) {
+        self.identity = Some(json!({"generation": generation, "documentId": document_id}));
+        self.explicit_identity = true;
+    }
+
+    pub fn identity(&self) -> Option<&Value> {
+        self.identity.as_ref()
+    }
+
+    pub async fn targets(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        self.call(json!({"command": "listTargets"})).await
+    }
+
+    fn queue_notification(&mut self, value: Value) {
+        const CAPACITY: usize = 1024;
+        if self.notifications.len() == CAPACITY {
+            self.notifications.pop_front();
+            self.lost_notifications += 1;
+        }
+        self.notifications.push_back(value);
+    }
+
+    pub async fn next_notification(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        if self.lost_notifications > 0 {
+            return Ok(
+                json!({"method": "notifications/blitz/diagnostics", "params": {
+                    "event": "clientNotificationOverflow", "value": {"dropped": std::mem::take(&mut self.lost_notifications)}
+                }}),
+            );
+        }
+        if let Some(value) = self.notifications.pop_front() {
+            return Ok(value);
+        }
+        loop {
+            let message = self
+                .stream
+                .recv()
+                .await
+                .ok_or("the browser closed the socket")?
+                .map_err(|error| format!("transport: {error}"))?;
+            match message {
+                WireMessage::Text(text) => {
+                    let value: Value = serde_json::from_str(&text)?;
+                    if value.get("method").is_some() && value.get("id").is_none() {
+                        return Ok(value);
+                    }
+                }
+                WireMessage::Close(_) => return Err("the browser closed the socket".into()),
+                _ => {}
+            }
+        }
     }
 
     /// One `tools/call`, unwrapped to the browser's own response value.
@@ -138,8 +213,48 @@ impl Client {
     async fn call_tool(
         &mut self,
         tool: &str,
-        request: Value,
+        mut request: Value,
     ) -> Result<Value, Box<dyn std::error::Error>> {
+        let arguments = request
+            .as_object_mut()
+            .ok_or("tool arguments must be an object")?;
+        if !arguments.contains_key("target")
+            && arguments.get("allTargets") != Some(&Value::Bool(true))
+            && let Some(target) = &self.target
+        {
+            arguments.insert("target".into(), target.clone());
+        }
+        let cached_guard = match arguments.get("command").and_then(Value::as_str) {
+            Some("act") => true,
+            Some("inspect") => arguments
+                .get("params")
+                .and_then(|params| params.get("root"))
+                .and_then(Value::as_u64)
+                .is_some(),
+            Some("snapshot") => arguments
+                .get("params")
+                .and_then(|params| params.get("nodeIds"))
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| !nodes.is_empty()),
+            Some("capture") => arguments
+                .get("params")
+                .and_then(|params| params.get("nodeId"))
+                .and_then(Value::as_u64)
+                .is_some(),
+            _ => false,
+        };
+        if arguments.get("target") == self.target.as_ref()
+            && self.target.is_some()
+            && (cached_guard || self.explicit_identity)
+            && let Some(identity) = &self.identity
+        {
+            arguments
+                .entry("expectedGeneration")
+                .or_insert_with(|| identity["generation"].clone());
+            arguments
+                .entry("expectedDocumentId")
+                .or_insert_with(|| identity["documentId"].clone());
+        }
         let id = self.next_id;
         self.next_id += 1;
         let envelope = json!({
@@ -171,7 +286,25 @@ impl Client {
             };
             let reply: Value = serde_json::from_str(&text)?;
             if reply.get("id").and_then(Value::as_i64) != Some(id) {
+                if reply.get("method").is_some() && reply.get("id").is_none() {
+                    self.queue_notification(reply);
+                }
                 continue;
+            }
+            if let Some(context) = reply.pointer("/result/structuredContent/context") {
+                let selected_id = self.target.as_ref().map_or_else(
+                    || json!("chrome"),
+                    |target| {
+                        if target == "chrome" {
+                            target.clone()
+                        } else {
+                            target["tabId"].clone()
+                        }
+                    },
+                );
+                if context.get("targetId") == Some(&selected_id) && !self.explicit_identity {
+                    self.identity = Some(context.clone());
+                }
             }
             if let Some(error) = reply.get("error") {
                 return Err(format!("JSON-RPC error: {error}").into());
@@ -203,7 +336,11 @@ impl Client {
         if response["result"] == "error" {
             return Err(format!("inspect failed: {}", response["value"]).into());
         }
-        Ok(response["value"].clone())
+        let mut snapshot = response["value"].clone();
+        if let Some(context) = response.get("context") {
+            snapshot["context"] = context.clone();
+        }
+        Ok(snapshot)
     }
 
     /// Committed top-level TLS status from chuzz-headless, without collecting DOM nodes.

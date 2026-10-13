@@ -45,7 +45,7 @@ blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6" }
 # The one control surface: wire vocabulary, the document core, and both
 # transports. It used to be reached through `izumo`, which meant a
 # headless browser compiled a Tauri runtime with the runtime switched off.
-blitz-control-protocol = { version = "^0.7.1", default-features = false }
+blitz-control-protocol = { version = "^0.7.2", default-features = false }
 
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }

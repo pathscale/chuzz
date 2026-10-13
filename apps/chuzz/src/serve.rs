@@ -2018,6 +2018,92 @@ fn serve_page(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        let (request, target_context) = match request {
+            ControlBridgeRequest::Targeted(targeted) => {
+                use blitz_control_protocol::{
+                    TargetCapabilities, TargetCommand, TargetContext, TargetId, TargetInfo,
+                };
+                if let Err(error) = targeted.validate_options() {
+                    reply.fill(DebugResponse::Error(error));
+                    continue;
+                }
+                let context = TargetContext {
+                    target_id: TargetId::Tab(0),
+                    generation: (u64::from(std::process::id()) << 32)
+                        | document.inner().id() as u64,
+                    document_id: document.inner().id() as u64,
+                };
+                if matches!(
+                    &targeted.command,
+                    TargetCommand::Agent(AgentControlRequest::ListTargets)
+                ) {
+                    let title = document
+                        .inner()
+                        .query_selector("title")
+                        .ok()
+                        .flatten()
+                        .and_then(|id| {
+                            document
+                                .inner()
+                                .get_node(id)
+                                .map(|node| node.text_content())
+                        })
+                        .unwrap_or_default();
+                    reply.fill(DebugResponse::Targets(vec![TargetInfo {
+                        id: context.target_id.clone(),
+                        url: document.inner().url().to_string(),
+                        title,
+                        active: true,
+                        generation: context.generation,
+                        document_id: Some(context.document_id),
+                        capabilities: TargetCapabilities {
+                            agent: true,
+                            diagnostics: !policy.bot_child,
+                            capture: !policy.bot_child,
+                            console: false,
+                            runtime_errors: false,
+                            web_gpu: !policy.bot_child,
+                        },
+                    }]));
+                    continue;
+                }
+                if !targeted.instance_scoped()
+                    && targeted
+                        .options
+                        .target
+                        .as_ref()
+                        .is_some_and(|target| target.id() != TargetId::Tab(0))
+                {
+                    reply.fill(DebugResponse::Error(blitz_control_protocol::target::error(
+                        "unknownTarget",
+                        "headless exposes only page 0",
+                    )));
+                    continue;
+                }
+                if !targeted.instance_scoped()
+                    && let Err(error) = context.validate(&targeted)
+                {
+                    reply.fill(DebugResponse::Error(error));
+                    continue;
+                }
+                if matches!(
+                    &targeted.command,
+                    TargetCommand::Diagnostics(DiagnosticsRequest::Observe { .. })
+                ) {
+                    reply.fill(DebugResponse::Ack.with_context(context));
+                    continue;
+                }
+                let wrap_context = !targeted.instance_scoped();
+                let request = match targeted.command {
+                    TargetCommand::Agent(request) => ControlBridgeRequest::Agent(request),
+                    TargetCommand::Diagnostics(request) => {
+                        ControlBridgeRequest::Diagnostics(request)
+                    }
+                };
+                (request, wrap_context.then_some(context))
+            }
+            request => (request, None),
+        };
         if let Err(error) = request_budget.admit(&policy, &request) {
             reply.fill(DebugResponse::Error(error));
             trace("the bot browser request budget was exhausted");
@@ -2041,6 +2127,7 @@ fn serve_page(
                 length,
             }) = &request
                 && !policy.bot_child
+                && target_context.is_none()
             {
                 crate::webgpu::capture_gpu_buffer_reply(
                     &mut document,
@@ -2244,6 +2331,9 @@ fn serve_page(
                     code: "unsupported".into(),
                     message: "the bot browser page serves no diagnostics".into(),
                 }),
+                ControlBridgeRequest::Targeted(_) => {
+                    unreachable!("target envelopes are normalized before dispatch")
+                }
             }
         };
         if policy.bot_child && navigation.take_refusal() {
@@ -2261,6 +2351,9 @@ fn serve_page(
         // A caller that stopped waiting leaves the `Once` behind unread; that
         // is not a reason to stop serving everyone else.
         drop(request_turn);
+        if let Some(context) = target_context {
+            response = response.with_context(context);
+        }
         if !deferred_buffer {
             reply.fill(response);
         }

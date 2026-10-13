@@ -30,7 +30,7 @@ inputs:
       The driver's compatible protocol line. Cargo installs the newest
       published 0.9 release, keeping the driver and headless host on the same
       protocol line without pinning a patch release.
-    default: "^0.9.1"
+    default: "^0.9.2"
 
 outputs:
   host:
