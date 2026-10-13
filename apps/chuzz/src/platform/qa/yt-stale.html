@@ -9,6 +9,8 @@
       src: url("./fonts/FiraSans-Regular.woff2") format("woff2");
     }
     html, body { margin: 0; }
+    html { display: block; }
+    html[data-yt-stale-reconstruct] { display: flow-root; }
     body {
       background: rgb(10, 20, 30);
       color: white;
@@ -48,6 +50,15 @@
       color: white;
       font: 20px/40px Fixture;
       white-space: nowrap;
+    }
+    #run {
+      display: block;
+      margin: 0;
+      padding: 8px 16px;
+      border: 0;
+      background: rgb(24, 48, 55);
+      color: white;
+      font: inherit;
     }
     main { padding: 80px 16px 16px; }
     h1, p { margin: 0 0 12px; font: inherit; }
@@ -101,7 +112,7 @@
     <div id="masthead-container">
       <qa-stream-masthead id="masthead">
         <button id="guide-button" type="button" aria-label="YTSTALE green guide"></button>
-        <span id="masthead-label">YTSTALE masthead</span>
+        <span id="masthead-label">YTSTALE initial masthead</span>
       </qa-stream-masthead>
     </div>
   </div>
@@ -119,6 +130,9 @@
       try {
         await document.fonts.ready;
         const state = globalThis.__ytStale;
+        const root = document.documentElement;
+        const authoredParent = document.getElementById("authored-parent");
+        const container = document.getElementById("masthead-container");
         const masthead = document.getElementById("masthead");
         const guide = document.getElementById("guide-button");
         const label = document.getElementById("masthead-label");
@@ -131,31 +145,72 @@
           && guide.parentNode.parentNode === masthead,
           "The parsed children must remain inside the stamped container");
 
-        // Publish status before the failure trigger. Changing body text after
-        // the trigger would reconstruct the authored parent and mask the bug.
-        document.getElementById("result").textContent = "PASS: YTSTALE setup";
-        const before = guide.getBoundingClientRect();
-        check(before.x === 16 && before.y === 8
-          && before.width === 40 && before.height === 40,
-          "The initial fixed guide must occupy its expected box");
+        // Publish the control only after parsing and font loading settle.
+        // The checked masthead name does not exist before the click.
+        const run = document.createElement("button");
+        run.id = "run";
+        run.type = "button";
+        run.textContent = "Rebuild root";
+        run.addEventListener("click", () => {
+          try {
+            run.disabled = true;
+            label.textContent = "YTSTALE masthead";
+            document.getElementById("result").textContent = "PASS: YTSTALE setup";
 
-        // Attribute removal requests construction on html. The authored
-        // parent is unchanged and retains the cache from which hoisting
-        // removed the fixed masthead. Rebuilding html must preserve that edge.
-        document.documentElement.removeAttribute("data-yt-stale-reconstruct");
-        const after = guide.getBoundingClientRect();
-        check(after.x === 16 && after.y === 8
-          && after.width === 40 && after.height === 40,
-          "The guide geometry must survive root reconstruction");
-        check(getComputedStyle(document.getElementById("masthead-container")).position === "fixed",
-          "The masthead must remain fixed");
-        check(document.elementFromPoint(36, 28) === guide,
-          "The painted tree must still expose the guide to hit testing");
+            // Preparation may have caused earlier root reconstructions.
+            // Reinsert the same fixed node so its authored parent is also
+            // reconstructed before the baseline layout on either engine.
+            authoredParent.appendChild(container);
 
-        // No DOM writes follow the trigger. ps-qa checks the named painted
-        // nodes, and yt_stale_pixels checks the actual icon and glyph pixels.
-        state.complete = true;
+            const before = guide.getBoundingClientRect();
+            check(before.x === 16 && before.y === 8
+              && before.width === 40 && before.height === 40,
+              "The initial fixed guide must occupy its expected box");
+            check(getComputedStyle(root).display === "flow-root",
+              "The root must start with a flow-root box");
+            check(document.elementFromPoint(36, 28) === guide,
+              "The initial fixed guide must be reachable by hit testing");
+            state.before = {
+              x: before.x,
+              y: before.y,
+              width: before.width,
+              height: before.height
+            };
+
+            // Hoisting has now removed the fixed child from its authored
+            // parent's layout-children cache and appended it to html.
+            // Removing this attribute changes only html's display value.
+            // That requests box construction on the root without changing
+            // the authored parent's computed style or retained child cache.
+            root.removeAttribute("data-yt-stale-reconstruct");
+            const after = guide.getBoundingClientRect();
+            state.after = {
+              x: after.x,
+              y: after.y,
+              width: after.width,
+              height: after.height
+            };
+            check(getComputedStyle(root).display === "block",
+              "The trigger must change the root display value");
+            check(after.x === 16 && after.y === 8
+              && after.width === 40 && after.height === 40,
+              "The guide geometry must survive root reconstruction");
+            check(getComputedStyle(container).position === "fixed",
+              "The masthead must remain fixed");
+            check(document.elementFromPoint(36, 28) === guide,
+              "The painted tree must still expose the guide to hit testing");
+
+            // No DOM writes follow the trigger, including on failure.
+            // Geometry alone can remain stale; PaintsNamed checks paint.
+            state.complete = true;
+          } catch (error) {
+            state.error = error.message;
+            console.error("YTSTALE: " + error.message);
+          }
+        }, { once: true });
+        document.querySelector("main").appendChild(run);
       } catch (error) {
+        globalThis.__ytStale.error = error.message;
         console.error("YTSTALE: " + error.message);
       }
     }, { once: true });

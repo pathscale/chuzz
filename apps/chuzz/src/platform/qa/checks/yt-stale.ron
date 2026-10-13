@@ -2,10 +2,10 @@
     (
         id: "sites-yt-stale",
         group: "yt-stale",
-        what: "A parser-upgraded custom element stamps light DOM and moves parsed children inside a fixed masthead; reconstructing the root preserves the painted icon and text",
+        what: "After bundled fonts settle, a click establishes a hoisted fixed masthead, then changes only html from flow-root to block; root reconstruction must retain the painted icon and text through the unchanged authored-parent cache",
         open: None,
         hover: None,
-        click: None,
+        click: Some("#run"),
         subject: "YTSTALE masthead",
         expect: PaintsNamed,
         covers: ["YTSTALE green guide", "PASS: YTSTALE setup"],
