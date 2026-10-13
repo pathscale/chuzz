@@ -576,9 +576,25 @@ impl Host {
             }
             nodes
         });
+        // Called natively: a script eval here would request a redraw on every
+        // poll, and the redraw polls again, so an idle page never stopped painting.
         let commands = document
-            .eval_json("globalThis.__chuzzVideoDrain()")
-            .ok()
+            .with_js_context(|context| {
+                let drain = context
+                    .global_object()
+                    .get(JsString::from("__chuzzVideoDrain"), context)
+                    .ok()?
+                    .as_object()
+                    .filter(|function| function.is_callable())?;
+                let value = drain
+                    .call(&JsValue::undefined(), &[], context)
+                    .inspect_err(|error| eprintln!("Media drain: {error}"))
+                    .ok()?;
+                if let Err(error) = context.run_jobs() {
+                    eprintln!("Media drain jobs: {error}");
+                }
+                value.to_json(context).ok().flatten()
+            })
             .and_then(|value| serde_json::from_value::<Vec<Command>>(value).ok())
             .unwrap_or_default();
         let mut changed = !loaded_nodes.is_empty();

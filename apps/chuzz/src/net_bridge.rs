@@ -6,6 +6,7 @@ use std::task::{Poll, Waker};
 use std::time::Duration;
 
 use blitz_dom::Document as _;
+use blitz_script::boa_engine::object::builtins::{AlignedVec, JsArrayBuffer, JsUint8Array};
 use blitz_script::boa_engine::{
     Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
 };
@@ -62,6 +63,7 @@ impl PageWake {
 struct Delivery {
     id: u64,
     payload: serde_json::Value,
+    bytes: Option<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -273,15 +275,18 @@ fn header_tokens(response: &FetchResponse, name: &str) -> Vec<String> {
 }
 
 impl ScriptHost {
-    async fn perform(&self, request: NetRequest) -> serde_json::Value {
+    async fn perform(&self, request: NetRequest) -> (serde_json::Value, Option<Vec<u8>>) {
         match nagoya::timeout(self.deadline, self.perform_inner(request)).await {
             Ok(Ok(response)) => response,
-            Ok(Err(error)) => failure(error),
-            Err(_) => failure("timed out"),
+            Ok(Err(error)) => (failure(error), None),
+            Err(_) => (failure("timed out"), None),
         }
     }
 
-    async fn perform_inner(&self, request: NetRequest) -> Result<serde_json::Value, String> {
+    async fn perform_inner(
+        &self,
+        request: NetRequest,
+    ) -> Result<(serde_json::Value, Option<Vec<u8>>), String> {
         use blitz_traits::platform::http::{HeaderName, HeaderValue, Method};
 
         let mut url = Url::options()
@@ -462,15 +467,18 @@ impl ScriptHost {
             })
             .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str(), value)))
             .collect::<Vec<_>>();
-        Ok(serde_json::json!({
-            "ok": true,
-            "status": response.status.as_u16(),
-            "statusText": response.status.canonical_reason().unwrap_or(""),
-            "url": response.url.as_str(),
-            "headers": headers,
-            "body": decode_body(&response.body),
-            "bytes": &response.body[..],
-        }))
+        let bytes = response.body.to_vec();
+        Ok((
+            serde_json::json!({
+                "ok": true,
+                "status": response.status.as_u16(),
+                "statusText": response.status.canonical_reason().unwrap_or(""),
+                "url": response.url.as_str(),
+                "headers": headers,
+                "body": decode_body(&bytes),
+            }),
+            Some(bytes),
+        ))
     }
 }
 
@@ -491,13 +499,31 @@ fn argument_string(args: &[JsValue], context: &mut Context) -> JsResult<String> 
         .to_std_string_escaped())
 }
 
+/// The response as a script object. The body travels as a Uint8Array over one
+/// buffer, never as source text the script parser would have to read.
+fn js_response(
+    payload: &serde_json::Value,
+    bytes: Option<Vec<u8>>,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let object = JsValue::from_json(payload, context)?
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("network response is not an object"))?;
+    if let Some(bytes) = bytes {
+        let buffer = JsArrayBuffer::from_byte_block(AlignedVec::from_iter(0, bytes), context)?;
+        let bytes = JsUint8Array::from_array_buffer(buffer, context)?;
+        object.set(JsString::from("bytes"), bytes, true, context)?;
+    }
+    Ok(object.into())
+}
+
 fn synchronous_request(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let host = script_host(context)?;
     let text = argument_string(args, context)?;
     let request = serde_json::from_str::<NetRequest>(&text)
         .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-    let result = nagoya::block_on(host.perform(request));
-    JsValue::from_json(&result, context)
+    let (payload, bytes) = nagoya::block_on(host.perform(request));
+    js_response(&payload, bytes, context)
 }
 
 fn cookie_get(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -599,8 +625,8 @@ pub fn install(
         let mailbox = handler_mailbox.clone();
         let id = request.id;
         drop(nagoya::spawn(async move {
-            let payload = host.perform(request).await;
-            mailbox.post(Delivery { id, payload });
+            let (payload, bytes) = host.perform(request).await;
+            mailbox.post(Delivery { id, payload, bytes });
         }));
     });
 
@@ -608,10 +634,35 @@ pub fn install(
         wake.bind(task_context.map(|context| context.waker()));
         let mut changed = sockets.drain_into(document) | gpu.drain_into(document);
         for delivery in mailbox.drain() {
-            document.eval(&format!(
-                "globalThis.__chuzzNetResolve({}, {});",
-                delivery.id, delivery.payload
-            ));
+            document.with_js_context(|context| {
+                let resolve = context
+                    .global_object()
+                    .get(JsString::from("__chuzzNetResolve"), context)
+                    .ok()
+                    .and_then(|value| value.as_object())
+                    .filter(|function| function.is_callable());
+                let Some(resolve) = resolve else {
+                    eprintln!("Network resolve hook is unavailable");
+                    return;
+                };
+                let result = match js_response(&delivery.payload, delivery.bytes, context) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        eprintln!("Network response: {error}");
+                        return;
+                    }
+                };
+                if let Err(error) = resolve.call(
+                    &JsValue::undefined(),
+                    &[JsValue::from(delivery.id as f64), result],
+                    context,
+                ) {
+                    eprintln!("Network response callback: {error}");
+                }
+                if let Err(error) = context.run_jobs() {
+                    eprintln!("Network response jobs: {error}");
+                }
+            });
             changed = true;
         }
         // The viewport moved (scrollTo from script, wheel, keys, automation):

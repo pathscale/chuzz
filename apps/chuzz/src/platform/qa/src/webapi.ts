@@ -178,6 +178,12 @@
         && fetched.status === 200 && fetched.type === "basic", "fetch returns a real Response");
       throws(() => fetched.headers.set("x", "bad"), "Fetched headers immutable");
       assert((await fetched.json()).webapi === true, "fetch Request and JSON bytes");
+      const mediaBytes = await fetch("../../video/qa/clip/init.mp4");
+      const mediaBuffer = await mediaBytes.arrayBuffer();
+      const mediaView = new Uint8Array(mediaBuffer);
+      assert(mediaBytes.ok && mediaView.length > 8
+        && String.fromCharCode(mediaView[4], mediaView[5], mediaView[6], mediaView[7]) === "ftyp",
+        "fetch native Uint8Array preserves MP4 bytes");
       const abortController = new AbortController();
       abortController.abort("fixture abort");
       await rejects(() => fetch("./payload.json", { signal: abortController.signal }), "fetch abort");
