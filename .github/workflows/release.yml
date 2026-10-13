@@ -59,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Compare the committed version against the published one
         id: decide
@@ -126,6 +128,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -181,6 +185,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # The engine is not checked out here any more. It was, and the revision
       # lived in a BLITZ_REF env var on this step while the workspace took the
@@ -240,7 +246,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Install the native QA harness
-        run: cargo install ps-qa --version '^0.9.1'
+        run: cargo install ps-qa --version '^0.9.2'
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
