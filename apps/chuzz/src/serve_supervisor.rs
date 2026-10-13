@@ -9,7 +9,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use blitz_control_protocol::latest::{Latest, Once};
@@ -21,7 +21,8 @@ use blitz_traits::net::Url;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BOT_CHILD_MAX_PENDING_REQUESTS, HeadlessPolicy, Target, WallTimeoutGuard, classify, trace,
+    BOT_CHILD_MAX_PENDING_REQUESTS, HeadlessPolicy, Target, WallTimeoutGuard, classify,
+    page_control, trace,
 };
 
 const WORKER_ENV: &str = "CHUZZ_HEADLESS_PAGE_WORKER";
@@ -37,7 +38,6 @@ const IO_SLICE: Duration = Duration::from_millis(8);
 const MAX_FRAME_BYTES: usize = blitz_control_protocol::MAX_DEBUG_FRAME_BYTES;
 
 type Answer = Arc<Once<DebugResponse>>;
-type DocumentRequest = (ControlBridgeRequest, Answer);
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(super) enum Operation {
@@ -179,7 +179,7 @@ pub(super) fn failed(message: &str) {
     send(&WorkerFrame::Failed(message.to_owned()));
 }
 
-pub(super) fn start_worker(sender: mpsc::SyncSender<DocumentRequest>) -> Result<(), String> {
+pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
     // Only the internally launched worker receives a socket as stdin. Keep
     // stdout separate so page console output cannot corrupt this transport.
     let descriptor = io::stdin()
@@ -220,13 +220,13 @@ pub(super) fn start_worker(sender: mpsc::SyncSender<DocumentRequest>) -> Result<
                 let answer = Once::new();
                 match sender.try_send((request.into(), Arc::clone(&answer))) {
                     Ok(()) => {}
-                    Err(mpsc::TrySendError::Full(_)) => {
+                    Err(page_control::TrySendError::Full) => {
                         answer.fill(DebugResponse::Error(DebugError {
                             code: "documentBusy".into(),
                             message: "the page worker request queue is full".into(),
                         }));
                     }
-                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                    Err(page_control::TrySendError::Disconnected) => {
                         failed("the page document loop stopped");
                         std::process::exit(1);
                     }

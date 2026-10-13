@@ -52,13 +52,13 @@
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use blitz_control_protocol::condense;
 use blitz_control_protocol::document::{DocumentCapture, inspect_document, snapshot_document};
 use blitz_control_protocol::in_process::DocumentControl;
-use blitz_control_protocol::latest::{Latest, Once};
+use blitz_control_protocol::latest::Latest;
 use blitz_control_protocol::server::ControlBridgeRequest;
 use blitz_control_protocol::{
     AgentAction, AgentControlRequest, DebugError, DebugEvent, DebugResponse, DiagnosticsRequest,
@@ -70,6 +70,8 @@ use blitz_script::ScriptDocument;
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
+#[path = "serve_page_control.rs"]
+mod page_control;
 #[path = "serve_shadow.rs"]
 mod shadow_inspect;
 #[path = "serve_supervisor.rs"]
@@ -1712,8 +1714,7 @@ fn serve_page(
 ) -> Result<(), String> {
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
-    let (request_tx, request_rx) =
-        mpsc::sync_channel::<(ControlBridgeRequest, Arc<Once<DebugResponse>>)>(64);
+    let (request_tx, request_rx) = page_control::channel(64);
     supervisor::start_worker(request_tx)?;
     let policy = HeadlessPolicy::from_env()?;
     let _egress_proxy = if policy.bot_child {
@@ -1996,7 +1997,7 @@ fn serve_page(
         };
         let (request, reply) = match received {
             Ok(pair) => pair,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(page_control::RecvTimeoutError::Timeout) => {
                 if tick_document(&mut document, &animation_clock) {
                     commit_render(&render_events, &mut render_revision);
                 }
@@ -2016,7 +2017,7 @@ fn serve_page(
                 }
                 continue;
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(page_control::RecvTimeoutError::Disconnected) => break,
         };
         if let Err(error) = request_budget.admit(&policy, &request) {
             reply.fill(DebugResponse::Error(error));
@@ -2307,8 +2308,8 @@ fn serve_page(
                     queued_request = Some(pair);
                     break;
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(page_control::TryRecvError::Empty) => {}
+                Err(page_control::TryRecvError::Disconnected) => break,
             }
             if tick_document(&mut document, &animation_clock) {
                 commit_render(&render_events, &mut render_revision);
