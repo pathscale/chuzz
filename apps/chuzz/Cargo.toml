@@ -220,7 +220,7 @@ nago-wss.workspace = true
 worktable.workspace = true
 mp4parse = { version = "^0.17", optional = true }
 # The VIDEORUST brief explicitly selects this synchronous local fork.
-ps-rust_h264 = { package = "rust_h264", version = "^0.4", path = "../../../ps-rust_h264", optional = true }
+ps-rust_h264 = { version = "^0.4", optional = true }
 # Synchronous I_PCM H.264 encoder, MIT OR Apache-2.0, with no codec runtime.
 less-avc = { package = "ps-less-avc", version = "^0.1.5", optional = true }
 # Synchronous, dependency-free Rust Opus encode/decode, BSD-3-Clause.
