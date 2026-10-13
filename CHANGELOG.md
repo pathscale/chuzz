@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require izumo ^0.6.1 and ps-rusty_alloc ^2.3.3; install ps-qa ^0.9.1 in the headless-host action, CI, and release workflow.
+
 ## 0.1.44
 
 - Inspect completed page GPUBuffer writes with original usage, submit serials and typed buffer diagnostics; require blitz-control-protocol ^0.7.1.

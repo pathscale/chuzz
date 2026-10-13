@@ -11,7 +11,7 @@ One headless process hosts one page. The process prints its descriptor path on s
 | Inspect, Act, Navigate, Condense, Relaunch, Quit | chuzz master, protocol from ps-observability |
 | Snapshot, Capture, WindowComposition, WebGpuInspect, WebGpuCapture on the headless host | chuzz master |
 | Evaluate, Metrics, WaitForIdle on the headless host | chuzz master `fefbea4` |
-| `evaluate` in the protocol and `ps-qa eval` | blitz-control-protocol 0.7.0 and ps-qa 0.9.0, from ps-observability master `d2b4551` and `ac0349c`. Chuzz requires `blitz-control-protocol ^0.7.0`; publish those releases before building this version. |
+| `evaluate` in the protocol and `ps-qa eval` | blitz-control-protocol 0.7.1 and ps-qa 0.9.1 from ps-observability. Chuzz requires `blitz-control-protocol ^0.7.1`, and the headless QA action installs ps-qa ^0.9.1. |
 | Page targets, `listTargets`, the diagnostic journal, `ps-qa targets`, `page-targets`, `headless-target`, `inspection-off` | `~/code/wt-pt` worktrees only, see [Page targets](#page-targets) |
 
 ## Enabling

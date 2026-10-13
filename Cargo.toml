@@ -124,7 +124,7 @@ cookie_store = "^0.22.1"
 psl = "^2"
 nagoya = { version = "^0.1.14", features = ["reactor"] }
 # Pure-Rust global allocator for every chuzz binary (owner decision: no C allocator).
-rusty_alloc = { package = "ps-rusty_alloc", version = "^2.3.1" }
+rusty_alloc = { package = "ps-rusty_alloc", version = "^2.3.3" }
 url = "2.5"
 worktable = "^1.11.0"
 tauri = { version = "^2", default-features = false }
@@ -144,7 +144,7 @@ tauri = { version = "^2", default-features = false }
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-izumo = { version = "^0.6.0", default-features = false, features = [
+izumo = { version = "^0.6.1", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }

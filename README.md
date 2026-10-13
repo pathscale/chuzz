@@ -98,7 +98,7 @@ Events are not wired up yet: the page renders and does not respond.
 The inspection socket, every request it answers, its limits and how ps-qa uses it are documented in [docs/inspection.md](docs/inspection.md).
 
 For interactive website QA, build the headless host with fonts and use the
-compatible ps-qa 0.9 line:
+compatible ps-qa ^0.9.1:
 
 ```sh
 cargo build --release --bin chuzz-headless --no-default-features \
