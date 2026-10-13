@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.44
+
 - Inspect completed page GPUBuffer writes with original usage, submit serials and typed buffer diagnostics; require blitz-control-protocol ^0.7.1.
 - Add the compute and indirect-render buffer proof page with positive, NaN, skipped-compute and frozen-output suites.
 
