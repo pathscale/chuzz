@@ -1320,10 +1320,11 @@ fn settle_immediate(
         }
         let progressed = {
             let _turn = supervisor::operation(supervisor::Operation::Poll);
-            // Allow one batch of due callbacks, then drain only immediate
-            // work. Repeating timers and re-registered animation frames belong
-            // to later host ticks, not to this control's settle loop.
-            document.poll_for_settle(None, iterations == 0)
+            // Settle the action's immediate checkpoint and DOM. Starting a
+            // timer here can start an unrelated mesh build or animation while
+            // the caller is waiting for its action acknowledgement. Timers run
+            // on host ticks, between control requests.
+            document.poll_for_settle(None, false)
         };
         iterations = iterations.saturating_add(1);
         // A yielded promise slice is progress, not a failure to settle:
@@ -1394,19 +1395,29 @@ fn headless_revisions(rendered: u64, page: &ScriptDocument) -> RevisionSet {
 /// Returns whether the page painted.
 fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> bool {
     let before = document.inner().paint_damage().generation;
-    // Return to the request receiver between document tasks. A poll that
-    // itself never returns is terminated by the supervisor's Poll deadline.
+    // One due timer or one continuing checkpoint per poll. Return to the
+    // request receiver before another timer starts. Boa's execution limit
+    // interrupts runaway script; the supervisor remains the native hang guard.
+    let poll_started = std::time::Instant::now();
     let progressed = {
         let _turn = supervisor::operation(supervisor::Operation::Poll);
         document.poll(None)
     };
+    let poll_elapsed = poll_started.elapsed();
+    let resolve_started = std::time::Instant::now();
     {
         let _resolve = supervisor::operation(supervisor::Operation::Resolve);
         document.inner_mut().resolve(clock.elapsed().as_secs_f64());
     }
+    let resolve_elapsed = resolve_started.elapsed();
     let painted = document.inner().paint_damage().generation != before;
     if progressed || painted {
-        verbose(&format!("tick progressed={progressed} painted={painted}"));
+        verbose(&format!(
+            "tick progressed={progressed} painted={painted} poll={}ms resolve={}ms jobs_pending={}",
+            poll_elapsed.as_millis(),
+            resolve_elapsed.as_millis(),
+            document.has_pending_jobs(),
+        ));
     }
     painted
 }
@@ -2079,6 +2090,7 @@ fn serve_page(
                     }
                     AgentControlRequest::Act(action) => {
                         let _action = supervisor::operation(supervisor::Operation::Action);
+                        let _execution = document.enter_execution_time_limit();
                         match authorize_action(&policy, &document, &action) {
                             Ok(()) => match control.act(&mut document, action) {
                                 Ok(()) => settle_response(
