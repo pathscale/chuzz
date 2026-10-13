@@ -1,0 +1,1 @@
+- 2026-10-12: chuzz-headless master (protocol 2 inspection, 88a4566/284e808) breaks ps-qa 0.8.3 (latest published; blitz-control-protocol 0.6.2 client speaks 1): 'uses debug protocol 2, but this client speaks 1'. Every site ps-qa gate and the CI headless-host@master action are red until ps-qa is released on protocol 2 or headless negotiates 1.
