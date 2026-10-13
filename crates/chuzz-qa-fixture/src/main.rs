@@ -17,6 +17,8 @@ const TAB_CLOSE_HTML: &[u8] =
     include_bytes!("../../../apps/chuzz/tests/fixture-site/tab-close.html");
 const SITES_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/sites.html");
 const SITES_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/src/sites.ts");
+const GPU_BUFFERS_HTML: &[u8] =
+    include_bytes!("../../../apps/chuzz/src/webgpu/qa/buffers/index.html");
 const FONT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/fonts/FiraSans-Regular.woff2");
 const UDP_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/index.html");
 const UDP_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/udp/src/udp.ts");
@@ -104,6 +106,7 @@ fn main() -> io::Result<()> {
         None => ("http", port),
     };
     let echoes = echo::Registry::new(echo_host, scheme, port);
+    println!("QA fixture: {scheme}://127.0.0.1:{port}/");
 
     nagoya::block_on(async {
         loop {
@@ -254,6 +257,19 @@ async fn serve(
             status,
             "application/json",
             body.to_string().as_bytes(),
+        )
+        .await;
+    }
+
+    if matches!(
+        path.split('?').next().unwrap_or(path),
+        "/webgpu/buffers/" | "/webgpu/buffers/index.html"
+    ) {
+        return respond(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            GPU_BUFFERS_HTML,
         )
         .await;
     }

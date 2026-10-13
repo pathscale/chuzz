@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU buffer QA</title>
+  <style>
+    @font-face {
+      font-family: Fixture;
+      src: url("/fonts/FiraSans-Regular.woff2") format("woff2");
+    }
+    body { margin: 24px; background: #182335; color: white; font-family: Fixture; }
+    button { padding: 12px; font-family: Fixture; }
+    canvas { display: block; width: 384px; height: 256px; margin-top: 16px; }
+    p { min-height: 24px; }
+  </style>
+</head>
+<body>
+  <h1>WebGPU buffer QA</h1>
+  <button id="run" type="button">Start buffer fixture</button>
+  <p id="result" role="status">Ready to start</p>
+  <p id="mode"></p>
+  <canvas id="stage" width="384" height="256" aria-label="64 GPU particles"></canvas>
+  <script type="module">
+    const mode = new URLSearchParams(location.search).get("break") || "normal";
+    document.getElementById("mode").textContent = "Mode: " + mode;
+    const result = document.getElementById("result");
+    const run = document.getElementById("run");
+    let started = false;
+    let failed = false;
+
+    function fail(error) {
+      failed = true;
+      result.textContent = "FAIL: " + error.message;
+    }
+
+    run.onclick = async () => {
+      if (started) { return; }
+      started = true;
+      run.disabled = true;
+      try {
+        if (!["normal", "nan", "skip", "freeze"].includes(mode)) {
+          throw new Error("unknown break mode: " + mode);
+        }
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) { throw new Error("no WebGPU adapter"); }
+        const device = await adapter.requestDevice({ label: "buffer fixture device" });
+        device.onuncapturederror = event => fail(event.error);
+        device.lost.then(info => fail(new Error("device lost: " + info.message)));
+        const context = document.getElementById("stage").getContext("webgpu");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({ device, format, alphaMode: "opaque" });
+
+        device.pushErrorScope("validation");
+        const counter = device.createBuffer({
+          label: "qa-counter", size: 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        const particles = device.createBuffer({
+          label: "qa-particles", size: 64 * 16,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        const indirect = device.createBuffer({
+          label: "qa-indirect", size: 4 * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST
+        });
+        const clock = device.createBuffer({
+          label: "qa-clock", size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        const parameters = new ArrayBuffer(16);
+        const seconds = new Float32Array(parameters);
+        new Uint32Array(parameters)[1] = mode === "nan" ? 1 : 0;
+        const computeModule = device.createShaderModule({
+          label: "buffer fixture compute shader",
+          code: `
+            struct Clock { seconds: f32, inject_nan: u32, padding: vec2<u32> }
+            @group(0) @binding(0) var<storage, read_write> counter: atomic<u32>;
+            @group(0) @binding(1) var<storage, read_write> particles: array<vec4<f32>, 64>;
+            @group(0) @binding(2) var<storage, read_write> indirect: array<u32, 4>;
+            @group(0) @binding(3) var<uniform> clock: Clock;
+
+            @compute @workgroup_size(64)
+            fn step(@builtin(global_invocation_id) invocation: vec3<u32>) {
+              let index = invocation.x;
+              let phase = f32(index) * 0.17 + clock.seconds;
+              particles[index] = vec4<f32>(
+                0.75 * sin(phase), 0.75 * cos(phase * 0.73),
+                0.5 * sin(phase * 1.31), 0.5 * cos(phase * 0.91)
+              );
+              if (index == 0u) {
+                atomicAdd(&counter, 1u);
+                indirect[0] = 3u;
+                indirect[1] = 64u;
+                indirect[2] = 0u;
+                indirect[3] = 0u;
+                if (clock.inject_nan != 0u) {
+                  particles[0].z = bitcast<f32>(0x7fc00000u);
+                }
+              }
+            }
+          `
+        });
+        const compute = device.createComputePipeline({
+          label: "buffer fixture compute pipeline", layout: "auto",
+          compute: { module: computeModule, entryPoint: "step" }
+        });
+        const computeBindings = device.createBindGroup({
+          layout: compute.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: counter } },
+            { binding: 1, resource: { buffer: particles } },
+            { binding: 2, resource: { buffer: indirect } },
+            { binding: 3, resource: { buffer: clock } }
+          ]
+        });
+        const renderModule = device.createShaderModule({
+          label: "buffer fixture render shader",
+          code: `
+            @group(0) @binding(0) var<storage, read> particles: array<vec4<f32>, 64>;
+            struct Vertex {
+              @builtin(position) position: vec4<f32>,
+              @location(0) color: vec3<f32>
+            }
+            @vertex fn vs(
+              @builtin(vertex_index) vertex: u32,
+              @builtin(instance_index) instance: u32
+            ) -> Vertex {
+              let corners = array<vec2<f32>, 3>(
+                vec2<f32>(-0.025, -0.02), vec2<f32>(0.025, -0.02), vec2<f32>(0.0, 0.03)
+              );
+              let particle = particles[instance];
+              var out: Vertex;
+              out.position = vec4<f32>(particle.xy + corners[vertex], 0.0, 1.0);
+              out.color = vec3<f32>(0.3, 0.7 + 0.2 * particle.w, 0.9);
+              return out;
+            }
+            @fragment fn fs(in: Vertex) -> @location(0) vec4<f32> {
+              return vec4<f32>(in.color, 1.0);
+            }
+          `
+        });
+        const render = device.createRenderPipeline({
+          label: "buffer fixture render pipeline", layout: "auto",
+          vertex: { module: renderModule, entryPoint: "vs" },
+          fragment: { module: renderModule, entryPoint: "fs", targets: [{ format }] },
+          primitive: { topology: "triangle-list" }
+        });
+        const renderBindings = device.createBindGroup({
+          layout: render.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: { buffer: particles } }]
+        });
+        // A completed initialization submit gives skip mode inspectable zeroes.
+        const initial = device.createCommandEncoder({ label: "buffer fixture initialization" });
+        initial.clearBuffer(counter);
+        initial.clearBuffer(particles);
+        initial.clearBuffer(indirect);
+        device.queue.submit([initial.finish()]);
+        const setupError = await device.popErrorScope();
+        if (setupError) { throw new Error(setupError.message); }
+        let ready = false;
+
+        async function frame(timestamp) {
+          if (failed) { return; }
+          try {
+            seconds[0] = mode === "freeze" ? 0 : (timestamp * 0.001) % 4096;
+            device.pushErrorScope("validation");
+            device.queue.writeBuffer(clock, 0, parameters);
+            const encoder = device.createCommandEncoder({ label: "buffer fixture frame" });
+            const step = encoder.beginComputePass({ label: "buffer fixture step" });
+            step.setPipeline(compute);
+            step.setBindGroup(0, computeBindings);
+            if (mode !== "skip") { step.dispatchWorkgroups(1); }
+            step.end();
+            const draw = encoder.beginRenderPass({
+              label: "buffer fixture particles",
+              colorAttachments: [{
+                view: context.getCurrentTexture().createView(),
+                loadOp: "clear", storeOp: "store",
+                clearValue: { r: 0.02, g: 0.04, b: 0.09, a: 1 }
+              }]
+            });
+            draw.setPipeline(render);
+            draw.setBindGroup(0, renderBindings);
+            draw.drawIndirect(indirect, 0);
+            draw.end();
+            device.queue.submit([encoder.finish()]);
+            const error = await device.popErrorScope();
+            if (error) { throw new Error(error.message); }
+            if (!ready) {
+              await device.queue.onSubmittedWorkDone();
+              if (failed) { return; }
+              ready = true;
+              result.textContent = "READY: WebGPU buffers";
+            }
+            if (!failed) { requestAnimationFrame(frame); }
+          } catch (error) {
+            fail(error);
+          }
+        }
+        requestAnimationFrame(frame);
+      } catch (error) {
+        fail(error);
+      }
+    };
+  </script>
+</body>
+</html>
