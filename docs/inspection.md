@@ -11,7 +11,7 @@ One headless process hosts one page. The process prints its descriptor path on s
 | Inspect, Act, Navigate, Condense, Relaunch, Quit | chuzz master, protocol from ps-observability |
 | Snapshot, Capture, WindowComposition, WebGpuInspect, WebGpuCapture on the headless host | chuzz master |
 | Evaluate, Metrics, WaitForIdle on the headless host | chuzz master `fefbea4` |
-| `evaluate` in the protocol and `ps-qa eval` | ps-observability master `d2b4551` and `ac0349c`, local and unpublished. chuzz master reaches them only through the path patch in `.cargo/local-engine.toml`; the published `blitz-control-protocol` 0.6.2 has no `Evaluate`. |
+| `evaluate` in the protocol and `ps-qa eval` | blitz-control-protocol 0.7.0 and ps-qa 0.9.0, from ps-observability master `d2b4551` and `ac0349c`. Chuzz requires `blitz-control-protocol ^0.7.0`; publish those releases before building this version. |
 | Page targets, `listTargets`, the diagnostic journal, `ps-qa targets`, `page-targets`, `headless-target`, `inspection-off` | `~/code/wt-pt` worktrees only, see [Page targets](#page-targets) |
 
 ## Enabling
@@ -125,7 +125,7 @@ Handshake, tool list, and calls are JSON-RPC 2.0. `initialize` and `tools/list` 
 }
 ```
 
-The `protocolVersion` string is endpoint-libs' MCP version. The descriptor's `protocolVersion` number is the Blitz debug protocol, currently `1`.
+The `protocolVersion` string is endpoint-libs' MCP version. The descriptor's `protocolVersion` number is the Blitz debug protocol, currently `2`.
 
 ```json
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list" }

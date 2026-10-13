@@ -28,9 +28,9 @@ inputs:
   ps-qa-version:
     description: >
       The driver's compatible protocol line. Cargo installs the newest
-      published 0.7 release, keeping the driver and headless host on the same
+      published 0.9 release, keeping the driver and headless host on the same
       protocol line without pinning a patch release.
-    default: "^0.7"
+    default: "^0.9.0"
 
 outputs:
   host:
