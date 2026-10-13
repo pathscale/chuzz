@@ -2559,6 +2559,9 @@ pub(crate) fn install_web_api_shim(
     document: &mut blitz_script::ScriptDocument,
     net_provider: &NetProvider,
 ) {
+    document.with_js_context(|context| {
+        context.set_execution_time_limit(Some(std::time::Duration::from_secs(8)));
+    });
     document.eval_named(WEB_API_SHIM, "<chuzz-webapi>");
     let user_agent = serde_json::to_string(net_provider.user_agent())
         .expect("a user-agent string always serializes as JSON");
