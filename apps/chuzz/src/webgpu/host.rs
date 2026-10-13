@@ -196,6 +196,10 @@ impl Bridge {
                 Request::Capture { slot, .. } => Some(Arc::clone(slot)),
                 _ => None,
             };
+            let buffer_capture = match &request {
+                Request::BufferCapture { slot, .. } => Some(Arc::clone(slot)),
+                _ => None,
+            };
             // One command worker per document retains push/create/write/pop
             // ordering. Startup requests use separate tasks.
             let result = match nagoya::timeout(DEADLINE, self.execute(request)).await {
@@ -208,6 +212,14 @@ impl Bridge {
                 completion.finish(Err(GpuError::internal(error.message.clone())));
             }
             if let Some(slot) = capture
+                && let Err(error) = &result
+            {
+                slot.finish(Err(blitz_control_protocol::DebugError {
+                    code: error.kind.to_owned(),
+                    message: error.message.clone(),
+                }));
+            }
+            if let Some(slot) = buffer_capture
                 && let Err(error) = &result
             {
                 slot.finish(Err(blitz_control_protocol::DebugError {

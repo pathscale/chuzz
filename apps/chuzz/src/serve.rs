@@ -2029,176 +2029,217 @@ fn serve_page(
         });
         let request_turn = supervisor::operation(supervisor::Operation::Request);
         let mut painted = false;
-        let mut response = match request {
-            ControlBridgeRequest::Agent(request) => match request {
-                AgentControlRequest::Inspect { root, max_depth } => {
-                    revision += 1;
-                    let depth = if policy.bot_child {
-                        max_depth.min(BOT_CHILD_MAX_INSPECT_DEPTH)
-                    } else {
-                        max_depth
-                    };
-                    let response = inspect_document(&mut document, root, depth, revision);
-                    let response = shadow_inspect::flatten(
-                        &mut document,
-                        response,
-                        root,
-                        depth as usize,
-                        |document, id| inspect_document(document, Some(id), 1, revision),
-                    );
-                    sanitize_inspection(&policy, &document, response)
-                }
-                AgentControlRequest::Act(action) => {
-                    let _action = supervisor::operation(supervisor::Operation::Action);
-                    match authorize_action(&policy, &document, &action) {
-                        Ok(()) => match control.act(&mut document, action) {
-                            Ok(()) => settle_response(
-                                &mut document,
-                                &animation_clock,
-                                settle_deadline,
-                                &mut painted,
-                            ),
+        let deferred_buffer =
+            if let ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuBuffer {
+                target,
+                offset,
+                length,
+            }) = &request
+                && !policy.bot_child
+            {
+                crate::webgpu::capture_gpu_buffer_reply(
+                    &mut document,
+                    target,
+                    *offset,
+                    *length,
+                    Arc::clone(&reply),
+                );
+                true
+            } else {
+                false
+            };
+        let mut response = if deferred_buffer {
+            // The native worker owns this request's reply slot.
+            DebugResponse::Ack
+        } else {
+            match request {
+                ControlBridgeRequest::Agent(request) => match request {
+                    AgentControlRequest::Inspect { root, max_depth } => {
+                        revision += 1;
+                        let depth = if policy.bot_child {
+                            max_depth.min(BOT_CHILD_MAX_INSPECT_DEPTH)
+                        } else {
+                            max_depth
+                        };
+                        let response = inspect_document(&mut document, root, depth, revision);
+                        let response = shadow_inspect::flatten(
+                            &mut document,
+                            response,
+                            root,
+                            depth as usize,
+                            |document, id| inspect_document(document, Some(id), 1, revision),
+                        );
+                        sanitize_inspection(&policy, &document, response)
+                    }
+                    AgentControlRequest::Act(action) => {
+                        let _action = supervisor::operation(supervisor::Operation::Action);
+                        match authorize_action(&policy, &document, &action) {
+                            Ok(()) => match control.act(&mut document, action) {
+                                Ok(()) => settle_response(
+                                    &mut document,
+                                    &animation_clock,
+                                    settle_deadline,
+                                    &mut painted,
+                                ),
+                                Err(error) => DebugResponse::Error(error),
+                            },
                             Err(error) => DebugResponse::Error(error),
-                        },
+                        }
+                    }
+                    AgentControlRequest::Navigate { url } => {
+                        // Resolved before the match, so the borrow of the standing
+                        // document ends before it is replaced.
+                        let resolved = document.inner().url().join(&url);
+                        match resolved {
+                            Ok(destination) => match follow_navigation(
+                                destination,
+                                &mut document,
+                                &mut origin,
+                                &policy,
+                                &load,
+                                &render_events,
+                                &mut render_revision,
+                            ) {
+                                Ok(()) => DebugResponse::Ack,
+                                Err(message) => DebugResponse::Error(DebugError {
+                                    code: "navigationFailed".into(),
+                                    message,
+                                }),
+                            },
+                            Err(error) => DebugResponse::Error(DebugError {
+                                code: "invalidArgument".into(),
+                                message: format!(
+                                    "could not resolve {url:?} against the document URL: {error}"
+                                ),
+                            }),
+                        }
+                    }
+                    AgentControlRequest::Condense { level, options } => {
+                        condense_response(&policy, level, options, || {
+                            revision += 1;
+                            let response = inspect_document(&mut document, None, 0, revision);
+                            shadow_inspect::flatten(
+                                &mut document,
+                                response,
+                                None,
+                                0,
+                                |document, id| inspect_document(document, Some(id), 1, revision),
+                            )
+                        })
+                    }
+                    // The remaining request types are not implemented by this host.
+                    _ => DebugResponse::Error(DebugError {
+                        code: "unsupported".into(),
+                        message: "the headless page does not handle this request".into(),
+                    }),
+                },
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuInspect)
+                    if !policy.bot_child =>
+                {
+                    match crate::webgpu::inspect_gpu(&mut document) {
+                        Ok(report) => DebugResponse::WebGpu(report),
                         Err(error) => DebugResponse::Error(error),
                     }
                 }
-                AgentControlRequest::Navigate { url } => {
-                    // Resolved before the match, so the borrow of the standing
-                    // document ends before it is replaced.
-                    let resolved = document.inner().url().join(&url);
-                    match resolved {
-                        Ok(destination) => match follow_navigation(
-                            destination,
-                            &mut document,
-                            &mut origin,
-                            &policy,
-                            &load,
-                            &render_events,
-                            &mut render_revision,
-                        ) {
-                            Ok(()) => DebugResponse::Ack,
-                            Err(message) => DebugResponse::Error(DebugError {
-                                code: "navigationFailed".into(),
-                                message,
-                            }),
-                        },
-                        Err(error) => DebugResponse::Error(DebugError {
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Capture(request))
+                    if !policy.bot_child =>
+                {
+                    if !request.scale.is_finite() || !(0.25..=8.0).contains(&request.scale) {
+                        DebugResponse::Error(DebugError {
                             code: "invalidArgument".into(),
-                            message: format!(
-                                "could not resolve {url:?} against the document URL: {error}"
-                            ),
-                        }),
+                            message: "capture scale must be finite and between 0.25 and 8".into(),
+                        })
+                    } else {
+                        match capture.capture(&mut document, request) {
+                            Ok(captured) => DebugResponse::Captured(captured),
+                            Err(error) => DebugResponse::Error(error),
+                        }
                     }
                 }
-                AgentControlRequest::Condense { level, options } => {
-                    condense_response(&policy, level, options, || {
-                        revision += 1;
-                        let response = inspect_document(&mut document, None, 0, revision);
-                        shadow_inspect::flatten(&mut document, response, None, 0, |document, id| {
-                            inspect_document(document, Some(id), 1, revision)
-                        })
-                    })
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Snapshot(request))
+                    if !policy.bot_child =>
+                {
+                    revision += 1;
+                    let status_only = !request.include_dom;
+                    match snapshot_document(&mut document, request, revision) {
+                        Ok(mut snapshot) => {
+                            if status_only {
+                                // Read now, not at load: counters keep moving.
+                                snapshot.dom =
+                                    tls_status.borrow().as_ref().map(|(url, policy_error)| {
+                                        crate::tls_status::inspection_state(url, *policy_error)
+                                    });
+                            }
+                            DebugResponse::Snapshot(snapshot)
+                        }
+                        Err(error) => DebugResponse::Error(error),
+                    }
                 }
-                // The remaining request types are not implemented by this host.
-                _ => DebugResponse::Error(DebugError {
-                    code: "unsupported".into(),
-                    message: "the headless page does not handle this request".into(),
-                }),
-            },
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuInspect)
-                if !policy.bot_child =>
-            {
-                match crate::webgpu::inspect_gpu(&mut document) {
-                    Ok(report) => DebugResponse::WebGpu(report),
-                    Err(error) => DebugResponse::Error(error),
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WindowComposition)
+                    if !policy.bot_child =>
+                {
+                    // There is no window, so there is nothing composited over the
+                    // page. Reporting the default is the true answer here, and it
+                    // is what lets a spill check run headlessly at all.
+                    DebugResponse::WindowComposition(WindowComposition::default())
                 }
-            }
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Capture(request))
-                if !policy.bot_child =>
-            {
-                if !request.scale.is_finite() || !(0.25..=8.0).contains(&request.scale) {
-                    DebugResponse::Error(DebugError {
-                        code: "invalidArgument".into(),
-                        message: "capture scale must be finite and between 0.25 and 8".into(),
-                    })
-                } else {
-                    match capture.capture(&mut document, request) {
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuCapture { target })
+                    if !policy.bot_child =>
+                {
+                    match crate::webgpu::capture_gpu(&mut document, &target) {
                         Ok(captured) => DebugResponse::Captured(captured),
                         Err(error) => DebugResponse::Error(error),
                     }
                 }
-            }
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Snapshot(request))
-                if !policy.bot_child =>
-            {
-                revision += 1;
-                let status_only = !request.include_dom;
-                match snapshot_document(&mut document, request, revision) {
-                    Ok(mut snapshot) => {
-                        if status_only {
-                            // Read now, not at load: counters keep moving.
-                            snapshot.dom =
-                                tls_status.borrow().as_ref().map(|(url, policy_error)| {
-                                    crate::tls_status::inspection_state(url, *policy_error)
-                                });
-                        }
-                        DebugResponse::Snapshot(snapshot)
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuBuffer {
+                    target,
+                    offset,
+                    length,
+                }) if !policy.bot_child => {
+                    match crate::webgpu::capture_gpu_buffer(&mut document, &target, offset, length)
+                    {
+                        Ok(snapshot) => DebugResponse::WebGpuBuffer(snapshot),
+                        Err(error) => DebugResponse::Error(error),
                     }
-                    Err(error) => DebugResponse::Error(error),
                 }
-            }
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WindowComposition)
-                if !policy.bot_child =>
-            {
-                // There is no window, so there is nothing composited over the
-                // page. Reporting the default is the true answer here, and it
-                // is what lets a spill check run headlessly at all.
-                DebugResponse::WindowComposition(WindowComposition::default())
-            }
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuCapture { target })
-                if !policy.bot_child =>
-            {
-                match crate::webgpu::capture_gpu(&mut document, &target) {
-                    Ok(captured) => DebugResponse::Captured(captured),
-                    Err(error) => DebugResponse::Error(error),
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Evaluate { script })
+                    if !policy.bot_child =>
+                {
+                    painted = true;
+                    match document.eval_json(&script) {
+                        Ok(value) => DebugResponse::Evaluated(value),
+                        Err(message) => DebugResponse::Error(DebugError {
+                            code: "scriptError".into(),
+                            message,
+                        }),
+                    }
                 }
-            }
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Evaluate { script })
-                if !policy.bot_child =>
-            {
-                painted = true;
-                match document.eval_json(&script) {
-                    Ok(value) => DebugResponse::Evaluated(value),
-                    Err(message) => DebugResponse::Error(DebugError {
-                        code: "scriptError".into(),
-                        message,
-                    }),
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Metrics)
+                    if !policy.bot_child =>
+                {
+                    DebugResponse::Metrics(RendererMetrics {
+                        revisions: headless_revisions(render_revision, &document),
+                        queue_depth: Some(document.pending_task_count()),
+                        ..RendererMetrics::default()
+                    })
                 }
-            }
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Metrics) if !policy.bot_child => {
-                DebugResponse::Metrics(RendererMetrics {
-                    revisions: headless_revisions(render_revision, &document),
-                    queue_depth: Some(document.pending_task_count()),
-                    ..RendererMetrics::default()
-                })
-            }
-            ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WaitForIdle)
-                if !policy.bot_child =>
-            {
-                // Run queued jobs until the page has none left, bounded so a
-                // page that reschedules forever still gets an answer.
-                let deadline = std::time::Instant::now() + IDLE_WAIT_LIMIT;
-                while document.has_pending_jobs() && std::time::Instant::now() < deadline {
-                    painted |= tick_document(&mut document, &animation_clock);
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WaitForIdle)
+                    if !policy.bot_child =>
+                {
+                    // Run queued jobs until the page has none left, bounded so a
+                    // page that reschedules forever still gets an answer.
+                    let deadline = std::time::Instant::now() + IDLE_WAIT_LIMIT;
+                    while document.has_pending_jobs() && std::time::Instant::now() < deadline {
+                        painted |= tick_document(&mut document, &animation_clock);
+                    }
+                    last_tick = std::time::Instant::now();
+                    DebugResponse::Idle(headless_revisions(render_revision, &document))
                 }
-                last_tick = std::time::Instant::now();
-                DebugResponse::Idle(headless_revisions(render_revision, &document))
+                ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
+                    code: "unsupported".into(),
+                    message: "the bot browser page serves no diagnostics".into(),
+                }),
             }
-            ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
-                code: "unsupported".into(),
-                message: "the bot browser page serves no diagnostics".into(),
-            }),
         };
         if policy.bot_child && navigation.take_refusal() {
             if was_action {
@@ -2215,7 +2256,9 @@ fn serve_page(
         // A caller that stopped waiting leaves the `Once` behind unread; that
         // is not a reason to stop serving everyone else.
         drop(request_turn);
-        reply.fill(response);
+        if !deferred_buffer {
+            reply.fill(response);
+        }
         // The page runs on a schedule, not only when the socket goes quiet.
         //
         // `recv_timeout` ticks the document when *no* request arrives, which

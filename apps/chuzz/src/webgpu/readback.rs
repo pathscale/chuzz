@@ -176,7 +176,7 @@ impl Bridge {
 
 const CAPTURE_WAIT: Duration = Duration::from_secs(8);
 
-fn next_capture_id() -> u64 {
+pub(super) fn next_capture_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1u64 << 62);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
@@ -574,7 +574,7 @@ impl DeviceConnection {
                     depth_or_array_layers: 1,
                 },
             );
-            self.queue.submit([encoder.finish()]);
+            self.submit_gpu([encoder.finish()]);
             Arc::new(buffer)
         })
         .await

@@ -215,6 +215,7 @@ cursor-icon.workspace = true
 cookie_store.workspace = true
 psl.workspace = true
 blitz-control-protocol = { workspace = true, features = ["engine", "server", "capture"] }
+base64 = "^0.22"
 izumo = { workspace = true, optional = true }
 nago-wss.workspace = true
 worktable.workspace = true

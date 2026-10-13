@@ -656,7 +656,7 @@ impl DeviceConnection {
                     depth_or_array_layers: 1,
                 },
             );
-            self.queue.submit([encoder.finish()]);
+            self.submit_gpu([encoder.finish()]);
             Arc::new(buffer)
         })
         .await?;
@@ -823,7 +823,7 @@ impl DeviceConnection {
                     depth_or_array_layers: 1,
                 },
             );
-            self.queue.submit([]);
+            self.submit_gpu([]);
         })
         .await?;
         Ok(Value::Null)

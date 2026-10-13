@@ -50,11 +50,13 @@ struct Bundle {
     native: Arc<wgpu::RenderBundle>,
     command_count: usize,
     inspection: Option<Arc<WebGpuPass>>,
+    writes: Option<Arc<Vec<u64>>>,
 }
 
 struct CommandInspection {
     passes: Vec<WebGpuPass>,
     complete: bool,
+    writes: Vec<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -435,6 +437,18 @@ impl DeviceConnection {
             return self.submitted_work_done().await;
         }
         let result = checked(&self.device, || self.encoding_sync(op, handle, args)).await;
+        if self.inspection_active() && op == "submit" {
+            let writes = lock(&self.inspection)
+                .buffer_tracking
+                .as_mut()
+                .and_then(|tracking| tracking.pending_writes.take());
+            // Rejected native submissions cannot become completed buffer writers.
+            if matches!(&result, Ok(Ok(_)))
+                && let Some((submit, writes)) = writes
+            {
+                self.checkpoint_buffers(&self.resources(), &writes, submit, false);
+            }
+        }
         match result {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) | Err(error) => {
@@ -540,12 +554,16 @@ impl DeviceConnection {
                     summarize_commands(self, &resources, &finish.commands, &mut pass);
                     Arc::new(pass)
                 });
+                let writes = self
+                    .inspection_active()
+                    .then(|| Arc::new(pass_buffer_writes(self, &resources, &finish.commands)));
                 resources.encoding.bundles.insert(
                     handle,
                     Bundle {
                         native: Arc::new(bundle),
                         command_count: finish.commands.len(),
                         inspection,
+                        writes,
                     },
                 );
             }
@@ -581,7 +599,7 @@ impl DeviceConnection {
                     .inspection_active()
                     .then(|| summarize_operations(self, &resources, &finish.operations));
                 for operation in &finish.operations {
-                    replay(&resources, &mut encoder, operation)?;
+                    replay(self, &resources, &mut encoder, operation)?;
                 }
                 // wgpu's command buffer label is inherited from the encoder.
                 // The JS GPUCommandBuffer owns the finish descriptor's label.
@@ -617,6 +635,7 @@ impl DeviceConnection {
                     ..Default::default()
                 };
                 let mut commands = Vec::with_capacity(handles.len());
+                let mut writes = Vec::new();
                 for handle in handles {
                     let command = resources
                         .encoding
@@ -626,6 +645,10 @@ impl DeviceConnection {
                     let inspection = resources.encoding.inspections.remove(&handle);
                     if profiling {
                         if let Some(inspection) = inspection {
+                            buffer_inspection::extend_unique(
+                                &mut writes,
+                                inspection.writes.iter().copied(),
+                            );
                             frame.complete &= inspection.complete;
                             let available =
                                 inspector::PASS_LIMIT.saturating_sub(frame.passes.len());
@@ -639,7 +662,11 @@ impl DeviceConnection {
                     }
                     commands.push(command);
                 }
-                self.queue.submit(commands);
+                let submit = self.submit_gpu(commands);
+                if profiling && let Some(tracking) = lock(&self.inspection).buffer_tracking.as_mut()
+                {
+                    tracking.pending_writes = Some((submit, writes));
+                }
                 self.inspection_submit(frame);
             }
             _ => {
@@ -660,6 +687,7 @@ fn summarize_operations(
     let mut inspection = CommandInspection {
         passes: Vec::new(),
         complete: true,
+        writes: operation_buffer_writes(connection, resources, operations),
     };
     for operation in operations {
         let (mut pass, commands) = match operation {
@@ -790,6 +818,115 @@ fn summarize_commands(
     }
 }
 
+fn pass_buffer_writes(
+    connection: &DeviceConnection,
+    resources: &Resources,
+    commands: &[PassCommand],
+) -> Vec<u64> {
+    if !connection.inspection_active() {
+        return Vec::new();
+    }
+    let inspection = lock(&connection.inspection);
+    let Some(tracking) = &inspection.buffer_tracking else {
+        return Vec::new();
+    };
+    let mut groups = buffer_inspection::BoundGroups::new();
+    let mut writes = Vec::new();
+    for command in commands {
+        match command {
+            PassCommand::BindGroup { index, group, .. } => {
+                if let Some(group) = group {
+                    groups.insert(*index, *group);
+                } else {
+                    groups.remove(index);
+                }
+            }
+            PassCommand::Draw { count: 0, .. }
+            | PassCommand::Draw { instances: 0, .. }
+            | PassCommand::DrawIndexed { count: 0, .. }
+            | PassCommand::DrawIndexed { instances: 0, .. } => {}
+            PassCommand::Dispatch(counts) if counts.contains(&0) => {}
+            PassCommand::Draw { .. }
+            | PassCommand::DrawIndexed { .. }
+            | PassCommand::DrawIndirect { .. }
+            | PassCommand::Dispatch(_)
+            | PassCommand::DispatchIndirect { .. } => {
+                for group in groups.values() {
+                    if let Some(buffers) = tracking.groups.get(group) {
+                        buffer_inspection::extend_unique(&mut writes, buffers.iter().copied());
+                    }
+                }
+            }
+            PassCommand::ExecuteBundles(handles) => {
+                for handle in handles {
+                    if let Some(buffers) = resources
+                        .encoding
+                        .bundles
+                        .get(handle)
+                        .and_then(|bundle| bundle.writes.as_ref())
+                    {
+                        buffer_inspection::extend_unique(&mut writes, buffers.iter().copied());
+                    }
+                }
+                // executeBundles resets all pass bindings, including an empty list.
+                groups.clear();
+            }
+            _ => {}
+        }
+    }
+    writes
+}
+
+fn operation_buffer_writes(
+    connection: &DeviceConnection,
+    resources: &Resources,
+    operations: &[Operation],
+) -> Vec<u64> {
+    if !connection.inspection_active() {
+        return Vec::new();
+    }
+    let mut writes = Vec::new();
+    for operation in operations {
+        match operation {
+            Operation::Render { commands, .. } | Operation::Compute { commands, .. } => {
+                buffer_inspection::extend_unique(
+                    &mut writes,
+                    pass_buffer_writes(connection, resources, commands),
+                );
+            }
+            Operation::ClearBuffer {
+                buffer,
+                offset,
+                size,
+            } if size != &Some(0)
+                && resources
+                    .buffers
+                    .get(buffer)
+                    .is_some_and(|entry| *offset < entry.size) =>
+            {
+                buffer_inspection::extend_unique(&mut writes, [*buffer]);
+            }
+            Operation::CopyBufferToBuffer {
+                destination, size, ..
+            } if *size != 0 => {
+                buffer_inspection::extend_unique(&mut writes, [*destination]);
+            }
+            Operation::CopyTextureToBuffer {
+                destination, size, ..
+            } if !size.contains(&0) => {
+                buffer_inspection::extend_unique(&mut writes, [destination.buffer]);
+            }
+            Operation::ResolveQuerySet {
+                destination, count, ..
+            } if *count != 0 => {
+                buffer_inspection::extend_unique(&mut writes, [*destination]);
+            }
+            _ => {}
+        }
+    }
+    writes
+}
+
 fn direct_draw_totals(pass: &mut WebGpuPass, count: u32, instances: u32) {
     pass.vertices = pass
         .vertices
@@ -798,6 +935,7 @@ fn direct_draw_totals(pass: &mut WebGpuPass, count: u32, instances: u32) {
 }
 
 fn replay(
+    connection: &DeviceConnection,
     resources: &Resources,
     encoder: &mut wgpu::CommandEncoder,
     operation: &Operation,
@@ -1077,6 +1215,16 @@ fn replay(
         } => {
             buffer_range(resources, *source, *source_offset, Some(*size))?;
             buffer_range(resources, *destination, *destination_offset, Some(*size))?;
+            // Inspection's private COPY_SRC must not grant page copy permission.
+            if connection.inspection_active()
+                && !get(&resources.buffers, *source, "GPUBuffer")?
+                    .usage
+                    .contains(wgpu::BufferUsages::COPY_SRC)
+            {
+                return Err(GpuError::validation(
+                    "copy source requires declared COPY_SRC usage",
+                ));
+            }
             encoder.copy_buffer_to_buffer(
                 &get(&resources.buffers, *source, "GPUBuffer")?.buffer,
                 *source_offset,
@@ -1090,6 +1238,15 @@ fn replay(
             destination,
             size,
         } => {
+            if connection.inspection_active()
+                && !get(&resources.buffers, source.buffer, "GPUBuffer")?
+                    .usage
+                    .contains(wgpu::BufferUsages::COPY_SRC)
+            {
+                return Err(GpuError::validation(
+                    "copy source requires declared COPY_SRC usage",
+                ));
+            }
             encoder.copy_buffer_to_texture(
                 buffer_copy(resources, source)?,
                 texture_copy(resources, destination)?,

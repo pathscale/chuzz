@@ -379,7 +379,7 @@ impl DeviceConnection {
                     depth_or_array_layers: write.size[2],
                 },
             );
-            self.queue.submit([]);
+            self.submit_gpu([]);
         })
         .await?;
         Ok(Value::Null)

@@ -55,7 +55,7 @@ impl Session {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    fn renew(&self) {
+    pub(super) fn renew(&self) {
         self.active_until
             .store(self.now().saturating_add(LEASE_MS), Ordering::Release);
     }
@@ -119,6 +119,7 @@ pub(super) struct DeviceState {
     canvases: HashMap<u64, String>,
     current_call: Option<Call>,
     pending: VecDeque<WebGpuFrame>,
+    pub(super) buffer_tracking: Option<buffer_inspection::Tracking>,
 }
 
 impl DeviceState {
@@ -130,6 +131,7 @@ impl DeviceState {
             canvases: HashMap::new(),
             current_call: None,
             pending: VecDeque::new(),
+            buffer_tracking: None,
         }
     }
 
@@ -475,6 +477,53 @@ pub(super) fn capture_document(
     bridge.capture_and_wait(target)
 }
 
+pub(super) fn buffer_document(
+    document: &mut blitz_script::ScriptDocument,
+    target: &str,
+    offset: u64,
+    length: Option<u64>,
+) -> Result<blitz_control_protocol::WebGpuBufferSnapshot, DebugError> {
+    let bridge = document
+        .with_js_context(|context| {
+            context
+                .get_data::<InspectorHost>()
+                .map(|host| host.0.clone())
+        })
+        .ok_or_else(|| DebugError {
+            code: "unsupported".to_owned(),
+            message: "the document has no page WebGPU inspector".to_owned(),
+        })?;
+    bridge.inspection_session().renew();
+    // Drain incoming page writes ahead of the diagnostics request. The worker
+    // fills a native slot and this document turn immediately returns pending.
+    bridge.prepare_images(document);
+    bridge.sample_buffer(target, offset, length)
+}
+
+pub(super) fn buffer_document_reply(
+    document: &mut blitz_script::ScriptDocument,
+    target: &str,
+    offset: u64,
+    length: Option<u64>,
+    reply: Arc<blitz_control_protocol::latest::Once<blitz_control_protocol::DebugResponse>>,
+) {
+    let bridge = document.with_js_context(|context| {
+        context
+            .get_data::<InspectorHost>()
+            .map(|host| host.0.clone())
+    });
+    let Some(bridge) = bridge else {
+        reply.fill(blitz_control_protocol::DebugResponse::Error(DebugError {
+            code: "unsupported".to_owned(),
+            message: "the document has no page WebGPU inspector".to_owned(),
+        }));
+        return;
+    };
+    bridge.inspection_session().renew();
+    bridge.prepare_images(document);
+    bridge.dispatch_buffer(target, offset, length, reply);
+}
+
 impl DeviceConnection {
     pub(super) fn inspection_call(&self, command: &Command) -> Call {
         let inspection = lock(&self.inspection);
@@ -520,9 +569,16 @@ impl DeviceConnection {
 
     pub(super) fn begin_inspection_call(&self, command: &Command) {
         let call = self.inspection_call(command);
+        let active = self.inspection_active();
         let mut inspection = lock(&self.inspection);
         inspection.current_call = Some(call);
         inspection.observe(command);
+        if active {
+            inspection
+                .buffer_tracking
+                .get_or_insert_with(buffer_inspection::Tracking::default)
+                .observe(command);
+        }
     }
 
     pub(super) fn end_inspection_call(&self) {

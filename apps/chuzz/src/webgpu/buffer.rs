@@ -9,6 +9,7 @@ pub(super) struct Entry {
     pub usage: wgpu::BufferUsages,
     pub mapped: Option<Range<u64>>,
     pub writable: bool,
+    pub inspection: Option<Arc<buffer_inspection::History>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -119,12 +120,30 @@ impl DeviceConnection {
                 "mappedAtCreation buffer size must be a multiple of 4",
             ));
         }
+        let inspected = self.inspection_active() && !options.label.is_empty();
+        if inspected
+            && ((usage.contains(wgpu::BufferUsages::MAP_READ)
+                && !(usage - wgpu::BufferUsages::MAP_READ - wgpu::BufferUsages::COPY_DST)
+                    .is_empty())
+                || (usage.contains(wgpu::BufferUsages::MAP_WRITE)
+                    && !(usage - wgpu::BufferUsages::MAP_WRITE - wgpu::BufferUsages::COPY_SRC)
+                        .is_empty()))
+        {
+            return Err(GpuError::validation(
+                "invalid mappable GPUBufferUsage combination",
+            ));
+        }
+        let native_usage = if inspected {
+            usage | wgpu::BufferUsages::COPY_SRC
+        } else {
+            usage
+        };
         self.resources().reserve(handle, options.size)?;
         let buffer = checked(&self.device, || {
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&options.label),
                 size: options.size,
-                usage,
+                usage: native_usage,
                 mapped_at_creation: options.mapped_at_creation,
             })
         })
@@ -137,6 +156,7 @@ impl DeviceConnection {
                 usage,
                 mapped: options.mapped_at_creation.then_some(0..options.size),
                 writable: options.mapped_at_creation,
+                inspection: inspected.then(|| Arc::new(buffer_inspection::History::default())),
             },
         );
         Ok(Value::Null)
@@ -172,15 +192,19 @@ impl DeviceConnection {
             }
             Arc::clone(&entry.buffer)
         };
+        let mut submit = 0;
         checked(&self.device, || {
             if !write.data.is_empty() {
                 self.queue.write_buffer(&buffer, write.offset, &write.data);
                 // wgpu stages queue writes until submit. Flush them before a
                 // following mapAsync, even though public encoding is pending.
-                self.queue.submit([]);
+                submit = self.submit_gpu([]);
             }
         })
         .await?;
+        if self.inspection_active() && !write.data.is_empty() {
+            self.checkpoint_buffers(&self.resources(), &[handle], submit, true);
+        }
         Ok(Value::Null)
     }
 
@@ -293,6 +317,12 @@ impl DeviceConnection {
         if let Some(entry) = self.resources().buffers.get_mut(&handle) {
             entry.mapped = None;
             entry.writable = false;
+            if self.inspection_active()
+                && writable
+                && let Some(history) = &entry.inspection
+            {
+                self.checkpoint_buffer(entry, Arc::clone(history), 0, false);
+            }
         }
         Ok(Value::Null)
     }

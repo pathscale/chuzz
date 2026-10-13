@@ -13,6 +13,8 @@ use serde_json::{Map, Value, json};
 
 mod binary;
 mod buffer;
+mod buffer_capture;
+mod buffer_inspection;
 mod canvas;
 mod canvas2d;
 mod encoder;
@@ -56,7 +58,26 @@ pub(crate) fn capture_gpu(
     inspector::capture_document(document, target)
 }
 
+pub(crate) fn capture_gpu_buffer(
+    document: &mut blitz_script::ScriptDocument,
+    target: &str,
+    offset: u64,
+    length: Option<u64>,
+) -> Result<blitz_control_protocol::WebGpuBufferSnapshot, blitz_control_protocol::DebugError> {
+    inspector::buffer_document(document, target, offset, length)
+}
+
 const DEADLINE: Duration = Duration::from_secs(10);
+pub(crate) fn capture_gpu_buffer_reply(
+    document: &mut blitz_script::ScriptDocument,
+    target: &str,
+    offset: u64,
+    length: Option<u64>,
+    reply: Arc<blitz_control_protocol::latest::Once<blitz_control_protocol::DebugResponse>>,
+) {
+    inspector::buffer_document_reply(document, target, offset, length, reply);
+}
+
 const OBJECT_LIMIT: usize = 64;
 const REQUEST_LIMIT: usize = 4096;
 
@@ -183,6 +204,12 @@ enum Request {
         target: String,
         slot: Arc<readback::CaptureSlot>,
     },
+    #[serde(skip)]
+    BufferCapture {
+        id: u64,
+        key: buffer_capture::Key,
+        slot: Arc<buffer_capture::Slot>,
+    },
 }
 
 impl Request {
@@ -192,7 +219,8 @@ impl Request {
             | Self::Device { id, .. }
             | Self::Command { id, .. }
             | Self::Readback { id, .. }
-            | Self::Capture { id, .. } => *id,
+            | Self::Capture { id, .. }
+            | Self::BufferCapture { id, .. } => *id,
         }
     }
 
@@ -207,12 +235,18 @@ impl Request {
                     message: message.to_owned(),
                 }));
             }
+            Self::BufferCapture { slot, .. } => {
+                slot.finish(Err(blitz_control_protocol::DebugError {
+                    code: "internal".to_owned(),
+                    message: message.to_owned(),
+                }));
+            }
             _ => {}
         }
     }
 
     fn delivers_reply(&self) -> bool {
-        !matches!(self, Self::Capture { .. })
+        !matches!(self, Self::Capture { .. } | Self::BufferCapture { .. })
     }
 
     fn fire_device(&self) -> Option<u64> {
@@ -377,6 +411,7 @@ struct State {
     ready: Vec<(u64, Value)>,
     events: Vec<(u64, Value)>,
     frames: HashMap<u64, canvas::Frame>,
+    buffer_captures: HashMap<buffer_capture::Key, Arc<buffer_capture::Slot>>,
     inspection: Arc<inspector::Session>,
     wake: crate::net_bridge::PageWake,
 }
@@ -549,6 +584,10 @@ impl Bridge {
                 self.capture_on_worker(&target, slot).await;
                 Ok(Value::Null)
             }
+            Request::BufferCapture { key, slot, .. } => {
+                slot.finish(self.read_buffer_capture(&key));
+                Ok(Value::Null)
+            }
             Request::Command {
                 id,
                 device,
@@ -677,6 +716,15 @@ impl Bridge {
             return Err("requested WebGPU limits exceed adapter capabilities".to_owned());
         }
 
+        // A labelled MAP_READ buffer also gains COPY_SRC during inspection.
+        // Native wgpu requires this feature for that combination of usages.
+        if self.inspection_active()
+            && adapter
+                .features()
+                .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+        {
+            features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
+        }
         let descriptor = wgpu::DeviceDescriptor {
             label: Some(options.label.as_str()),
             required_features: features,
