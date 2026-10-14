@@ -295,6 +295,12 @@ pub(super) fn run(
             return;
         }
     };
+    // Match page realms: the retired WebAssembly global is absent.
+    context
+        .global_object()
+        .clone()
+        .delete_property_or_throw(JsString::from("WebAssembly"), &mut context)
+        .expect("remove WebAssembly before worker scripts run");
     context.set_interrupt_flag(Arc::clone(&endpoint.canceled));
     // Same JS frame budget and value-stack budget as the page. A plain
     // function is about 7 slots, so 16384 * 32 still hits the frame limit

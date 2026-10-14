@@ -2,7 +2,7 @@
 # Run a cargo command against the engine working checkouts instead of the pins.
 #
 #     scripts/local-engine.sh check -p chuzz
-#     scripts/local-engine.sh run -p chuzz --bin chuzz-gui -- --wasm demo.wasm
+#     scripts/local-engine.sh run -p chuzz --bin chuzz-gui -- example.com
 #
 # Everything after the script name is passed through to cargo unchanged.
 #

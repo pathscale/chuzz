@@ -49,7 +49,6 @@ default = [
   "vello",
   "scrollbars",
   "javascript",
-  "wasm",
   "capture",
   "pdf",
   "webp",
@@ -66,12 +65,7 @@ gui = [
   # not in the base dependencies. Rendered QA opts in through the same feature.
   "system-fonts",
 ]
-# Let a WebAssembly guest build a page, through `--wasm` in the window and
-# `--capture-wasm` headlessly. On by default because it is a way of opening a
-# page rather than a diagnostic: with it off, `--wasm` is not a flag the binary
-# has. That is the interpreter it pulls in, small and never instantiated unless
-# a module is named.
-wasm = ["dep:blitz-wasm", "dep:wasmi"]
+
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
 # page parses to an empty mount point and paints nothing.
 javascript = [
@@ -115,7 +109,7 @@ pdf = ["dep:pdf-toolkit", "dep:png", "headless-fonts"]
 # .webp or .avif downloads fine and then cannot be decoded: the element simply
 # never paints, which reads as a missing asset rather than a failed codec.
 webp = ["image/webp"]
-# Render a page headlessly to a PNG, through `--capture` and `--capture-wasm`.
+# Render a page headlessly to a PNG, through `--capture`.
 #
 # On by default. It was off, on the reasoning that the windowed browser never
 # needs the CPU rasteriser, and that reasoning cost more than a page that
@@ -148,7 +142,6 @@ capture = [
   "dep:anyrender_svg",
   "dep:blitz-paint",
   "dep:png",
-  "wasm",
   "headless-fonts",
   "pdf",
 ]
@@ -184,8 +177,7 @@ blitz-html = { workspace = true, default-features = true }
 blitz-net = { workspace = true, features = ["cookies", "compression", "cache"] }
 blitz-script = { workspace = true, optional = true }
 blitz-traits = { workspace = true, default-features = true }
-blitz-wasm = { workspace = true, optional = true }
-wasmi = { workspace = true, optional = true }
+
 brotli.workspace = true
 image = { workspace = true, default-features = false }
 anyrender = { workspace = true, optional = true }
@@ -268,11 +260,11 @@ cpal = { version = "^0.15.3", default-features = false, optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "^0.2"
 
+
 [dev-dependencies]
-# Assembles `fixtures/panel.wat` into a module in-process, so the capture test
-# owns its guest instead of borrowing blitz-wasm's demo, and so it needs no
-# wasm32 target and no nested cargo build.
-wat = "1"
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6.3" }
+wasmi = "^1.1"
+wat = "^1"
 
 [build-dependencies]
 nagoya = "^0.1.12"

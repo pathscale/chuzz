@@ -37,9 +37,7 @@ blitz-html = { package = "ps-blitz-html", version = "^0.6.3" }
 blitz-net = { package = "ps-blitz-net", version = "^0.6.3", path = "../ps-blitz/packages/blitz-net" }
 blitz-script = { package = "ps-blitz-script", version = "^0.6.3" }
 blitz-traits = { package = "ps-blitz-traits", version = "^0.6.3", path = "../ps-blitz/packages/blitz-traits" }
-# The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
-# document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6.3" }
+
 # The MCP framing the control server speaks, same source and feature as
 # izumo uses for its agent-control surface.
 # The one control surface: wire vocabulary, the document core, and both
@@ -88,12 +86,7 @@ anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15", default-featu
 headless-fonts = "^0.1"
 blitz-paint = { package = "ps-blitz-paint", version = "^0.6.3" }
 png = "=0.18.1"
-# Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
-# and blitz-wasm does not re-export the runtime. This must stay on the same
-# semver line blitz-wasm pins (1.x, not 2.0.0-beta), or cargo links two wasmi
-# crates and the `Linker<Host>` built here is a different type from the one that
-# function accepts.
-wasmi = "1.1"
+
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

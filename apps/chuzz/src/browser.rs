@@ -128,7 +128,7 @@ pub struct DebugEntry {
     seq: u64,
     /// `info`, `warn` or `error`. Drives the colour and nothing else.
     level: &'static str,
-    /// Which part of the browser said it: `net`, `page`, `script`, `wasm`.
+    /// Which part of the browser said it: `net`, `page`, `script`.
     source: &'static str,
     message: String,
 }
@@ -226,47 +226,13 @@ impl PageOutcome {
 }
 
 /// Where a page's document comes from.
-///
-/// An enum rather than an optional module path beside the HTML, so the two
-/// cannot both be set or both be missing. A wasm page has no HTML and no
-/// scripts, and an HTML page has no module; there is no state in between.
 enum PageSource {
     Html {
         html: String,
         scripts: HashMap<Url, String>,
-        /// A module the page asked for with `<script type="application/wasm">`,
-        /// already fetched and vetted. Fetching happens with the rest of the
-        /// page because only that half is async; mounting is done later,
-        /// against the parsed document.
-        wasm: Option<PageModule>,
     },
-    /// Built by a WebAssembly guest. Nothing is fetched and no JavaScript runs.
-    Wasm { module: std::path::PathBuf },
     /// The bytes a server sent, shown rather than rendered.
     Source { text: String },
-}
-
-/// A module a page declared, fetched alongside it.
-struct PageModule {
-    bytes: Vec<u8>,
-    /// The `mount` selector, resolved against the parsed document later.
-    selector: String,
-}
-
-/// A page served from a module on disk rather than from the network.
-///
-/// The URL is kept alongside the path because a tab is addressed by URL
-/// everywhere else in the browser: history, the address bar and the back and
-/// forward stack all hold `Request`s, and giving the wasm tab a `file:` URL
-/// lets it sit in those unchanged. Navigating away from it is then an ordinary
-/// navigation, and coming back re-runs the guest.
-///
-/// Not behind `feature = "wasm"`: a path and a URL need no wasm runtime. Only
-/// running the guest does, so that is the only thing gated, and a build without
-/// the feature reports the fact on the page instead of silently lacking a flag.
-struct WasmPage {
-    url: Url,
-    module: std::path::PathBuf,
 }
 
 /// How long the window waits for a script the page asked for while running.
@@ -297,8 +263,7 @@ struct BrowserInner {
     user_agent_spoofing: Mutex<bool>,
     completed: Mutex<VecDeque<PageBundle>>,
     app: Mutex<Option<ChuzzAppHandle>>,
-    /// Set by `--wasm`. Immutable for the life of the process.
-    wasm: Option<WasmPage>,
+
 }
 
 /// Queue embedded-page redraws without blocking network workers on AppKit.
@@ -415,28 +380,15 @@ pub struct Browser(Arc<BrowserInner>);
 
 impl Browser {
     pub fn new(startup: Option<Url>) -> Self {
-        Self::build(startup, None)
+        Self::build(startup)
     }
 
-    /// A browser whose first tab is built by the guest in `module` rather than
-    /// fetched.
-    ///
-    /// The tab is an ordinary tab addressed by an ordinary `file:` URL. Only
-    /// the source of its document differs, which is why nothing downstream of
-    /// the mount — the tab strip, the toolbar, history, layout, paint — needs
-    /// to know this flag exists.
-    pub fn with_wasm_page(module: std::path::PathBuf) -> Result<Self, String> {
-        let module = std::fs::canonicalize(&module)
-            .map_err(|error| format!("--wasm: cannot read {}: {error}", module.display()))?;
-        let url = Url::from_file_path(&module)
-            .map_err(|()| format!("--wasm: {} is not an absolute path", module.display()))?;
-        Ok(Self::build(
-            Some(url.clone()),
-            Some(WasmPage { url, module }),
-        ))
+    /// Compatibility entry point for callers of the retired guest API.
+    pub fn with_wasm_page(_module: std::path::PathBuf) -> Result<Self, String> {
+        Err(crate::wasm_retired::WasmUnsupported.to_string())
     }
 
-    fn build(startup: Option<Url>, wasm: Option<WasmPage>) -> Self {
+    fn build(startup: Option<Url>) -> Self {
         let first = startup.unwrap_or_else(|| Url::parse(NEW_TAB_URL).unwrap());
         let user_agent_spoofing = stored_user_agent().spoofing;
         Self(Arc::new(BrowserInner {
@@ -481,7 +433,6 @@ impl Browser {
             user_agent_spoofing: Mutex::new(user_agent_spoofing),
             completed: Mutex::new(VecDeque::new()),
             app: Mutex::new(None),
-            wasm,
         }))
     }
 
@@ -758,9 +709,7 @@ impl Browser {
                 Some(app) => Arc::new(QueuedRedrawShell::new(direct_shell, app)),
                 None => direct_shell,
             };
-            // A factory rather than a value: a module that fails to mount is
-            // re-parsed from the same bytes, and that second parse needs its own
-            // config because `DocumentConfig` is consumed by the first.
+
             let net = Arc::clone(&bundle.net);
             let make_config = || DocumentConfig {
                 base_url: Some(bundle.resolved_url.clone()),
@@ -775,80 +724,11 @@ impl Browser {
                 font_ctx: Some(FontContext::default()),
                 ..Default::default()
             };
-            // The two document sources meet here and nowhere else. Both end as
-            // a `Box<dyn Document>` on the same `chuzz-page-{tab_id}` mount, so
-            // everything downstream — layout, paint, the tab strip, the toolbar
-            // — cannot tell them apart and did not have to change.
-            // What the fetch concluded, which mounting can only make worse.
-            let mut outcome = bundle.outcome;
+            // Preserve the outcome established during loading.
+            let outcome = bundle.outcome;
             let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
-                // A page that declared a module gets it mounted here, against
-                // the document as parsed. Everything up to this point is an
-                // ordinary page load.
-                PageSource::Html {
-                    html,
-                    scripts,
-                    wasm: Some(module),
-                } => match mount_page_module(&html, &module, make_config()) {
-                    Some(page) => {
-                        self.note(
-                            "info",
-                            "wasm",
-                            format!(
-                                "guest mounted on {:?}, {} nodes in the document",
-                                module.selector,
-                                page.tree().len()
-                            ),
-                        );
-                        (Box::new(page), String::new())
-                    }
-                    None => {
-                        // The module fetched and vetted, then would not run.
-                        // The page still shows its fallback, so this is the
-                        // same "arrived, but not what was asked for" reading as
-                        // a script that never came.
-                        outcome = outcome.max(PageOutcome::Warning);
-                        self.note(
-                            "warn",
-                            "wasm",
-                            format!(
-                                "the guest did not mount on {:?}; keeping the page's fallback",
-                                module.selector
-                            ),
-                        );
-                        // Re-parsed rather than repaired. The guest appends into
-                        // the mount as it builds, so a run that fails part way
-                        // leaves a half-built tree next to the fallback, and
-                        // there is no way to tell the two apart afterwards.
-                        // Parsing the same bytes again is the only way to be
-                        // certain the document is exactly what the page said.
-                        let mut page = crate::webgpu::script_document(&html, make_config())
-                            .with_fetcher(crate::script_fetch::PageScripts::new(
-                                scripts,
-                                Arc::clone(&net),
-                                WINDOW_SCRIPT_DEADLINE,
-                            ));
-                        install_web_api_shim(&mut page, &net);
-                        crate::net_bridge::install(
-                            &mut page,
-                            Arc::clone(&net),
-                            WINDOW_NETWORK_DEADLINE,
-                            blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
-                        );
-                        page.execute_scripts();
-                        let title = page
-                            .inner()
-                            .find_title_node()
-                            .map(|node| node.text_content())
-                            .unwrap_or_default();
-                        (Box::new(page), title)
-                    }
-                },
-                PageSource::Html {
-                    html,
-                    scripts,
-                    wasm: None,
-                } => {
+
+                PageSource::Html { html, scripts } => {
                     let mut page = crate::webgpu::script_document(&html, make_config())
                         .with_fetcher(crate::script_fetch::PageScripts::new(
                             scripts,
@@ -876,22 +756,7 @@ impl Browser {
                             .into_inner();
                     (Box::new(page), format!("source of {}", bundle.resolved_url))
                 }
-                PageSource::Wasm { module } => match build_wasm_page(&module, make_config()) {
-                    // A bare `BaseDocument`, not a `ScriptDocument`. The mount
-                    // takes `Box<dyn Document>` and `BaseDocument` implements
-                    // it, so no wrapper is needed and no JavaScript runtime is
-                    // attached to a page that has no scripts to run.
-                    Ok(page) => (Box::new(page), module_title(&module)),
-                    Err(error) => {
-                        eprintln!("chuzz: --wasm: {error}");
-                        outcome = PageOutcome::Error;
-                        let page = blitz_script::ScriptDocument::from_html(
-                            &error_html(&error),
-                            DocumentConfig::default(),
-                        );
-                        (Box::new(page), module_title(&module))
-                    }
-                },
+
             };
             self.note(
                 "info",
@@ -960,184 +825,6 @@ impl NavigationProvider for PageNavigation {
     }
 }
 
-/// Build a page document by letting a WebAssembly guest construct it.
-///
-/// The config is the page config the HTML path uses, so the guest's document
-/// gets the same shell provider and the same navigation provider and sits in
-/// the window on the same terms. It gets no html parser and no script runtime
-/// because it needs neither.
-#[cfg(feature = "wasm")]
-fn build_wasm_page(
-    module: &std::path::Path,
-    config: DocumentConfig,
-) -> Result<blitz_dom::BaseDocument, String> {
-    let (document, mount) = crate::wasm_page::empty_document(config);
-    crate::wasm_page::run_guest(module, document, mount).map_err(|error| error.to_string())
-}
-
-/// Without the `wasm` feature there is no interpreter to run the guest, so the
-/// page says so rather than coming up blank.
-#[cfg(not(feature = "wasm"))]
-fn build_wasm_page(
-    module: &std::path::Path,
-    _config: DocumentConfig,
-) -> Result<blitz_dom::BaseDocument, String> {
-    Err(format!(
-        "this build has no wasm support, so {} cannot be run. \
-         Rebuild with the `wasm` feature, which is on by default.",
-        module.display()
-    ))
-}
-
-/// A wasm page has no `<title>`, so the module's file name stands in.
-fn module_title(module: &std::path::Path) -> String {
-    module
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| module.display().to_string())
-}
-
-/// Parse the page, then let the guest take over its mount element.
-///
-/// Returns `None` on every failure, and the caller then re-parses the same
-/// bytes. Nothing here repairs a document: a guest appends into the mount as it
-/// builds, so a run that fails part way leaves its own half-built tree beside
-/// the fallback with no way to tell them apart.
-///
-/// The fallback is removed only after the entry export has returned `OK`, which
-/// is the whole point. Emptying first and failing after turns a working static
-/// page into a blank one.
-#[cfg(feature = "wasm")]
-fn mount_page_module(
-    html: &str,
-    module: &PageModule,
-    config: DocumentConfig,
-) -> Option<blitz_dom::BaseDocument> {
-    // Parsed without a script runtime. A page that hands its interface to a
-    // guest has no JavaScript in the path by construction, and attaching an
-    // engine to run none would be dead weight.
-    let document = blitz_html::HtmlDocument::from_html(html, config).into_inner();
-
-    let mount = match document.query_selector(&module.selector) {
-        Ok(Some(node)) => node,
-        Ok(None) => {
-            eprintln!(
-                "chuzz: wasm: mount selector {:?} matched nothing; keeping the page as parsed",
-                module.selector
-            );
-            return None;
-        }
-        Err(error) => {
-            eprintln!(
-                "chuzz: wasm: mount selector {:?} is not valid: {error:?}",
-                module.selector
-            );
-            return None;
-        }
-    };
-
-    // What the fallback consists of, recorded before the guest adds anything.
-    let fallback: Vec<NodeId> = document.get_node(mount)?.children.to_vec();
-
-    let mut document = match crate::wasm_page::run_guest_bytes(&module.bytes, document, mount) {
-        Ok(document) => document,
-        Err(error) => {
-            eprintln!("chuzz: wasm: {error}");
-            return None;
-        }
-    };
-
-    // Only now. Everything above can fail, and every one of those failures
-    // leaves the document with its fallback intact.
-    let mut changes = document.mutate();
-    let replaced = fallback.len();
-    for node in fallback {
-        changes.remove_and_drop_node(node);
-    }
-    drop(changes);
-    // Said out loud, because the alternative is indistinguishable from a page
-    // that never declared a module: both are silent and both render something.
-    eprintln!(
-        "chuzz: wasm: mounted a guest on {:?}, replacing {replaced} fallback node(s)",
-        module.selector
-    );
-    Some(document)
-}
-
-/// Without the `wasm` feature there is no interpreter, so the page keeps its
-/// fallback and says why.
-#[cfg(not(feature = "wasm"))]
-fn mount_page_module(
-    _html: &str,
-    _module: &PageModule,
-    _config: DocumentConfig,
-) -> Option<blitz_dom::BaseDocument> {
-    eprintln!("chuzz: wasm: this build has no wasm support; keeping the page as parsed");
-    None
-}
-
-/// Fetch the module a page's wasm script tag names, and vet it.
-///
-/// Returns `None` on every failure, having said why. `None` means the page
-/// keeps the fallback content inside its mount element, which is the entire
-/// degradation story: a browser that cannot run the module shows the static
-/// document instead of a broken one.
-async fn fetch_page_module(
-    browser: &Browser,
-    document_url: &str,
-    script: &crate::wasm_page::WasmScript,
-    net: &NetProvider,
-) -> Option<PageModule> {
-    let base = Url::parse(document_url).ok()?;
-    let src = match base.join(&script.src) {
-        Ok(src) => src,
-        Err(error) => {
-            browser.note(
-                "error",
-                "wasm",
-                format!("cannot resolve src {:?}: {error}", script.src),
-            );
-            return None;
-        }
-    };
-
-    // Same origin only. The module runs against the host ABI with the whole
-    // document reachable, which is a materially different trust decision from a
-    // local file named on the command line. Cross-origin loading needs a
-    // deliberate policy, not a default.
-    if src.origin() != base.origin() {
-        eprintln!(
-            "chuzz: wasm: refusing to load {src} into {base}: a module must come from \
-             the page's own origin"
-        );
-        return None;
-    }
-
-    let bytes = match net.fetch_async(Request::get(src.clone())).await {
-        Ok((_, bytes)) => bytes,
-        Err(error) => {
-            // Covers a non-2xx status: the provider turns that into
-            // `ProviderError::HttpStatus` rather than handing back a body.
-            browser.note("error", "wasm", format!("could not fetch {src}: {error:?}"));
-            return None;
-        }
-    };
-
-    if let Err(problem) = crate::wasm_page::validate_module(&bytes) {
-        browser.note("error", "wasm", format!("{src}: {problem}"));
-        return None;
-    }
-
-    browser.note(
-        "info",
-        "wasm",
-        format!("module {src} validated, {} bytes", bytes.len()),
-    );
-    Some(PageModule {
-        bytes: bytes.to_vec(),
-        selector: script.mount.clone(),
-    })
-}
 
 pub(crate) fn page_node(document: &blitz_dom::BaseDocument, tab_id: u64) -> Option<NodeId> {
     if let Some(node) = document.get_element_by_id(&format!("chuzz-page-{tab_id}")) {
@@ -1189,7 +876,6 @@ async fn fetch_page(
             source: PageSource::Html {
                 html,
                 scripts: HashMap::new(),
-                wasm: None,
             },
             outcome: PageOutcome::Ready,
         };
@@ -1203,7 +889,6 @@ async fn fetch_page(
             source: PageSource::Html {
                 html: BLANK_HTML.to_owned(),
                 scripts: HashMap::new(),
-                wasm: None,
             },
             outcome: PageOutcome::Blank,
         };
@@ -1246,7 +931,6 @@ async fn fetch_page(
                             source: PageSource::Html {
                                 html: crate::internal_pages::tls_refused_html(&url, *reason),
                                 scripts: HashMap::new(),
-                                wasm: None,
                             },
                             outcome: PageOutcome::Error,
                         };
@@ -1295,7 +979,6 @@ async fn fetch_page(
                         _ => error_html(&format!("{error:?}")),
                     },
                     scripts: HashMap::new(),
-                    wasm: None,
                 },
                 outcome: PageOutcome::Error,
             };
@@ -1319,10 +1002,9 @@ async fn fetch_page(
     } else {
         decode_body(&bytes)
     };
-    // Discover HTML scripts without constructing a DOM that would be discarded.
-    // This also finds WASM declarations beyond the first JavaScript boundary.
+    // Discover JavaScript without constructing a DOM that would be discarded.
     // XHTML retains its XML parser and complete tree.
-    let (urls, wasm_script) = if blitz_html::DocumentHtmlParser::is_xhtml_document(&html) {
+    let urls = if blitz_html::DocumentHtmlParser::is_xhtml_document(&html) {
         let document = blitz_script::ScriptDocument::from_html(
             &html,
             DocumentConfig {
@@ -1330,51 +1012,18 @@ async fn fetch_page(
                 ..Default::default()
             },
         );
-        let wasm_script = crate::wasm_page::find_wasm_script(&document.inner());
-        (document.external_script_urls(), wasm_script)
+        document.external_script_urls()
     } else {
         let tags = blitz_html::scan_script_tags(&html);
         let base_url = Url::parse(&resolved_url).ok();
-        let urls = tags
-            .iter()
+        tags.iter()
             .filter(|tag| tag.is_javascript())
             .filter_map(|tag| tag.src.as_ref())
             .filter_map(|src| match &base_url {
                 Some(base) => base.join(src.as_ref()).ok(),
                 None => Url::parse(src.as_ref()).ok(),
             })
-            .collect();
-        let wasm_script = tags
-            .iter()
-            .find(|tag| tag.script_type.as_ref() == "application/wasm")
-            .and_then(|tag| {
-                Some(crate::wasm_page::WasmScript {
-                    src: tag.src.as_ref()?.to_string(),
-                    mount: tag.mount.as_ref()?.to_string(),
-                })
-            });
-        (urls, wasm_script)
-    };
-    let wasm = match wasm_script {
-        Some(script) => {
-            browser.note(
-                "info",
-                "wasm",
-                format!(
-                    "page declares a module: {} mounting on {}",
-                    script.src, script.mount
-                ),
-            );
-            let module = fetch_page_module(browser, &resolved_url, &script, &net).await;
-            if module.is_none() {
-                // The page declared a module and it did not load. The fallback
-                // inside the mount is shown instead, which is the designed
-                // degradation and still not what the page asked for.
-                outcome = outcome.max(PageOutcome::Warning);
-            }
-            module
-        }
-        None => None,
+            .collect()
     };
     let mut scripts = HashMap::new();
     for url in urls {
@@ -1412,11 +1061,7 @@ async fn fetch_page(
         tab_id,
         generation,
         resolved_url,
-        source: PageSource::Html {
-            html,
-            scripts,
-            wasm,
-        },
+        source: PageSource::Html { html, scripts },
         outcome,
     }
 }

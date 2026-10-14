@@ -61,7 +61,7 @@ export interface PanelSections {
 export interface DebugEntry {
   seq: number;
   level: "info" | "warn" | "error";
-  /** Which part of the browser said it: `nav`, `net`, `script`, `wasm`, `page`. */
+  /** Which part of the browser said it: `nav`, `net`, `script`, `page`. */
   source: string;
   message: string;
 }

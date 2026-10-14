@@ -20,6 +20,7 @@ static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 mod app_caps;
 
 fn main() {
+    chuzz::wasm_retired::reject_flags();
     chuzz::platform_hardening::startup();
     chuzz::sandbox::startup();
     let _caps = app_caps::start(&[]);

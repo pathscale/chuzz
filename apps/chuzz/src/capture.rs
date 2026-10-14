@@ -8,17 +8,13 @@
 //! It deliberately shares the loader with the browser, so what it captures is
 //! what the browser would show, not a second rendering path that could drift.
 //!
-//! There are two ways in, and they differ only in where the document comes
-//! from. [`capture`] fetches a URL and parses HTML. [`capture_wasm`] hands an
-//! empty document to a WebAssembly guest and lets it build the tree through
-//! `blitz-wasm`, with no URL, no fetch and no parser anywhere in the path.
-//! Everything from layout onwards is the same code for both.
+//! [`capture`] fetches a URL and renders its parsed document.
 
 use std::path::{Path, PathBuf};
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, DocumentConfig};
+use blitz_dom::BaseDocument;
 use blitz_paint::paint_scene;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
@@ -165,63 +161,19 @@ pub async fn capture(
     result
 }
 
-/// Render a document built by a WebAssembly guest and write a PNG to `png_out`.
-///
-/// The sibling of [`capture`], not a variant of it. That function renders a
-/// *fetched* page: it resolves a URL, goes through the net provider, and parses
-/// the bytes that come back. A wasm-built document has none of that. There is
-/// no URL, nothing is fetched, no HTML is parsed, and the tree exists only
-/// because the guest called `create_element` and `append_child` across the ABI.
-/// So the two share the painter and the dump and nothing before them.
-///
-/// The document handed to the guest is empty apart from `<html><body>`, and the
-/// body is seeded as the guest's mount handle ([`blitz_wasm::MOUNT`]). Without
-/// that seed a guest can build a tree and has nowhere to put it.
+/// Compatibility entry point for callers of the retired guest capture API.
 pub fn capture_wasm(
-    module_path: &Path,
-    width: u32,
-    height: u32,
-    png_out: &Path,
-    tree_out: Option<&Path>,
+    _module_path: &Path,
+    _width: u32,
+    _height: u32,
+    _png_out: &Path,
+    _tree_out: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let scale = capture_scale();
-    let device_width = (width as f32 * scale).round() as u32;
-    let device_height = (height as f32 * scale).round() as u32;
-
-    // The viewport goes in at construction because it is what the style device
-    // is built from, so a document created without one resolves media queries
-    // and viewport units against a default that is not the size being captured.
-    //
-    // The seeding and the guest run are `wasm_page`'s, shared with `--wasm` in
-    // the window, so the two cannot render the same module differently.
-    let (document, mount) = crate::wasm_page::empty_document(DocumentConfig {
-        viewport: Some(Viewport::new(
-            device_width,
-            device_height,
-            scale,
-            capture_color_scheme(),
-        )),
-        ..Default::default()
-    });
-    let mut document = crate::wasm_page::run_guest(module_path, document, mount)?;
-
-    // Resolve once, then paint.
-    //
-    // Deliberately not the settling loop `capture` runs. That loop waits on
-    // `pending_image_count` and `has_pending_critical_resources`, which count
-    // subresources discovered by parsing HTML. Nothing here parses HTML and the
-    // guest cannot request a subresource, so both are zero from the first pass
-    // and every iteration would be a sleep with nothing to wait for.
-    let buffer = paint(&mut document, scale, device_width, device_height, tree_out);
-
-    write_png(&buffer, device_width, device_height, png_out)
+    Err(Box::new(crate::wasm_retired::WasmUnsupported))
 }
 
 /// Lay `document` out at `scale`, dump the tree if asked, and rasterise.
-///
-/// Shared by both entry points on purpose: a wasm capture that painted through
-/// its own copy of this could drift from what `--capture` produces, and then a
-/// difference between the two would mean nothing.
+
 fn paint(
     document: &mut BaseDocument,
     scale: f32,
@@ -276,19 +228,13 @@ fn write_png(
     Ok(())
 }
 
-/// Proof that the wasm path renders, rather than that it runs.
-///
-/// A test that only checked the PNG exists would pass on a blank image, and
-/// blank is the exact failure this path is prone to: strip `system-fonts` and
-/// parley finds no face, every line shapes to zero height, the guest still
-/// reports OK, the tree still has all the right nodes, and the picture is
-/// empty. So the pixels are decoded and the boxes are read back.
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("chuzz-capture-wasm-tests");
+        let dir = std::env::temp_dir().join("chuzz-capture-source");
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         dir.join(name)
     }
@@ -477,7 +423,7 @@ mod tests {
     /// page, which is the one thing view source must never do.
     ///
     /// So this paints exactly what the loader would hand to the renderer, and
-    /// reads the pixels back the way the wasm test does.
+    /// reads the pixels back from the rendered source document.
     #[test]
     fn a_source_document_paints_its_markup_rather_than_rendering_it() {
         use blitz_dom::{BaseDocument, DocumentConfig};
@@ -515,7 +461,7 @@ mod tests {
         let buffer = super::paint(&mut document, 1.0, 1440, 960, Some(&tree));
         super::write_png(&buffer, 1440, 960, &png).expect("the png should be written");
 
-        // The same reasoning as the wasm test: a blank image would satisfy any
+        // A blank image would satisfy any
         // weaker assertion, and blank is this path's characteristic failure.
         let painted = non_background_pixels(&png);
         assert!(

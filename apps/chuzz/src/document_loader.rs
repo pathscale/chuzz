@@ -2606,8 +2606,8 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   // - `ActiveXObject`, reported by one site. No browser has it, and a page that
   //   reaches for it without a `typeof` guard throws in Chrome too. Absent is
   //   the correct answer and the report is not a defect of ours.
-  // - `WebAssembly`, `define` and `require` are module and engine support,
-  //   which is not something JavaScript in this string can supply.
+  // - WebAssembly is retired and absent. Direct use raises ReferenceError.
+  // - `define` and `require` are module support that this shim cannot supply.
 })();
 "#;
 
