@@ -75,7 +75,7 @@ function judge(result: { code: number; stdout: string; stderr: string }, ids: st
     const expected = failure === id ? "fail" : "pass";
     if (!row || row.verdict.toLowerCase() !== expected) throw new Error(`${id}: expected ${expected}: ${result.stdout}\n${result.stderr}`);
   }
-  if (result.code !== (failure ? 1 : 0)) throw new Error(`sandbox2-report: unexpected exit ${result.code}`);
+  if (result.code !== (failure ? 1 : 0)) throw new Error(`sandbox2-report: unexpected exit ${result.code}: ${result.stdout}\n${result.stderr}`);
   console.log(failure ? `planted defect failed by name: ${failure}` : `functional checks passed: ${ids.join(", ")}`);
 }
 
