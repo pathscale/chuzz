@@ -2646,15 +2646,8 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   // - `ReadableStream`. A page reaching for it wants incremental delivery, and a
   //   stub can only hand over the whole body at once or nothing. Both read as a
   //   working stream to the code and neither is one.
-  // - The DOM interface constructors the corpus also reported missing:
-  //   `NodeList`, `DocumentFragment`, `CharacterData`, `KeyboardEvent`.
-  //   `ShadowRoot` above is declared precisely because
-  //   nothing in this engine is one, so answering `false` to `instanceof` is
-  //   true. These are the opposite case: the document really does contain node
-  //   lists and fragments, so an empty constructor would answer `false` about
-  //   objects that genuinely are instances, and a branch that meant to take the
-  //   DOM path would silently take the other one. They belong with the engine's
-  //   DOM bindings, next to the prototypes they have to be related to.
+  // - DOM interface constructors come from the engine, where their prototype
+  //   chains and native instances agree. The shim must not replace them.
   // - `Intl`. Faking `NumberFormat` and `DateTimeFormat` as `String(value)`
   //   would keep a script alive at the cost of rendering unformatted numbers
   //   and raw date strings as though they were the page's own output, and the
@@ -3497,33 +3490,22 @@ mod tests {
         );
     }
 
-    /// The omissions are deliberate, and this is the record of that.
-    ///
-    /// Each is on the corpus's missing-globals list, cheap to stub and wrong to
-    /// stub: a `ReadableStream` that cannot stream reads as one to the code
-    /// using it, and `NodeList`/`DocumentFragment`/`CharacterData` would answer
-    /// `false` to an `instanceof` about a genuine instance.
-    ///
-    /// `getComputedStyle` was on this list and has left it, in the way the note
-    /// asked for: the engine now answers it from real computed values rather
-    /// than a shim returning `''`. The instruction was to delete this test
-    /// rather than edit it, and editing is the narrower change here, because
-    /// the remaining names are still unbacked and still worth guarding. Delete
-    /// it when the last of them is answered honestly.
+    /// The shim leaves missing APIs absent and preserves real engine APIs.
+    /// Native DOM instances and locale formatting must work, rather than
+    /// merely exposing constructor names that lie about their capabilities.
     #[test]
     fn the_lying_stubs_are_left_out() {
-        let mut document = shimmed();
-        // `getComputedStyle` used to be on this list, and the reasoning was
-        // right: a shim returning `""` for every property is worse than the
-        // ReferenceError, because a page reads `display`, concludes nothing is
-        // hidden, and lays out wrongly with nothing in the log.
-        //
-        // It is off the list because the engine now answers it from real
-        // computed values (ps-blitz `getComputedStyle`, backed by
-        // `computed_style_properties`), which is the case this test was written
-        // to leave room for. Asserting it absent here would fail the moment
-        // that engine is published, and it would be asserting the wrong thing:
-        // the objection was to lying, not to the API.
+        let mut document = blitz_script::ScriptDocument::from_html(
+            "<html><body></body></html>",
+            blitz_dom::DocumentConfig::default(),
+        );
+        document.eval(
+            "globalThis.__beforeShim = { ReadableStream: globalThis.ReadableStream, \
+             NodeList: globalThis.NodeList, DocumentFragment: globalThis.DocumentFragment, \
+             CharacterData: globalThis.CharacterData, Intl: globalThis.Intl, \
+             ActiveXObject: globalThis.ActiveXObject };",
+        );
+        document.eval(WEB_API_SHIM);
         for name in [
             "ReadableStream",
             "NodeList",
@@ -3533,10 +3515,32 @@ mod tests {
             "ActiveXObject",
         ] {
             assert_eq!(
-                value(&mut document, &format!("typeof globalThis.{name}")),
-                serde_json::json!("undefined"),
-                "{name} is deliberately not shimmed"
+                value(
+                    &mut document,
+                    &format!("globalThis.{name} === __beforeShim.{name}")
+                ),
+                serde_json::json!(true),
+                "the shim must preserve the engine's {name}"
             );
         }
+        assert_eq!(
+            value(
+                &mut document,
+                "[typeof ReadableStream, typeof ActiveXObject]"
+            ),
+            serde_json::json!(["undefined", "undefined"])
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () { var text = document.createTextNode('first'); \
+                  text.data = 'second'; return [ \
+                  document.querySelectorAll('body') instanceof NodeList, \
+                  document.createDocumentFragment() instanceof DocumentFragment, \
+                  text instanceof CharacterData, text.nodeValue, \
+                  new Intl.NumberFormat('de-DE').format(1234.5)]; })()"
+            ),
+            serde_json::json!([true, true, true, "second", "1.234,5"])
+        );
     }
 }
