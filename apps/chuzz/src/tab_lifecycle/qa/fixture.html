@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>QA lifecycle</title></head>
+<body style="font:1rem sans-serif;background:white;color:black">
+<form id="qa-form" method="post" action="/posted?case=post">
+  <label>Draft <input id="draft" name="draft" type="text"></label>
+  <label>Password <input id="password" type="password"></label>
+  <label>OTP <input id="otp" type="text" autocomplete="one-time-code"></label>
+  <label>Off <input id="off" type="text" autocomplete="off"></label>
+  <div data-chuzz-sensitive><label>Marked <input id="marked" type="text"></label></div>
+  <label>Clone <input id="clone" type="text"></label>
+  <button id="submit" type="submit">Submit once</button>
+</form>
+<form id="off-parent" autocomplete="off"><label>Inherited off <input id="inherited" type="text"></label></form>
+<button id="prepare" type="button">Prepare state</button>
+<p id="result"></p><p id="ticks"></p>
+<script>
+var mode = new URLSearchParams(location.search).get('case') || 'sleep';
+document.title = 'QA ' + mode;
+var sensitive = ['password', 'otp', 'off', 'marked', 'clone', 'inherited'];
+var draft = document.getElementById('draft');
+var empty = sensitive.every(function (id) { return document.getElementById(id).value === ''; });
+var result = document.getElementById('result');
+if (document.wasDiscarded && mode === 'form') {
+  result.textContent = draft.value === 'ordinary draft' && empty && sessionStorage.getItem('ordinary') === 'saved session'
+    ? 'READY: FORM RESTORED' : 'FORM RESTORE FAILED';
+} else if (document.wasDiscarded && mode === 'origin') {
+  result.textContent = draft.value === '' && empty && sessionStorage.getItem('ordinary') === null
+    ? 'READY: ORIGIN ISOLATED' : 'ORIGIN RESTORE LEAK';
+} else {
+  result.textContent = location.pathname === '/posted' ? 'READY: POST ENTRY' : 'READY: FIXTURE';
+}
+document.getElementById('prepare').onclick = function () {
+  document.getElementById('password').type = 'text';
+  document.getElementById('clone').remove();
+  var copy = document.getElementById('password').cloneNode(true);
+  copy.id = 'clone';
+  document.getElementById('qa-form').appendChild(copy);
+  sessionStorage.setItem('ordinary', 'saved session');
+  sessionStorage.setItem('sensitive', 'excluded session');
+  sessionStorage.markSensitive('sensitive');
+  result.textContent = 'READY: PREPARED';
+};
+document.addEventListener('freeze', function () { sessionStorage.setItem('freezeSeen', 'yes'); });
+var worker = new Worker('/worker.js');
+fetch('/slow');
+var ticks = 0;
+setInterval(function () {
+  document.getElementById('ticks').textContent = 'TICK ' + (++ticks);
+  fetch('/beat?main=1');
+}, 100);
+</script></body></html>
