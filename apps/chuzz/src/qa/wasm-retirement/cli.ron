@@ -1,0 +1,26 @@
+[
+    (
+        id: "wasm-cli-refusal",
+        group: "wasm-retirement",
+        what: "every binary refuses the retired flag by name before output or startup",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "PASS: wasm-unsupported --wasm exit 2",
+        expect: PaintsNamed,
+        open_timeout_ms: 5000,
+        outcome_timeout_ms: 5000,
+    ),
+    (
+        id: "capture-wasm-cli-refusal",
+        group: "wasm-retirement",
+        what: "every binary refuses the retired flag by name before output or startup",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "PASS: wasm-unsupported --capture-wasm exit 2",
+        expect: PaintsNamed,
+        open_timeout_ms: 5000,
+        outcome_timeout_ms: 5000,
+    ),
+]

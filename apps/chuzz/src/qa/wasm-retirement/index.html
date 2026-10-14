@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebAssembly retirement</title>
+  <style>body { font: 18px sans-serif; padding: 24px; } button { padding: 12px; }</style>
+</head>
+<body>
+  <h1>WebAssembly retirement</h1>
+  <button id="run" type="button">Try WebAssembly instantiation</button>
+  <p id="result">Ready</p>
+  <script>
+    document.getElementById("run").addEventListener("click", async function () {
+      var name = "returned without error";
+      var referenceError = false;
+      var bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+      try {
+        await WebAssembly.instantiate(bytes);
+      } catch (error) {
+        name = String(error.name);
+        referenceError = error instanceof ReferenceError;
+      }
+      var absent = !("WebAssembly" in globalThis) && typeof WebAssembly === "undefined";
+      document.getElementById("result").textContent = absent && referenceError && name === "ReferenceError"
+        ? "PASS: WebAssembly absent; instantiate raised ReferenceError"
+        : "FAIL: WebAssembly retirement; absent=" + absent + "; error=" + name;
+    });
+  </script>
+</body>
+</html>

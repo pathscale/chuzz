@@ -1,0 +1,14 @@
+[
+    (
+        id: "webassembly-reference-error",
+        group: "wasm-retirement",
+        what: "direct instantiation raises ReferenceError with no WebAssembly global",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "PASS: WebAssembly absent; instantiate raised ReferenceError",
+        expect: PaintsNamed,
+        open_timeout_ms: 5000,
+        outcome_timeout_ms: 5000,
+    ),
+]

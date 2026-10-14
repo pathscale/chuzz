@@ -1,0 +1,26 @@
+[
+  {
+    "name": "wasm-flag-name",
+    "repository": "/Users/revenge/code/chuzz",
+    "file": "apps/chuzz/src/wasm_retired.rs",
+    "expected_failure": "wasm-cli-refusal",
+    "search": "        eprintln!(\"chuzz: {WasmUnsupported}\");\n",
+    "replacement": "        if std::env::args_os().any(|argument| argument.to_string_lossy().starts_with(\"--wasm\")) {\n            eprintln!(\"chuzz: WebAssembly support has been retired\");\n        } else {\n            eprintln!(\"chuzz: {WasmUnsupported}\");\n        }\n"
+  },
+  {
+    "name": "capture-wasm-flag-name",
+    "repository": "/Users/revenge/code/chuzz",
+    "file": "apps/chuzz/src/wasm_retired.rs",
+    "expected_failure": "capture-wasm-cli-refusal",
+    "search": "        eprintln!(\"chuzz: {WasmUnsupported}\");\n",
+    "replacement": "        if std::env::args_os().any(|argument| argument.to_string_lossy().starts_with(\"--capture-wasm\")) {\n            eprintln!(\"chuzz: WebAssembly support has been retired\");\n        } else {\n            eprintln!(\"chuzz: {WasmUnsupported}\");\n        }\n"
+  },
+  {
+    "name": "webassembly-global",
+    "repository": "/Users/revenge/code/ps-blitz",
+    "file": "packages/blitz-script/src/runtime.rs",
+    "expected_failure": "webassembly-reference-error",
+    "search": "        context\n            .global_object()\n            .clone()\n            .delete_property_or_throw(js_string!(\"WebAssembly\"), &mut context)\n            .expect(\"remove WebAssembly before page scripts run\");\n",
+    "replacement": "        register_global(&mut context, \"WebAssembly\", JsValue::undefined());\n"
+  }
+]
