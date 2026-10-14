@@ -742,6 +742,28 @@ fn begin(owner: u64, prepared: Arc<Prepared>, notifications: &Arc<Notifications>
     requests.jobs.insert(id, Arc::clone(&job));
     drop(requests);
 
+    if choice() == AuthenticatorChoice::Software {
+        let worker_job = Arc::clone(&job);
+        let prepared = Arc::clone(&prepared);
+        drop(nagoya::spawn(async move {
+            let result = catch_unwind(AssertUnwindSafe(|| perform(&prepared, &worker_job)))
+                .unwrap_or_else(|_| Err(Error::unknown()));
+            {
+                let mut requests = lock(&REQUESTS);
+                if requests.active == Some(worker_job.id) { requests.active = None; }
+                if worker_job.discarded.load(Ordering::Acquire) { requests.jobs.remove(&worker_job.id); }
+            }
+            complete(Arc::clone(&worker_job), Arc::new(result));
+            worker_job
+        }));
+        drop(nagoya::spawn(async move {
+            if nagoya::timeout(job.deadline.saturating_duration_since(Instant::now()), job.completed.notified()).await.is_err() {
+                complete(Arc::clone(&job), Arc::new(Err(Error::denied())));
+            }
+            job
+        }));
+        return serde_json::json!(id);
+    }
     let worker_job = Arc::clone(&job);
     // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: blocking platform authenticator.
     #[allow(clippy::disallowed_methods)]
