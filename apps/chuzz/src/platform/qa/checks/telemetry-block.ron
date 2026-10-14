@@ -1,0 +1,14 @@
+[
+    (
+        id: "telemetry-block-before-network",
+        group: "telemetry-block",
+        what: "image, fetch, and beacon requests under unagi.amazon.* are reported as blocked and never reach the local fixture endpoint",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: TELEMETRY BLOCK PASS",
+        expect: PaintsNamed,
+        covers: ["READY: TELEMETRY BLOCK PASS"],
+        outcome_timeout_ms: 10000,
+    ),
+]

@@ -75,6 +75,7 @@ enum WorkerFrame {
 enum WireRequest {
     Agent(AgentControlRequest),
     Diagnostics(DiagnosticsRequest),
+    Targeted(blitz_control_protocol::TargetRequest),
 }
 
 impl From<ControlBridgeRequest> for WireRequest {
@@ -82,6 +83,7 @@ impl From<ControlBridgeRequest> for WireRequest {
         match request {
             ControlBridgeRequest::Agent(request) => Self::Agent(request),
             ControlBridgeRequest::Diagnostics(request) => Self::Diagnostics(request),
+            ControlBridgeRequest::Targeted(request) => Self::Targeted(request),
         }
     }
 }
@@ -91,6 +93,7 @@ impl From<WireRequest> for ControlBridgeRequest {
         match request {
             WireRequest::Agent(request) => Self::Agent(request),
             WireRequest::Diagnostics(request) => Self::Diagnostics(request),
+            WireRequest::Targeted(request) => Self::Targeted(request),
         }
     }
 }

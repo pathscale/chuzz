@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Telemetry block</title>
+  <style>
+    body { font: 16px sans-serif; margin: 24px; color: #182436; }
+    #result { display: block; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Telemetry block</h1>
+  <output id="result">READY: TELEMETRY BLOCK WAITING</output>
+  <script>
+    const result = document.getElementById("result");
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = function (...values) {
+      const message = values.map(String).join(" ");
+      if (message.includes("blocked Amazon telemetry request")) warnings.push(message);
+      originalWarn.apply(console, values);
+    };
+
+    const url = `http://unagi.amazon.localhost:${location.port}/telemetry-hit`;
+    const image = new Image();
+    image.src = `${url}?kind=image`;
+    navigator.sendBeacon(`${url}?kind=beacon`, "fixture beacon");
+    fetch(`${url}?kind=fetch`, { method: "POST", body: "fixture fetch" }).catch(() => {});
+
+    const started = Date.now();
+    async function verify() {
+      try {
+        const response = await fetch("/telemetry-hits", { cache: "no-store" });
+        const hits = Number(await response.text());
+        if (warnings.length >= 3 && hits === 0) {
+          result.textContent = "READY: TELEMETRY BLOCK PASS";
+          return;
+        }
+        if (Date.now() - started >= 5000) {
+          result.textContent = `FAIL: telemetry diagnostics=${warnings.length} fixture-hits=${hits}`;
+          return;
+        }
+      } catch (error) {
+        if (Date.now() - started >= 5000) {
+          result.textContent = `FAIL: telemetry fixture status ${String(error)}`;
+          return;
+        }
+      }
+      setTimeout(verify, 50);
+    }
+    setTimeout(verify, 50);
+  </script>
+</body>
+</html>

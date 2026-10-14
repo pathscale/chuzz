@@ -64,6 +64,13 @@ Options:
     --depth <n>                tree depth to request (default: 40)
     --root <node-id>           subtree to report (default: the document)
     --all                      keep zero-sized and hidden nodes (default: drop)
+    --tab-id <id>              select a page by stable numeric tab ID
+    --chrome                   select chrome explicitly
+    --generation <n>           mounted generation returned by tree/targets
+    --document-id <id>         document identity returned by tree/targets
+    --all-targets              console from every target
+    --after-sequence <n>       replay console after a journal sequence
+    targets                    list chrome and tabs with mounted identities
 ";
 
 struct Options {
@@ -72,6 +79,12 @@ struct Options {
     depth: u32,
     root: Option<u64>,
     all: bool,
+    tab_id: Option<u64>,
+    chrome: bool,
+    generation: Option<u64>,
+    document_id: Option<u64>,
+    all_targets: bool,
+    after_sequence: Option<u64>,
     command: Vec<String>,
 }
 
@@ -82,6 +95,12 @@ fn parse_options() -> Result<Options, String> {
         depth: 40,
         root: None,
         all: false,
+        tab_id: None,
+        chrome: false,
+        generation: None,
+        document_id: None,
+        all_targets: false,
+        after_sequence: None,
         command: Vec::new(),
     };
     let mut args = std::env::args().skip(1);
@@ -103,12 +122,55 @@ fn parse_options() -> Result<Options, String> {
                 )
             }
             "--all" => options.all = true,
+            "--tab-id" => {
+                options.tab_id = Some(
+                    value("--tab-id")?
+                        .parse()
+                        .map_err(|_| "--tab-id takes a number")?,
+                )
+            }
+            "--chrome" => options.chrome = true,
+            "--generation" => {
+                options.generation = Some(
+                    value("--generation")?
+                        .parse()
+                        .map_err(|_| "--generation takes a number")?,
+                )
+            }
+            "--document-id" => {
+                options.document_id = Some(
+                    value("--document-id")?
+                        .parse()
+                        .map_err(|_| "--document-id takes a number")?,
+                )
+            }
+            "--all-targets" => options.all_targets = true,
+            "--after-sequence" => {
+                options.after_sequence = Some(
+                    value("--after-sequence")?
+                        .parse()
+                        .map_err(|_| "--after-sequence takes a number")?,
+                )
+            }
             "-h" | "--help" => return Err(USAGE.to_owned()),
             _ => options.command.push(arg),
         }
     }
     if options.command.is_empty() {
         return Err(USAGE.to_owned());
+    }
+    if options.tab_id.is_some() && options.chrome {
+        return Err("--tab-id and --chrome are mutually exclusive".into());
+    }
+    if options.generation.is_some() != options.document_id.is_some() {
+        return Err("--generation and --document-id must be supplied together".into());
+    }
+    if options.all_targets && (options.tab_id.is_some() || options.chrome) {
+        return Err("--all-targets cannot be combined with --tab-id or --chrome".into());
+    }
+    if (options.all_targets || options.after_sequence.is_some()) && options.command[0] != "console"
+    {
+        return Err("--all-targets and --after-sequence require console".into());
     }
     Ok(options)
 }
@@ -214,7 +276,7 @@ fn print_tree(nodes: &[Value], all: bool) {
 /// The deep-debugging commands, which use the driver rather than the control
 /// socket and so are answered before a control connection is even opened.
 fn run_driver(options: &Options) -> Result<bool, Box<dyn std::error::Error>> {
-    if options.command[0] != "screenshot" {
+    if options.command[0] != "screenshot" || options.tab_id.is_some() || options.chrome {
         return Ok(false);
     }
     let descriptor = options
@@ -246,6 +308,14 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         None => newest_descriptor()?,
     };
     let mut client = Client::connect(&descriptor).await?;
+    if let Some(id) = options.tab_id {
+        client.select_tab(id);
+    } else if options.chrome {
+        client.select_chrome();
+    }
+    if let (Some(generation), Some(document_id)) = (options.generation, options.document_id) {
+        client.set_expected_identity(generation, document_id);
+    }
 
     let command = options.command[0].as_str();
     let argument = |index: usize| -> Result<&str, String> {
@@ -260,15 +330,58 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         // The diagnostics tool is what reports a page's own JS errors. Without
         // it a thrown TypeError only reaches stdout, where it is indistinguishable
         // from the renderer's own logging.
+        "targets" => println!(
+            "{}",
+            serde_json::to_string_pretty(&client.targets().await?)?
+        ),
         "console" => {
-            let request = serde_json::json!({
+            let mut request = serde_json::json!({
                 "command": "observe",
                 "params": {"streams": ["console", "runtimeErrors"]}
             });
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&client.diagnostics(request).await?)?
+            if options.all_targets {
+                request["allTargets"] = true.into();
+            }
+            if let Some(sequence) = options.after_sequence {
+                request["afterSequence"] = sequence.into();
+            }
+            let response = client.diagnostics(request).await?;
+            if response["result"] == "error" {
+                return Err(format!("observe failed: {}", response["value"]).into());
+            }
+            println!("{}", serde_json::to_string(&response)?);
+            loop {
+                println!(
+                    "{}",
+                    serde_json::to_string(&client.next_notification().await?)?
+                );
+            }
+        }
+        "capture" | "screenshot" => {
+            use base64::Engine as _;
+            let response = client
+                .diagnostics(serde_json::json!({
+                    "command": "capture", "params": {"nodeId": options.root, "scale": 1.0}
+                }))
+                .await?;
+            if response["result"] != "captured" {
+                return Err(format!("capture failed: {response}").into());
+            }
+            let image: blitz_control_protocol::CapturedImage =
+                serde_json::from_value(response["value"].clone())?;
+            let rgba = base64::engine::general_purpose::STANDARD.decode(image.rgba_base64)?;
+            let output = argument(1)?;
+            let mut encoder = png::Encoder::new(
+                std::io::BufWriter::new(std::fs::File::create(output)?),
+                image.width,
+                image.height,
             );
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header()?;
+            writer.write_image_data(&rgba)?;
+            writer.finish()?;
+            println!("wrote {output}");
         }
         "metrics" => {
             let request = serde_json::json!({"command": "metrics"});
@@ -351,6 +464,9 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         "tree" | "nodes" | "find" | "overlap" => {
             let page = client.inspect(options.root, options.depth).await?;
+            if let Some(context) = page.get("context") {
+                eprintln!("identity={}", serde_json::to_string(context)?);
+            }
             let nodes = page["nodes"].as_array().cloned().unwrap_or_default();
             match command {
                 "tree" => {

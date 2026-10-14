@@ -11,6 +11,13 @@
     if (globalThis.console) console.error(error);
   }
 
+  function reportNetworkFailure(url, error) {
+    if (String(error).indexOf('blocked Amazon telemetry request') === 0
+        && globalThis.console) {
+      console.warn(String(error) + ': ' + String(url));
+    }
+  }
+
   globalThis.__chuzzNetResolve = function (id, result) {
     var callback = pending[id];
     if (!callback) return;
@@ -46,7 +53,27 @@
 
   function forget(id) { delete pending[id]; }
 
-  globalThis.__chuzzBodyApi.installFetch(send, forget);
+  globalThis.__chuzzBodyApi.installFetch(function (payload, callback) {
+    return send(payload, function (result) {
+      if (!result.ok) reportNetworkFailure(payload.url, result.error || 'Network request failed');
+      callback(result);
+    });
+  }, forget);
+
+  if (globalThis.navigator) {
+    globalThis.navigator.sendBeacon = function (url, data) {
+      try {
+        var payload = request(url, { method: 'POST', body: data, credentials: 'include' });
+        send(payload, function (result) {
+          if (!result.ok) reportNetworkFailure(payload.url, result.error || 'Network request failed');
+        });
+        return true;
+      } catch (error) {
+        report(error);
+        return false;
+      }
+    };
+  }
 
   function EventTarget() {
     this._listeners = Object.create(null);
@@ -272,6 +299,7 @@
       function complete(result) {
         if (!current()) return;
         if (!result.ok) {
+          reportNetworkFailure(self._url, result.error || 'Network request failed');
           if (!self._async) {
             self._clear();
             self.readyState = 4;

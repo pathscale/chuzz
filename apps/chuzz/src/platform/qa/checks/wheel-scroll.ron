@@ -1,0 +1,17 @@
+[
+    (
+        id: "wheel-scroll-nested-input",
+        group: "wheel-scroll",
+        what: "line and page wheel dispatch honor passive cancellation, and real pixel input scrolls the nested containers with the expected listener order",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: WHEEL-SCROLL PASS",
+        expect: PaintsNamed,
+        covers: ["READY: WHEEL-SCROLL PASS"],
+        outcome_timeout_ms: 10000,
+        scroll_over: Some("120,150"),
+        scroll_ticks: 10,
+        scroll_delta: -120.0,
+    ),
+]

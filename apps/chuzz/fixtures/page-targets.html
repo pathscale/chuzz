@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Page target fixture</title>
+<style>
+html, body { margin: 0; background: #eef5ff; color: #142336; font: 16px sans-serif; }
+h1 { margin: 0; height: 32px; }
+button, input { margin: 8px; width: 160px; height: 40px; }
+output { display: block; height: 32px; }
+</style>
+</head>
+<body>
+<h1 id="ready">READY</h1>
+<button id="press">Press</button>
+<label for="field" id="label">Field</label><input id="field" value="">
+<output id="count" role="status">count 0</output>
+<output id="typed" role="status">typed empty</output>
+<output id="key" role="status">key empty</output>
+<script>
+const name = location.href.includes('name=B') ? 'B' : 'A';
+document.title = 'Page target ' + name;
+document.getElementById('ready').textContent = 'READY ' + name;
+document.getElementById('press').textContent = 'Press ' + name;
+document.getElementById('label').textContent = 'Field ' + name;
+let count = 0;
+document.getElementById('press').addEventListener('click', () => {
+  count += 1;
+  document.getElementById('count').textContent = 'count ' + count;
+  console.log('click ' + name);
+  throw new Error('handler-error ' + name);
+});
+const field = document.getElementById('field');
+field.addEventListener('input', () => {
+  document.getElementById('typed').textContent = 'typed ' + field.value;
+  console.log('input ' + name);
+});
+field.addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    document.getElementById('key').textContent = 'key ' + field.value;
+    console.log('key ' + name);
+  }
+});
+console.log('startup ' + name);
+setTimeout(() => { throw new Error('timer-error ' + name); }, 0);
+setInterval(() => console.log('timer ' + name), 250);
+throw new Error('startup-error ' + name);
+</script>
+</body>
+</html>

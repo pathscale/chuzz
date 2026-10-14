@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Wheel scroll</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      color: #182436;
+      background: #f5f7fa;
+      font: 16px sans-serif;
+    }
+    #outer {
+      position: absolute;
+      top: 104px;
+      left: 24px;
+      width: 500px;
+      height: 180px;
+      overflow: auto;
+      background: #dce8f3;
+    }
+    #outer-content {
+      position: relative;
+      height: 620px;
+    }
+    #inner {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      width: 360px;
+      height: 120px;
+      overflow: auto;
+      background: #ffffff;
+      box-shadow: inset 0 0 0 2px #465d78;
+    }
+    #inner-content {
+      width: 100%;
+      height: 1200px;
+      background: linear-gradient(#ffffff, #b7cde2);
+    }
+    #result {
+      margin-top: 300px;
+      padding: 12px;
+      background: #ffffff;
+      border: 1px solid #465d78;
+    }
+  </style>
+  <script src="./src/wheel-scroll.ts" defer></script>
+</head>
+<body>
+  <h1>Wheel scroll</h1>
+  <p>QA sends pixel input over the inner scrollport. The page also checks line and page wheel events.</p>
+  <div id="outer" aria-label="Outer scrollport">
+    <div id="outer-content">
+      <div id="inner" aria-label="Inner scrollport">
+        <div id="inner-content"></div>
+      </div>
+    </div>
+  </div>
+  <p id="result" role="status">READY: WHEEL-SCROLL WAITING</p>
+</body>
+</html>
