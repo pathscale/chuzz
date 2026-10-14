@@ -503,6 +503,8 @@ pub(crate) const WEB_API_SHIM: &str = r#"
       SHOW_NOTATION: 0x800
     });
   }
+  // Keep the shim's constants immutable when the engine supplies traversal.
+  Object.freeze(globalThis.NodeFilter);
   function defineElementInterface(name, matches) {
     if (typeof globalThis[name] === 'function') return globalThis[name];
     var constructor = function () { throw new TypeError('Illegal constructor'); };
