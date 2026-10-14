@@ -300,6 +300,9 @@ impl ScriptHost {
             return Err("request URL cannot contain credentials".to_owned());
         }
         url.set_fragment(None);
+        if crate::telemetry::blocked_url(&url) {
+            return Err(crate::telemetry::diagnostic(&url));
+        }
 
         let method =
             Method::from_bytes(request.method.as_bytes()).map_err(|error| error.to_string())?;
@@ -554,6 +557,7 @@ pub fn install(
     deadline: Duration,
     base: Option<Url>,
 ) {
+    let handler_net = Arc::clone(&net);
     let host = ScriptHost {
         same_origin: Arc::new(blitz_net::Provider::with_user_agent_and_cookie_provider(
             None,
@@ -633,6 +637,12 @@ pub fn install(
     document.add_poll_hook(move |document, task_context| {
         wake.bind(task_context.map(|context| context.waker()));
         let mut changed = sockets.drain_into(document) | gpu.drain_into(document);
+        for message in handler_net.take_blocked_requests() {
+            if let Ok(encoded) = serde_json::to_string(&message) {
+                document.eval(&format!("globalThis.console.warn({encoded});"));
+                changed = true;
+            }
+        }
         for delivery in mailbox.drain() {
             document.with_js_context(|context| {
                 let resolve = context

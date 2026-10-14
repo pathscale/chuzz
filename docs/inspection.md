@@ -11,8 +11,8 @@ One headless process hosts one page. The process prints its descriptor path on s
 | Inspect, Act, Navigate, Condense, Relaunch, Quit | chuzz master, protocol from ps-observability |
 | Snapshot, Capture, WindowComposition, WebGpuInspect, WebGpuCapture on the headless host | chuzz master |
 | Evaluate, Metrics, WaitForIdle on the headless host | chuzz master `fefbea4` |
-| `evaluate` in the protocol and `ps-qa eval` | blitz-control-protocol 0.7.1 and ps-qa 0.9.1 from ps-observability. Chuzz requires `blitz-control-protocol ^0.7.1`, and the headless QA action installs ps-qa ^0.9.1. |
-| Page targets, `listTargets`, the diagnostic journal, `ps-qa targets`, `page-targets`, `headless-target`, `inspection-off` | `~/code/wt-pt` worktrees only, see [Page targets](#page-targets) |
+| `evaluate` in the protocol and `ps-qa eval` | blitz-control-protocol 0.7.3 and ps-qa 0.9.4 from ps-observability. Chuzz requires `blitz-control-protocol ^0.7.3`, and the headless QA action installs ps-qa ^0.9.4. |
+| Page targets, `listTargets`, the diagnostic journal, `ps-qa targets`, `page-targets`, `headless-target`, `inspection-off` | Chuzz master and published ps-qa 0.9.4, see [Page targets](#page-targets) |
 
 ## Enabling
 
@@ -712,7 +712,7 @@ Useful readings against a process that is already up:
 
 ## Page targets
 
-Page targets are not on chuzz master yet. They live in the pagetarget worktrees under `~/code/wt-pt`: the protocol and `ps-qa` commands in ps-observability `9603f6f`, tab routing in izumo `91712dc`, bounded console and error batches in ps-blitz `1fa32759`, and the GUI and headless hosts plus `chuzz-inspect --tab-id` in chuzz `2ee8a62`. The four land together, protocol first. A request with none of the target keys keeps the shape described above, except `listTargets`, which is always treated as targeted.
+Page targets are available on chuzz master. Chuzz requires `blitz-control-protocol ^0.7.3`, `ps-blitz ^0.6.2`, and `izumo ^0.6.3`; the headless QA action installs `ps-qa ^0.9.4`. A request with none of the target keys keeps the shape described above, except `listTargets`, which is always treated as targeted.
 
 Targets are the browser chrome or one tab. A target id is the JSON string `"chrome"` or a tab number. A target selector is `"chrome"` or `{"tabId": 7}`.
 
@@ -823,10 +823,10 @@ A gap in that journal is reported as `diagnosticOverflow` with `firstSequence` a
 
 ### How each host serves targets
 
-- **Headless** (chuzz `2ee8a62`, `serve.rs`): the one page is tab `0`. `listTargets` returns a single entry with `active: true`, `generation` built from the process id and the document id, and capabilities `agent: true`, `diagnostics`, `capture` and `webGpu` true outside bot mode, `console` and `runtimeErrors` false. Any other `target` is `unknownTarget` (`headless exposes only page 0`). A targeted `observe` is acknowledged with a context and delivers nothing.
-- **GUI** (izumo `91712dc`, chuzz `2ee8a62` `browser.rs`): every tab is a target with its own `mounted_generation`, bumped each time a new document mounts in it. Agent and diagnostics requests run against the addressed tab's mounted document. Capability flags are all true when the tab runs script and all false otherwise. Omitting `target` keeps the old default, the chrome document.
-- **Journal**: izumo keeps 4096 diagnostic records across targets. Each page script runtime keeps at most 1000 console entries and 1000 runtime errors, read in bounded batches that report how many were lost (ps-blitz `1fa32759`). A lost range shows up as `diagnosticOverflow`.
-- **ps-qa**: `--tab-id N` or `--chrome` selects a target for any command, and node guards are copied from the inspection it made. `ps-qa targets` lists targets. `page-targets <url>` drives the fixture in `apps/chuzz/tests/page-targets/` through two GUI tabs, navigation and closure. `headless-target` checks the headless single-page discovery and legacy default. `inspection-off` turns inspection off in Settings and asserts the socket and descriptor are gone.
+- **Headless** (`serve.rs`): the one page is tab `0`. `listTargets` returns a single entry with `active: true`, `generation` built from the process id and the document id, and capabilities `agent: true`, `diagnostics`, `capture` and `webGpu` true outside bot mode, `console` and `runtimeErrors` false. Any other `target` is `unknownTarget` (`headless exposes only page 0`). A targeted `observe` is acknowledged with a context and delivers nothing.
+- **GUI** (`browser.rs`, with izumo `^0.6.3`): every tab is a target with its own `mounted_generation`, bumped each time a new document mounts in it. Agent and diagnostics requests run against the addressed tab's mounted document. Capability flags are all true when the tab runs script and all false otherwise. Omitting `target` keeps the old default, the chrome document.
+- **Journal**: izumo keeps 4096 diagnostic records across targets. Each page script runtime keeps at most 1000 console entries and 1000 runtime errors, read in bounded batches that report how many were lost (ps-blitz `^0.6.2`). A lost range shows up as `diagnosticOverflow`.
+- **ps-qa**: `--tab-id N` or `--chrome` selects a target for any command, and node guards are copied from the inspection it made. `ps-qa targets` lists targets. `page-targets <url>` drives `apps/chuzz/fixtures/page-targets.html` through two GUI tabs, navigation and closure. `headless-target` checks the headless single-page discovery and legacy default. `inspection-off` turns inspection off in Settings and asserts the socket and descriptor are gone.
 
 ## Driver plane (TAURI_BLITZ_DRIVER)
 

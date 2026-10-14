@@ -1,6 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use nagoya::net::{TcpListener, TcpStream};
@@ -15,6 +16,9 @@ const SECOND_HTML: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-sit
 const SECOND_JS: &[u8] = include_bytes!("../../../apps/chuzz/tests/fixture-site/second.js");
 const TAB_CLOSE_HTML: &[u8] =
     include_bytes!("../../../apps/chuzz/tests/fixture-site/tab-close.html");
+const PAGE_TARGET_HTML: &[u8] = include_bytes!("../../../apps/chuzz/fixtures/page-targets.html");
+const TELEMETRY_BLOCK_HTML: &[u8] =
+    include_bytes!("../../../apps/chuzz/src/platform/qa/telemetry-block.html");
 const SITES_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/sites.html");
 const SITES_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/video/qa/src/sites.ts");
 const GPU_BUFFERS_HTML: &[u8] =
@@ -29,11 +33,13 @@ const ECHO_COMMON: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/ech
 const ECHO_SCRIPT: &[u8] = include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/echo.ts");
 const ECHO_HELPER_SCRIPT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/webrtc/qa/echo/src/helper.ts");
+
 const WEBAUTHN_HTML: &[u8] = include_bytes!("../../../apps/chuzz/src/platform/qa/webauthn.html");
 const WEBAUTHN_FONT: &[u8] =
     include_bytes!("../../../apps/chuzz/src/platform/qa/fonts/FiraSans-Regular.woff2");
 /// The Referer the last `/referer.png` request carried, for the domb fixture.
 static IMAGE_REFERER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static TELEMETRY_HITS: AtomicUsize = AtomicUsize::new(0);
 
 const PIXEL: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0,
@@ -280,6 +286,28 @@ async fn serve(
         "/second.html" => ("text/html; charset=utf-8", SECOND_HTML.to_vec()),
         "/second.js" => ("text/javascript; charset=utf-8", SECOND_JS.to_vec()),
         "/tab-close.html" => ("text/html; charset=utf-8", TAB_CLOSE_HTML.to_vec()),
+        "/page-targets.html" => ("text/html; charset=utf-8", PAGE_TARGET_HTML.to_vec()),
+        "/telemetry-block.html" => ("text/html; charset=utf-8", TELEMETRY_BLOCK_HTML.to_vec()),
+        "/telemetry-hit" => {
+            TELEMETRY_HITS.fetch_add(1, Ordering::Relaxed);
+            return respond(
+                &mut stream,
+                "204 No Content",
+                "text/plain; charset=utf-8",
+                b"",
+            )
+            .await;
+        }
+        "/telemetry-hits" => {
+            let hits = TELEMETRY_HITS.load(Ordering::Relaxed).to_string();
+            return respond(
+                &mut stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                hits.as_bytes(),
+            )
+            .await;
+        }
         "/sites.html" => ("text/html; charset=utf-8", SITES_HTML.to_vec()),
         "/src/sites.ts" => ("text/javascript; charset=utf-8", SITES_SCRIPT.to_vec()),
         "/fonts/FiraSans-Regular.woff2" => ("font/woff2", FONT.to_vec()),

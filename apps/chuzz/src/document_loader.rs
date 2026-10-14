@@ -9,7 +9,8 @@
 // Everything but the shim and the provider alias belongs to `load_for_capture`,
 // which is off by default: it pulls in the CPU rasteriser the windowed browser
 // never needs.
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "capture")]
 use blitz_dom::DocumentConfig;
@@ -37,6 +38,7 @@ pub struct NetProvider {
     inner: Arc<blitz_net::Provider>,
     cookies: Arc<crate::cookie_store::BrowserCookieStore>,
     waker: Arc<dyn blitz_traits::net::NetWaker>,
+    blocked_requests: Arc<Mutex<VecDeque<String>>>,
 }
 
 const DEFAULT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
@@ -128,6 +130,7 @@ impl NetProvider {
             )),
             cookies,
             waker,
+            blocked_requests: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -137,6 +140,23 @@ impl NetProvider {
 
     pub fn cookie_store(&self) -> Arc<crate::cookie_store::BrowserCookieStore> {
         Arc::clone(&self.cookies)
+    }
+
+    pub(crate) fn note_blocked_request(&self, url: &Url) {
+        let message = crate::telemetry::diagnostic(url);
+        self.blocked_requests
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push_back(message.clone());
+        eprintln!("chuzz: net: {message}");
+    }
+
+    pub(crate) fn take_blocked_requests(&self) -> Vec<String> {
+        self.blocked_requests
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .drain(..)
+            .collect()
     }
 
     fn with_default_language(
@@ -278,6 +298,12 @@ impl blitz_traits::net::NetProvider for NetProvider {
         );
         let signal = request.signal.clone();
         let provider = self.clone();
+        if crate::telemetry::blocked_url(&request.url) {
+            provider.note_blocked_request(&request.url);
+            handler.bytes(request.url.to_string(), blitz_traits::net::Bytes::new());
+            provider.waker.wake(doc_id);
+            return;
+        }
         let _detached = nagoya::spawn(async move {
             let result = if let Some(signal) = signal {
                 let mut fetch = Box::pin(provider.fetch_response_async(request));

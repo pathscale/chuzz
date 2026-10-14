@@ -3,7 +3,7 @@ members = ["apps/chuzz", "crates/chuzz-control", "crates/chuzz-qa-fixture"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.44"
+version = "0.1.45"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
@@ -32,20 +32,20 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same range gets the same crate rather than a second copy. To build against
 # a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
 # exercises what a release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.6" }
-blitz-html = { package = "ps-blitz-html", version = "^0.6" }
-blitz-net = { package = "ps-blitz-net", version = "^0.6" }
-blitz-script = { package = "ps-blitz-script", version = "^0.6" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.6" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.6.3" }
+blitz-html = { package = "ps-blitz-html", version = "^0.6.3" }
+blitz-net = { package = "ps-blitz-net", version = "^0.6.3" }
+blitz-script = { package = "ps-blitz-script", version = "^0.6.3" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.6.3" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6" }
+blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6.3" }
 # The MCP framing the control server speaks, same source and feature as
 # izumo uses for its agent-control surface.
 # The one control surface: wire vocabulary, the document core, and both
 # transports. It used to be reached through `izumo`, which meant a
 # headless browser compiled a Tauri runtime with the runtime switched off.
-blitz-control-protocol = { version = "^0.7.1", default-features = false }
+blitz-control-protocol = { version = "^0.7.3", default-features = false }
 
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
 brotli = { version = "8", default-features = false, features = ["std"] }
@@ -86,7 +86,7 @@ anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.3",
 anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15", default-features = false, features = ["image_format_png", "image_format_jpeg", "image_format_gif", "image_format_webp"] }
 # Compiled-in open fonts for headless renders that must not depend on the machine.
 headless-fonts = "^0.1"
-blitz-paint = { package = "ps-blitz-paint", version = "^0.6" }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.6.3" }
 png = "=0.18.1"
 # Naming `wasmi::Linker` is unavoidable: `blitz_wasm::add_to_linker` takes one,
 # and blitz-wasm does not re-export the runtime. This must stay on the same
@@ -143,7 +143,7 @@ worktable = "^1.11.0"
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-izumo = { version = "^0.6.1", default-features = false, features = [
+izumo = { version = "^0.6.3", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }
