@@ -298,9 +298,7 @@ mod tests {
     #[derive(Debug)]
     struct Box_ {
         name: String,
-        y: f32,
-        width: f32,
-        height: f32,
+
     }
 
     fn boxes(dump: &str) -> Vec<Box_> {
@@ -310,13 +308,10 @@ mod tests {
                 let mut tokens = line.split_whitespace();
                 let _node_id = tokens.next()?;
                 let name = tokens.next()?;
-                let (_x, y) = tokens.next()?.split_once(',')?;
-                let (width, height) = tokens.next()?.split_once('*')?;
+
                 Some(Box_ {
                     name: name.to_owned(),
-                    y: y.parse().ok()?,
-                    width: width.parse().ok()?,
-                    height: height.parse().ok()?,
+
                 })
             })
             .collect()
