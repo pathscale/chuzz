@@ -77,6 +77,11 @@ mod shadow_inspect;
 #[path = "serve_supervisor.rs"]
 mod supervisor;
 
+fn reactor_defect(name: &str) -> bool {
+    cfg!(feature = "reactor-witness")
+        && std::env::var("CHUZZ_REACTOR_DEFECT").as_deref() == Ok(name)
+}
+
 fn trace(message: &str) {
     eprintln!("chuzz-headless: {message}");
 }

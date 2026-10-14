@@ -34,6 +34,7 @@ path = "src/headless_main.rs"
 required-features = ["capture", "javascript"]
 
 [features]
+reactor-witness = []
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
 default = [
@@ -195,7 +196,7 @@ skrifa = { version = "^0.42", default-features = false, features = ["std"], opti
 blitz-paint = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 flate2.workspace = true
-nagoya.workspace = true
+nagoya = { workspace = true, features = ["process"] }
 libc = "^0.2.189"
 rusty_alloc.workspace = true
 url.workspace = true

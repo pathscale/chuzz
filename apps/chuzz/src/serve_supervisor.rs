@@ -4,11 +4,12 @@
 //! is an inherited Unix socket, not another public control endpoint. Deadlines
 //! are enforced outside the process executing scripts.
 
+use nagoya::process::Child;
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -31,7 +32,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// A real site fetches dozens of scripts over the network before it is ready;
 /// ten seconds is a budget for local fixtures, not for the web.
 const REMOTE_LOAD_DEADLINE: Duration = Duration::from_secs(60);
-const IO_SLICE: Duration = Duration::from_millis(8);
+
 /// The worker link carries the same answers the public socket sends, so it
 /// takes the public frame limit. A larger worker frame could only be refused
 /// one hop later, by the encoder that writes it to the client.
@@ -118,14 +119,30 @@ fn page_error(message: &str) -> DebugResponse {
     })
 }
 
-fn not_ready(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
-    )
+fn worker_reactor() -> Result<&'static nagoya::reactor::Reactor, String> {
+    static REACTOR: OnceLock<Result<nagoya::reactor::Reactor, String>> = OnceLock::new();
+    REACTOR
+        .get_or_init(|| nagoya::reactor::Reactor::start().map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
-static WORKER_WIRE: OnceLock<Mutex<UnixStream>> = OnceLock::new();
+fn adopt_wire(wire: UnixStream) -> Result<nagoya::net::TcpStream, String> {
+    use std::os::fd::IntoRawFd;
+    wire.set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let handle = worker_reactor()?.handle();
+    // SAFETY: into_raw_fd transfers sole ownership of the connected socket.
+    let socket = unsafe { nagoya::reactor::socket::TcpSocket::from_raw(wire.into_raw_fd()) };
+    nagoya::net::TcpStream::from_socket(socket, &handle).map_err(|error| error.to_string())
+}
+
+struct WorkerWire {
+    outgoing: Mutex<spsc::Producer<Arc<Vec<u8>>>>,
+    ready: nagoya::sync::Notify,
+}
+
+static WORKER_WIRE: OnceLock<Arc<WorkerWire>> = OnceLock::new();
 
 pub(super) fn is_worker() -> bool {
     matches!(std::env::var(WORKER_ENV), Ok(value) if value == "1")
@@ -137,14 +154,20 @@ pub(super) fn launch_route() -> Option<String> {
 
 fn send(frame: &WorkerFrame) {
     let result = (|| {
-        let bytes = encode(frame)?;
+        let bytes = Arc::new(encode(frame)?);
         let wire = WORKER_WIRE
             .get()
             .ok_or("the page worker transport was not initialized")?;
-        let mut wire = wire
+        let producer = wire
+            .outgoing
             .lock()
             .map_err(|_| "the page worker transport lock was poisoned")?;
-        wire.write_all(&bytes).map_err(|error| error.to_string())
+        if producer.try_push(bytes).is_some() {
+            return Err("the page worker output queue is full".to_owned());
+        }
+        drop(producer);
+        wire.ready.notify_one();
+        Ok(())
     })();
     if let Err(error) = result {
         trace(&format!("page worker transport failed: {error}"));
@@ -171,83 +194,103 @@ impl Drop for OperationGuard {
 pub(super) fn ready(url: &Url) {
     send(&WorkerFrame::Ready(url.to_string()));
 }
-
 pub(super) fn painted() {
     if is_worker() {
         send(&WorkerFrame::Paint);
     }
 }
-
 pub(super) fn failed(message: &str) {
     send(&WorkerFrame::Failed(message.to_owned()));
 }
 
+async fn read_exact(reader: &mut nagoya::net::TcpStream, bytes: &mut [u8]) -> Result<(), String> {
+    let mut read = 0;
+    while read < bytes.len() {
+        let length = reader
+            .read(&mut bytes[read..])
+            .await
+            .map_err(|error| error.to_string())?;
+        if length == 0 {
+            return Err("the page worker closed its transport".into());
+        }
+        read += length;
+    }
+    Ok(())
+}
+
 pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
-    // Only the internally launched worker receives a socket as stdin. Keep
-    // stdout separate so page console output cannot corrupt this transport.
     let descriptor = io::stdin()
         .as_fd()
         .try_clone_to_owned()
         .map_err(|error| format!("could not inherit the page worker socket: {error}"))?;
     let wire = UnixStream::from(descriptor);
-    wire.set_nonblocking(false)
-        .map_err(|error| error.to_string())?;
-    let mut reader = wire.try_clone().map_err(|error| error.to_string())?;
+    let mut reader = adopt_wire(wire.try_clone().map_err(|error| error.to_string())?)?;
+    let mut writer = adopt_wire(wire)?;
+    let (producer, consumer) = spsc::make(128);
+    let wire = Arc::new(WorkerWire {
+        outgoing: Mutex::new(producer),
+        ready: nagoya::sync::Notify::new(),
+    });
     WORKER_WIRE
-        .set(Mutex::new(wire))
+        .set(Arc::clone(&wire))
         .map_err(|_| "the page worker transport was initialized twice".to_owned())?;
-
-    std::thread::Builder::new()
-        .name("chuzz-page-control".to_owned())
-        .spawn(move || {
-            loop {
-                let request = (|| {
-                    let mut header = [0_u8; 4];
-                    reader.read_exact(&mut header)?;
-                    let length = u32::from_be_bytes(header) as usize;
-                    if length > MAX_FRAME_BYTES {
-                        return Err(io::Error::other(
-                            "page worker request exceeded its byte limit",
-                        ));
-                    }
-                    let mut bytes = vec![0_u8; length];
-                    reader.read_exact(&mut bytes)?;
-                    serde_json::from_slice::<WireRequest>(&bytes)
-                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-                })();
-                let Ok(request) = request else {
-                    // Also handles a killed supervisor during initial loading:
-                    // this thread exists before any page script executes.
+    drop(nagoya::spawn(async move {
+        loop {
+            if let Some(bytes) = consumer.try_pop() {
+                if writer.write_all(&bytes).await.is_err() {
                     std::process::exit(0);
-                };
-                let answer = Once::new();
-                match sender.try_send((request.into(), Arc::clone(&answer))) {
-                    Ok(()) => {}
-                    Err(page_control::TrySendError::Full) => {
-                        answer.fill(DebugResponse::Error(DebugError {
-                            code: "documentBusy".into(),
-                            message: "the page worker request queue is full".into(),
-                        }));
-                    }
-                    Err(page_control::TrySendError::Disconnected) => {
-                        failed("the page document loop stopped");
-                        std::process::exit(1);
-                    }
                 }
-                let response = nagoya::block_on(answer.recv())
-                    .unwrap_or_else(|| page_error("the page document loop closed its reply"));
-                send(&WorkerFrame::Reply(Box::new(response)));
+            } else {
+                wire.ready.notified().await;
             }
-        })
-        .map_err(|error| format!("could not start the page worker control reader: {error}"))?;
+        }
+    }));
+    drop(nagoya::spawn(async move {
+        loop {
+            let request = async {
+                let mut header = [0_u8; 4];
+                read_exact(&mut reader, &mut header).await?;
+                let length = u32::from_be_bytes(header) as usize;
+                if length > MAX_FRAME_BYTES {
+                    return Err("page worker request exceeded its byte limit".to_owned());
+                }
+                let mut bytes = vec![0; length];
+                read_exact(&mut reader, &mut bytes).await?;
+                serde_json::from_slice::<WireRequest>(&bytes).map_err(|error| error.to_string())
+            }
+            .await;
+            let Ok(request) = request else {
+                std::process::exit(0);
+            };
+            let answer = Once::new();
+            match sender.try_send(Arc::new((request.into(), Arc::clone(&answer)))) {
+                Ok(()) => {}
+                Err(page_control::TrySendError::Full) => {
+                    answer.fill(DebugResponse::Error(DebugError {
+                        code: "documentBusy".into(),
+                        message: "the page worker request queue is full".into(),
+                    }));
+                }
+                Err(page_control::TrySendError::Disconnected) => {
+                    failed("the page document loop stopped");
+                    std::process::exit(1);
+                }
+            }
+            let response = answer
+                .recv()
+                .await
+                .unwrap_or_else(|| page_error("the page document loop closed its reply"));
+            send(&WorkerFrame::Reply(Box::new(response)));
+        }
+    }));
     Ok(())
 }
 
 struct Session {
     child: Child,
-    wire: UnixStream,
-    incoming: Vec<u8>,
-    outgoing: Vec<u8>,
+    wire: nagoya::net::TcpStream,
+    incoming: bytes::BytesMut,
+    outgoing: Arc<Vec<u8>>,
     written: usize,
     ready: bool,
     local: bool,
@@ -258,12 +301,7 @@ struct Session {
 impl Session {
     fn spawn(target: &str, route: Option<&str>, local: bool) -> Result<Self, String> {
         let (wire, worker) = UnixStream::pair().map_err(|error| error.to_string())?;
-        wire.set_nonblocking(false)
-            .map_err(|error| error.to_string())?;
-        wire.set_read_timeout(Some(IO_SLICE))
-            .map_err(|error| error.to_string())?;
-        wire.set_write_timeout(Some(IO_SLICE))
-            .map_err(|error| error.to_string())?;
+        let wire = adopt_wire(wire)?;
         let input: OwnedFd = worker.into();
         let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
         command
@@ -282,12 +320,15 @@ impl Session {
             } else {
                 REMOTE_LOAD_DEADLINE
             };
-        let child = command.spawn().map_err(|error| error.to_string())?;
+        let child = nagoya::process::Command::from(command)
+            .kill_on_drop(true)
+            .spawn(&worker_reactor()?.handle())
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             child,
             wire,
-            incoming: Vec::new(),
-            outgoing: Vec::new(),
+            incoming: bytes::BytesMut::new(),
+            outgoing: Arc::new(Vec::new()),
             written: 0,
             ready: false,
             local,
@@ -297,7 +338,7 @@ impl Session {
     }
 
     fn queue(&mut self, request: WireRequest) -> Result<(), String> {
-        self.outgoing = encode(&request)?;
+        self.outgoing = Arc::new(encode(&request)?);
         self.written = 0;
         Ok(())
     }
@@ -312,51 +353,80 @@ impl Session {
             .map(|(operation, _)| format!("the page exceeded its {operation:?} deadline"))
     }
 
-    fn pump(&mut self) -> Result<Vec<WorkerFrame>, String> {
+    async fn pump(&mut self) -> Result<Vec<WorkerFrame>, String> {
+        std::future::poll_fn(|cx| self.poll_pump(cx)).await
+    }
+
+    fn poll_pump(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Vec<WorkerFrame>, String>> {
+        use std::future::Future;
+        use std::task::Poll;
+        {
+            // Child::wait registers the process exit descriptor. Cancellation
+            // retains its cached exit status and is safe between wakeups.
+            let mut exited = std::pin::pin!(self.child.wait());
+            if let Poll::Ready(status) = exited.as_mut().poll(cx) {
+                return Poll::Ready(Err(format!("the page worker exited: {status:?}")));
+            }
+        }
         if self.written < self.outgoing.len() {
-            match self.wire.write(&self.outgoing[self.written..]) {
-                Ok(0) => return Err("the page worker stopped reading requests".to_owned()),
-                Ok(length) => self.written += length,
-                Err(error) if not_ready(&error) => {}
-                Err(error) => return Err(format!("could not write to the page worker: {error}")),
+            match self.wire.poll_write(cx, &self.outgoing[self.written..]) {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err("the page worker stopped reading requests".to_owned()));
+                }
+                Poll::Ready(Ok(length)) => self.written += length,
+                Poll::Pending => {}
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready(Err(format!(
+                        "could not write to the page worker: {error}"
+                    )));
+                }
             }
             if self.written == self.outgoing.len() {
-                self.outgoing.clear();
+                self.outgoing = Arc::new(Vec::new());
                 self.written = 0;
             }
         }
 
-        let mut bytes = [0_u8; 65_536];
-        match self.wire.read(&mut bytes) {
-            Ok(0) => return Err("the page worker closed its transport".to_owned()),
-            Ok(length) => self.incoming.extend_from_slice(&bytes[..length]),
-            // EAGAIN on macOS is readiness, not a dead page. Keep both partial
-            // incoming frames and partial outgoing writes until the deadline.
-            Err(error) if not_ready(&error) => return Ok(Vec::new()),
-            Err(error) => return Err(format!("could not read the page worker: {error}")),
+        self.incoming.reserve(65_536);
+        match self.wire.poll_read_buf(cx, &mut self.incoming) {
+            Poll::Ready(Ok(0)) => {
+                return Poll::Ready(Err("the page worker closed its transport".to_owned()));
+            }
+            Poll::Ready(Ok(_)) => {}
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => {
+                return Poll::Ready(Err(format!("could not read the page worker: {error}")));
+            }
         }
-
         let mut frames = Vec::new();
         let mut consumed = 0;
         while self.incoming.len() - consumed >= 4 {
             let header = &self.incoming[consumed..consumed + 4];
             let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
             if length > MAX_FRAME_BYTES {
-                return Err("the page worker reply exceeded its byte limit".to_owned());
+                return Poll::Ready(Err(
+                    "the page worker reply exceeded its byte limit".to_owned()
+                ));
             }
             if self.incoming.len() - consumed - 4 < length {
                 break;
             }
             let end = consumed + 4 + length;
-            let frame = serde_json::from_slice(&self.incoming[consumed + 4..end])
-                .map_err(|error| format!("invalid page worker frame: {error}"))?;
-            frames.push(frame);
+            match serde_json::from_slice(&self.incoming[consumed + 4..end]) {
+                Ok(frame) => frames.push(frame),
+                Err(error) => {
+                    return Poll::Ready(Err(format!("invalid page worker frame: {error}")));
+                }
+            }
             consumed = end;
         }
         if consumed > 0 {
-            self.incoming.drain(..consumed);
+            let _ = self.incoming.split_to(consumed);
         }
-        Ok(frames)
+        Poll::Ready(Ok(frames))
     }
 }
 
@@ -374,7 +444,8 @@ struct PendingRequest {
 
 struct Supervisor {
     session: Option<Session>,
-    retired: Vec<Child>,
+    retired: Vec<nagoya::JoinHandle<Arc<()>>>,
+    wake: Arc<nagoya::sync::Notify>,
     pending: Option<PendingRequest>,
     failure: Option<String>,
     url: Option<Url>,
@@ -398,28 +469,18 @@ impl Supervisor {
         }
         if let Some(session) = self.session.take() {
             let Session { mut child, .. } = session;
-            let _ = child.kill();
-            self.retired.push(child);
+            let _ = child.start_kill();
+            let wake = Arc::clone(&self.wake);
+            self.retired.push(nagoya::spawn(async move {
+                let _ = child.wait().await;
+                wake.notify_one();
+                Arc::new(())
+            }));
         }
         self.failure = Some(message);
     }
 
     fn check_deadlines(&mut self) {
-        // A worker killed by a signal (a native stack overflow, the memory
-        // killer) leaves its socket open in no state the transport notices, so
-        // ask the process itself and name how it ended.
-        let exited = self
-            .session
-            .as_mut()
-            .and_then(|session| match session.child.try_wait() {
-                Ok(Some(status)) => Some(status.to_string()),
-                Ok(None) => None,
-                Err(error) => Some(format!("unknown status ({error})")),
-            });
-        if let Some(status) = exited {
-            self.fail(&format!("the page worker exited: {status}"));
-            return;
-        }
         let now = Instant::now();
         if self
             .pending
@@ -607,10 +668,10 @@ impl Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         if let Some(session) = &mut self.session {
-            let _ = session.child.kill();
+            let _ = session.child.start_kill();
         }
-        for child in &mut self.retired {
-            let _ = child.kill();
+        for task in self.retired.drain(..) {
+            task.cancel();
         }
     }
 }
@@ -630,18 +691,22 @@ pub(super) fn serve(target: &str) -> Result<(), String> {
     } else {
         64
     };
-    let inbox = Arc::new(Mutex::new(VecDeque::<QueuedRequest>::new()));
+    let inbox = Arc::new(Mutex::new(VecDeque::<Arc<QueuedRequest>>::new()));
     let bridge_inbox = Arc::clone(&inbox);
+    let wake = Arc::new(nagoya::sync::Notify::new());
+    let bridge_wake = Arc::clone(&wake);
     let bridge: blitz_control_protocol::server::ControlBridge = Arc::new(move |request| {
         let answer = Once::new();
         let deadline = Instant::now() + REQUEST_DEADLINE;
         match bridge_inbox.lock() {
             Ok(mut inbox) if inbox.len() < max_pending => {
-                inbox.push_back(QueuedRequest {
+                inbox.push_back(Arc::new(QueuedRequest {
                     request,
                     answer: Arc::clone(&answer),
                     deadline,
-                });
+                }));
+                drop(inbox);
+                bridge_wake.notify_one();
             }
             Ok(_) => {
                 answer.fill(DebugResponse::Error(DebugError {
@@ -682,6 +747,7 @@ pub(super) fn serve(target: &str) -> Result<(), String> {
     let mut supervisor = Supervisor {
         session,
         retired: Vec::new(),
+        wake: Arc::clone(&wake),
         pending: None,
         failure,
         url: Url::parse(target).ok(),
@@ -691,62 +757,98 @@ pub(super) fn serve(target: &str) -> Result<(), String> {
         events,
         render_revision: 0,
     };
-    loop {
-        supervisor.check_deadlines();
-        let frames = match &mut supervisor.session {
-            Some(session) => session.pump(),
-            None => Ok(Vec::new()),
-        };
-        // Check before applying End or Reply, so late data cannot erase an
-        // expired execution or request deadline.
-        supervisor.check_deadlines();
-        match frames {
-            Ok(frames) => {
-                for frame in frames {
-                    if supervisor.session.is_none() {
-                        break;
+    nagoya::block_on(async {
+        loop {
+            supervisor.check_deadlines();
+            supervisor.retired.retain(|task| !task.is_finished());
+            let now = Instant::now();
+            let (expired, next, queued_deadline) = {
+                let mut inbox = inbox
+                    .lock()
+                    .map_err(|_| "the inspection request queue was poisoned".to_owned())?;
+                let mut expired = Vec::new();
+                inbox.retain(|queued| {
+                    if now >= queued.deadline {
+                        expired.push(Arc::clone(&queued.answer));
+                        false
+                    } else {
+                        true
                     }
-                    supervisor.frame(frame);
+                });
+                let next = if supervisor.pending.is_none() && supervisor.retired.is_empty() {
+                    inbox.pop_front()
+                } else {
+                    None
+                };
+                let deadline = inbox.iter().map(|request| request.deadline).min();
+                (expired, next, deadline)
+            };
+            for answer in expired {
+                answer.fill(page_error(
+                    "the control request expired while waiting for the page",
+                ));
+            }
+            if let Some(next) = next {
+                supervisor.accept(Arc::try_unwrap(next).unwrap_or_else(|_| {
+                    panic!("supervisor request ownership was retained after enqueue")
+                }));
+            }
+
+            let mut deadline = queued_deadline;
+            let mut include = |due: Instant| {
+                deadline = Some(deadline.map_or(due, |current| current.min(due)));
+            };
+            if let Some(pending) = &supervisor.pending {
+                include(pending.deadline);
+            }
+            if let Some(session) = &supervisor.session {
+                if !session.ready {
+                    include(session.startup_deadline);
+                }
+                for (_, due) in &session.operations {
+                    include(*due);
                 }
             }
-            Err(message) => supervisor.fail(&message),
-        }
-        // Never block the public control loop waiting to reap a killed page.
-        supervisor
-            .retired
-            .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
-
-        let now = Instant::now();
-        let (expired, next) = {
-            let mut inbox = inbox
-                .lock()
-                .map_err(|_| "the inspection request queue was poisoned".to_owned())?;
-            let mut expired = Vec::new();
-            inbox.retain(|queued| {
-                if now >= queued.deadline {
-                    expired.push(Arc::clone(&queued.answer));
-                    false
-                } else {
-                    true
-                }
-            });
-            let next = if supervisor.pending.is_none() && supervisor.retired.is_empty() {
-                inbox.pop_front()
-            } else {
-                None
+            let frames = {
+                use std::future::Future;
+                use std::task::Poll;
+                let mut changed = Box::pin(wake.notified());
+                let mut timer = Box::pin(async {
+                    match deadline {
+                        Some(due) => {
+                            nagoya::sleep(due.saturating_duration_since(Instant::now())).await
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                });
+                let mut progress = Box::pin(async {
+                    match &mut supervisor.session {
+                        Some(session) => session.pump().await,
+                        None => std::future::pending::<Result<Vec<WorkerFrame>, String>>().await,
+                    }
+                });
+                std::future::poll_fn(|cx| {
+                    if timer.as_mut().poll(cx).is_ready() || changed.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(None);
+                    }
+                    progress.as_mut().poll(cx).map(Some)
+                })
+                .await
             };
-            (expired, next)
-        };
-        for answer in expired {
-            answer.fill(page_error(
-                "the control request expired while waiting for the page",
-            ));
+            // Deadlines are checked before any End or Reply may clear them.
+            supervisor.check_deadlines();
+            match frames {
+                Some(Ok(frames)) => {
+                    for frame in frames {
+                        if supervisor.session.is_none() {
+                            break;
+                        }
+                        supervisor.frame(frame);
+                    }
+                }
+                Some(Err(message)) => supervisor.fail(&message),
+                None => {}
+            }
         }
-        if let Some(next) = next {
-            supervisor.accept(next);
-        }
-        if supervisor.session.is_none() {
-            std::thread::sleep(IO_SLICE);
-        }
-    }
+    })
 }
