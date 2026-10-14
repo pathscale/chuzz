@@ -2681,6 +2681,9 @@ pub async fn load_for_capture(
     if request.url.scheme() == "view-source" {
         let inner = request.url.path().to_owned();
         let url = Url::parse(&inner).map_err(|error| format!("{inner} is not a URL: {error}"))?;
+        let navigation = if matches!(navigation, Initiator::Browser(_)) {
+            net_provider.browser_initiator(url.clone())
+        } else { navigation.clone() };
         let (_, bytes) = net_provider
             .fetch_async(Request::get(url).initiator(navigation.clone()))
             .await
