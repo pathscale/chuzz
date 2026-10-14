@@ -93,6 +93,10 @@ pub mod internal_pages;
 pub mod media;
 #[cfg(feature = "javascript")]
 pub mod tab_stash;
+#[cfg(feature = "gui")]
+mod tab_native;
+#[cfg(feature = "gui")]
+mod tab_session;
 pub mod nav;
 #[cfg(feature = "gui")]
 pub mod tab_records;
