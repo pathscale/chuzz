@@ -51,7 +51,7 @@
 
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -428,29 +428,24 @@ fn is_public_ipv4(address: std::net::Ipv4Addr) -> bool {
     !(special_purpose || address.is_private() || address.is_loopback() || address.is_multicast())
 }
 
-struct WallTimeoutGuard(Arc<AtomicBool>);
+struct WallTimeoutGuard(Option<nagoya::JoinHandle<Arc<()>>>);
 
 impl WallTimeoutGuard {
     fn start(timeout: Duration) -> Result<Self, String> {
-        let finished = Arc::new(AtomicBool::new(false));
-        let watchdog_finished = Arc::clone(&finished);
-        std::thread::Builder::new()
-            .name("chuzz-headless-timeout".to_owned())
-            .spawn(move || {
-                std::thread::sleep(timeout);
-                if !watchdog_finished.swap(true, Ordering::AcqRel) {
-                    eprintln!("chuzz-headless: bot child reached its wall-time limit");
-                    std::process::exit(124);
-                }
-            })
-            .map_err(|error| format!("could not start the headless timeout guard: {error}"))?;
-        Ok(Self(finished))
+        let task = nagoya::spawn(async move {
+            nagoya::sleep(timeout).await;
+            eprintln!("chuzz-headless: bot child reached its wall-time limit");
+            std::process::exit(124);
+        });
+        Ok(Self(Some(task)))
     }
 }
 
 impl Drop for WallTimeoutGuard {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        if let Some(task) = self.0.take() {
+            task.cancel();
+        }
     }
 }
 
@@ -468,203 +463,9 @@ const PROXY_ENVIRONMENT: [&str; 8] = [
     "no_proxy",
 ];
 
-struct EgressProxy {
-    address: SocketAddr,
-    stop: Arc<AtomicBool>,
-    active_connections: Arc<std::sync::atomic::AtomicUsize>,
-    accept_thread: Option<std::thread::JoinHandle<()>>,
-    original_environment: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl EgressProxy {
-    fn start(policy: HeadlessPolicy) -> Result<Self, String> {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-            .map_err(|error| format!("could not bind the private egress filter: {error}"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| format!("could not configure the private egress filter: {error}"))?;
-        let address = listener
-            .local_addr()
-            .map_err(|error| format!("could not read the private egress address: {error}"))?;
-        let proxy_url = format!("http://{address}");
-        let original_environment = PROXY_ENVIRONMENT
-            .iter()
-            .map(|name| (*name, std::env::var_os(name)))
-            .collect::<Vec<_>>();
-        // The headless binary has not started its runtime or any network
-        // workers yet. Install the proxy before client construction so the
-        // existing engine provider sends every HTTP(S) connection through it.
-        unsafe {
-            for name in [
-                "HTTP_PROXY",
-                "http_proxy",
-                "HTTPS_PROXY",
-                "https_proxy",
-                "ALL_PROXY",
-                "all_proxy",
-            ] {
-                std::env::set_var(name, &proxy_url);
-            }
-            std::env::set_var("NO_PROXY", "");
-            std::env::set_var("no_proxy", "");
-        }
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let accept_stop = Arc::clone(&stop);
-        let active_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let accept_active_connections = Arc::clone(&active_connections);
-        let transferred_bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let accept_transferred_bytes = Arc::clone(&transferred_bytes);
-        let accept_thread = match std::thread::Builder::new()
-            .name("chuzz-headless-egress".to_owned())
-            .spawn(move || {
-                while !accept_stop.load(Ordering::Acquire) {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            let already_active =
-                                accept_active_connections.fetch_add(1, Ordering::AcqRel);
-                            if already_active >= MAX_PROXY_CONNECTIONS {
-                                accept_active_connections.fetch_sub(1, Ordering::AcqRel);
-                                refuse_proxy_connection(stream, "503 Service Unavailable");
-                                continue;
-                            }
-                            let connection_policy = policy.clone();
-                            let connection_active = Arc::clone(&accept_active_connections);
-                            let connection_bytes = Arc::clone(&accept_transferred_bytes);
-                            if std::thread::Builder::new()
-                                .name("chuzz-headless-egress-connection".to_owned())
-                                .spawn(move || {
-                                    handle_proxy_connection(
-                                        stream,
-                                        &connection_policy,
-                                        connection_bytes,
-                                    );
-                                    connection_active.fetch_sub(1, Ordering::AcqRel);
-                                })
-                                .is_err()
-                            {
-                                accept_active_connections.fetch_sub(1, Ordering::AcqRel);
-                            }
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }) {
-            Ok(thread) => thread,
-            Err(error) => {
-                restore_proxy_environment(&original_environment);
-                return Err(format!(
-                    "could not start the private egress filter: {error}"
-                ));
-            }
-        };
-
-        Ok(Self {
-            address,
-            stop,
-            active_connections,
-            accept_thread: Some(accept_thread),
-            original_environment,
-        })
-    }
-}
-
-impl Drop for EgressProxy {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = std::net::TcpStream::connect_timeout(&self.address, Duration::from_millis(100));
-        if let Some(thread) = self.accept_thread.take() {
-            let _ = thread.join();
-        }
-        let drained_at = std::time::Instant::now();
-        while self.active_connections.load(Ordering::Acquire) > 0
-            && drained_at.elapsed() < Duration::from_secs(3)
-        {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if self.active_connections.load(Ordering::Acquire) == 0 {
-            restore_proxy_environment(&self.original_environment);
-        }
-    }
-}
-
-fn restore_proxy_environment(originals: &[(&'static str, Option<std::ffi::OsString>)]) {
-    unsafe {
-        for (name, value) in originals {
-            if let Some(value) = value {
-                std::env::set_var(name, value);
-            } else {
-                std::env::remove_var(name);
-            }
-        }
-    }
-}
-
-fn refuse_proxy_connection(mut stream: std::net::TcpStream, status: &str) {
-    use std::io::Write as _;
-    let _ = stream.write_all(
-        format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes(),
-    );
-}
-
-fn handle_proxy_connection(
-    mut client: std::net::TcpStream,
-    policy: &HeadlessPolicy,
-    transferred_bytes: Arc<std::sync::atomic::AtomicUsize>,
-) {
-    use std::io::Write as _;
-
-    let _ = client.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = client.set_write_timeout(Some(Duration::from_secs(2)));
-    let Some(request_head) = read_proxy_head(&mut client) else {
-        return;
-    };
-    let Some(url) = proxy_connect_url(&request_head) else {
-        refuse_proxy_connection(client, "403 Forbidden");
-        return;
-    };
-    let Ok(addresses) = policy.resolve_public_addresses(&url) else {
-        refuse_proxy_connection(client, "403 Forbidden");
-        return;
-    };
-    let upstream = addresses.into_iter().find_map(|address| {
-        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(3)).ok()
-    });
-    let Some(upstream) = upstream else {
-        refuse_proxy_connection(client, "502 Bad Gateway");
-        return;
-    };
-    if client
-        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .is_err()
-    {
-        return;
-    }
-    let _ = client.set_read_timeout(None);
-    let _ = client.set_write_timeout(None);
-    tunnel_proxy_streams(client, upstream, transferred_bytes);
-}
-
-fn read_proxy_head(stream: &mut std::net::TcpStream) -> Option<String> {
-    use std::io::Read as _;
-
-    let mut head = Vec::with_capacity(1024);
-    let mut byte = [0_u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if head.len() >= MAX_PROXY_HEADER_BYTES {
-            return None;
-        }
-        match stream.read(&mut byte) {
-            Ok(0) => return None,
-            Ok(_) => head.push(byte[0]),
-            Err(_) => return None,
-        }
-    }
-    String::from_utf8(head).ok()
-}
+#[path = "serve_egress.rs"]
+mod egress;
+use egress::EgressProxy;
 
 fn proxy_connect_url(request_head: &str) -> Option<Url> {
     let first_line = request_head.lines().next()?;
@@ -674,82 +475,6 @@ fn proxy_connect_url(request_head: &str) -> Option<Url> {
     }
     let authority = fields.next()?;
     Url::parse(&format!("https://{authority}/")).ok()
-}
-
-fn tunnel_proxy_streams(
-    mut client: std::net::TcpStream,
-    mut upstream: std::net::TcpStream,
-    transferred_bytes: Arc<std::sync::atomic::AtomicUsize>,
-) {
-    use std::net::Shutdown;
-
-    let Ok(mut client_reader) = client.try_clone() else {
-        return;
-    };
-    let Ok(mut upstream_writer) = upstream.try_clone() else {
-        return;
-    };
-    let Ok(client_stop) = client.try_clone() else {
-        return;
-    };
-    let Ok(upstream_stop) = upstream.try_clone() else {
-        return;
-    };
-    let Ok(sender_client_stop) = client.try_clone() else {
-        return;
-    };
-    let Ok(sender_upstream_stop) = upstream.try_clone() else {
-        return;
-    };
-    let exhausted = Arc::new(AtomicBool::new(false));
-    let sender_exhausted = Arc::clone(&exhausted);
-    let sender_bytes = Arc::clone(&transferred_bytes);
-    let client_to_upstream = std::thread::spawn(move || {
-        relay_proxy_bytes(
-            &mut client_reader,
-            &mut upstream_writer,
-            &sender_bytes,
-            &sender_exhausted,
-        );
-        if sender_exhausted.load(Ordering::Acquire) {
-            let _ = sender_client_stop.shutdown(Shutdown::Both);
-            let _ = sender_upstream_stop.shutdown(Shutdown::Both);
-        }
-        let _ = upstream_writer.shutdown(Shutdown::Write);
-    });
-    relay_proxy_bytes(&mut upstream, &mut client, &transferred_bytes, &exhausted);
-    if exhausted.load(Ordering::Acquire) {
-        let _ = client_stop.shutdown(Shutdown::Both);
-        let _ = upstream_stop.shutdown(Shutdown::Both);
-    }
-    let _ = client.shutdown(Shutdown::Write);
-    let _ = client_to_upstream.join();
-}
-
-fn relay_proxy_bytes(
-    reader: &mut impl std::io::Read,
-    writer: &mut impl std::io::Write,
-    transferred_bytes: &std::sync::atomic::AtomicUsize,
-    exhausted: &AtomicBool,
-) {
-    let mut buffer = [0_u8; 8192];
-    loop {
-        if exhausted.load(Ordering::Acquire) {
-            return;
-        }
-        let read = match std::io::Read::read(reader, &mut buffer) {
-            Ok(0) | Err(_) => return,
-            Ok(read) => read,
-        };
-        let allowed = reserve_proxy_bytes(transferred_bytes, read);
-        if allowed > 0 && std::io::Write::write_all(writer, &buffer[..allowed]).is_err() {
-            return;
-        }
-        if allowed < read {
-            exhausted.store(true, Ordering::Release);
-            return;
-        }
-    }
 }
 
 fn reserve_proxy_bytes(
@@ -1726,7 +1451,7 @@ fn serve_page(
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
     let (request_tx, request_rx) = page_control::channel(64);
-    supervisor::start_worker(request_tx)?;
+
     let policy = HeadlessPolicy::from_env()?;
     let _egress_proxy = if policy.bot_child {
         Some(EgressProxy::start(policy.clone())?)
@@ -1738,6 +1463,7 @@ fn serve_page(
     } else {
         None
     };
+    supervisor::start_worker(request_tx)?;
     let target = classify(target).map_err(|error| {
         if policy.bot_child {
             let _ = error;
