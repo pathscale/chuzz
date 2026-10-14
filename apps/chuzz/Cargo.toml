@@ -196,6 +196,7 @@ blitz-paint = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 flate2.workspace = true
 nagoya.workspace = true
+libc = "^0.2.189"
 rusty_alloc.workspace = true
 url.workspace = true
 serde.workspace = true
