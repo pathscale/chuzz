@@ -2454,6 +2454,57 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     };
   }
 
+  if (typeof globalThis.Image === 'undefined') {
+    // The standalone shim's preloader fallback. The network/GPU bootstrap
+    // replaces this with its DOM-backed, decoded image constructor when the
+    // host transport is installed.
+    globalThis.Image = function (width, height) {
+      var image = this;
+      var handlers = [];
+      var source = '';
+      this.width = width === undefined ? 0 : width;
+      this.height = height === undefined ? 0 : height;
+      this.naturalWidth = 0;
+      this.naturalHeight = 0;
+      this.complete = false;
+      this.onload = null;
+      this.onerror = null;
+      this.crossOrigin = null;
+      this.decoding = 'auto';
+      this.loading = 'eager';
+      this.addEventListener = function (type, handler) {
+        if (typeof handler === 'function') { handlers.push([String(type), handler]); }
+      };
+      this.removeEventListener = function (type, handler) {
+        for (var index = handlers.length - 1; index >= 0; index--) {
+          if (handlers[index][0] === String(type) && handlers[index][1] === handler) {
+            handlers.splice(index, 1);
+          }
+        }
+      };
+      this.dispatchEvent = function () { return false; };
+      this.decode = function () { return Promise.resolve(); };
+      Object.defineProperty(this, 'src', {
+        configurable: true,
+        get: function () { return source; },
+        set: function (value) {
+          source = String(value);
+          setTimeout(function () {
+            image.complete = true;
+            var event = { type: 'load', target: image };
+            if (typeof image.onload === 'function') {
+              try { image.onload(event); } catch (error) {}
+            }
+            var listeners = handlers.slice();
+            for (var index = 0; index < listeners.length; index++) {
+              if (listeners[index][0] !== 'load') { continue; }
+              try { listeners[index][1](event); } catch (error) {}
+            }
+          }, 0);
+        }
+      });
+    };
+  }
   if (typeof globalThis.Path2D === 'undefined') {
     // Commands live only in this WeakMap. Canvas calls receive copies, so a
     // later mutation cannot change an already queued draw.
