@@ -2,6 +2,6 @@
     (
         id: "tls-chacha-required", group: "sandbox2-tls", what: "an authenticated AES-only local server commits the named refusal document",
         open: None, hover: None, click: None, subject: "#tls-chacha-required",
-        expect: VisibleInk, outcome_timeout_ms: 5000,
+        expect: VisibleInk, covers: ["Why chuzz refused this TLS connection", "link:Why chuzz refused this TLS connection"], outcome_timeout_ms: 5000,
     ),
 ]
