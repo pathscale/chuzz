@@ -21,6 +21,7 @@ mod app_caps;
 
 fn main() {
     chuzz::platform_hardening::startup();
+    chuzz::sandbox::startup();
     let _caps = app_caps::start(&[]);
     chuzz::tune_allocator();
     // Before the loader can reach the network. See the function's own comment

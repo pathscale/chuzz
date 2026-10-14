@@ -2,6 +2,8 @@
 
 use std::sync::OnceLock;
 
+static HEAP_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 static HARDENED: OnceLock<Result<(), String>> = OnceLock::new();
 
 pub fn startup() {
@@ -20,22 +22,23 @@ pub fn core_limit_zero() -> bool {
     {
         let mut limit = libc::rlimit { rlim_cur: 1, rlim_max: 1 };
         // The kernel writes exactly one initialized rlimit structure.
-        unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) == 0 }
+        return unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) == 0 }
             && limit.rlim_cur == 0
-            && limit.rlim_max == 0
+            && limit.rlim_max == 0;
     }
     #[cfg(not(unix))]
     false
 }
 
 pub fn heap_reports_disabled() -> bool {
-    HARDENED.get().is_some_and(|result| result.is_ok())
+    HEAP_DISABLED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 fn install() -> Result<(), String> {
     #[cfg(unix)]
     {
-        let limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let value = u64::from(crate::sandbox::defect("core-limit-zero"));
+        let limit = libc::rlimit { rlim_cur: value as libc::rlim_t, rlim_max: value as libc::rlim_t };
         // Lower both limits. Unprivileged code cannot raise the hard limit.
         if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
             return Err(format!("core-limit-zero: {}", std::io::Error::last_os_error()));
@@ -46,11 +49,11 @@ fn install() -> Result<(), String> {
         // task_info.h: disable corpse forks, which preserve the task's heap
         // for postmortem inspection independently of RLIMIT_CORE.
         const TASK_CORPSE_FORKING_DISABLED_MEM_DIAG: u32 = 1;
-        let result = unsafe {
+        let result = if crate::sandbox::defect("heap-reports-disabled") { 0 } else { unsafe {
             task_set_corpse_forking_behavior(
                 mach_task_self_, TASK_CORPSE_FORKING_DISABLED_MEM_DIAG,
             )
-        };
+        } };
         if result != 0 {
             return Err(format!("heap-reports-disabled: task policy returned {result}"));
         }
@@ -62,6 +65,8 @@ fn install() -> Result<(), String> {
             return Err(format!("heap-reports-disabled: {}", std::io::Error::last_os_error()));
         }
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    HEAP_DISABLED.store(!crate::sandbox::defect("heap-reports-disabled"), std::sync::atomic::Ordering::Release);
     // A panic payload can contain page bytes, credentials or heap values.
     std::panic::set_hook(Box::new(|_| eprintln!("chuzz: internal failure")));
     Ok(())

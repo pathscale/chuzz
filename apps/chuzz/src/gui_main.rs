@@ -52,6 +52,7 @@ mod app_caps;
 
 fn main() {
     chuzz::platform_hardening::startup();
+    chuzz::sandbox::startup();
     let _caps = app_caps::start(&[]);
     chuzz::tune_allocator();
     // Before any of the entry points below can reach the network. See the

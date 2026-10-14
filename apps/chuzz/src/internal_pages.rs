@@ -84,6 +84,9 @@ pub(crate) fn tls_refused_html(
 
 /// Resolve browser-owned pages before handing a URL to the network.
 pub(crate) fn html_for(url: &blitz_traits::net::Url) -> Option<String> {
+    if url.as_str() == "chuzz:sandbox-probe" {
+        return crate::sandbox::probe_html();
+    }
     (url.as_str() == crate::tls_status::TLS_REFUSED_WHY_URL).then(tls_refused_explainer_html)
 }
 

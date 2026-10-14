@@ -105,6 +105,7 @@ pub mod platform_hardening;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod script_fetch;
+pub mod sandbox;
 pub(crate) mod telemetry;
 mod tls;
 pub mod tls_status;
