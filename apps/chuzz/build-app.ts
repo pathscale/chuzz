@@ -1,5 +1,6 @@
 import { cp, mkdir, rm, utimes } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { audit } from "../../scripts/audit-c-surface";
 import { command, verifySignature } from "../../scripts/verify-sandbox2-signature";
 
 const script = import.meta.dir;
@@ -19,6 +20,15 @@ const bundle = join(repository, "target", profile, "bundle/macos/Chuzz.app");
 const contents = join(bundle, "Contents");
 const macos = join(contents, "MacOS");
 const resources = join(contents, "Resources");
+
+const metadataResult = await command(["cargo", ...args, "metadata", "--manifest-path", join(repository, "Cargo.toml"), "--format-version", "1", "--filter-platform", "aarch64-apple-darwin"]);
+const metadata = JSON.parse(metadataResult.stdout);
+const surface = audit(metadata, ["chuzz"]);
+const reportDirectory = join(repository, "target", profile, "sandbox2");
+await mkdir(reportDirectory, { recursive: true });
+await Bun.write(join(reportDirectory, "metadata.json"), metadataResult.stdout);
+await Bun.write(join(reportDirectory, "c-surface.json"), JSON.stringify(surface, null, 2));
+if (!surface.passed) throw new Error("c-surface-forbidden: " + surface.violations.map(pkg => pkg.name).join(", "));
 
 const build = Bun.spawn(["cargo", ...args, "build", "-p", "chuzz", "--bin", "chuzz-gui", "--bin", "chuzz-headless", ...(profile === "release" ? ["--release"] : [])], { cwd: repository, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
 if (await build.exited !== 0) throw new Error("browser build failed");
@@ -41,6 +51,7 @@ for (const name of ["chuzz-headless", "chuzz-gui"]) {
 await command(["/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime", "--entitlements", join(script, "entitlements.plist"), bundle]);
 await command(["/usr/bin/codesign", "--verify", "--deep", "--strict", bundle]);
 await verifySignature(join(macos, "chuzz-gui"));
+await command([process.execPath, join(repository, "scripts/qa-sandbox2.ts"), "--startup-only"]);
 const now = new Date();
 await utimes(bundle, now, now);
 console.log(bundle);
