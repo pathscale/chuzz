@@ -215,6 +215,8 @@ nago-rustls.workspace = true
 tokio.workspace = true
 cursor-icon.workspace = true
 cookie_store.workspace = true
+endpoint-libs.workspace = true
+futures = "^0.3.31"
 psl.workspace = true
 blitz-control-protocol = { workspace = true, features = ["engine", "server", "capture"] }
 base64 = "^0.22"
