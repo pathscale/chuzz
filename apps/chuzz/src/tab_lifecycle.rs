@@ -4,7 +4,7 @@ use std::future::{Future, poll_fn};
 use std::task::{Poll, Waker};
 
 use blitz_dom::release::Teardown;
-use crate::tab_stash::{Charge, PageStash, PaintSnapshot, ScrollState, SleepingBudget};
+use crate::tab_stash::{Charge, PageStash, PaintSnapshot, ScrollState, StashLocation};
 
 #[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -282,7 +282,7 @@ impl Browser {
             let disabled = loading || document.inner().stash_disabled();
             let session = if disabled { None } else { (document as &mut dyn std::any::Any).downcast_mut::<blitz_script::ScriptDocument>()
                 .and_then(|page| crate::tab_session::capture(page, &self.0.sleeping_budget)) };
-            let stash = if disabled { None } else { PageStash::seal(&self.0.sleeping_budget, &url, entry, generation,
+            let stash = if disabled { None } else { PageStash::seal(&self.0.sleeping_budget, StashLocation { url: &url, entry, generation },
                 replayable, forms, session, ScrollState { x: scroll.x, y: scroll.y }, 0).ok() };
             let preview = if matches!(url.origin(), url::Origin::Tuple(..)) {
                 crate::tab_native::capture_paint(&mut document.inner_mut(), &self.0.sleeping_budget)

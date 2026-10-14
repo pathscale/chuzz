@@ -182,6 +182,12 @@ impl Drop for ScrollState {
     fn drop(&mut self) { self.x.zeroize(); self.y.zeroize(); }
 }
 
+pub struct StashLocation<'a> {
+    pub url: &'a url::Url,
+    pub entry: u64,
+    pub generation: u64,
+}
+
 /// No Request, upload, authorization header, POST body or guest value.
 pub struct PageStash {
     origin: url::Origin,
@@ -197,10 +203,11 @@ pub struct PageStash {
 
 impl PageStash {
     pub fn seal(
-        budget: &Arc<SleepingBudget>, url: &url::Url, entry: u64, generation: u64,
+        budget: &Arc<SleepingBudget>, location: StashLocation<'_>,
         replayable: bool, forms: Vec<FormState>, session: Option<Arc<SessionBucket>>,
         scroll: ScrollState, record_bytes: usize,
     ) -> Result<Arc<Self>, &'static str> {
+        let StashLocation { url, entry, generation } = location;
         if !matches!(url.origin(), url::Origin::Tuple(..)) { return Err("stash-opaque-origin"); }
         if forms.len() > 256 || record_bytes > 32 * 1024 { return Err("stash-record-budget"); }
         let route = Text::capture(url.as_str().encode_utf16(), 32 * 1024).ok_or("stash-route-budget")?;

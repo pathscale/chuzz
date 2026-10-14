@@ -34,7 +34,7 @@ fn identity(document: &BaseDocument, id: NodeId) -> Option<(&str, &str, &str)> {
     while owner.is_none() {
         let Some(id) = parent else { break; };
         let node = document.get_node(id)?;
-        if node.local_name() == "form" { owner = Some(id); }
+        if node.element_data().is_some_and(|element| element.name.local == local_name!("form")) { owner = Some(id); }
         parent = node.parent;
     }
     if let Some(form) = owner {
@@ -62,7 +62,9 @@ pub fn capture_forms(document: &mut BaseDocument) -> Vec<FormState> {
             let text = protected(&value);
             value.zeroize();
             text
-        } else { protected(element.text_input_data().map_or(element.attr(local_name!("value")).unwrap_or(""), |input| input.editor.text())) };
+        } else if let Some(input) = element.text_input_data() {
+            Text::capture(input.editor.text().into_iter().flat_map(str::encode_utf16), 4096)
+        } else { protected(element.attr(local_name!("value")).unwrap_or("")) };
         let (Some(form), Some(field), Some(action), Some(value)) = (protected(form), protected(field), protected(action), value) else { continue; };
         bytes += form.allocated_bytes() + field.allocated_bytes() + action.allocated_bytes() + value.allocated_bytes() + size_of::<FormState>();
         if bytes > 24 * 1024 || forms.len() >= 256 { break; }
@@ -133,7 +135,7 @@ pub fn capture_paint(document: &mut BaseDocument, budget: &Arc<SleepingBudget>) 
 pub fn show_preview(ui: &mut BaseDocument, id: NodeId, paint: &PaintSnapshot) -> bool {
     let length = paint.width as usize * paint.height as usize * 4;
     let mut decoded = Bytes::new(Vec::with_capacity(length));
-    for run in paint.encoded().chunks_exact(6) {
+    for run in paint.encoded().as_chunks::<6>().0 {
         let count = u16::from_le_bytes([run[0], run[1]]) as usize;
         if decoded.bytes().len().saturating_add(count * 4) > length { return false; }
         for _ in 0..count { decoded.extend(&run[2..]); }
