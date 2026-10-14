@@ -1,6 +1,8 @@
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { installCaps } from "./app-caps";
+const caps = installCaps("chuzz-gpu-buffers");
 
 type Child = Bun.Subprocess<"ignore", "pipe", "pipe">;
 type Service = { child: Child; name: string; log: string[]; drained: Promise<void> };
@@ -23,7 +25,10 @@ function port(name: string, fallback: number): number {
 }
 
 function launch(command: string[], env: Record<string, string | undefined>): Child {
+  caps.beforeChild();
+  caps.check("cache-entries", children.length + 1);
   const child = Bun.spawn(command, { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  caps.watch(child);
   children.push(child);
   return child;
 }
@@ -48,10 +53,16 @@ async function capture(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let pending = "";
+  let retainedBytes = 0;
   try {
     for (;;) {
       const chunk = await reader.read();
+      const ingress = chunk.done ? 0 : chunk.value.byteLength;
+      caps.check("input-bytes", retainedBytes + ingress);
+      caps.reserve(ingress * 2);
       const text = chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
+      retainedBytes += ingress;
+      caps.check("cache-entries", log.length + 1);
       log.push(text);
       pending += text;
       let newline;
@@ -201,6 +212,7 @@ try {
     `h2 front https://127.0.0.1:${frontPort}/ -> ${upstreamPort}`, env);
 
   for (const witness of cases) {
+    caps.turn("GPU case");
     const profile = join(work, witness.mode);
     const control = join(profile, "control");
     await mkdir(control, { recursive: true, mode: 0o700 });

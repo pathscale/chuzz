@@ -59,11 +59,11 @@ fn options() -> Result<Options, String> {
             },
             "--cert" => {
                 certs.push(CertificateDer::from(
-                    std::fs::read(value).map_err(|error| error.to_string())?,
+                    app_caps::read_bytes(value).map_err(|error| error.to_string())?,
                 ));
             }
             "--key" if key.is_none() => {
-                let bytes = std::fs::read(value).map_err(|error| error.to_string())?;
+                let bytes = app_caps::read_bytes(value).map_err(|error| error.to_string())?;
                 key = Some(
                     PrivateKeyDer::try_from(bytes)
                         .map_err(|error| format!("invalid DER private key: {error}"))?,
@@ -87,7 +87,11 @@ fn options() -> Result<Options, String> {
 #[global_allocator]
 static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 
+#[path = "bin_caps.rs"]
+mod app_caps;
+
 fn main() {
+    let _caps = app_caps::start(&[]);
     if let Err(error) = run() {
         eprintln!("TLS fixture failed: {error}");
         std::process::exit(1);
@@ -117,7 +121,10 @@ fn run() -> Result<(), String> {
             let (stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
             let config = Arc::clone(&config);
             let version = options.version_name;
+            app_caps::turn("accept fixture connection");
+            let connection = app_caps::connection();
             let _detached = nagoya::spawn(async move {
+                let _connection = connection;
                 match nagoya::timeout(Duration::from_secs(60), serve(stream, config, version)).await
                 {
                     Ok(Ok(())) => {}

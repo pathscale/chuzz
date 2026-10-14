@@ -1,3 +1,6 @@
+#[path = "build_caps.rs"]
+mod caps;
+
 use std::process::Command;
 
 // Everything below is the embedded browser chrome, which only a `gui` build
@@ -81,16 +84,19 @@ fn only_file_with_extension(directory: &Path, extension: &str) -> PathBuf {
 
 #[cfg(feature = "gui")]
 fn compress_asset(path: &Path, output: &Path, quality: u32) -> usize {
-    let input =
-        fs::read(path).unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-    let mut compressed = Vec::new();
+    let input = caps::read_bytes(path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let mut compressed = CappedWriter {
+        file: fs::File::create(output).expect("write embedded Chuzz UI asset"),
+        written: 0,
+    };
     {
         let mut encoder = CompressorWriter::new(&mut compressed, 4096, quality, 22);
         encoder
             .write_all(&input)
             .unwrap_or_else(|error| panic!("cannot compress {}: {error}", path.display()));
     }
-    fs::write(output, compressed).expect("write embedded Chuzz UI asset");
+    compressed.flush().expect("write embedded Chuzz UI asset");
     input.len()
 }
 
@@ -102,11 +108,42 @@ fn build_frontend() {
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR"),
     );
     let frontend = manifest_dir.join("frontend");
-    let output = Command::new("bun")
+    caps::turn("build browser UI");
+    let mut command = Command::new("bun");
+    command
         .args(["run", "build"])
         .current_dir(&frontend)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .spawn()
         .unwrap_or_else(|error| panic!("failed to start system bun: {error}"));
+    caps::child(child.id());
+    let stdout = child.stdout.take().expect("piped build stdout");
+    let stderr = child.stderr.take().expect("piped build stderr");
+    let runtime = nagoya::runtime::Runtime::new(2);
+    let stdout =
+        runtime.spawn(async move { caps::read_limited(stdout, caps::hard("input-bytes")) });
+    let stderr =
+        runtime.spawn(async move { caps::read_limited(stderr, caps::hard("input-bytes")) });
+    let stdout = nagoya::block_on(stdout)
+        .expect("build stdout task")
+        .expect("build stdout read");
+    let stderr = nagoya::block_on(stderr)
+        .expect("build stderr task")
+        .expect("build stderr read");
+    let status = child.wait().expect("wait for browser UI build");
+    caps::reaped(child.id());
+    let output = std::process::Output {
+        status,
+        stdout,
+        stderr,
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail = stderr.lines().rev().take(30).collect::<Vec<_>>();
@@ -168,6 +205,18 @@ fn strip_unused_frameworks() {
 }
 
 fn main() {
+    let _caps = caps::start(&[]);
+    for name in [
+        "APP_CAP_PROFILE",
+        "APP_CAP_MAX_RSS",
+        "APP_CAP_WARN_RSS",
+        "APP_CAP_MAX_INPUT_BYTES",
+        "APP_CAP_WARN_INPUT_BYTES",
+        "APP_CAP_MAX_DECODED_BYTES",
+        "APP_CAP_WARN_DECODED_BYTES",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
     strip_unused_frameworks();
     stamp_build();
     // The Solid browser chrome, consumed only by `frontend.rs`, which is itself
@@ -180,4 +229,25 @@ fn main() {
     // fleet's QA red.
     #[cfg(feature = "gui")]
     build_frontend();
+}
+
+#[cfg(feature = "gui")]
+struct CappedWriter {
+    file: std::fs::File,
+    written: u64,
+}
+#[cfg(feature = "gui")]
+impl std::io::Write for CappedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        caps::check(
+            "decoded-bytes",
+            self.written.saturating_add(bytes.len() as u64),
+        );
+        let count = self.file.write(bytes)?;
+        self.written = self.written.saturating_add(count as u64);
+        Ok(count)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
