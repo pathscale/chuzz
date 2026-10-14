@@ -91,6 +91,8 @@ pub mod languages;
 pub mod internal_pages;
 #[cfg(feature = "javascript")]
 pub mod media;
+#[cfg(feature = "javascript")]
+pub mod tab_stash;
 pub mod nav;
 #[cfg(feature = "gui")]
 pub mod tab_records;

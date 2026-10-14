@@ -205,6 +205,7 @@ nagoya = { workspace = true, features = ["process"] }
 libc = "^0.2.189"
 rusty_alloc.workspace = true
 url.workspace = true
+zeroize = "^1.8"
 serde.workspace = true
 serde_json.workspace = true
 ctap2 = { workspace = true, optional = true }
