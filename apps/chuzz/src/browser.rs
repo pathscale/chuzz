@@ -583,24 +583,50 @@ impl Browser {
         Arc::clone(&self.0.net.lock().unwrap())
     }
 
-    /// Open the process-wide profile jar before the first tab is scheduled.
+    /// Open the profile jar and optional cache before the first tab is scheduled.
     pub async fn open_cookie_profile(
         &self,
         directory: impl AsRef<std::path::Path>,
     ) -> Result<(), crate::cookie_store::CookieStoreError> {
-        let cookies = Arc::new(crate::cookie_store::BrowserCookieStore::open(directory).await?);
+        let directory = directory.as_ref().to_owned();
+        let cookies = Arc::new(crate::cookie_store::BrowserCookieStore::open(&directory).await?);
+        let cache = match nagoya::spawn(
+            async move { blitz_net::PrivateCache::open(directory).await },
+        )
+        .await
+        {
+            Some(Ok(cache)) => Some(cache),
+            Some(Err(error)) => {
+                eprintln!("chuzz: could not open HTTP cache: {error}");
+                None
+            }
+            None => {
+                eprintln!("chuzz: HTTP cache opener was cancelled");
+                None
+            }
+        };
         let user_agent_spoofing = *self.0.user_agent_spoofing.lock().unwrap();
-        *self.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_and_cookies(
+        *self.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_cookies_and_cache(
             None,
             &crate::identity::user_agent_for_spoofing(user_agent_spoofing),
             cookies,
+            cache,
         ));
         Ok(())
     }
 
-    /// Drain cookie writes during orderly application shutdown.
+    /// Drain profile writes during orderly application shutdown.
     pub async fn flush_cookie_store(&self) -> Result<(), crate::cookie_store::CookieStoreError> {
-        self.net().cookie_store().flush().await
+        let net = self.net();
+        let cookies = net.cookie_store().flush().await;
+        if let Some(cache) = net.http_cache() {
+            match nagoya::spawn(async move { cache.flush().await }).await {
+                Some(Ok(())) => {}
+                Some(Err(error)) => eprintln!("chuzz: could not flush HTTP cache: {error}"),
+                None => eprintln!("chuzz: HTTP cache flush was cancelled"),
+            }
+        }
+        cookies
     }
 
     fn app(&self) -> Option<ChuzzAppHandle> {
@@ -1785,20 +1811,23 @@ pub fn user_agent(browser: Arc<Browser>) -> UserAgentState {
 
 /// Apply the compatibility identity immediately and reload the active tab.
 ///
-/// The network provider owns its cache and User-Agent, so changing identity
-/// replaces that provider while retaining the profile cookie jar. The current
-/// document keeps the provider it was created with; reloading makes the
-/// visible page and every subresource agree on the new identity.
+/// Changing identity replaces the network provider while retaining the
+/// profile cookie jar and cache. The current document keeps the provider it
+/// was created with; reloading makes the visible page and every subresource
+/// agree on the new identity.
 pub fn set_user_agent_spoofing(browser: Arc<Browser>, spoofing: bool) -> UserAgentState {
     if crate::identity::environment_override_is_set() {
         return user_agent_state(&browser);
     }
     *browser.0.user_agent_spoofing.lock().unwrap() = spoofing;
-    let cookies = browser.net().cookie_store();
-    *browser.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_and_cookies(
+    let net = browser.net();
+    let cookies = net.cookie_store();
+    let cache = net.http_cache();
+    *browser.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_cookies_and_cache(
         None,
         &crate::identity::user_agent_for_spoofing(spoofing),
         cookies,
+        cache,
     ));
     store_user_agent(StoredUserAgent { spoofing });
     let active = browser.snapshots().1;
@@ -1851,12 +1880,7 @@ fn diagnostics_now() -> DiagnosticsState {
 /// that silently forgets itself is worse than no switch, because the answer to
 /// "is the socket open?" would then depend on something the window cannot see.
 fn diagnostics_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        std::path::PathBuf::from(home)
-            .join("Library/Application Support/ai.chuzz.browser")
-            .join("diagnostics.json"),
-    )
+    Some(crate::cookie_store::profile_directory().join("diagnostics.json"))
 }
 
 #[derive(Clone, Copy, Default, Serialize, serde::Deserialize)]

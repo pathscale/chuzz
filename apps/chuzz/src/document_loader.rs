@@ -38,6 +38,7 @@ pub struct NetProvider {
     policy: Arc<ResourcePolicy>,
     initiator: Initiator,
     cookies: Arc<crate::cookie_store::BrowserCookieStore>,
+    cache: Option<Arc<blitz_net::PrivateCache>>,
     waker: Arc<dyn blitz_traits::net::NetWaker>,
     blocked_requests: Arc<Mutex<VecDeque<String>>>,
 }
@@ -120,17 +121,31 @@ impl NetProvider {
         user_agent: &str,
         cookies: Arc<crate::cookie_store::BrowserCookieStore>,
     ) -> Self {
+        Self::with_user_agent_cookies_and_cache(waker, user_agent, cookies, None)
+    }
+
+    pub(crate) fn with_user_agent_cookies_and_cache(
+        waker: Option<Arc<dyn blitz_traits::net::NetWaker>>,
+        user_agent: &str,
+        cookies: Arc<crate::cookie_store::BrowserCookieStore>,
+        cache: Option<Arc<blitz_net::PrivateCache>>,
+    ) -> Self {
         let waker = waker.unwrap_or_else(|| Arc::new(|_| {}));
         let application_policy = crate::resource_parameters::from_environment();
+        let mut inner = blitz_net::Provider::with_user_agent_and_cookie_provider(
+            None,
+            user_agent,
+            Arc::clone(&cookies),
+        );
+        if let Some(cache) = &cache {
+            inner = inner.with_cache(Arc::clone(cache));
+        }
         Self {
-            inner: Arc::new(blitz_net::Provider::with_user_agent_and_cookie_provider(
-                None,
-                user_agent,
-                Arc::clone(&cookies),
-            )),
+            inner: Arc::new(inner),
             policy: Arc::new(ResourcePolicy::default()),
             initiator: Initiator::Unknown,
             cookies,
+            cache,
             waker,
             blocked_requests: Arc::new(Mutex::new(VecDeque::new())),
         }
@@ -181,6 +196,10 @@ impl NetProvider {
 
     pub fn cookie_store(&self) -> Arc<crate::cookie_store::BrowserCookieStore> {
         Arc::clone(&self.cookies)
+    }
+
+    pub(crate) fn http_cache(&self) -> Option<Arc<blitz_net::PrivateCache>> {
+        self.cache.clone()
     }
 
     pub(crate) fn note_blocked_request(&self, url: &Url) {

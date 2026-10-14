@@ -204,10 +204,12 @@ mkdir -p "$qa_home/Library/Application Support/ai.chuzz.browser" "$artifacts/pix
 printf '%s\n' '{"inspection":true,"profiling":false}' \
   > "$qa_home/Library/Application Support/ai.chuzz.browser/diagnostics.json"
 
-# Keep this run's descriptor and other temporary files inside its artifact
-# directory, so the app, this script and ps-qa resolve the same location.
+# Keep this run's cache, descriptor and temporary files inside its short
+# private temp directory, so Seatbelt, the app, this script and ps-qa resolve
+# the same location and unix domain socket paths stay well under 104 bytes.
 TMPDIR="$private_tmp"
-export TMPDIR
+CHUZZ_CACHE_DIR="$private_tmp"
+export TMPDIR CHUZZ_CACHE_DIR
 
 "$fixture_bin" --port 49124 > "$artifacts/fixture.log" 2>&1 &
 server_pid=$!
@@ -232,7 +234,7 @@ HOME="$qa_home" "$app/Contents/MacOS/chuzz-gui" \
   https://127.0.0.1:49123/ > "$artifacts/chuzz.log" 2>&1 &
 app_pid=$!
 
-descriptor_dir=$TMPDIR/tauri-blitz-agent
+descriptor_dir=$private_tmp/tmp/tauri-blitz-agent
 for _ in {1..200}; do
   candidate=$(find "$descriptor_dir" -maxdepth 1 -name "$app_pid-*.json" -print -quit 2>/dev/null || true)
   if [[ -n "$candidate" ]]; then
@@ -348,11 +350,11 @@ else
 fi
 for _ in {1..30}; do
   grep -q '"inspection"[[:space:]]*:[[:space:]]*false' \
-    "$qa_home/Library/Application Support/ai.chuzz.browser/diagnostics.json" && break
+    "$private_tmp/profile/diagnostics.json" 2>/dev/null && break
   sleep 0.1
 done
 grep -q '"inspection"[[:space:]]*:[[:space:]]*false' \
-  "$qa_home/Library/Application Support/ai.chuzz.browser/diagnostics.json"
+  "$private_tmp/profile/diagnostics.json"
 if run_guarded agent-control-disabled-socket "$qa_command_timeout" \
   "$artifacts/agent-control-disabled-socket.txt" \
   "$qa_bin" --descriptor "$descriptor" nodes; then
