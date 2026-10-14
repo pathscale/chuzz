@@ -26,6 +26,12 @@ pub const NEW_TAB_URL: &str = "about:blank";
 ///
 /// Returns `None` for anything that is not a URL or a bare hostname. The
 /// toolbar treats that as "do nothing".
+pub(crate) fn browser_request(url: Url) -> Request {
+    let policy = std::sync::Arc::new(blitz_traits::net::ResourcePolicy::default());
+    let initiator = policy.browser(url.clone());
+    Request::get(url).initiator(initiator)
+}
+
 pub fn request_from_input(input: &str) -> Option<Request> {
     let input = input.trim();
     if input.is_empty() {
@@ -35,13 +41,13 @@ pub fn request_from_input(input: &str) -> Option<Request> {
     if let Ok(url) = Url::parse(input)
         && url.scheme() != "localhost"
     {
-        return Some(Request::get(url));
+        return Some(browser_request(url));
     }
 
     if looks_like_hostname(input)
         && let Ok(url) = Url::parse(&format!("https://{input}"))
     {
-        return Some(Request::get(url));
+        return Some(browser_request(url));
     }
 
     // No search fallback. Anything that is not a URL and not a hostname is a

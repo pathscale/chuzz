@@ -1388,9 +1388,10 @@ fn follow_navigation(
     document: &mut ScriptDocument,
     origin: &mut String,
     policy: &HeadlessPolicy,
-    load: &impl Fn(Url, Option<&StoredState>) -> Result<Box<ScriptDocument>, String>,
+    load: &impl Fn(Url, Option<&StoredState>, blitz_traits::net::Initiator) -> Result<Box<ScriptDocument>, String>,
     render_events: &Latest<DebugEvent>,
     render_revision: &mut u64,
+    browser_initiated: bool,
 ) -> Result<(), String> {
     let _navigation = supervisor::operation(supervisor::Operation::Load);
     policy.validate_url(&destination)?;
@@ -1403,7 +1404,12 @@ fn follow_navigation(
     } else {
         Some(snapshot_storage(document, origin))
     };
-    let next = load(destination, carried.as_ref())?;
+    let initiator = if browser_initiated {
+        Arc::new(blitz_traits::net::ResourcePolicy::default()).browser(destination.clone())
+    } else {
+        document.inner().net_provider.resource_initiator()
+    };
+    let next = load(destination, carried.as_ref(), initiator)?;
     let arriving = next.inner().url().origin().ascii_serialization();
     *document = *next;
     *origin = arriving;
@@ -1562,7 +1568,7 @@ fn serve_page(
     let animation_clock = std::time::Instant::now();
 
     let tls_status = std::cell::RefCell::new(None::<(Url, Option<blitz_net::TlsPolicyError>)>);
-    let load = |url: Url, carried: Option<&StoredState>| -> Result<Box<ScriptDocument>, String> {
+    let load = |url: Url, carried: Option<&StoredState>, initiator: blitz_traits::net::Initiator| -> Result<Box<ScriptDocument>, String> {
         // Includes HTML and external-script fetches, script execution, loader
         // pumping, shim evaluation and the initial viewport settle.
         let _load = supervisor::operation(supervisor::Operation::Load);
@@ -1594,7 +1600,7 @@ fn serve_page(
             ))
         } else {
             let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
-                blitz_traits::net::Request::get(url.clone()),
+                blitz_traits::net::Request::get(url.clone()).initiator(initiator),
                 Arc::clone(&net_provider),
                 &prelude,
                 Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
@@ -1681,7 +1687,8 @@ fn serve_page(
         }
     };
     let failed_url = display_url(&url, policy.bot_child);
-    let mut document = match load(url, seed.as_ref()) {
+    let initial = net_provider.browser_initiator(url.clone());
+    let mut document = match load(url, seed.as_ref(), initial) {
         Ok(document) => document,
         // A page that cannot load is still a page, as in any browser: show why
         // and keep the inspection socket up, so the caller can read the reason,
@@ -1691,7 +1698,7 @@ fn serve_page(
             trace(&format!("top-level load failed: {error}"));
             let page = failure_page_url(&failed_url, &error)?;
             nagoya::block_on(crate::document_loader::load_for_capture(
-                blitz_traits::net::Request::get(page),
+                blitz_traits::net::Request::get(page.clone()).initiator(net_provider.browser_initiator(page)),
                 Arc::clone(&net_provider),
                 "",
                 Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
@@ -1765,6 +1772,7 @@ fn serve_page(
                         &load,
                         &render_events,
                         &mut render_revision,
+                        false,
                     )
                 {
                     trace(&format!("the navigation failed, staying put: {error}"));
@@ -1947,6 +1955,7 @@ fn serve_page(
                                 &load,
                                 &render_events,
                                 &mut render_revision,
+                                true,
                             ) {
                                 Ok(()) => DebugResponse::Ack,
                                 Err(message) => DebugResponse::Error(DebugError {
@@ -2199,6 +2208,7 @@ fn serve_page(
                 &load,
                 &render_events,
                 &mut render_revision,
+                false,
             ) {
                 Ok(()) => {}
                 Err(error) => trace(&format!("the navigation failed, staying put: {error}")),

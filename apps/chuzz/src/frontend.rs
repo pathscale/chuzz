@@ -4,7 +4,9 @@ use crate::browser::Browser;
 
 include!(concat!(env!("OUT_DIR"), "/chuzz_embedded.rs"));
 
-struct EmbeddedChuzzScriptFetcher;
+struct EmbeddedChuzzScriptFetcher {
+    net: std::sync::Arc<crate::document_loader::NetProvider>,
+}
 
 impl blitz_script::ScriptFetcher for EmbeddedChuzzScriptFetcher {
     fn fetch(&self, url: &blitz_traits::net::Url) -> Result<String, blitz_script::FetchError> {
@@ -12,7 +14,11 @@ impl blitz_script::ScriptFetcher for EmbeddedChuzzScriptFetcher {
             decompress_asset(CHUZZ_JS_BROTLI, CHUZZ_JS_LEN, "JavaScript")
                 .map_err(blitz_script::FetchError::InvalidData)
         } else {
-            blitz_script::ScriptFetcher::fetch(&blitz_script::DefaultScriptFetcher, url)
+            let request = blitz_traits::net::Request::get(url.clone())
+                .initiator(self.net.browser_initiator(url.clone()));
+            nagoya::block_on(self.net.fetch_async(request))
+                .map(|(_, bytes)| crate::decode::decode_body(&bytes))
+                .map_err(|error| blitz_script::FetchError::InvalidData(error.to_string()))
         }
     }
 }
@@ -46,7 +52,7 @@ pub fn document(browser: Browser, url: &str) -> Result<blitz_script::ScriptDocum
         ..Default::default()
     };
     let mut document = blitz_script::ScriptDocument::from_html(&html, config)
-        .with_fetcher(EmbeddedChuzzScriptFetcher);
+        .with_fetcher(EmbeddedChuzzScriptFetcher { net: browser.net() });
     document.eval(crate::document_loader::WEB_API_SHIM);
     document.eval(CHROME_API_SHIM);
     browser.install_document_lifecycle(&mut document);

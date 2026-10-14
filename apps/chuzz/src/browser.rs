@@ -180,6 +180,7 @@ struct BrowserState {
 }
 
 struct PageBundle {
+    net: Arc<NetProvider>,
     tab_id: u64,
     generation: u64,
     resolved_url: String,
@@ -440,7 +441,7 @@ impl Browser {
                     id: 0,
                     mounted_generation: 0,
                     mounted: None,
-                    history: vec![Request::get(first)],
+                    history: vec![crate::nav::browser_request(first)],
                     current: 0,
                     title: String::new(),
                     loading: false,
@@ -535,7 +536,7 @@ impl Browser {
                         .join(url)
                         .map_err(|error| error.to_string())?
                 };
-                if browser.navigate_request(id, Request::get(destination)) {
+                if browser.navigate_request(id, crate::nav::browser_request(destination)) {
                     Ok(())
                 } else {
                     Err("the tab closed".into())
@@ -571,7 +572,7 @@ impl Browser {
         document.add_poll_hook(move |document, _| browser.poll_document(document, &mut pending));
     }
 
-    fn net(&self) -> Arc<NetProvider> {
+    pub(crate) fn net(&self) -> Arc<NetProvider> {
         Arc::clone(&self.0.net.lock().unwrap())
     }
 
@@ -665,6 +666,7 @@ impl Browser {
         // elsewhere is an ordinary navigation and coming back re-runs the guest.
         if let Some(page) = self.0.wasm.as_ref().filter(|page| page.url == request.url) {
             self.0.completed.lock().unwrap().push_back(PageBundle {
+                net: self.net(),
                 tab_id,
                 generation,
                 resolved_url: page.url.to_string(),
@@ -737,13 +739,14 @@ impl Browser {
             // A factory rather than a value: a module that fails to mount is
             // re-parsed from the same bytes, and that second parse needs its own
             // config because `DocumentConfig` is consumed by the first.
-            let net = self.net();
+            let net = Arc::clone(&bundle.net);
             let make_config = || DocumentConfig {
                 base_url: Some(bundle.resolved_url.clone()),
                 net_provider: Some(Arc::clone(&net) as _),
                 navigation_provider: Some(Arc::new(PageNavigation {
                     browser: Arc::downgrade(&self.0),
                     tab_id: bundle.tab_id,
+                    initiator: net.initiator(),
                 })),
                 shell_provider: Some(shell_provider.clone()),
                 html_parser_provider: Some(Arc::new(HtmlProvider)),
@@ -923,12 +926,13 @@ impl Browser {
 struct PageNavigation {
     browser: Weak<BrowserInner>,
     tab_id: u64,
+    initiator: blitz_traits::net::Initiator,
 }
 
 impl NavigationProvider for PageNavigation {
     fn navigate_to(&self, options: NavigationOptions) {
         if let Some(inner) = self.browser.upgrade() {
-            Browser(inner).navigate_request(self.tab_id, options.into_request());
+            Browser(inner).navigate_request(self.tab_id, options.into_request().initiator(self.initiator.clone()));
         }
     }
 }
@@ -1059,8 +1063,8 @@ async fn fetch_page_module(
     browser: &Browser,
     document_url: &str,
     script: &crate::wasm_page::WasmScript,
+    net: &NetProvider,
 ) -> Option<PageModule> {
-    let net = browser.net();
     let base = Url::parse(document_url).ok()?;
     let src = match base.join(&script.src) {
         Ok(src) => src,
@@ -1147,10 +1151,15 @@ async fn fetch_page(
     mut request: Request,
     force_revalidate: bool,
 ) -> PageBundle {
-    let net = browser.net();
+    let mut net = browser.net();
+    if matches!(request.initiator, blitz_traits::net::Initiator::Browser(_)) {
+        request.initiator = net.browser_initiator(request.url.clone());
+    }
+    let navigation = request.initiator.clone();
     browser.note("info", "nav", format!("navigating to {}", request.url));
     if let Some(html) = crate::internal_pages::html_for(&request.url) {
         return PageBundle {
+            net: Arc::clone(&net),
             tab_id,
             generation,
             resolved_url: request.url.to_string(),
@@ -1164,6 +1173,7 @@ async fn fetch_page(
     }
     if request.url.scheme() == "about" {
         return PageBundle {
+            net: Arc::clone(&net),
             tab_id,
             generation,
             resolved_url: request.url.to_string(),
@@ -1185,7 +1195,11 @@ async fn fetch_page(
         // failure is a red tab showing what went wrong, which is the same
         // reading as an ordinary failed page.
         let (source, outcome) = match Url::parse(&inner) {
-            Ok(url) => match net.fetch_async(Request::get(url.clone())).await {
+            Ok(url) => match net.fetch_async(Request::get(url.clone()).initiator(
+                if matches!(navigation, blitz_traits::net::Initiator::Browser(_)) {
+                    net.browser_initiator(url.clone())
+                } else { navigation.clone() }
+            )).await {
                 Ok((_, bytes)) => {
                     browser.note(
                         "info",
@@ -1202,6 +1216,7 @@ async fn fetch_page(
                     );
                     if let blitz_net::ProviderError::TlsPolicy(reason) = &error {
                         return PageBundle {
+                            net: Arc::clone(&net),
                             tab_id,
                             generation,
                             resolved_url: request.url.to_string(),
@@ -1222,6 +1237,7 @@ async fn fetch_page(
             Err(error) => (format!("{inner} is not a URL: {error}"), PageOutcome::Error),
         };
         return PageBundle {
+            net: Arc::clone(&net),
             tab_id,
             generation,
             resolved_url: request.url.to_string(),
@@ -1243,6 +1259,7 @@ async fn fetch_page(
                 format!("{requested_url} did not load: {error:?}"),
             );
             return PageBundle {
+                net: Arc::clone(&net),
                 tab_id,
                 generation,
                 resolved_url: requested_url.clone(),
@@ -1263,6 +1280,7 @@ async fn fetch_page(
     };
     // Worst-wins from here: the document arrived, so the floor is Ready, and
     // each thing the page named that did not arrive can only raise it.
+    net = Arc::new(net.for_document(Url::parse(&resolved_url).expect("provider returned a URL"), &navigation));
     let mut outcome = PageOutcome::Ready;
     browser.note(
         "info",
@@ -1324,7 +1342,7 @@ async fn fetch_page(
                     script.src, script.mount
                 ),
             );
-            let module = fetch_page_module(browser, &resolved_url, &script).await;
+            let module = fetch_page_module(browser, &resolved_url, &script, &net).await;
             if module.is_none() {
                 // The page declared a module and it did not load. The fallback
                 // inside the mount is shown instead, which is the designed
@@ -1367,6 +1385,7 @@ async fn fetch_page(
         }
     }
     PageBundle {
+        net: Arc::clone(&net),
         tab_id,
         generation,
         resolved_url,
@@ -1573,7 +1592,7 @@ pub fn select_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> {
 pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTab, String> {
     let request = match url {
         Some(url) => request_from_input(&url).ok_or_else(|| format!("invalid URL {url}"))?,
-        None => Request::get(Url::parse(NEW_TAB_URL).unwrap()),
+        None => crate::nav::browser_request(Url::parse(NEW_TAB_URL).unwrap()),
     };
     let id = {
         let mut state = browser.0.state.lock().unwrap();
