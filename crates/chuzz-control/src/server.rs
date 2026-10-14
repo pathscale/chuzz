@@ -5,23 +5,20 @@
 //! running browser without being told where to look. Clients speak MCP
 //! JSON-RPC over endpoint-libs framed text.
 //!
-//! Requests arrive on the socket thread and are answered on the UI thread: the
-//! DOM is not `Send`, so every command crosses a bridge channel and is executed
-//! where the document lives.
+//! Requests arrive on reactor sockets and are answered where the document
+//! lives. The bridge preserves its published request and reply types.
 
 use std::fs::{OpenOptions, remove_file};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
 
 use blitz_control_protocol::latest::{Flag, Once};
 use blitz_control_protocol::{NagoyaStream, framed_json_neutral};
-use endpoint_libs::libs::ws::transport::TransportStream;
-use endpoint_libs::libs::ws::{MessageStream, WireMessage};
+use endpoint_libs::libs::ws::WireMessage;
 use nagoya::reactor::socket::TcpListener as BoundListener;
-use nagoya::reactor::{Addr, Reactor, TcpListener, TcpStream, block_on_with};
+use nagoya::reactor::{Addr, Reactor, TcpListener, TcpStream};
 use serde::{Deserialize, Serialize};
 use std::os::unix::ffi::OsStrExt;
 
@@ -45,12 +42,13 @@ pub struct ControlServer {
     descriptor_path: PathBuf,
     socket_path: PathBuf,
     shutdown: Option<Arc<Flag>>,
-    thread: Option<JoinHandle<()>>,
+    task: Option<nagoya::JoinHandle<Arc<()>>>,
+    _reactor: Arc<Reactor>,
 }
 
 impl ControlServer {
-    /// Bind the socket and publish the descriptor. The listener runs on its own
-    /// thread so it never blocks the UI.
+    /// Bind the socket and publish the descriptor. Reactor readiness drives
+    /// the listener independently of the UI.
     pub fn start(bridge: ControlBridge) -> io::Result<Self> {
         let socket_path = runtime_dir().join(format!("chuzz-{}.sock", std::process::id()));
         let descriptor_path = socket_path.with_extension("json");
@@ -72,6 +70,12 @@ impl ControlServer {
             .map_err(|error| std::io::Error::other(format!("bind: {error:?}")))?;
         std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
 
+        let reactor = Arc::new(
+            Reactor::start().map_err(|error| io::Error::other(format!("reactor: {error:?}")))?,
+        );
+        let listener = TcpListener::from_listener(listener, &reactor.handle())
+            .map_err(|error| io::Error::other(format!("register listener: {error:?}")))?;
+
         write_descriptor(
             &descriptor_path,
             &ControlDescriptor {
@@ -84,15 +88,19 @@ impl ControlServer {
 
         let shutdown_tx = Flag::new();
         let shutdown_rx = Arc::clone(&shutdown_tx);
-        let thread = thread::Builder::new()
-            .name("chuzz-control".to_owned())
-            .spawn(move || run(listener, bridge, shutdown_rx))?;
+        let task_reactor = Arc::clone(&reactor);
+        let task = nagoya::spawn(async move {
+            let _reactor = task_reactor;
+            run(listener, bridge, shutdown_rx).await;
+            Arc::new(())
+        });
 
         Ok(Self {
             descriptor_path,
             socket_path,
             shutdown: Some(shutdown_tx),
-            thread: Some(thread),
+            task: Some(task),
+            _reactor: reactor,
         })
     }
 
@@ -106,8 +114,8 @@ impl Drop for ControlServer {
         if let Some(shutdown) = self.shutdown.take() {
             shutdown.raise();
         }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(task) = self.task.take() {
+            task.cancel();
         }
         // Leaving either behind would advertise a browser that is gone.
         let _ = remove_file(&self.socket_path);
@@ -132,61 +140,48 @@ fn write_descriptor(path: &std::path::Path, descriptor: &ControlDescriptor) -> i
         .open(path)?;
     file.write_all(&encoded)
 }
-fn run(listener: BoundListener, bridge: ControlBridge, shutdown: Arc<Flag>) {
-    // One reactor, owned by this thread, driving the listener and every
-    // connection on it: a nagoya socket only makes progress while its own
-    // reactor is polled.
-    let Ok(reactor) = Reactor::local() else {
+async fn run(listener: TcpListener, bridge: ControlBridge, shutdown: Arc<Flag>) {
+    use futures::StreamExt;
+    use futures::future::{Either, select};
+    use futures::stream::FuturesUnordered;
+
+    if cfg!(feature = "reactor-witness")
+        && std::env::var("CHUZZ_REACTOR_DEFECT").as_deref() == Ok("control-listener")
+    {
+        shutdown.raised().await;
         return;
-    };
-    let handle = reactor.handle();
-    let Ok(listener) = TcpListener::from_listener(listener, &handle) else {
-        return;
-    };
-
-    block_on_with(&reactor, async move {
-        use futures::StreamExt;
-        use futures::future::{Either, select};
-        use futures::stream::FuturesUnordered;
-
-        // Held and polled in place rather than spawned. nagoya's TaskSet never
-        // removes a finished task's entry, so a set fed by unbounded connection
-        // churn grows one entry per connection ever accepted.
-        let mut connections = FuturesUnordered::new();
-
-        loop {
-            let stopping = shutdown.raised();
-            let accepted = listener.accept();
-            futures::pin_mut!(stopping, accepted);
-
-            let accepted = if connections.is_empty() {
-                match select(stopping, accepted).await {
-                    Either::Left(_) => break,
-                    Either::Right((accepted, _)) => accepted,
-                }
-            } else {
-                let progress = select(accepted, connections.next());
-                futures::pin_mut!(progress);
-                match select(stopping, progress).await {
-                    Either::Left(_) => break,
-                    Either::Right((Either::Left((accepted, _)), _)) => accepted,
-                    Either::Right((Either::Right(_), _)) => continue,
-                }
-            };
-
-            let Ok((stream, _)) = accepted else {
-                break;
-            };
-            // Several clients may watch at once; one slow reader must not stall
-            // the others.
-            connections.push(handle_connection(stream, Arc::clone(&bridge)));
-        }
-    });
+    }
+    let mut connections = FuturesUnordered::new();
+    loop {
+        let stopping = shutdown.raised();
+        let accepted = listener.accept();
+        futures::pin_mut!(stopping, accepted);
+        let accepted = if connections.is_empty() {
+            match select(stopping, accepted).await {
+                Either::Left(_) => break,
+                Either::Right((accepted, _)) => accepted,
+            }
+        } else {
+            let progress = select(accepted, connections.next());
+            futures::pin_mut!(progress);
+            match select(stopping, progress).await {
+                Either::Left(_) => break,
+                Either::Right((Either::Left((accepted, _)), _)) => accepted,
+                Either::Right((Either::Right(_), _)) => continue,
+            }
+        };
+        let Ok((stream, _)) = accepted else {
+            break;
+        };
+        connections.push(handle_connection(stream, Arc::clone(&bridge)));
+    }
 }
 
 async fn handle_connection(stream: TcpStream, bridge: ControlBridge) {
-    let mut stream = TransportStream::new(framed_json_neutral(NagoyaStream::new(stream)));
-    while let Some(message) = stream.recv().await {
+    use futures::{SinkExt, StreamExt};
+
+    let mut stream = framed_json_neutral(NagoyaStream::new(stream));
+    while let Some(message) = stream.next().await {
         let response = match message {
             // Ping, pong and close frames are transport bookkeeping, not
             // requests: answering them with a protocol error would be wrong.

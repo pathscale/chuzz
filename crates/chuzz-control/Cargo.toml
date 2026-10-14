@@ -11,6 +11,12 @@ publish = false
 # build that only speaks the protocol does not pull in a transport.
 default = ["server"]
 server = ["dep:endpoint-libs", "dep:nagoya", "dep:futures"]
+reactor-witness = ["server"]
+
+[[bin]]
+name = "control-reactor-witness"
+path = "src/bin/control_reactor_witness.rs"
+required-features = ["reactor-witness"]
 
 [dependencies]
 nagoya = { workspace = true, optional = true }
