@@ -1,1 +1,0 @@
-- 2026-10-13: Resolved. ps-qa 0.9.1 speaks protocol 2 and unblocks the headless-host QA gates.

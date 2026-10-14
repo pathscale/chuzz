@@ -1,4 +1,6 @@
-# TODO: DOM-related work
+> Historical reference only. Its measurements, implementation claims, proposed work and third-party comparisons are unverified as of 2026-10-14. This is not a work queue. All current work is maintained in [TODO.md](TODO.md); historical prescriptions below do not establish current status.
+
+# Historical DOM design
 
 Written 2026-08-11. A plan, not a design doc: each item says what to change, where, why,
 what it depends on, and how to tell it worked.
@@ -6,7 +8,7 @@ what it depends on, and how to tell it worked.
 **Engine paths here are `ps-blitz/packages/blitz-dom/src/...`**, the checkout this
 repository builds against by path. AgencyZero patches in a *different* checkout
 (`ps-blitz-render`) whose line numbers differ, and keeps its own list at
-`agencyzero/docs/TODO-dom-related-work.md`. **A fix in one tree does not reach the other.**
+`agencyzero/docs/dom-design-history.md`. **A fix in one tree does not reach the other.**
 Items marked ENGINE need landing in both, or the two checkouts need converging first.
 
 Nothing below is measured. Numbers cited come from AgencyZero's `docs/performance.md`,

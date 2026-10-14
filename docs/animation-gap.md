@@ -155,5 +155,5 @@ dependency values rather than damage triggers. Items 1 to 3 are stopgaps until t
 - `agencyzero/docs/blink-what-we-can-learn.md` section 3, the enumerated
   compositor-eligibility model.
 - `agencyzero/docs/partial-paint.md`, why one animated element costs a whole frame.
-- [TODO-dom-related-work.md](TODO-dom-related-work.md), which shares the ENGINE-in-two-trees
+- [dom-design-history.md](dom-design-history.md), which shares the ENGINE-in-two-trees
   problem items 1 to 3 have.

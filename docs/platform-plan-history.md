@@ -1,13 +1,15 @@
+> Historical reference only. Its measurements, implementation claims, proposed work and third-party comparisons are unverified as of 2026-10-14. This is not a work queue. All current work is maintained in [TODO.md](TODO.md); historical prescriptions below do not establish current status.
+
 # Plan: what already exists, and what we actually have to build
 
 Written 2026-08-11. Companion to
-[TODO-audit-us-vs-fastrender-vs-chrome.md](TODO-audit-us-vs-fastrender-vs-chrome.md),
+[platform-audit-history.md](platform-audit-history.md),
 which says what is missing. This says **how to get it**, and the answer is usually not
 "write it".
 
 ## The thesis
 
-fastrender wrote 57MB of Rust from scratch — their own cascade, their own text stack, their
+fastrender wrote 57MB of Rust from scratch ;  their own cascade, their own text stack, their
 own flex and grid, their own JS engine. We compose: Stylo, Parley, Taffy, Boa, vello,
 reqwest. **That is the advantage, not the compromise**, and this plan is about pressing it.
 
@@ -21,7 +23,7 @@ Every gap in the audit sorts into one of three buckets, and the first two are mo
 
 ---
 
-## Bucket A — already ours, switched off. Do these first, they are nearly free
+## Bucket A ;  already ours, switched off. Do these first, they are nearly free
 
 ### A1. The HTTP disk cache already exists and is disabled
 
@@ -51,7 +53,7 @@ unreachable or set `Sequential`.
 
 ---
 
-## Bucket B — a crate away
+## Bucket B ;  a crate away
 
 | Gap | What exists | In our tree already? | Work left |
 |---|---|---|---|
@@ -66,27 +68,27 @@ unreachable or set `Sequential`.
 **The `fetch` point deserves emphasis.** The audit called it "large, unavoidable" and that
 was measured against fastrender's 598KB `window_fetch.rs`. But they were writing an HTTP
 stack. We already ship one: `blitz-net` wraps `reqwest` with TLS, redirects, compression,
-cookies and now caching. What is missing is the *binding* — `Request`/`Response`/`Headers`
+cookies and now caching. What is missing is the *binding* ;  `Request`/`Response`/`Headers`
 objects over Boa, plumbed to the existing loader. That is a different and much smaller job,
 and it is why bucket B matters.
 
 ---
 
-## Bucket C — genuinely ours
+## Bucket C ;  genuinely ours
 
 No crate does these, because they are engine semantics rather than infrastructure.
 
 | Gap | Why no crate helps | Size |
 |---|---|---|
 | **Stacking-context property cluster** | two functions in `blitz-dom`, and the TODOs are already written in our source | one afternoon |
-| **`backdrop-filter` in the vello backends** | we own `~/code/ps-anyrender`; `anyrender_skia` already implements it, the vello ones take `_backdrop_filter` and drop it | small |
-| **ES modules** | Boa already has `core/engine/src/module/` with a loader — we simply never call it. The work is routing `type="module"` through `Module` parse with a loader resolving against the document base URL | medium |
+| **`backdrop-filter` in the vello backends** | we own `ps-anyrender`; `anyrender_skia` already implements it, the vello ones take `_backdrop_filter` and drop it | small |
+| **ES modules** | Boa already has `core/engine/src/module/` with a loader ;  we simply never call it. The work is routing `type="module"` through `Module` parse with a loader resolving against the document base URL | medium |
 | **`getComputedStyle`** | Stylo computes it; we expose it. Purely our plumbing | small |
 | **Cookie scoping on `fetch`** | not CORS, not CSP. `blitz-net/src/lib.rs:77` sets `cookie_store(true)`, one jar for the whole process. The fetch spec's own `credentials: "same-origin"` default is the fix | **a few lines** |
 | **Display list** | a design decision about our paint architecture | large, three payoffs |
 | **`srcset` / `sizes` / `<picture>`** | ~200 lines of parsing and selection against the spec | small |
 | **`structuredClone`, `Blob`/`File`/`FormData`, `ResizeObserver`** | web semantics over our own DOM | each small |
-| **Colour fonts** | `skrifa` 0.44 is in our graph and does read COLR; the constraint is downstream in `vello_cpu` **0.0.9**, which is very early. Check what it can draw before planning anything | unknown — measure first |
+| **Colour fonts** | `skrifa` 0.44 is in our graph and does read COLR; the constraint is downstream in `vello_cpu` **0.0.9**, which is very early. Check what it can draw before planning anything | unknown ;  measure first |
 
 ### Sandboxing is bucket C, reluctantly
 
@@ -98,7 +100,7 @@ we actually ship.
 
 So for macOS: a Seatbelt profile applied through `sandbox_init`. It is a deprecated API and
 still what everything uses, the profile is tens of lines, and **the probe matters more than
-the profile** — fastrender ships three separate probe binaries whose only job is asserting
+the profile** ;  fastrender ships three separate probe binaries whose only job is asserting
 at runtime that the sandbox is on. Without one it silently becomes a no-op after any
 refactor.
 
@@ -108,18 +110,18 @@ refactor.
 
 Ordered so each phase makes the next cheaper or safer.
 
-### Phase 0 — free wins, today
+### Phase 0 ;  free wins, today
 
 1. Turn on `blitz-net`'s `cache` feature in chuzz (**A1**)
 2. Resolve `parallel-construct`: default and measure, or delete (**A2**)
 3. Resolve `StyleThreading` (**A3**)
-4. Fix the stacking-context cluster — `filter`, `clip-path`, `mask` are already painted (**C**)
+4. Fix the stacking-context cluster ;  `filter`, `clip-path`, `mask` are already painted (**C**)
 5. `backdrop-filter` in `anyrender_vello_cpu` (**C**)
 
 Nothing here needs a new dependency, and items 4 and 5 are the two biggest visual defects
 we know of.
 
-### Phase 1 — make quality measurable
+### Phase 1 ;  make quality measurable
 
 6. Pageset scoreboard: cached HTML, Chrome baseline from that cache, `image-compare` or
    `dssim` for the diff, per-page JSON with `status`/`stages_ms`/`hotspot`/`notes`
@@ -128,7 +130,7 @@ we know of.
 Until this exists every later item is unmeasured. It is also what makes phase 0's fixes
 provable rather than asserted.
 
-### Phase 2 — the JS surface, in a safe order
+### Phase 2 ;  the JS surface, in a safe order
 
 8. Move chuzz's nine JS shims down into `blitz-script` as real bindings with tests
 9. `URL`/`URLSearchParams` on the `url` crate; `TextEncoder`/`TextDecoder` on `encoding_rs`
@@ -150,13 +152,13 @@ things:
   browses untrusted sites in chuzz with credentials. That is a "before we tell anyone this
   is their browser" item, not a "before `fetch`" one.
 
-What survives is small and concrete. `blitz-net` sets `cookie_store(true)` — **one cookie
-jar for the whole process** — and chuzz enables `cookies`. So a page that can `fetch` any
+What survives is small and concrete. `blitz-net` sets `cookie_store(true)` ;  **one cookie
+jar for the whole process** ;  and chuzz enables `cookies`. So a page that can `fetch` any
 origin gets that origin's cookies attached and reads the response back. The fix is not a
 subsystem: it is the fetch spec's own default, `credentials: "same-origin"`, applied where
 we build the binding. Do that, and ship `fetch`.
 
-### Phase 3 — platform and hardening
+### Phase 3 ;  platform and hardening
 
 14. macOS Seatbelt profile **and a probe that fails loudly**
 15. `srcset`/`sizes`/`<picture>`, `text-shadow`
@@ -165,7 +167,7 @@ we build the binding. Do that, and ship `fetch`.
 Same-origin policy proper, and CSP, belong here **only if chuzz stops being a tool for
 rendering our own sites**. Until then they are cost without a threat model.
 
-### Phase 4 — architecture
+### Phase 4 ;  architecture
 
 18. A display list, then damage regions, parallel paint and occlusion culling on top
 19. Colour fonts, after measuring what `vello_cpu` can actually draw
