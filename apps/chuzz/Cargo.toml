@@ -267,11 +267,6 @@ cpal = { version = "^0.15.3", default-features = false, optional = true }
 libc = "^0.2"
 
 
-[dev-dependencies]
-blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6.3" }
-wasmi = "^1.1"
-wat = "^1"
-
 [build-dependencies]
 nagoya.workspace = true
 brotli.workspace = true

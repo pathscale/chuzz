@@ -135,6 +135,4 @@ pub mod ws_bridge;
 // `javascript` carry.
 #[cfg(all(feature = "capture", feature = "javascript"))]
 pub mod serve;
-#[cfg(test)]
-mod wasm_page;
 pub mod wasm_retired;

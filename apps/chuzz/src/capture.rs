@@ -161,17 +161,6 @@ pub async fn capture(
     result
 }
 
-/// Compatibility entry point for callers of the retired guest capture API.
-pub fn capture_wasm(
-    _module_path: &Path,
-    _width: u32,
-    _height: u32,
-    _png_out: &Path,
-    _tree_out: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    Err(Box::new(crate::wasm_retired::WasmUnsupported))
-}
-
 /// Lay `document` out at `scale`, dump the tree if asked, and rasterise.
 fn paint(
     document: &mut BaseDocument,
@@ -242,9 +231,6 @@ mod tests {
     #[derive(Debug)]
     struct Box_ {
         name: String,
-        y: f32,
-        width: f32,
-        height: f32,
     }
 
     fn boxes(dump: &str) -> Vec<Box_> {
@@ -254,13 +240,8 @@ mod tests {
                 let mut tokens = line.split_whitespace();
                 let _node_id = tokens.next()?;
                 let name = tokens.next()?;
-                let (_x, y) = tokens.next()?.split_once(',')?;
-                let (width, height) = tokens.next()?.split_once('*')?;
                 Some(Box_ {
                     name: name.to_owned(),
-                    y: y.parse().ok()?,
-                    width: width.parse().ok()?,
-                    height: height.parse().ok()?,
                 })
             })
             .collect()
@@ -292,12 +273,10 @@ mod tests {
         let mut painted = Painted {
             differing: 0,
             total: pixels.len() / 4,
-            lowest: 0,
         };
-        for (index, pixel) in rgba.iter().enumerate() {
+        for pixel in rgba {
             if *pixel != background {
                 painted.differing += 1;
-                painted.lowest = painted.lowest.max(index as u32 / info.width);
             }
         }
         painted
@@ -306,122 +285,6 @@ mod tests {
     struct Painted {
         differing: usize,
         total: usize,
-        /// The bottom-most row of pixels that is not the background.
-        lowest: u32,
-    }
-
-    // Exercise the existing guest fixture without reopening its production entry point.
-    fn capture_guest_fixture(png: &Path, tree: Option<&Path>) {
-        let (document, mount) = crate::wasm_page::empty_document(blitz_dom::DocumentConfig {
-            viewport: Some(blitz_traits::shell::Viewport::new(
-                1440,
-                960,
-                1.0,
-                super::capture_color_scheme(),
-            )),
-            ..Default::default()
-        });
-        let mut document =
-            crate::wasm_page::run_guest(&crate::wasm_page::fixture_module(), document, mount)
-                .expect("the fixture guest should build its document");
-        let buffer = super::paint(&mut document, 1.0, 1440, 960, tree);
-        super::write_png(&buffer, 1440, 960, png).expect("the fixture capture should succeed");
-    }
-
-    #[test]
-    fn a_wasm_built_page_paints_something() {
-        let png = scratch("paints.png");
-        let _ = std::fs::remove_file(&png);
-        capture_guest_fixture(&png, None);
-
-        let painted = non_background_pixels(&png);
-        // Not "at least one": a single stray pixel would satisfy that and is
-        // not a rendered page.
-        //
-        // The measured figure for this page is 1231 of 1382400, all of it
-        // antialiased black text on a fully transparent canvas. It is a small
-        // number because the demo guest sets no background and draws no
-        // borders, so glyph coverage is the *only* thing that paints. That is
-        // what makes this assertion load-bearing rather than decorative: with
-        // no font the count is not merely lower, it is exactly zero. 250
-        // leaves room for a machine whose default serif is lighter than this
-        // one's without leaving room for a blank page.
-        assert!(
-            painted.differing > 250,
-            "the capture is blank: {} of {} pixels differ from the background. \
-             This is what a build without `system-fonts` produces, because parley finds no \
-             face, every line shapes to zero height, and the guest still reports OK.",
-            painted.differing,
-            painted.total
-        );
-
-        // Bounded by the layout, not merely present. The tree puts the whole
-        // page in the top 187 rows, so ink below that would mean the pixels
-        // and the boxes disagree, and then neither could be trusted to explain
-        // the other.
-        assert!(
-            painted.lowest < 300,
-            "something painted at row {}, far below the {}-tall page the tree describes",
-            painted.lowest,
-            187
-        );
-    }
-
-    #[test]
-    fn the_tree_dump_shows_the_panel_and_its_rows() {
-        let png = scratch("tree.png");
-        let tree = scratch("tree.txt");
-        let _ = std::fs::remove_file(&tree);
-        capture_guest_fixture(&png, Some(&tree));
-
-        let dump = std::fs::read_to_string(&tree).expect("the tree dump should have been written");
-        let boxes = boxes(&dump);
-        assert!(
-            dump.contains("\"Blitz\""),
-            "the heading's text node is missing from the dump:\n{dump}"
-        );
-
-        let panels: Vec<&Box_> = boxes.iter().filter(|b| b.name.contains(".panel")).collect();
-        assert_eq!(panels.len(), 1, "expected one .panel, got {panels:?}");
-        let panel = panels[0];
-        assert_eq!(panel.name, "div#root.panel");
-        assert!(
-            panel.width > 0.0 && panel.width <= 1440.0,
-            "the panel's width is not plausible: {panel:?}"
-        );
-        // A heading and three paragraphs at default UA sizes cannot be shorter
-        // than this, and cannot overflow the viewport either. A zero height is
-        // the blank-render failure; a height in the thousands would mean the
-        // dump is not measuring what was painted.
-        assert!(
-            panel.height > 50.0 && panel.height <= 960.0,
-            "the panel's height is not plausible: {panel:?}"
-        );
-
-        let rows: Vec<&Box_> = boxes.iter().filter(|b| b.name.contains(".row")).collect();
-        assert_eq!(rows.len(), 3, "expected three .row elements, got {rows:?}");
-        for row in &rows {
-            assert_eq!(row.name, "p.row");
-            assert!(
-                row.width > 0.0 && row.width <= panel.width,
-                "a row is wider than its panel, or has no width: {row:?}"
-            );
-            // One line of default-size text. Zero means nothing shaped.
-            assert!(
-                row.height > 4.0 && row.height < 100.0,
-                "a row's height is not one line of text: {row:?}"
-            );
-            assert!(
-                row.y >= panel.y && row.y + row.height <= panel.y + panel.height,
-                "a row falls outside its panel: {row:?} against {panel:?}"
-            );
-        }
-        // Stacked, not piled on one line, which is what proves they are block
-        // children of the panel rather than three nodes that merely exist.
-        assert!(
-            rows.windows(2).all(|pair| pair[1].y > pair[0].y),
-            "the rows do not stack in order: {rows:?}"
-        );
     }
 
     /// `view-source:` renders through the capture path, escaped rather than
