@@ -1139,7 +1139,7 @@ fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> b
     let poll_started = std::time::Instant::now();
     let progressed = {
         let _turn = supervisor::operation(supervisor::Operation::Poll);
-        document.poll(None)
+        document.poll(Some(supervisor::task_context()))
     };
     let poll_elapsed = poll_started.elapsed();
     let resolve_started = std::time::Instant::now();
@@ -1358,7 +1358,7 @@ fn commit_render(events: &Latest<DebugEvent>, revision: &mut u64) {
     events.set_now(DebugEvent::PaintCommitted {
         revision: *revision,
     });
-    supervisor::painted();
+
 }
 
 /// A data: page that names the URL that failed and why.
@@ -1446,25 +1446,11 @@ fn fail_qa_inspect_storage(error: &str) -> ! {
     std::process::exit(2);
 }
 
-/// Report whether this process owns the inherited private page transport.
-/// Whether this process owns the inherited private page-worker transport.
-pub fn is_page_worker() -> bool { supervisor::is_worker() }
-
 /// Load `target` and serve it over the inspection socket until killed.
 pub fn serve(target: &str) -> Result<(), String> {
+    crate::sandbox::ensure()?;
     let storage = read_qa_inspect_storage();
-    if supervisor::is_worker() {
-        let result = serve_page(target, storage.as_ref());
-        let message = result
-            .as_ref()
-            .err()
-            .map(String::as_str)
-            .unwrap_or("the page document loop finished");
-        supervisor::failed(message);
-        result
-    } else {
-        supervisor::serve(target)
-    }
+    serve_page(target, storage.as_ref())
 }
 
 fn serve_page(
@@ -1534,14 +1520,7 @@ fn serve_page(
         }
         Target::Page(url) => url.clone(),
     };
-    // A recovered local page needs a fresh server origin. Carry its route,
-    // rather than trying to reconnect to the killed worker's old port.
-    let url = match supervisor::launch_route() {
-        Some(route) => url
-            .join(&route)
-            .map_err(|error| format!("could not resolve the worker launch route: {error}"))?,
-        None => url,
-    };
+
 
     let cookies = if policy.bot_child {
         Arc::new(crate::cookie_store::BrowserCookieStore::default())
@@ -1724,7 +1703,10 @@ fn serve_page(
     }
 
     supervisor::ready(document.inner().url());
-    let render_events = Latest::new();
+    let render_events = supervisor::events();
+    if tick_document(&mut document, &animation_clock) {
+        let _ = render_events.set_now(DebugEvent::PaintCommitted { revision: 0 });
+    }
 
     let mut revision = 0_u64;
     let mut render_revision = 0_u64;
@@ -1745,16 +1727,13 @@ fn serve_page(
         // measured), so code that yields every few milliseconds sat idle most
         // of the time.
         let wait = if document.has_pending_jobs() {
-            std::time::Duration::ZERO
+            Some(std::time::Duration::ZERO)
         } else {
-            document.next_timer_deadline().map_or(IDLE_TICK, |due| {
-                due.saturating_duration_since(std::time::Instant::now())
-                    .min(IDLE_TICK)
-            })
+            document.next_timer_deadline().map(|due| due.saturating_duration_since(std::time::Instant::now()))
         };
         let received = match queued_request.take() {
             Some(pair) => Ok(pair),
-            None => request_rx.recv_timeout(wait),
+            None => request_rx.receive(wait),
         };
         let (request, reply) = match received {
             Ok(pair) => pair,

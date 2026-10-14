@@ -44,6 +44,10 @@ pub(super) fn task_context() -> Context<'static> {
     Context::from_waker(WAKER.get().expect("document wake initialized"))
 }
 
+pub(super) fn network_wake() -> Waker {
+    WAKER.get().expect("document wake initialized").clone()
+}
+
 pub(super) fn ready(url: &Url) {
     let state = CONTROL.get().expect("control socket initialized");
     if state.ready.set(url.clone()).is_ok() {
@@ -121,14 +125,14 @@ fn selected(streams: &[DebugStream], event: &DebugEvent) -> bool {
 }
 
 async fn response(state: &ControlState, request: ControlBridgeRequest) -> DebugResponse {
-    let answer = Once::new();
+    let answer = page_control::Reply::new();
     let sent = state.sender.lock().unwrap_or_else(|poison| poison.into_inner())
-        .try_send((request, Arc::clone(&answer)));
+        .try_send(Arc::new((request, Arc::clone(&answer))));
     if sent.is_err() {
         return DebugResponse::Error(protocol::DebugError { code: "documentBusy".into(), message: "document request queue unavailable".into() });
     }
     match nagoya::timeout(Duration::from_secs(60), answer.recv()).await {
-        Ok(Some(response)) => response,
+        Ok(Some(response)) => Arc::try_unwrap(response).unwrap_or_else(|response| response.as_ref().clone()),
         _ => DebugResponse::Error(protocol::DebugError { code: "pageUnresponsive".into(), message: "the page exceeded its response deadline; do not automatically retry an action".into() }),
     }
 }

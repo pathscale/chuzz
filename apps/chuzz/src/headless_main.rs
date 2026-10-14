@@ -39,33 +39,9 @@ fn main() {
             std::process::exit(2);
         }
     };
-    if !serve::is_page_worker() {
-        if let Err(error) = serve::serve(&target) {
-            eprintln!("chuzz-headless: {error}");
-            std::process::exit(1);
-        }
-        return;
-    }
-    // JavaScript frames live on a heap value stack. Native re-entry (a getter
-    // or dispatchEvent nesting `Context::run`) holds this thread's stack. The
-    // main thread's 8 MB ran out first on YouTube's Polymer, aborting the
-    // worker, so the page runs on a thread sized for that nesting. The
-    // reservation is virtual; pages are committed only as they are touched.
-    let target = std::sync::Arc::new(target);
-    // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: one isolation thread per page JS engine.
-    #[allow(clippy::disallowed_methods)]
-    let page = std::thread::Builder::new()
-        .name("chuzz-page".into())
-        .stack_size(PAGE_STACK_BYTES)
-        .spawn(move || {
-            std::sync::Arc::new(serve::serve(&target).map_err(|error| error.to_string()))
-        })
-        .expect("spawn the page thread");
-    let result = page.join().unwrap_or_else(|_| std::process::exit(101));
-    if let Err(error) = result.as_ref() {
+    if let Err(error) = serve::serve(&target) {
         eprintln!("chuzz-headless: {error}");
         std::process::exit(1);
     }
 }
 
-const PAGE_STACK_BYTES: usize = 256 * 1024 * 1024;
