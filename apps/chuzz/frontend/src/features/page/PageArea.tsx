@@ -51,7 +51,7 @@ export function PageArea(): JSX.Element {
                   reason={tab.lifecycleReason ?? ""}
                 >
                   <div>
-                    <Button id={`chuzz-wake-${tab.id}`} disabled={tab.lifecycle === "waking" || tab.lifecycle === "discarding"} onClick={() => browser.wakeTab(tab.id)}>
+                    <Button id={`chuzz-wake-${tab.id}`} disabled={tab.lifecycle === "waking" || tab.lifecycle === "discarding"} onClick={() => tab.lifecycleReason === "reload-requires-resubmission" ? void browser.navigate(tab.url) : browser.wakeTab(tab.id)}>
                       {tab.lifecycleReason === "reload-requires-resubmission" ? "Open URL to resubmit" : "Wake tab"}
                     </Button>
                   </div>

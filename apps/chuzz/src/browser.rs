@@ -655,6 +655,7 @@ impl Browser {
             }
             tab.life.cancel_deadline();
             tab.life.await_preview = false;
+            if tab.life.discarded && tab.mounted.is_none() { tab.life.phase = TabPhase::Waking; }
             tab.generation = tab.generation.checked_add(1).expect("document generation exhausted");
             tab.loading = true;
 
@@ -818,6 +819,21 @@ impl Browser {
                     outcome.name()
                 ),
             );
+            let failed_wake = outcome == PageOutcome::Error && self.0.state.lock().unwrap().tabs.iter().any(|tab| tab.id == bundle.tab_id && tab.life.phase == TabPhase::Waking);
+            if failed_wake {
+                let receipt = page.dispose();
+                let mut state = self.0.state.lock().unwrap();
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == bundle.tab_id && tab.generation == bundle.generation) {
+                    tab.loading = false;
+                    tab.life.phase = TabPhase::RestoreFailed;
+                    tab.life.reason = "reload-failed";
+                    tab.life.preview_surface.take();
+                    if !receipt.complete() { tab.life.release = Some(receipt); }
+                    tab.outcome = outcome;
+                }
+                changed = true;
+                continue;
+            }
             let mounted = MountedPage {
                 owner_document_id: ui.inner().id() as u64,
                 mount_node_id: target.as_u64(),
@@ -851,9 +867,6 @@ impl Browser {
                 tab.life.hidden_at = nagoya::now_ns();
                 tab.life.preview_surface.take();
                 if tab.life.phase != TabPhase::Waking { tab.life.phase = TabPhase::Live; }
-                if outcome == PageOutcome::Error && tab.life.phase == TabPhase::Waking {
-                    tab.life.phase = TabPhase::RestoreFailed; tab.life.reason = "reload-failed";
-                }
                 tab.outcome = outcome;
                 state.records.attached(TabId(bundle.tab_id), DocumentGeneration(bundle.generation));
             }
