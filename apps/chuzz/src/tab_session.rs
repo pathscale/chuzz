@@ -12,6 +12,7 @@ struct Store {
     backing: Option<Arc<SessionBucket>>,
     entries: Vec<SessionPair>,
     sensitive: Vec<Text>,
+    no_stash: bool,
 }
 
 #[derive(Clone)]
@@ -33,6 +34,7 @@ impl Store {
     }
 
     fn capture(&mut self, budget: &Arc<SleepingBudget>) -> Option<Arc<SessionBucket>> {
+        if self.no_stash { self.backing.take(); self.entries.clear(); return None; }
         if self.sensitive.is_empty() && self.backing.is_some() { return self.backing.take(); }
         self.make_mut();
         self.entries.retain(|pair| !self.sensitive.iter().any(|key| key.units() == pair.key.units()));
@@ -68,7 +70,7 @@ fn session(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
     let mut store = host.0.borrow_mut();
     if op == 6 {
         if !store.sensitive.iter().any(|old| old.units() == key.units()) {
-            if store.sensitive.len() >= 256 { return Err(JsNativeError::range().with_message("sensitive key limit").into()); }
+            if store.sensitive.len() >= 256 { store.no_stash = true; return Ok(JsValue::undefined()); }
             store.sensitive.push(key);
         }
         return Ok(JsValue::undefined());
@@ -90,7 +92,7 @@ fn session(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
 pub fn install(document: &mut ScriptDocument, backing: Option<Arc<SessionBucket>>) {
     let origin = document.current_url().map(url::Url::origin).unwrap_or_else(|| url::Origin::new_opaque());
     document.with_js_context(|context| {
-        context.insert_data(Host(Rc::new(RefCell::new(Store { origin, backing, entries: Vec::new(), sensitive: Vec::new() }))));
+        context.insert_data(Host(Rc::new(RefCell::new(Store { origin, backing, entries: Vec::new(), sensitive: Vec::new(), no_stash: false }))));
         context.register_global_builtin_callable(JsString::from("__chuzzSession"), 3, NativeFunction::from_fn_ptr(session)).expect("native session owner");
     });
     document.eval_named(r#"Object.defineProperty(globalThis, 'sessionStorage', {value: Object.freeze({

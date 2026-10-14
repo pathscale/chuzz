@@ -131,6 +131,14 @@ impl Zeroize for FormState {
     }
 }
 
+fn scrub_origin(origin: &mut url::Origin) {
+    if let url::Origin::Tuple(scheme, host, port) = origin {
+        scheme.zeroize();
+        if let url::Host::Domain(domain) = host { domain.zeroize(); }
+        port.zeroize();
+    }
+}
+
 pub struct SessionPair { pub key: Text, pub value: Text }
 
 impl Zeroize for SessionPair {
@@ -146,7 +154,7 @@ pub struct SessionBucket {
 impl SessionBucket {
     pub fn seal(budget: &Arc<SleepingBudget>, origin: url::Origin, pairs: Vec<SessionPair>) -> Result<Arc<Self>, &'static str> {
         if !matches!(origin, url::Origin::Tuple(..)) || pairs.len() > 256
-            || pairs.iter().any(|pair| pair.value.allocated_bytes() > 8 * 1024)
+            || pairs.iter().any(|pair| pair.key.allocated_bytes() > 2048 || pair.value.allocated_bytes() > 8 * 1024)
         { return Err("stash-session-budget"); }
         let bytes = pairs.capacity() * size_of::<SessionPair>()
             + pairs.iter().map(|pair| pair.key.allocated_bytes() + pair.value.allocated_bytes()).sum::<usize>();
@@ -165,7 +173,7 @@ impl SessionBucket {
 }
 
 impl Drop for SessionBucket {
-    fn drop(&mut self) { self.pairs.zeroize(); }
+    fn drop(&mut self) { self.pairs.zeroize(); scrub_origin(&mut self.origin); }
 }
 
 pub struct ScrollState { pub x: f64, pub y: f64 }
@@ -225,7 +233,7 @@ impl PageStash {
 }
 
 impl Drop for PageStash {
-    fn drop(&mut self) { self.forms.zeroize(); }
+    fn drop(&mut self) { self.forms.zeroize(); scrub_origin(&mut self.origin); }
 }
 
 pub struct RestoreState(Arc<PageStash>);
