@@ -1,0 +1,11 @@
+[
+    (
+        id: "stash-sensitive-empty",
+        group: "tab-lifecycle",
+        what: "Actual linked browser input and retained-state or residency outcome",
+        open: None, hover: None, click: None,
+        subject: "READY: FORM RESTORED",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 2000,
+    ),
+]

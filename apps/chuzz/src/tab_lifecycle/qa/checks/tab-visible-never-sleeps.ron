@@ -1,0 +1,11 @@
+[
+    (
+        id: "tab-visible-never-sleeps",
+        group: "tab-lifecycle",
+        what: "Actual linked browser input and retained-state or residency outcome",
+        open: None, hover: None, click: None,
+        subject: "Sleeping, saved view",
+        expect: Absent,
+        outcome_timeout_ms: 2000,
+    ),
+]

@@ -1,0 +1,11 @@
+[
+    (
+        id: "lifecycle-fixture-ready",
+        group: "tab-lifecycle",
+        what: "Actual linked browser input and retained-state or residency outcome",
+        open: None, hover: None, click: None,
+        subject: "READY: FIXTURE",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 2000,
+    ),
+]

@@ -1,0 +1,11 @@
+[
+    (
+        id: "tab-restore-failure-repost",
+        group: "tab-lifecycle",
+        what: "Actual linked browser input and retained-state or residency outcome",
+        open: None, hover: None, click: None,
+        subject: "reload-requires-resubmission",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 2000,
+    ),
+]
