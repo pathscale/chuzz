@@ -80,11 +80,17 @@ function judge(result: { code: number; stdout: string; stderr: string }, ids: st
 }
 
 function startup(result: { code: number; stdout: string; stderr: string }, failure?: string) {
-  const found = [...result.stdout.matchAll(/^sandbox2: (\S+) (PASS|FAIL)$/gm)];
+  const found = [...result.stdout.matchAll(/^sandbox2: (\S+) (PASS|FAIL|UNAVAILABLE)$/gm)];
   if (found.length !== names.length) throw new Error(`sandbox2-startup: missing real probe results: ${result.stderr}`);
   for (const name of names) {
     const matches = found.filter(row => row[1] === name);
-    if (matches.length !== 1 || matches[0][2] !== (failure === name ? "FAIL" : "PASS")) throw new Error(`sandbox2-startup: ${name} verdict mismatch`);
+    // heap-reports-disabled may be UNAVAILABLE where the OS refuses the policy;
+    // it is printed by name and a planted defect must still FAIL.
+    const verdict = matches.length === 1 ? matches[0][2] : "";
+    const healthy = verdict === "PASS" || (name === "heap-reports-disabled" && verdict === "UNAVAILABLE");
+    const ok = failure === name ? verdict === "FAIL" : healthy;
+    if (matches.length !== 1 || !ok) throw new Error(`sandbox2-startup: ${name} verdict mismatch (${verdict})`);
+    if (verdict === "UNAVAILABLE") console.log(`sandbox2-startup: ${name} UNAVAILABLE on this host`);
   }
   if (result.code !== (failure ? 1 : 0)) throw new Error(`sandbox2-startup: exit ${result.code}`);
 }
