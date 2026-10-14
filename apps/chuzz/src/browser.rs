@@ -47,6 +47,8 @@ pub struct FrontendTab {
     preview_available: bool,
     runtime_released: bool,
     preview_age_ms: Option<u64>,
+    consecutive_document_failures: u32,
+    recovery_degraded: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -88,6 +90,8 @@ struct MountedPage {
     script: bool,
 }
 
+const DOCUMENT_RECOVERY_FAILURE_LIMIT: u32 = 3;
+
 struct TabState {
     id: u64,
     mounted_generation: u64,
@@ -101,11 +105,28 @@ struct TabState {
     /// is in flight, so the previous page's outcome never shows against the
     /// new one's address.
     outcome: PageOutcome,
+    consecutive_document_failures: u32,
     generation: u64,
     life: TabLife,
 }
 
 impl TabState {
+    fn recovery_degraded(&self) -> bool {
+        self.consecutive_document_failures >= DOCUMENT_RECOVERY_FAILURE_LIMIT
+    }
+
+    fn record_document_result(&mut self, successful: bool) -> bool {
+        let was_degraded = self.recovery_degraded();
+        self.consecutive_document_failures = if successful {
+            0
+        } else {
+            self.consecutive_document_failures
+                .saturating_add(1)
+                .min(DOCUMENT_RECOVERY_FAILURE_LIMIT)
+        };
+        !was_degraded && self.recovery_degraded()
+    }
+
     fn request(&self) -> &Request {
         self.pending_navigation
             .as_ref()
@@ -135,6 +156,8 @@ impl TabState {
             },
             lifecycle: self.life.phase,
             lifecycle_reason: self.life.reason,
+            consecutive_document_failures: self.consecutive_document_failures,
+            recovery_degraded: self.recovery_degraded(),
             visible: self.life.visible,
             preview_available: self.life.preview.is_some(),
             preview_age_ms: self
@@ -438,6 +461,7 @@ impl Browser {
                     title: String::new(),
                     loading: false,
                     outcome: PageOutcome::Blank,
+                    consecutive_document_failures: 0,
                     generation: 0,
                     life: TabLife::default(),
                 }],
@@ -827,6 +851,66 @@ impl Browser {
         true
     }
 
+    fn record_document_result(&self, tab_id: u64, generation: u64, successful: bool) {
+        let newly_degraded = {
+            let mut state = self.0.state.lock().unwrap();
+            let Some(tab) = state
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == tab_id && tab.generation == generation)
+            else {
+                return;
+            };
+            tab.record_document_result(successful)
+        };
+        if newly_degraded {
+            self.note(
+                "error",
+                "document-recovery-degraded",
+                format!(
+                    "document-recovery-degraded: tab {tab_id}, generation {generation}, \
+                     {DOCUMENT_RECOVERY_FAILURE_LIMIT} consecutive load/attach failures; \
+                     page-origin navigation is disabled; use reload or the address bar to recover"
+                ),
+            );
+        }
+    }
+
+    fn document_attach_failed(&self, tab_id: u64, generation: u64) -> bool {
+        {
+            let mut state = self.0.state.lock().unwrap();
+            let Some(tab) = state
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == tab_id && tab.generation == generation)
+            else {
+                return false;
+            };
+            tab.loading = false;
+            tab.outcome = PageOutcome::Error;
+            tab.pending_navigation = None;
+            tab.life.cancel_restore();
+            if let Some(signal) = tab.life.load_signal.take() {
+                blitz_traits::net::AbortController { signal }.abort();
+            }
+            if tab.life.phase == TabPhase::Waking {
+                tab.life.phase = TabPhase::RestoreFailed;
+                tab.life.reason = "document-attach-failed";
+                tab.life.preview_surface.take();
+            }
+        }
+        self.record_document_result(tab_id, generation, false);
+        self.note(
+            "error",
+            "page",
+            format!(
+                "document-attach-failed: tab {tab_id}, generation {generation}; \
+                 no automatic retry"
+            ),
+        );
+        true
+    }
+
     fn poll_document(
         &self,
         ui: &mut blitz_script::ScriptDocument,
@@ -884,40 +968,50 @@ impl Browser {
             };
             // Preserve the outcome established during loading.
             let outcome = bundle.outcome;
-            let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
-                PageSource::Html { html, scripts } => {
-                    let mut page = crate::webgpu::script_document(&html, make_config())
-                        .with_fetcher(crate::script_fetch::PageScripts::new(
-                            scripts,
+            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
+                    PageSource::Html { html, scripts } => {
+                        let mut page = crate::webgpu::script_document(&html, make_config())
+                            .with_fetcher(crate::script_fetch::PageScripts::new(
+                                scripts,
+                                Arc::clone(&net),
+                                WINDOW_SCRIPT_DEADLINE,
+                            ));
+                        self.prepare_tab_page(
+                            &mut page,
+                            bundle.tab_id,
+                            bundle.generation,
+                            &bundle.resolved_url,
+                        );
+                        install_web_api_shim(&mut page, &net);
+                        crate::net_bridge::install(
+                            &mut page,
                             Arc::clone(&net),
-                            WINDOW_SCRIPT_DEADLINE,
-                        ));
-                    self.prepare_tab_page(
-                        &mut page,
-                        bundle.tab_id,
-                        bundle.generation,
-                        &bundle.resolved_url,
-                    );
-                    install_web_api_shim(&mut page, &net);
-                    crate::net_bridge::install(
-                        &mut page,
-                        Arc::clone(&net),
-                        WINDOW_NETWORK_DEADLINE,
-                        blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
-                    );
-                    page.execute_scripts();
-                    let title = page
-                        .inner()
-                        .find_title_node()
-                        .map(|node| node.text_content())
-                        .unwrap_or_default();
-                    (Box::new(page), title)
-                }
-                PageSource::Source { text } => {
-                    let page =
-                        blitz_html::HtmlDocument::from_html(&source_html(&text), make_config())
-                            .into_inner();
-                    (Box::new(page), format!("source of {}", bundle.resolved_url))
+                            WINDOW_NETWORK_DEADLINE,
+                            blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
+                        );
+                        page.execute_scripts();
+                        let title = page
+                            .inner()
+                            .find_title_node()
+                            .map(|node| node.text_content())
+                            .unwrap_or_default();
+                        (Box::new(page), title)
+                    }
+                    PageSource::Source { text } => {
+                        let page =
+                            blitz_html::HtmlDocument::from_html(&source_html(&text), make_config())
+                                .into_inner();
+                        (Box::new(page), format!("source of {}", bundle.resolved_url))
+                    }
+                };
+                (page, title)
+            }));
+            let (page, title) = match prepared {
+                Ok(prepared) => prepared,
+                Err(_) => {
+                    changed |= self.document_attach_failed(bundle.tab_id, bundle.generation);
+                    continue;
                 }
             };
             self.note(
@@ -940,6 +1034,7 @@ impl Browser {
                     .iter()
                     .any(|tab| tab.id == bundle.tab_id && tab.life.phase == TabPhase::Waking);
             if failed_wake {
+                self.record_document_result(bundle.tab_id, bundle.generation, false);
                 let receipt = page.dispose();
                 let mut state = self.0.state.lock().unwrap();
                 if let Some(tab) = state
@@ -973,6 +1068,24 @@ impl Browser {
                 document_id: page.id() as u64,
                 script: (&*page as &dyn std::any::Any).is::<blitz_script::ScriptDocument>(),
             };
+            let still_current = {
+                let state = self.0.state.lock().unwrap();
+                state
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == bundle.tab_id && tab.generation == bundle.generation)
+            };
+            if !still_current {
+                continue;
+            }
+            // Keep the browser state mutex outside the engine unwind boundary.
+            let attached = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ui.inner_mut().set_sub_document(target, page);
+            }));
+            if attached.is_err() {
+                changed |= self.document_attach_failed(bundle.tab_id, bundle.generation);
+                continue;
+            }
             {
                 let mut state = self.0.state.lock().unwrap();
                 let Some(tab) = state
@@ -983,7 +1096,6 @@ impl Browser {
                     continue;
                 };
                 let resolved_url = Url::parse(&bundle.resolved_url).ok();
-                ui.inner_mut().set_sub_document(target, page);
                 tab.mounted_generation += 1;
                 tab.mounted = Some(mounted);
                 if bundle.navigation_loaded {
@@ -1022,6 +1134,11 @@ impl Browser {
                     .records
                     .attached(TabId(bundle.tab_id), DocumentGeneration(bundle.generation));
             }
+            self.record_document_result(
+                bundle.tab_id,
+                bundle.generation,
+                bundle.navigation_loaded && outcome != PageOutcome::Error,
+            );
             self.attached_lifecycle(bundle.tab_id);
             changed = true;
         }
@@ -1043,7 +1160,19 @@ struct PageNavigation {
 impl NavigationProvider for PageNavigation {
     fn navigate_to(&self, options: NavigationOptions) {
         if let Some(inner) = self.browser.upgrade() {
-            Browser(inner).navigate_request(
+            let browser = Browser(inner);
+            {
+                let state = browser.0.state.lock().unwrap();
+                if state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == self.tab_id)
+                    .is_none_or(TabState::recovery_degraded)
+                {
+                    return;
+                }
+            }
+            browser.navigate_request(
                 self.tab_id,
                 options.into_request().initiator(self.initiator.clone()),
             );
@@ -1565,6 +1694,7 @@ fn open_tab_record(
             title: String::new(),
             loading: false,
             outcome: PageOutcome::Blank,
+            consecutive_document_failures: 0,
             generation: 0,
             life: TabLife::default(),
         });
@@ -2037,6 +2167,7 @@ mod tests {
             title: String::new(),
             loading: true,
             outcome: PageOutcome::Ready,
+            consecutive_document_failures: 0,
             generation: 0,
             life: TabLife::default(),
         };
