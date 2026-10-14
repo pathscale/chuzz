@@ -4,15 +4,6 @@ Audited 2026-10-14.
 
 This is the sole current work queue. Each entry states the gap, its location and where to start. Checked chuzz through `4eb8d1d`, published ps-blitz 0.6.5 sources and matching local history; no build was run. "Unverified" means current runtime behavior or external proof could not be established. Historical design notes are references, not additional queues.
 
-## CI: the `app` job fails in the TLS functional checks (open, 2026-10-14)
-
-- `scripts/qa-sandbox2.ts:185` runs `required.ron` against the local AES-only TLS server. The
-  check `tls-chacha-required` passes, but ps-qa exits 1: `uncovered component control: role=link
-  name="Why chuzz refused this TLS connection"`. The refusal page has a visible link that no check
-  in `apps/chuzz/src/sandbox/qa/checks/required.ron` covers, and ps-qa's coverage gate fails any
-  run with an uncovered visible control. Start: add a check (and `covers` entry) for that link in
-  `required.ron`; do not disable the coverage gate. Everything earlier in the job passes.
-
 ## Security and native execution
 
 - A01: Sandbox v2 per-agent cages are not integrated into production page execution; ekojit `crates/ekojit-cage` reserves 4 GiB plus guards, but `crates/ekojit/src/baseline/numeric.rs` uses host address space; start by connecting guest accesses to ps-codegen H4, proving guard faults and zeroed block reuse after the H1-H9 integration gate.
@@ -20,7 +11,6 @@ This is the sole current work queue. Each entry states the gap, its location and
 - A03: Sandbox v2 lacks one broker task owning network, cookies, storage, permissions and stash outside every cage; `apps/chuzz/src/document_loader.rs`, `cookie_store.rs`, `browser.rs` and `tab_stash.rs` distribute these owners; start with a deny-by-default typed capability API on a nagoya task and a missing-capability witness.
 - A04: The bounded RAM stash is zeroized but unencrypted; `apps/chuzz/src/tab_stash.rs` retains forms, session pairs and previews in plaintext vectors; start with per-site authenticated encryption under memory-only keys in the broker, preserving origin checks, sensitive-field exclusion and zeroization.
 - A05: Persistent cookies are plaintext on disk; `apps/chuzz/src/cookie_store.rs` serializes JSON into WorkTable's `cookies: String` column in the profile's `browser_cookie` directory; start at `BrowserCookieStore::open` and `apply_durable_snapshot` with a Secure Enclave-bound key through the se-fido backend, per-purpose HKDF keys, XChaCha20-Poly1305 page encryption and presence-gated unlock at launch, including plaintext migration.
-- A06: Tab sleep/wake landed in `948704c` and follow-ups, but all six ps-qa witnesses remain unverified; `scripts/qa-tab-lifecycle.ts` exited before checks because `QA_TAB_MUTANTS` was unset (ps-qa 0.9.4 available); start with six prebuilt mutants from `qa-tab-defects.ts`, `PS_QA_BIN` and `QA_HOST_BIN`, then prove `stash-teardown-complete`, `stash-sensitive-empty`, `stash-origin-before-script`, `tab-restore-failure-repost`, `tab-visible-never-sleeps` and `tab-five-minute-expiry`, with named plant failures and the real 300000 ms deadline; CI/release omit this runner.
 - A07: The blitz-script ekojit hello-world page is not proven; ekojit `crates/blitz-script-ekojit` supplies `native-page-host`, but its current TODO reports a native compiler control-flow layout rejection; start with an already-built `ekojit-page-witness` host and the ps-qa `scripts/native-page-witness.ts` runner, inspect the ps-codegen refusal and require healthy plus `host-text-append-noop` outcomes (fresh reproduction unverified because no prebuilt host was found).
 - O01: Typed resource-policy checks now exist, superseding the unconditional arbitrary-file-read claim, but functional proof is unverified; ps-blitz `packages/blitz-net/src/lib.rs` checks initiators and chuzz `apps/chuzz/src/document_loader.rs` binds scopes; start with `scripts/qa-sandbox2.ts` and ps-blitz `scripts/qa-resource-policy.ts` for file, resolved private-address, credential and request/byte-cap plants.
 - O02: Sandbox v2 frozen clocks and per-site agent metering are not proven by process caps/page deadlines; `apps/chuzz/src/bin_caps.rs`, `resource_parameters.rs` and ekojit runtime budgets cover parts; start with page clock bindings, agent accounting and named kill outcomes, proving frozen execution clocks and burning-agent termination (runtime coverage unverified).
