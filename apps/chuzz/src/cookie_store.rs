@@ -30,6 +30,12 @@ worktable!(
 
 type CookieKey = (String, String, String);
 
+#[cfg(feature = "reactor-witness")]
+pub fn reactor_receipt() -> Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>> {
+    static RECEIPT: std::sync::OnceLock<Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>> = std::sync::OnceLock::new();
+    Arc::clone(RECEIPT.get_or_init(blitz_control_protocol::latest::Once::new))
+}
+
 const COOKIE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(25);
 
 struct PersistenceCommand {
@@ -784,6 +790,11 @@ async fn record_durable_snapshot(
     let error = apply_durable_snapshot(table, snapshot.as_str()).await;
     if first_error.is_none() {
         *first_error = error;
+    }
+    #[cfg(feature = "reactor-witness")]
+    {
+        let durable = table.wait_for_ops().await.map_err(|error| error.to_string());
+        reactor_receipt().fill(Arc::new(first_error.clone().map_or(durable, Err)));
     }
 }
 
