@@ -396,7 +396,11 @@ pub(super) fn run(
     checkpoint(&host, &mut context);
     let mut deferred = VecDeque::new();
 
+    let notifications = crate::webapi::notifications(&context);
     while !endpoint.stopped() && !endpoint.closing.load(Ordering::Acquire) {
+        if crate::webapi::drain_notifications(&mut context) {
+            checkpoint(&host, &mut context);
+        }
         if let Some(promise) = &startup {
             match promise.state() {
                 PromiseState::Pending => {}
@@ -422,15 +426,32 @@ pub(super) fn run(
             .clamp(0.0, 1000.0);
         let input = nagoya::block_on(nagoya::timeout(
             Duration::from_secs_f64(delay / 1000.0),
-            endpoint.inbox.recv(),
+            async {
+                use std::future::Future;
+                use std::task::Poll;
+                let mut input = Box::pin(endpoint.inbox.recv());
+                let mut completed = Box::pin(async {
+                    match &notifications {
+                        Some(notifications) => notifications.changed().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                });
+                std::future::poll_fn(|cx| {
+                    if completed.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(None);
+                    }
+                    input.as_mut().poll(cx).map(Some)
+                })
+                .await
+            },
         ));
         if endpoint.stopped() {
             break;
         }
         match input {
-            Ok(Input::Message(wire)) if startup.is_some() => deferred.push_back(wire),
-            Ok(Input::Message(wire)) => dispatch(&host, wire, &mut context),
-            Ok(Input::Fetch { id, metadata, body }) => {
+            Ok(Some(Input::Message(wire))) if startup.is_some() => deferred.push_back(wire),
+            Ok(Some(Input::Message(wire))) => dispatch(&host, wire, &mut context),
+            Ok(Some(Input::Fetch { id, metadata, body })) => {
                 let result = (|| -> JsResult<JsValue> {
                     let body = JsArrayBuffer::from_byte_block(body, &mut context)?;
                     call(
@@ -448,7 +469,7 @@ pub(super) fn run(
                 }
                 checkpoint(&host, &mut context);
             }
-            Err(_) => {}
+            Ok(None) | Err(_) => {}
         }
         if endpoint.stopped() || endpoint.closing.load(Ordering::Acquire) {
             break;

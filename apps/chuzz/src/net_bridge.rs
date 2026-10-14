@@ -31,14 +31,14 @@ struct WakeState {
 pub(crate) struct PageWake(Arc<Mutex<WakeState>>);
 
 impl PageWake {
-    fn new(shell: Arc<dyn ShellProvider>) -> Self {
+    pub(crate) fn new(shell: Arc<dyn ShellProvider>) -> Self {
         Self(Arc::new(Mutex::new(WakeState {
             waker: None,
             shell: Some(shell),
         })))
     }
 
-    fn bind(&self, waker: Option<&Waker>) {
+    pub(crate) fn bind(&self, waker: Option<&Waker>) {
         if let Some(waker) = waker {
             self.0
                 .lock()

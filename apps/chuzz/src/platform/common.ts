@@ -560,6 +560,11 @@
         };
       });
     }
+    const credentialCompletions = new Map();
+    Object.defineProperty(g, "__chuzzWebauthnResolve", { value(id, result) {
+      const complete = credentialCompletions.get(id);
+      if (complete) complete(result);
+    } });
     function credentialsRequest(create, options) {
       return new Promise((resolve, reject) => {
         options = dictionary(options, "options");
@@ -586,10 +591,9 @@
         }
         const id = started;
         let done = false;
-        let timer = null;
         function cleanup() {
           done = true;
-          if (timer !== null) g.clearTimeout(timer);
+          credentialCompletions.delete(id);
           if (signal) signal.removeEventListener("abort", abort);
         }
         function abort() {
@@ -599,26 +603,14 @@
             reject(exception("AbortError", "The request was aborted"));
           }
         }
-        function check() {
+        credentialCompletions.set(id, state => {
           if (done) return;
           if (signal && signal.aborted) { abort(); return; }
-          try {
-            const state = call({ op: "webauthn-status", id });
-            if (state.pending) {
-              timer = g.setTimeout(check, 10);
-              return;
-            }
-            cleanup();
-            if (state.error) reject(exception(state.error.name, state.error.message));
-            else resolve(new PublicKeyCredential(credentialToken, state.result, create));
-          } catch (error) {
-            cleanup();
-            call({ op: "webauthn-abort", id });
-            reject(error);
-          }
-        }
+          cleanup();
+          if (state.error) reject(exception(state.error.name, state.error.message));
+          else resolve(new PublicKeyCredential(credentialToken, state.result, create));
+        });
         if (signal) signal.addEventListener("abort", abort, { once: true });
-        check();
       });
     }
     class CredentialsContainer {
