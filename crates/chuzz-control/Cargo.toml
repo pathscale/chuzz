@@ -10,7 +10,7 @@ publish = false
 # The socket server. Types are always available; the listener is opt-in so a
 # build that only speaks the protocol does not pull in a transport.
 default = ["server"]
-server = ["dep:endpoint-libs", "dep:nagoya", "dep:futures"]
+server = ["dep:endpoint-libs", "dep:nagoya", "dep:futures", "dep:libc"]
 reactor-witness = ["server"]
 
 [[bin]]
@@ -21,6 +21,7 @@ required-features = ["reactor-witness"]
 [dependencies]
 nagoya = { workspace = true, optional = true }
 futures = { version = "^0.3", optional = true }
+libc = { version = "^0.2", optional = true }
 blitz-control-protocol = { workspace = true, default-features = false, features = ["client"] }
 endpoint-libs = { workspace = true, optional = true }
 serde.workspace = true
