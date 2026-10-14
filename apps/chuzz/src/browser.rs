@@ -2209,6 +2209,8 @@ mod tests {
     #[test]
     fn a_wasm_page_is_attached_to_the_tab_mount() {
         // Boa needs the stack, the same as the frontend test.
+        // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: test-only big stack.
+        #[allow(clippy::disallowed_methods)]
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {

@@ -41,18 +41,20 @@ fn main() {
     // main thread's 8 MB ran out first on YouTube's Polymer, aborting the
     // worker, so the page runs on a thread sized for that nesting. The
     // reservation is virtual; pages are committed only as they are touched.
+    let target = std::sync::Arc::new(target);
+    // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: one isolation thread per page JS engine.
+    #[allow(clippy::disallowed_methods)]
     let page = std::thread::Builder::new()
         .name("chuzz-page".into())
         .stack_size(PAGE_STACK_BYTES)
-        .spawn(move || serve::serve(&target).map_err(|error| error.to_string()))
+        .spawn(move || {
+            std::sync::Arc::new(serve::serve(&target).map_err(|error| error.to_string()))
+        })
         .expect("spawn the page thread");
-    match page.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            eprintln!("chuzz-headless: {error}");
-            std::process::exit(1);
-        }
-        Err(_) => std::process::exit(101),
+    let result = page.join().unwrap_or_else(|_| std::process::exit(101));
+    if let Err(error) = result.as_ref() {
+        eprintln!("chuzz-headless: {error}");
+        std::process::exit(1);
     }
 }
 
