@@ -47,9 +47,10 @@ export function PageArea(): JSX.Element {
               <Show when={tab.id === browser.state.activeTabId && ["sleeping", "waking", "discarding", "restore-failed"].includes(tab.lifecycle ?? "")}>
                 <SleepView
                   tabId={String(tab.id)}
-                  label={tab.lifecycle === "waking" ? "Waking, saved view" : tab.lifecycle === "discarding" ? "Releasing page" : tab.lifecycle === "restore-failed" ? "Reload failed, saved view" : "Sleeping, saved view"}
+                  label={tab.lifecycle === "discarding" ? "Releasing page" : `${tab.lifecycle === "waking" ? "Waking" : tab.lifecycle === "restore-failed" ? "Reload failed" : "Sleeping"}${tab.previewAvailable ? ", saved view" : ""}`}
                   reason={tab.lifecycleReason ?? ""}
                   ageSeconds={Math.floor((tab.previewAgeMs ?? 0) / 1000)}
+                  hasPreview={!!tab.previewAvailable}
                 >
                   <div>
                     <Button id={`chuzz-wake-${tab.id}`} disabled={tab.lifecycle === "waking" || tab.lifecycle === "discarding"} onClick={() => tab.lifecycleReason === "reload-requires-resubmission" ? void browser.navigate(tab.url) : browser.wakeTab(tab.id)}>

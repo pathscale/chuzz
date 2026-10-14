@@ -40,6 +40,9 @@ pub struct TabLife {
     pub epoch: u64,
     pub hidden_at: u64,
     pub deadline: Option<Arc<Deadline>>,
+    pub restore_deadline: Option<Arc<Deadline>>,
+    pub load_signal: Option<blitz_traits::net::AbortSignal>,
+    pub ever_live: bool,
     pub stash: Option<Arc<PageStash>>,
     pub preview: Option<Arc<PaintSnapshot>>,
     pub preview_surface: Option<izumo::PageSurface>,
@@ -54,7 +57,7 @@ pub struct TabLife {
 impl Default for TabLife {
     fn default() -> Self {
         Self { phase: TabPhase::Dormant, visible: false, epoch: 0, hidden_at: nagoya::now_ns(),
-            deadline: None, stash: None, preview: None, preview_surface: None, record_charge: None,
+            deadline: None, restore_deadline: None, load_signal: None, ever_live: false, stash: None, preview: None, preview_surface: None, record_charge: None,
             release: None, wake_requested: false, await_preview: false, discarded: false, reason: "" }
     }
 }
@@ -65,8 +68,14 @@ impl TabLife {
         if let Some(deadline) = self.deadline.take() { deadline.cancel(); }
     }
 
+    pub fn cancel_restore(&mut self) {
+        if let Some(deadline) = self.restore_deadline.take() { deadline.cancel(); }
+    }
+
     pub fn navigate(&mut self) {
         self.cancel_deadline();
+        self.cancel_restore();
+        if let Some(signal) = self.load_signal.take() { blitz_traits::net::AbortController { signal }.abort(); }
         self.stash.take(); self.preview.take(); self.preview_surface.take(); self.record_charge.take();
         self.discarded = false; self.await_preview = false;
         if self.phase != TabPhase::Discarding { self.phase = TabPhase::Dormant; }
@@ -74,13 +83,18 @@ impl TabLife {
 }
 
 impl Drop for TabLife {
-    fn drop(&mut self) { if let Some(deadline) = self.deadline.take() { deadline.cancel(); } }
+    fn drop(&mut self) {
+        if let Some(deadline) = self.deadline.take() { deadline.cancel(); }
+        self.cancel_restore();
+        if let Some(signal) = self.load_signal.take() { blitz_traits::net::AbortController { signal }.abort(); }
+    }
 }
 
 pub enum LifecycleMessage {
     Sleep { id: u64, generation: u64, epoch: u64, automatic: bool },
     Released { id: u64, receipt: Arc<Teardown> },
     Surface(Arc<izumo::SurfaceEvent>),
+    RestoreTimeout { id: u64, generation: u64 },
 }
 
 impl Browser {
@@ -126,6 +140,45 @@ impl Browser {
                 browser.wake_document();
             }
         });
+    }
+
+    pub(super) fn arm_restore(&self, id: u64, generation: u64) {
+        let deadline = {
+            let mut state = self.0.state.lock().unwrap();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id && tab.generation == generation) else { return; };
+            if tab.life.phase != TabPhase::Waking { return; }
+            tab.life.cancel_restore();
+            let deadline = Arc::new(Deadline { due: nagoya::now_ns().saturating_add(30_000_000_000), generation,
+                epoch: tab.life.epoch, cancelled: AtomicBool::new(false), reader: Mutex::new(None) });
+            tab.life.restore_deadline = Some(Arc::clone(&deadline));
+            deadline
+        };
+        let owner = Arc::downgrade(&self.0);
+        nagoya::spawn(async move {
+            if deadline.expires().await && let Some(inner) = owner.upgrade() {
+                let browser = Browser(inner);
+                browser.0.lifecycle.lock().unwrap().push_back(LifecycleMessage::RestoreTimeout { id, generation });
+                browser.wake_document();
+            }
+        });
+    }
+
+    fn restore_timeout(&self, ui: &mut blitz_script::ScriptDocument, id: u64, generation: u64) -> bool {
+        let mount = {
+            let mut state = self.0.state.lock().unwrap();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id && tab.generation == generation && tab.life.phase == TabPhase::Waking) else { return false; };
+            tab.life.cancel_restore();
+            if let Some(signal) = tab.life.load_signal.take() { blitz_traits::net::AbortController { signal }.abort(); }
+            tab.generation = tab.generation.checked_add(1).expect("document generation exhausted");
+            tab.loading = false;
+            tab.life.phase = TabPhase::RestoreFailed;
+            tab.life.visible = false;
+            tab.life.reason = "restore-timeout";
+            tab.life.preview_surface.take();
+            tab.mounted.take().map(|page| NodeId::from_u64(page.mount_node_id))
+        };
+        if let Some(mount) = mount && let Some(receipt) = ui.inner_mut().retire_sub_document(mount) { self.track_release(id, receipt); }
+        true
     }
 
     pub(super) fn request_sleep(&self, id: u64) -> Result<(), String> {
@@ -174,6 +227,9 @@ impl Browser {
             }
         };
         page.set_was_discarded(discarded);
+        let waking = self.0.state.lock().unwrap().tabs.iter().any(|tab| tab.id == id && tab.generation == generation && tab.life.phase == TabPhase::Waking);
+        page.inner_mut().page_input_blocked = waking;
+        if waking { page.with_js_context(|context| context.set_execution_time_limit(Some(WINDOW_NETWORK_DEADLINE))); }
         crate::tab_session::install(page, restore.as_ref().and_then(|restore| restore.session()));
         if let Some(restore) = restore {
             if destination.as_ref().is_some_and(|url| url.fragment().is_none()) {
@@ -185,17 +241,17 @@ impl Browser {
     }
 
     fn commit_sleep(&self, ui: &mut blitz_script::ScriptDocument, id: u64, generation: u64, epoch: u64, automatic: bool) -> bool {
-        let (mount, url, entry, replayable, record_bytes) = {
+        let (mount, url, entry, replayable, record_bytes, loading) = {
             let mut state = self.0.state.lock().unwrap();
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id && tab.generation == generation && tab.life.epoch == epoch) else { return false; };
-            if tab.loading || tab.life.phase != TabPhase::Live || automatic && (tab.life.visible
+            if tab.loading && !automatic || tab.life.phase != TabPhase::Live || automatic && (tab.life.visible
                 || tab.life.deadline.as_ref().is_none_or(|deadline| nagoya::now_ns() < deadline.due)) { return false; }
             let Some(page) = &tab.mounted else { return false; };
             if ui.inner().subdoc(NodeId::from_u64(page.mount_node_id)).is_none_or(|document| document.id() as u64 != page.document_id) { return false; }
             let mount = NodeId::from_u64(page.mount_node_id);
             let record_bytes = size_of::<TabState>() + tab.title.capacity() + tab.history.capacity() * size_of::<Request>()
                 + tab.history.iter().map(|request| request.url.as_str().len()).sum::<usize>();
-            (mount, tab.request().url.clone(), tab.current as u64, matches!(tab.request().method.as_str(), "GET" | "HEAD"), record_bytes)
+            (mount, tab.request().url.clone(), tab.current as u64, matches!(tab.request().method.as_str(), "GET" | "HEAD"), record_bytes, tab.loading)
         };
         if record_bytes > 32 * 1024 { return false; }
         let mut charge = self.0.sleeping_budget.reserve(record_bytes);
@@ -216,9 +272,10 @@ impl Browser {
             document.freeze();
             let still_current = self.0.state.lock().unwrap().tabs.iter().any(|tab| tab.id == id && tab.generation == generation && tab.life.epoch == epoch);
             if !still_current { document.resume(); return false; }
-            let forms = crate::tab_native::capture_forms(&mut document.inner_mut());
+            document.inner_mut().classify_stash();
+            let forms = if loading { Vec::new() } else { crate::tab_native::capture_forms(&mut document.inner_mut()) };
             let scroll = document.inner().viewport_scroll();
-            let disabled = document.inner().stash_disabled();
+            let disabled = loading || document.inner().stash_disabled();
             let session = if disabled { None } else { (document as &mut dyn std::any::Any).downcast_mut::<blitz_script::ScriptDocument>()
                 .and_then(|page| crate::tab_session::capture(page, &self.0.sleeping_budget)) };
             let stash = if disabled { None } else { PageStash::seal(&self.0.sleeping_budget, &url, entry, generation,
@@ -234,6 +291,8 @@ impl Browser {
             tab.life.cancel_deadline();
             tab.generation = tab.generation.checked_add(1).expect("document generation exhausted");
             tab.life.phase = TabPhase::Discarding; tab.life.visible = false; tab.life.discarded = true;
+            tab.life.cancel_restore();
+            if let Some(signal) = tab.life.load_signal.take() { blitz_traits::net::AbortController { signal }.abort(); }
             tab.life.stash = stash; tab.life.preview = preview; tab.life.record_charge = Some(charge);
             tab.life.reason = if tab.life.stash.is_some() { "" } else { "stash-incomplete" };
             tab.mounted.take(); tab.loading = false;
@@ -275,6 +334,7 @@ impl Browser {
         let mut changed = false;
         for message in messages {
             match message {
+                LifecycleMessage::RestoreTimeout { id, generation } => { changed |= self.restore_timeout(ui, id, generation); }
                 LifecycleMessage::Sleep { id, generation, epoch, automatic } => { changed |= self.commit_sleep(ui, id, generation, epoch, automatic); }
                 LifecycleMessage::Released { id, receipt } => {
                     let wake = {
@@ -312,7 +372,7 @@ impl Browser {
                         }
                         if tab.mounted.as_ref().is_none_or(|mount| mount.document_id != page.document_id) { continue; }
                         let mount = tab.mounted.as_ref().unwrap().mount_node_id;
-                        tab.life.phase = TabPhase::Live; tab.life.stash.take(); tab.life.preview.take();
+                        tab.life.phase = TabPhase::Live; tab.life.cancel_restore(); tab.life.stash.take(); tab.life.preview.take();
                         tab.life.preview_surface.take(); tab.life.record_charge.take();
                         drop(state);
                         if let Some(document) = ui.inner_mut().subdoc_mut(NodeId::from_u64(mount)) { document.finish_restore(); }

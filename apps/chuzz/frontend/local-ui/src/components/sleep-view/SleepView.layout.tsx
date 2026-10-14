@@ -8,16 +8,17 @@ export type SleepViewProps = {
   label: string;
   reason: string;
   ageSeconds: number;
+  hasPreview: boolean;
   children: JSX.Element;
 };
 
 const SleepView: Layout<typeof sleepView, SleepViewProps> = () => (
   <section {...slot.root} aria-label={local.label}>
-    <img {...slot.image} id={`chuzz-saved-${local.tabId}`} alt="Saved view" />
+    <img {...slot.image} id={`chuzz-saved-${local.tabId}`} alt={local.hasPreview ? "Saved view" : ""} />
     <div {...slot.caption}>
       <Text>{local.label}</Text>
       <Text size="sm">{local.reason}</Text>
-      <Text size="sm">Saved {local.ageSeconds}s ago</Text>
+      {local.hasPreview && <Text size="sm">Saved {local.ageSeconds}s ago</Text>}
       <div {...slot.actions}>{children}</div>
     </div>
   </section>

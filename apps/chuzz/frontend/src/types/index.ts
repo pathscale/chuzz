@@ -45,7 +45,7 @@ export interface Tab {
   visible?: boolean;
   previewAvailable?: boolean;
   runtimeReleased?: boolean;
-  previewAgeMs?: number;
+  previewAgeMs?: number | null;
 }
 
 /** Which inspector sections are open. Persisted by the shell, not the interface. */

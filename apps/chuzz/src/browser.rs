@@ -656,14 +656,23 @@ impl Browser {
                 drop(state); self.emit_state(); return;
             }
             tab.life.cancel_deadline();
+            tab.life.cancel_restore();
+            if let Some(signal) = tab.life.load_signal.take() { blitz_traits::net::AbortController { signal }.abort(); }
+            let signal = blitz_traits::net::AbortSignal::default();
+            tab.life.load_signal = Some(signal);
             tab.life.await_preview = false;
             if tab.life.discarded && tab.mounted.is_none() { tab.life.phase = TabPhase::Waking; }
+            else if tab.mounted.is_some() { tab.life.phase = TabPhase::Live; }
             tab.generation = tab.generation.checked_add(1).expect("document generation exhausted");
             tab.loading = true;
 
-            (tab.request().clone(), tab.generation)
+            let mut request = tab.request().clone();
+            request.signal = tab.life.load_signal.clone();
+            (request, tab.generation)
         };
         self.0.state.lock().unwrap().records.loading(TabId(tab_id), DocumentGeneration(generation));
+        self.arm_restore(tab_id, generation);
+        self.attached_lifecycle(tab_id);
         self.emit_state();
 
         // A wasm page has nothing to fetch, so its bundle is complete the
@@ -828,6 +837,7 @@ impl Browser {
                 if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == bundle.tab_id && tab.generation == bundle.generation) {
                     tab.loading = false;
                     tab.life.phase = TabPhase::RestoreFailed;
+                    tab.life.cancel_restore();
                     tab.life.reason = "reload-failed";
                     tab.life.preview_surface.take();
                     tab.outcome = outcome;
@@ -867,7 +877,7 @@ impl Browser {
                 tab.title = title;
                 tab.loading = false;
                 tab.life.visible = false;
-                tab.life.hidden_at = nagoya::now_ns();
+                if !tab.life.ever_live { tab.life.hidden_at = nagoya::now_ns(); tab.life.ever_live = true; }
                 tab.life.preview_surface.take();
                 if tab.life.phase != TabPhase::Waking { tab.life.phase = TabPhase::Live; }
                 tab.outcome = outcome;

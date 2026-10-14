@@ -9,5 +9,5 @@ export const sleepView = recipe({
     caption: { base: "sleep-view__caption" },
     actions: { base: "sleep-view__actions" },
   },
-  props: { tabId: {}, label: {}, reason: {}, ageSeconds: {} },
+  props: { tabId: {}, label: {}, reason: {}, ageSeconds: {}, hasPreview: {} },
 });
