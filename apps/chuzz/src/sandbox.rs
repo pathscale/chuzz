@@ -85,6 +85,11 @@ fn install() -> Result<Arc<Directories>, String> {
     let cache = own_directory(&cache, &home)?;
     let profile = std::env::var_os("CHUZZ_PROFILE_DIR").map(PathBuf::from)
         .unwrap_or_else(|| cache.join("profile"));
+    let old_profile = home.join("Library/Application Support/ai.chuzz.browser");
+    if std::env::var_os("CHUZZ_PROFILE_DIR").is_none() && !profile.exists() && old_profile.is_dir() {
+        let old_profile = own_directory(&old_profile, &home)?;
+        migrate_profile(&old_profile, &profile)?;
+    }
     std::fs::create_dir_all(&profile).map_err(|error| error.to_string())?;
     let profile = own_directory(&profile, &home)?;
     if !profile.starts_with(&cache) {
@@ -142,4 +147,23 @@ pub(crate) fn defect(name: &str) -> bool {
     return std::env::var("SANDBOX2_DEFECT").ok().as_deref() == Some(name);
     #[cfg(not(feature = "sandbox2-witness"))]
     { let _ = name; false }
+}
+
+fn migrate_profile(source: &Path, destination: &Path) -> Result<(), String> {
+    let mut pending = vec![(source.to_path_buf(), destination.to_path_buf())];
+    let mut entries = 0usize;
+    while let Some((source, destination)) = pending.pop() {
+        std::fs::create_dir_all(&destination).map_err(|error| format!("sandbox-profile-migration: {error}"))?;
+        for entry in std::fs::read_dir(source).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            entries += 1;
+            if entries > 100_000 { return Err("sandbox-profile-migration: entry limit exceeded".to_owned()); }
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            let target = destination.join(entry.file_name());
+            if kind.is_dir() { pending.push((entry.path(), target)); }
+            else if kind.is_file() { std::fs::copy(entry.path(), target).map_err(|error| error.to_string())?; }
+            else { return Err("sandbox-profile-migration: symlink or special file refused".to_owned()); }
+        }
+    }
+    Ok(())
 }
