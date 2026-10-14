@@ -619,6 +619,7 @@ impl Browser {
                 let mut record = Request::get(request.url.clone());
                 record.method = request.method.clone();
                 record.destination = request.destination;
+                record.initiator = request.initiator.clone();
                 *request = record;
             }
             let next = tab.generation;
