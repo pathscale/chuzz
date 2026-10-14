@@ -41,6 +41,7 @@ use nagoya::reactor::Reactor;
 // 38 MiB OpenCaptchaWorld image-matching response and similarly sized pages.
 const MAX_MESSAGE_BYTES: usize = 128 << 20;
 const MAX_FRAME_BYTES: usize = 64 << 20;
+const MAX_ACTIVE_SOCKETS: usize = 64;
 
 // Every document bridge shares this driver. The static owns the reactor,
 // because dropping it while connections still hold handles stops their I/O.
@@ -157,10 +158,9 @@ struct Command {
     url: Option<String>,
     #[serde(default)]
     protocols: Vec<String>,
-    /// The page origin, sent as the handshake `Origin` header as a browser
-    /// must (RFC 6455 4.1). Servers that check it refuse a handshake without it.
-    #[serde(default)]
-    origin: Option<String>,
+    /// Accepted for wire compatibility. Native document identity supplies Origin.
+    #[serde(default, rename = "origin")]
+    _origin: Option<String>,
     #[serde(default)]
     data: Option<String>,
     #[serde(default)]
@@ -175,6 +175,7 @@ pub struct Bridge {
     wake: crate::net_bridge::PageWake,
     lifetime: Option<Arc<blitz_dom::release::Teardown>>,
     signal: blitz_traits::net::AbortSignal,
+    initiator: blitz_traits::net::Initiator,
 }
 
 impl Bridge {
@@ -187,6 +188,11 @@ impl Bridge {
             lifetime: Some(lifetime),
             ..Default::default()
         }
+    }
+
+    pub(crate) fn with_initiator(mut self, initiator: blitz_traits::net::Initiator) -> Self {
+        self.initiator = initiator;
+        self
     }
 
     pub(crate) fn retire(&self) {
@@ -218,12 +224,15 @@ impl Bridge {
         }
     }
 
-    fn failed(&self, id: u64, reason: &str, error: impl std::fmt::Display) {
+    fn failed(&self, id: u64, _reason: &str, _error: impl std::fmt::Display) {
         self.post(
             id,
-            serde_json::json!({"type": "error", "message": format!("{error}")}),
+            serde_json::json!({
+                "type": "error",
+                "message": "WebSocket connection failed",
+            }),
         );
-        self.post(id, closed(1006, reason));
+        self.post(id, closed(1006, ""));
     }
 
     /// Take one IPC message if it is a socket command. Returns whether it was.
@@ -243,6 +252,10 @@ impl Bridge {
     }
 
     fn connect(&self, command: Command) {
+        if self.signal.aborted() {
+            return;
+        }
+
         let id = command.id;
         let Some(url) = command.url else {
             self.failed(id, "handshake", "no url");
@@ -252,6 +265,14 @@ impl Bridge {
         let outbox = Arc::new(Outbox::default());
         match self.senders.lock() {
             Ok(mut open) => {
+                if self.signal.aborted() || open.contains_key(&id) {
+                    return;
+                }
+                if open.len() >= MAX_ACTIVE_SOCKETS {
+                    drop(open);
+                    self.failed(id, "connect", "active socket limit reached");
+                    return;
+                }
                 open.insert(id, Arc::clone(&outbox));
             }
             Err(_) => {
@@ -268,19 +289,14 @@ impl Bridge {
                 let connected = match open_socket(
                     &url,
                     &command.protocols,
-                    command.origin.as_deref(),
+                    &bridge.initiator,
                     Arc::clone(&outbox),
                 )
                 .await
                 {
                     Ok(connected) => connected,
                     Err(error) => {
-                        // The page is told the same thing a browser tells it: the
-                        // connection failed. The detail goes in the error event
-                        // rather than being swallowed, because "it did not
-                        // connect" is the least useful sentence in networking.
                         bridge.failed(id, "connect", error);
-                        bridge.forget(id);
                         return;
                     }
                 };
@@ -299,7 +315,6 @@ impl Bridge {
                 bridge
                     .run_connection(id, connected.connection, &outbox)
                     .await;
-                bridge.forget(id);
             });
             std::future::poll_fn(|cx| {
                 use std::future::Future;
@@ -309,6 +324,7 @@ impl Bridge {
                 work.as_mut().poll(cx)
             })
             .await;
+            bridge.forget(id);
         });
     }
 
@@ -383,7 +399,7 @@ impl Bridge {
                     break;
                 }
                 Ok(None) => {
-                    self.post(id, closed(1006, "eof"));
+                    self.post(id, closed(1006, ""));
                     break;
                 }
             }
@@ -458,12 +474,21 @@ fn closed(code: u16, reason: &str) -> serde_json::Value {
 /// This is the whole reason the fleet needs a real socket rather than a
 /// reachable one: honey.id's auth rides here, as `["0login", "1<token>"]`, so
 /// a client that drops the header authenticates as nobody.
+fn invalid_handshake_bytes(value: &str) -> bool {
+    value
+        .bytes()
+        .any(|byte| matches!(byte, b'\r' | b'\n' | b'\0'))
+}
+
 async fn open_socket(
     url: &str,
     protocols: &[String],
-    origin: Option<&str>,
+    initiator: &blitz_traits::net::Initiator,
     outbox: Arc<Outbox>,
 ) -> Result<Connected<Transport>, String> {
+    if invalid_handshake_bytes(url) {
+        return Err("invalid WebSocket URL".to_owned());
+    }
     let url = url::Url::parse(url).map_err(|error| error.to_string())?;
     let secure = match url.scheme() {
         "ws" => false,
@@ -479,7 +504,20 @@ async fn open_socket(
         Some(url::Host::Ipv6(host)) => host.to_string(),
         None => return Err("missing host".to_owned()),
     };
+    let document_url = initiator
+        .document_url()
+        .ok_or_else(|| "document URL is unavailable".to_owned())?;
+    let origin = match document_url.scheme() {
+        "http" | "https" => document_url.origin().ascii_serialization(),
+        _ => "null".to_owned(),
+    };
+    if invalid_handshake_bytes(&origin) {
+        return Err("invalid document origin".to_owned());
+    }
     for (index, protocol) in protocols.iter().enumerate() {
+        if invalid_handshake_bytes(protocol) {
+            return Err("bad subprotocol".to_owned());
+        }
         let token = !protocol.is_empty()
             && protocol.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric()
@@ -507,6 +545,13 @@ async fn open_socket(
     }
     let offered: Vec<&str> = protocols.iter().map(String::as_str).collect();
 
+    let mut policy_url = url.clone();
+    policy_url
+        .set_scheme(if secure { "https" } else { "http" })
+        .map_err(|_| "invalid WebSocket policy URL".to_owned())?;
+    initiator.begin(&policy_url)?;
+    initiator.check_url(&policy_url)?;
+
     let mut entropy = [0u8; 16];
     crate::tls::crypto_provider()
         .secure_random
@@ -517,10 +562,7 @@ async fn open_socket(
     } else {
         None
     };
-    let headers: Vec<(&str, &str)> = origin
-        .map(|origin| ("Origin", origin))
-        .into_iter()
-        .collect();
+    let headers = [("Origin", origin.as_str())];
     let options = ClientOptions {
         protocols: &offered,
         headers: &headers,
@@ -541,6 +583,21 @@ async fn open_socket(
     // This function runs on a nagoya worker. getaddrinfo must never run
     // on the reactor thread or the document thread.
     let addresses = nagoya::resolve::resolve(&host, port).map_err(|error| format!("{error:?}"))?;
+    for address in &addresses {
+        let ip = match address {
+            nagoya::reactor::Addr::V4(octets, _) => {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(*octets))
+            }
+            nagoya::reactor::Addr::V6(octets, _)
+            | nagoya::reactor::Addr::V6Scoped(octets, _, _) => {
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(*octets))
+            }
+            nagoya::reactor::Addr::Path(_) => {
+                return Err("WebSocket resolved to Unix path".to_owned());
+            }
+        };
+        initiator.check_address(ip)?;
+    }
     let stream = nagoya::resolve::connect_any(&addresses, &handle)
         .await
         .map_err(|error| error.to_string())?;
@@ -568,6 +625,9 @@ async fn open_socket(
     };
     let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
     let host_header = &url[url::Position::BeforeHost..url::Position::AfterPort];
+    if invalid_handshake_bytes(path) || invalid_handshake_bytes(host_header) {
+        return Err("invalid WebSocket handshake target".to_owned());
+    }
     let (connection, protocol) = nago_wss::upgrade::connect(
         stream,
         path,

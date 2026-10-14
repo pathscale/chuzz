@@ -25,7 +25,10 @@ pub enum AuthenticatorChoice {
     Software,
 }
 
+const MAX_PENDING_REQUESTS: usize = 64;
+
 static CHOICE: OnceLock<AuthenticatorChoice> = OnceLock::new();
+static PLATFORM_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static AUTHENTICATOR: OnceLock<Mutex<Option<Device>>> = OnceLock::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static REQUESTS: LazyLock<Mutex<Requests>> = LazyLock::new(Mutex::default);
@@ -197,12 +200,27 @@ fn effective_rp(origin: &str, secure: bool, requested: Option<&str>) -> Result<S
         return Err(Error::security());
     };
     let requested = requested.unwrap_or(host);
+    if requested.is_empty()
+        || requested.len() > 1024
+        || requested.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(
+                    character,
+                    '%' | '/' | '\\' | ':' | '?' | '#' | '@' | '[' | ']'
+                )
+        })
+    {
+        return Err(Error::security());
+    }
     let Host::Domain(rp) = Host::parse(requested).map_err(|_| Error::security())? else {
         return Err(Error::security());
     };
     if rp.is_empty()
+        || rp.len() > 253
         || rp.split('.').any(|label| {
             label.is_empty()
+                || label.len() > 63
                 || label.starts_with('-')
                 || label.ends_with('-')
                 || !label
@@ -228,12 +246,24 @@ fn require_uv(value: Option<&str>) -> Result<bool> {
 }
 
 fn descriptors(values: &[Descriptor]) -> Result<Out<'_>> {
+    if values.len() > 64 {
+        return Err(Error::new(
+            "ConstraintError",
+            "Too many credential descriptors",
+        ));
+    }
     let mut result = Vec::with_capacity(values.len());
     for descriptor in values {
         if descriptor.kind != "public-key" {
             return Err(Error::new(
                 "TypeError",
                 "Invalid credential descriptor type",
+            ));
+        }
+        if descriptor.id.is_empty() || descriptor.id.len() > 1024 {
+            return Err(Error::new(
+                "ConstraintError",
+                "Credential descriptor ID must contain 1 through 1024 bytes",
             ));
         }
         result.push(Out::Map(vec![
@@ -288,6 +318,21 @@ fn prepare_create(origin: &str, secure: bool, options: CreationOptions) -> Resul
         return Err(Error::new(
             "TypeError",
             "user.id must contain 1 through 64 bytes",
+        ));
+    }
+    if options.rp.name.len() > 1024
+        || options.user.name.len() > 1024
+        || options.user.display_name.len() > 1024
+    {
+        return Err(Error::new(
+            "ConstraintError",
+            "Relying party and user names are too large",
+        ));
+    }
+    if options.pub_key_cred_params.len() > 64 {
+        return Err(Error::new(
+            "ConstraintError",
+            "Too many public key credential parameters",
         ));
     }
     if !options.pub_key_cred_params.is_empty()
@@ -530,19 +575,21 @@ pub(crate) fn platform_available() -> bool {
     if choice() != AuthenticatorChoice::SecureEnclave {
         return false;
     }
-    #[cfg(target_os = "macos")]
-    {
-        backend_se::SeBackend::new(
-            backend_se::StorageMode::Blob,
-            backend_se::AccessPolicy::None,
-        )
-        .create()
-        .is_ok()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
+    *PLATFORM_AVAILABLE.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            backend_se::SeBackend::new(
+                backend_se::StorageMode::Blob,
+                backend_se::AccessPolicy::None,
+            )
+            .create()
+            .is_ok()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    })
 }
 
 #[derive(Default)]
@@ -725,10 +772,13 @@ pub(crate) fn get(
 
 fn begin(owner: u64, prepared: Arc<Prepared>, notifications: &Arc<Notifications>) -> Json {
     let mut requests = lock(&REQUESTS);
-    if requests.active.is_some() || requests.jobs.len() >= 64 {
+    if requests.active.is_some() || requests.jobs.len() >= MAX_PENDING_REQUESTS {
         return Error::denied().wire();
     }
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let Ok(id) = NEXT_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    else {
+        return Error::unknown().wire();
+    };
     let job = Arc::new(Job {
         id,
         owner,

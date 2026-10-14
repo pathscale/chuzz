@@ -1386,6 +1386,22 @@ fn failure_page_url(url: &str, error: &str) -> Result<Url, String> {
     Ok(page)
 }
 
+fn navigation_initiator(
+    policy: &HeadlessPolicy,
+    url: Url,
+    current: Option<blitz_traits::net::Initiator>,
+) -> blitz_traits::net::Initiator {
+    let resources = Arc::new(blitz_traits::net::ResourcePolicy::default());
+    if policy.bot_child {
+        match current {
+            Some(current) => resources.document(url, &current),
+            None => resources.document(url, &blitz_traits::net::Initiator::Unknown),
+        }
+    } else {
+        current.unwrap_or_else(|| resources.browser(url))
+    }
+}
+
 fn follow_navigation(
     destination: Url,
     document: &mut ScriptDocument,
@@ -1410,11 +1426,16 @@ fn follow_navigation(
     } else {
         Some(snapshot_storage(document, origin))
     };
-    let initiator = if browser_initiated {
-        Arc::new(blitz_traits::net::ResourcePolicy::default()).browser(destination.clone())
-    } else {
-        document.inner().net_provider.resource_initiator()
-    };
+    let current = document.inner().net_provider.resource_initiator();
+    let initiator = navigation_initiator(
+        policy,
+        destination.clone(),
+        if policy.bot_child || !browser_initiated {
+            Some(current)
+        } else {
+            None
+        },
+    );
     let next = load(destination, carried.as_ref(), initiator)?;
     let arriving = next.inner().url().origin().ascii_serialization();
     *document = *next;
@@ -1564,6 +1585,11 @@ fn serve_page(
         // pumping, shim evaluation and the initial viewport settle.
         let _load = supervisor::operation(supervisor::Operation::Load);
         policy.validate_url(&url)?;
+        let initiator = if policy.bot_child {
+            navigation_initiator(&policy, url.clone(), Some(initiator))
+        } else {
+            initiator
+        };
         trace(&format!("loading {}", display_url(&url, policy.bot_child)));
         let mut prelude = if policy.bot_child {
             String::new()
@@ -1678,7 +1704,7 @@ fn serve_page(
         }
     };
     let failed_url = display_url(&url, policy.bot_child);
-    let initial = net_provider.browser_initiator(url.clone());
+    let initial = navigation_initiator(&policy, url.clone(), None);
     let mut document = match load(url, seed.as_ref(), initial) {
         Ok(document) => document,
         // A page that cannot load is still a page, as in any browser: show why

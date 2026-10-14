@@ -101,18 +101,18 @@ impl Mailbox {
 }
 
 #[derive(serde::Deserialize)]
-struct NetRequest {
+pub(crate) struct NetRequest {
     #[serde(default)]
-    id: u64,
-    url: String,
+    pub(crate) id: u64,
+    pub(crate) url: String,
     #[serde(default = "get_method")]
-    method: String,
+    pub(crate) method: String,
     #[serde(default)]
-    headers: Vec<(String, String)>,
+    pub(crate) headers: Vec<(String, String)>,
     #[serde(default)]
-    body: Option<Vec<u8>>,
+    pub(crate) body: Option<Vec<u8>>,
     #[serde(default = "default_credentials")]
-    credentials: String,
+    pub(crate) credentials: String,
 }
 
 fn get_method() -> String {
@@ -245,7 +245,7 @@ impl ScriptHost {
             .base_url(self.base.as_ref())
             .parse(&request.url)
             .map_err(|error| error.to_string())?;
-        if !matches!(url.scheme(), "http" | "https" | "file" | "data") {
+        if !matches!(url.scheme(), "http" | "https" | "data") {
             return Err("unsupported request scheme".to_owned());
         }
         if !url.username().is_empty() || url.password().is_some() {
@@ -328,12 +328,13 @@ impl ScriptHost {
         let origin = self
             .base
             .as_ref()
-            .filter(|base| base.origin().is_tuple())
+            .filter(|base| matches!(base.scheme(), "http" | "https"))
             .map(|base| base.origin().ascii_serialization());
         let cross_origin = matches!(url.scheme(), "http" | "https")
             && self
                 .base
                 .as_ref()
+                .filter(|base| matches!(base.scheme(), "http" | "https"))
                 .is_none_or(|base| base.origin() != url.origin());
         if cross_origin {
             let origin = origin.as_deref().unwrap_or("null");
@@ -392,10 +393,14 @@ impl ScriptHost {
         let response = fetch_response_owned(&self.net, wire, &self.lifetime)
             .await
             .map_err(|error| error.to_string())?;
+        if !matches!(response.url.scheme(), "http" | "https" | "data") {
+            return Err("unsupported response scheme".to_owned());
+        }
         let response_cross_origin = matches!(response.url.scheme(), "http" | "https")
             && self
                 .base
                 .as_ref()
+                .filter(|base| matches!(base.scheme(), "http" | "https"))
                 .is_none_or(|base| base.origin() != response.url.origin());
         if response_cross_origin
             && !cors_allowed(
@@ -442,6 +447,46 @@ impl ScriptHost {
             Some(bytes),
         ))
     }
+}
+
+pub(crate) async fn worker_fetch(
+    net: Arc<NetProvider>,
+    base: Option<Url>,
+    signal: blitz_traits::net::AbortSignal,
+    lifetime: Arc<blitz_dom::release::Teardown>,
+    request: NetRequest,
+) -> Result<(serde_json::Value, Vec<u8>), String> {
+    let _lease = lifetime.lease();
+    let url = Url::options()
+        .base_url(base.as_ref())
+        .parse(&request.url)
+        .map_err(|error| error.to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("worker fetch requires an HTTP URL".to_owned());
+    }
+
+    let host = ScriptHost {
+        net,
+        base,
+        deadline: Duration::ZERO,
+        signal,
+        lifetime,
+    };
+    let (mut metadata, bytes) = host.perform_inner(request).await?;
+    let metadata = metadata
+        .as_object_mut()
+        .ok_or_else(|| "worker response metadata is not an object".to_owned())?;
+    let response_url = metadata
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "worker response URL is unavailable".to_owned())?;
+    let response_url = Url::parse(response_url).map_err(|error| error.to_string())?;
+    if !matches!(response_url.scheme(), "http" | "https") {
+        return Err("worker response requires an HTTP URL".to_owned());
+    }
+    metadata.remove("body");
+    let bytes = bytes.ok_or_else(|| "worker response body is unavailable".to_owned())?;
+    Ok((serde_json::Value::Object(metadata.clone()), bytes))
 }
 
 fn script_host(context: &Context) -> JsResult<ScriptHost> {
@@ -563,7 +608,8 @@ pub fn install(
     };
     let handler_mailbox = mailbox.clone();
     let sockets =
-        crate::ws_bridge::Bridge::with_lifetime(wake.clone(), document.teardown_receipt());
+        crate::ws_bridge::Bridge::with_lifetime(wake.clone(), document.teardown_receipt())
+            .with_initiator(host.net.initiator());
     let retiring_sockets = sockets.clone();
     let retiring_wake = wake.clone();
     document.add_teardown_hook(move || {
