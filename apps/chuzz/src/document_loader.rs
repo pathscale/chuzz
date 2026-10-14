@@ -202,6 +202,11 @@ impl NetProvider {
     fn with_default_language(
         mut request: blitz_traits::net::Request,
     ) -> blitz_traits::net::Request {
+        if request.credentials == Credentials::Omit {
+            for name in ["cookie", "cookie2", "authorization", "proxy-authorization"] {
+                request.headers.remove(name);
+            }
+        }
         crate::languages::insert_accept_language(&mut request.headers);
         request
     }
