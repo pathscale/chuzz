@@ -219,7 +219,7 @@ jobs:
       - name: Build the review bundle
         run: |
           cargo build --release -p chuzz-qa-fixture
-          apps/chuzz/build-app.sh release
+          bun apps/chuzz/build-app.ts release
 
       - name: Drive the visible application
         env:

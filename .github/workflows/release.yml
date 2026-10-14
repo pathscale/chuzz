@@ -260,7 +260,7 @@ jobs:
       # that acquiring one cannot silently leave the cask stripping a Gatekeeper
       # check users should be getting.
       - name: Build the bundle
-        run: apps/chuzz/build-app.sh release
+        run: bun apps/chuzz/build-app.ts release
 
       - name: Verify the bundle
         env:
