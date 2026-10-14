@@ -39,7 +39,7 @@ ps-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
 ps-blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
 ps-blitz-script = { path = "../ps-blitz/packages/blitz-script" }
 ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
-ps-blitz-wasm = { path = "../ps-blitz/packages/blitz-wasm" }
+
 ps-dioxus-native = { path = "../ps-blitz/packages/dioxus-native" }
 izumo = { path = "../izumo/crates/izumo" }
 
