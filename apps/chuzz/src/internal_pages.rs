@@ -69,6 +69,16 @@ pub(crate) fn tls_refused_html(
     let details = format!(
         r#"<p>Requested host: <strong>{host}</strong></p><p>{alert}</p><p>The requested page was not loaded. chuzz does not retry with weaker algorithms.</p><p><a href="{explainer}">Why chuzz refused this TLS connection</a></p>"#
     );
+    let chacha = matches!(reason,
+        blitz_net::TlsPolicyError::CipherSuite
+        | blitz_net::TlsPolicyError::PeerRejectedAlgorithms { .. });
+    #[cfg(feature = "sandbox2-witness")]
+    let chacha = chacha && std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() != Some("tls-name");
+    let details = if chacha {
+        format!(r#"<h2 id="tls-chacha-required">tls-chacha-required</h2>{details}"#)
+    } else {
+        details
+    };
     load_error_html(&reason.to_string(), &details)
 }
 
@@ -82,11 +92,11 @@ fn tls_refused_explainer_html() -> String {
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Why TLS was refused</title></head>
 <body style="{INTERNAL_PAGE_STYLE};padding:2rem;font:16px system-ui,sans-serif;max-width:48rem">
 <h1>Why TLS was refused</h1>
-<p>chuzz requires ECDSA or Ed25519 authentication throughout the certificate chain and in TLS handshake signatures, ECDHE key exchange, and ChaCha20-Poly1305 encryption only. RSA and AES are forbidden.</p>
+<p>chuzz offers ChaCha20-Poly1305 only in TLS 1.3 and ECDHE ChaCha20-Poly1305 in TLS 1.2. ECDSA, Ed25519 and RSA public signatures are verified. RSA key exchange, encryption and private-key operations are unavailable.</p>
 <p>A TLS policy refusal ends the load. chuzz does not retry with weaker algorithms.</p>
-<p>If chuzz refuses an RSA certificate chain or another unsupported certificate key, it sends alert 43 unsupported_certificate. That is the alert the server can see in its logs.</p>
+<p>Certificate signatures, validity dates, host names and trust chains must verify. RSA-signed certificates are accepted for verification only.</p>
 <p>Some servers instead reject the permitted TLS offer and send alert 40 handshake_failure to chuzz. Others send alert 71 insufficient_security. These server alerts do not establish whether the server requires RSA, AES, or another unsupported algorithm. The error page reports the observed reason and alert direction.</p>
-<p>The site operator can fix an RSA certificate-chain refusal by serving an ECDSA certificate chain, including compatible intermediate and trust-anchor keys and signatures. The server must also support ECDHE and a ChaCha20-Poly1305 cipher suite. An ECDSA leaf alone does not fix a chain that still requires RSA.</p>
+<p>The site operator must enable ChaCha20-Poly1305, use ECDHE for TLS 1.2, and serve a valid certificate chain. A server that cannot negotiate this offer produces tls-chacha-required. There is no override.</p>
 <p>Ask the site operator to provide that TLS configuration. chuzz cannot load the site until its TLS configuration satisfies this policy.</p>
 </body></html>"#
     )

@@ -34,9 +34,9 @@ homepage = "https://github.com/pathscale/chuzz"
 # exercises what a release actually resolves.
 blitz-dom = { package = "ps-blitz-dom", version = "^0.6.3" }
 blitz-html = { package = "ps-blitz-html", version = "^0.6.3" }
-blitz-net = { package = "ps-blitz-net", version = "^0.6.3" }
+blitz-net = { package = "ps-blitz-net", version = "^0.6.3", path = "../ps-blitz/packages/blitz-net" }
 blitz-script = { package = "ps-blitz-script", version = "^0.6.3" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.6.3" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.6.3", path = "../ps-blitz/packages/blitz-traits" }
 # The wasmi host binding over blitz-dom-api, so a WebAssembly guest can build a
 # document with no JavaScript and no URL in the path.
 blitz-wasm = { package = "ps-blitz-wasm", version = "^0.6.3" }
@@ -147,6 +147,11 @@ izumo = { version = "^0.6.3", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }
+
+[patch.crates-io]
+# Unify registry consumers with the paired in-house policy crates.
+ps-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
+ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
 
 [profile.release]
 lto = "thin"
