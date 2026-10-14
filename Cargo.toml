@@ -141,11 +141,6 @@ izumo = { path = "../izumo/crates/izumo", default-features = false, features = [
   "diagnostics",
 ] }
 
-[patch.crates-io]
-# Unify registry consumers with the paired in-house policy crates.
-ps-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
-ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
-
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -161,6 +156,7 @@ strip = "none"
 
 # Local lifecycle hooks must also reach transitive control-protocol consumers.
 [patch.crates-io]
+nagoya = { path = "../nagoya" }
 ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
 ps-blitz-html = { path = "../ps-blitz/packages/blitz-html" }
 ps-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
