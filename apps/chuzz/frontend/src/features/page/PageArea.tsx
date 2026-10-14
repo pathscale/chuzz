@@ -1,6 +1,7 @@
-import { Page, Viewport } from "@chuzz/ui";
+import { Page, SleepView, Viewport } from "@chuzz/ui";
+import { Button } from "@pathscale/ui";
 import type { JSX } from "@solidjs/web";
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 
 /**
@@ -37,11 +38,26 @@ export function PageArea(): JSX.Element {
       <div class="page-stack">
         <For each={browser.state.tabs}>
           {(tab) => (
-            <Page
-              tabId={String(tab.id)}
-              active={tab.id === browser.state.activeTabId}
-              blank={tab.status === "blank"}
-            />
+            <>
+              <Page
+                tabId={String(tab.id)}
+                active={tab.id === browser.state.activeTabId}
+                blank={tab.status === "blank"}
+              />
+              <Show when={tab.id === browser.state.activeTabId && ["sleeping", "waking", "discarding", "restore-failed"].includes(tab.lifecycle ?? "")}>
+                <SleepView
+                  tabId={String(tab.id)}
+                  label={tab.lifecycle === "waking" ? "Waking, saved view" : tab.lifecycle === "discarding" ? "Releasing page" : tab.lifecycle === "restore-failed" ? "Reload failed, saved view" : "Sleeping, saved view"}
+                  reason={tab.lifecycleReason ?? ""}
+                >
+                  <div>
+                    <Button id={`chuzz-wake-${tab.id}`} disabled={tab.lifecycle === "waking" || tab.lifecycle === "discarding"} onClick={() => browser.wakeTab(tab.id)}>
+                      {tab.lifecycleReason === "reload-requires-resubmission" ? "Open URL to resubmit" : "Wake tab"}
+                    </Button>
+                  </div>
+                </SleepView>
+              </Show>
+            </>
           )}
         </For>
       </div>

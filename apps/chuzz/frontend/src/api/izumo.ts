@@ -46,6 +46,8 @@ export function createIzumoApi(): BrowserApi {
     activeTabId: () => izumo.invoke<TabId>("active_tab_id"),
 
     selectTab: (id) => izumo.invoke<void>("select_tab", { id }),
+    sleepTab: (id) => izumo.invoke<void>("sleep_tab", { id }),
+    wakeTab: (id) => izumo.invoke<void>("wake_tab", { id }),
     openTab: (url) => izumo.invoke<Tab>("open_tab", { url: url ?? null }),
     closeTab: (id) => izumo.invoke<void>("close_tab", { id }),
 

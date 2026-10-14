@@ -259,6 +259,8 @@ function createBrowserStore() {
     state,
     activeTab,
     selectTab: (id: TabId) => void api.selectTab(id),
+    sleepTab: (id: TabId) => void api.sleepTab(id),
+    wakeTab: (id: TabId) => void api.wakeTab(id),
     openTab: () => void api.openTab(),
     closeTab: (id: TabId) => void api.closeTab(id),
     /** Resolves false when the shell refused the input. */

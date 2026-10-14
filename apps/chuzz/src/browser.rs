@@ -45,6 +45,7 @@ pub struct FrontendTab {
     lifecycle_reason: &'static str,
     visible: bool,
     preview_available: bool,
+    runtime_released: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -73,6 +74,9 @@ pub struct StatusReadout {
     tab_count: usize,
     node_count: usize,
     transferred: &'static str,
+    sleeping_bytes: usize,
+    sleeping_warning: bool,
+    live_page_count: usize,
 }
 
 struct MountedPage {
@@ -129,6 +133,7 @@ impl TabState {
             lifecycle_reason: self.life.reason,
             visible: self.life.visible,
             preview_available: self.life.preview.is_some(),
+            runtime_released: matches!(self.life.phase, TabPhase::Sleeping | TabPhase::RestoreFailed) && self.mounted.is_none() && self.life.release.is_none(),
         }
     }
 }
@@ -601,6 +606,9 @@ impl Browser {
             tab_count: tabs.len(),
             node_count: 0,
             transferred: "0 B",
+            sleeping_bytes: self.0.sleeping_budget.used(),
+            sleeping_warning: self.0.sleeping_budget.warning(),
+            live_page_count: state.tabs.iter().filter(|tab| tab.mounted.is_some() || tab.life.release.as_ref().is_some_and(|receipt| !receipt.complete())).count(),
         };
         (tabs, active, state.panel.clone(), status)
     }
