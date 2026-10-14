@@ -173,8 +173,8 @@ try {
       const chacha = await tlsServer(cert, key, ca, version, version === "TLSv1.2" ? "ECDHE-ECDSA-CHACHA20-POLY1305" : "TLS_CHACHA20_POLY1305_SHA256");
       const aes = await tlsServer(cert, key, ca, version, version === "TLSv1.2" ? "ECDHE-ECDSA-AES128-GCM-SHA256" : "TLS_AES_128_GCM_SHA256");
       const trust = { SSL_CERT_FILE: caFile, SANDBOX2_TLS_CA_FILE: caFile };
-      judge(await qa(witness, chacha, "chacha.ron", await environment(trust)), ["tls-chacha-load"]);
-      judge(await qa(witness, aes, "required.ron", await environment(trust)), ["tls-chacha-required"]);
+      judge(await qa(shipped, chacha, "chacha.ron", await environment(trust)), ["tls-chacha-load"]);
+      judge(await qa(shipped, aes, "required.ron", await environment(trust)), ["tls-chacha-required"]);
       judge(await qa(witness, chacha, "chacha.ron", await environment({ ...trust, SANDBOX2_TLS_DEFECT: "chacha-load" })), ["tls-chacha-load"], "tls-chacha-load");
       judge(await qa(witness, aes, "required.ron", await environment({ ...trust, SANDBOX2_TLS_DEFECT: "tls-name" })), ["tls-chacha-required"], "tls-chacha-required");
     }
