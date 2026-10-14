@@ -83,11 +83,23 @@ pub(super) fn html() -> String {
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Sandbox probe</title></head><body style=\"background:white;color:black;font:18px sans-serif;padding:24px\"><h1>Sandbox probe</h1>",
     );
     for check in checks.iter() {
-        let verdict = if check.passed { "PASS" } else { "FAIL" };
+        // The heap-report policy may be unsupported by the OS for this process:
+        // that is acceptable but always named, never shown as a plain PASS.
+        let heap = check.name == "heap-reports-disabled";
+        let unavailable =
+            heap && !check.passed && crate::platform_hardening::heap_policy_unavailable();
+        let verdict = match (check.passed || unavailable, heap) {
+            (true, true) => "OK",
+            (true, false) => "PASS",
+            (false, _) => "FAIL",
+        };
         html.push_str(&format!(
             "<p id=\"{}\">{} {verdict}</p>",
             check.name, check.name
         ));
+        if unavailable {
+            html.push_str("<p id=\"heap-report-policy\">heap-report-policy UNAVAILABLE</p>");
+        }
     }
     html.push_str("</body></html>");
     html

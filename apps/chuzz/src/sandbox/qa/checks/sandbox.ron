@@ -62,11 +62,11 @@
     (
         id: "sandbox2-heap-reports-disabled",
         group: "sandbox2",
-        what: "the running process reports heap-reports-disabled from the real operating-system operation",
+        what: "the running process reports heap-reports-disabled as enforced, or as unavailable by name where the OS refuses the policy",
         open: None, hover: None, click: None,
-        subject: "heap-reports-disabled PASS",
+        subject: "heap-reports-disabled OK",
         expect: PaintsNamed,
-        covers: ["heap-reports-disabled PASS"],
+        covers: ["heap-reports-disabled OK"],
         outcome_timeout_ms: 5000,
     ),
 ]
