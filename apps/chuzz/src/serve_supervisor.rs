@@ -264,12 +264,12 @@ pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
             };
             let answer = Once::new();
             match sender.try_send(Arc::new((request.into(), Arc::clone(&answer)))) {
-                Ok(()) => {}
+                Ok(()) => false,
                 Err(page_control::TrySendError::Full) => {
                     answer.fill(DebugResponse::Error(DebugError {
                         code: "documentBusy".into(),
                         message: "the page worker request queue is full".into(),
-                    }));
+                    }))
                 }
                 Err(page_control::TrySendError::Disconnected) => {
                     failed("the page document loop stopped");

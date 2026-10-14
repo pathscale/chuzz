@@ -1,5 +1,3 @@
-use std::sync::Condvar;
-
 use blitz_dom::node::RasterImageData;
 use blitz_script::boa_engine::object::builtins::{JsArray, JsUint8ClampedArray};
 use blitz_script::boa_engine::{
@@ -7,7 +5,6 @@ use blitz_script::boa_engine::{
 };
 
 use std::sync::atomic::AtomicU64;
-use std::time::Instant;
 
 use blitz_control_protocol::{CapturedImage, DebugError};
 
@@ -21,26 +18,34 @@ type ImageResult = Result<Arc<RasterImageData>, GpuError>;
 #[derive(Default)]
 pub(super) struct Completion {
     result: Mutex<Option<ImageResult>>,
-    wake: Condvar,
+    wake: nagoya::sync::Notify,
 }
 
 impl Completion {
     pub(super) fn finish(&self, result: ImageResult) {
+        if cfg!(feature = "reactor-witness")
+            && std::env::var("CHUZZ_REACTOR_DEFECT").as_deref() == Ok("canvas-readback-drop")
+        {
+            return;
+        }
         let mut current = lock(&self.result);
         if current.is_none() {
             *current = Some(result);
-            self.wake.notify_all();
+            drop(current);
+            self.wake.notify_one();
         }
     }
 
     fn wait(&self) -> ImageResult {
-        let (mut result, _) = self
-            .wake
-            .wait_timeout_while(lock(&self.result), DEADLINE, |result| result.is_none())
-            .unwrap_or_else(|poison| poison.into_inner());
-        result
-            .take()
-            .unwrap_or_else(|| Err(GpuError::internal("canvas readback timed out in chuzz")))
+        nagoya::block_on(nagoya::timeout(DEADLINE, async {
+            loop {
+                if let Some(result) = lock(&self.result).take() {
+                    return result;
+                }
+                self.wake.notified().await;
+            }
+        }))
+        .unwrap_or_else(|_| Err(GpuError::internal("canvas readback timed out in chuzz")))
     }
 }
 
@@ -279,6 +284,7 @@ enum CanvasAlpha {
 
 pub(super) struct CaptureSlot {
     result: Mutex<Option<Result<CapturedImage, DebugError>>>,
+    wake: nagoya::sync::Notify,
 }
 
 impl CaptureSlot {
@@ -286,6 +292,8 @@ impl CaptureSlot {
         let mut current = lock(&self.result);
         if current.is_none() {
             *current = Some(result);
+            drop(current);
+            self.wake.notify_one();
         }
     }
 
@@ -316,39 +324,27 @@ impl Bridge {
         let id = next_capture_id();
         let slot = Arc::new(CaptureSlot {
             result: Mutex::new(None),
+            wake: nagoya::sync::Notify::new(),
         });
         self.enqueue(Request::Capture {
             id,
             target: target.to_owned(),
             slot: Arc::clone(&slot),
         });
-        let deadline = Instant::now() + CAPTURE_WAIT;
-        loop {
-            if let Some(result) = slot.take() {
-                return result;
-            }
-            let pending = {
-                let state = self.state();
-                state.in_flight.contains_key(&id)
-                    || state.requests.iter().any(|request| request.id() == id)
-            };
-            if !pending {
+        nagoya::block_on(nagoya::timeout(CAPTURE_WAIT, async {
+            loop {
                 if let Some(result) = slot.take() {
                     return result;
                 }
-                return Err(DebugError {
-                    code: "internal".to_owned(),
-                    message: "WebGPU capture ended before producing pixels".to_owned(),
-                });
+                slot.wake.notified().await;
             }
-            if Instant::now() >= deadline {
-                return Err(DebugError {
-                    code: "internal".to_owned(),
-                    message: "WebGPU capture timed out in chuzz".to_owned(),
-                });
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        }))
+        .unwrap_or_else(|_| {
+            Err(DebugError {
+                code: "internal".to_owned(),
+                message: "WebGPU capture timed out in chuzz".to_owned(),
+            })
+        })
     }
 
     pub(super) async fn capture_on_worker(&self, target: &str, slot: Arc<CaptureSlot>) {
