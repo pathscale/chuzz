@@ -178,13 +178,6 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub(crate) fn new(wake: crate::net_bridge::PageWake) -> Self {
-        Self {
-            wake,
-            ..Default::default()
-        }
-    }
-
     pub(crate) fn with_lifetime(wake: crate::net_bridge::PageWake, lifetime: Arc<blitz_dom::release::Teardown>) -> Self {
         Self { wake, lifetime: Some(lifetime), ..Default::default() }
     }

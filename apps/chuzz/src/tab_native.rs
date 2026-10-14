@@ -33,7 +33,9 @@ fn identity(document: &BaseDocument, id: NodeId) -> Option<(&str, &str, &str)> {
     }
     if let Some(form) = owner {
         let form = document.get_node(form)?.element_data()?;
-        Some((form.attr(local_name!("id"))?, field, form.attr(local_name!("action")).unwrap_or("")))
+        let form_id = form.attr(local_name!("id"))?;
+        if form_id.is_empty() || document.tree().iter().filter(|(_, node)| node.attr(local_name!("id")) == Some(form_id)).count() != 1 { return None; }
+        Some((form_id, field, form.attr(local_name!("action")).unwrap_or("")))
     } else { Some(("", field, "")) }
 }
 
@@ -96,9 +98,10 @@ pub fn capture_paint(document: &mut BaseDocument, budget: &Arc<SleepingBudget>) 
     for _ in 0..4 {
         let width = (view_width as f64 * fit).floor().max(1.0) as u16;
         let height = (view_height as f64 * fit).floor().max(1.0) as u16;
+        let scale = document.viewport().scale_f64() * fit;
         document.stash_paint = true;
         let pixels = anyrender::render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(|scene| {
-            blitz_paint::paint_scene(scene, document, document.viewport().scale_f64() * fit, width as u32, height as u32, 0, 0);
+            blitz_paint::paint_scene(scene, document, scale, width as u32, height as u32, 0, 0);
         }, width as u32, height as u32);
         document.stash_paint = false;
         let pixels = Bytes::new(pixels);

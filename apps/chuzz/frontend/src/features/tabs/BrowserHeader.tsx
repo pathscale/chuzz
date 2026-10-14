@@ -1,7 +1,7 @@
 import { Tab as BrowserTab, TabList, TitleBar } from "@chuzz/ui";
 import { Button } from "@pathscale/ui";
 import type { JSX } from "@solidjs/web";
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { useBrowser } from "~/stores/browser";
 import { t } from "~/stores/i18n";
 import type { Tab } from "~/types";
@@ -45,6 +45,9 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
         </Button>
       </TabList>
 
+      <Show when={browser.state.status.sleepingWarning}>
+        <span role="status">Sleeping tab memory is above 80%</span>
+      </Show>
       <Button
         id="chuzz-sleep-active"
         variant="outline"

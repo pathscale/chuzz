@@ -138,6 +138,9 @@ export interface ThemeSettings {
 
 /** The bottom strip's counters. Everything but the URL is still mock in Rust. */
 export interface StatusReadout {
+  sleepingBytes?: number;
+  sleepingWarning?: boolean;
+  livePageCount?: number;
   status: LoadStatus;
   url: string;
   tabCount: number;

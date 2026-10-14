@@ -190,6 +190,7 @@ impl Browser {
             if tab.loading || tab.life.phase != TabPhase::Live || automatic && (tab.life.visible
                 || tab.life.deadline.as_ref().is_none_or(|deadline| nagoya::now_ns() < deadline.due)) { return false; }
             let Some(page) = &tab.mounted else { return false; };
+            if ui.inner().subdoc(NodeId::from_u64(page.mount_node_id)).is_none_or(|document| document.id() as u64 != page.document_id) { return false; }
             let mount = NodeId::from_u64(page.mount_node_id);
             let record_bytes = size_of::<TabState>() + tab.title.capacity() + tab.history.capacity() * size_of::<Request>()
                 + tab.history.iter().map(|request| request.url.as_str().len()).sum::<usize>();
@@ -203,11 +204,17 @@ impl Browser {
             charge = self.0.sleeping_budget.reserve(record_bytes);
         }
         let Ok(charge) = charge else { return false; };
+        {
+            let mut state = self.0.state.lock().unwrap();
+            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) { tab.life.phase = TabPhase::Freezing; }
+        }
         let (stash, preview) = {
             let mut root = ui.inner_mut();
             let Some(document) = root.subdoc_mut(mount) else { return false; };
             document.set_page_visible(false);
             document.freeze();
+            let still_current = self.0.state.lock().unwrap().tabs.iter().any(|tab| tab.id == id && tab.generation == generation && tab.life.epoch == epoch);
+            if !still_current { document.resume(); return false; }
             let forms = crate::tab_native::capture_forms(&mut document.inner_mut());
             let scroll = document.inner().viewport_scroll();
             let disabled = document.inner().stash_disabled();
