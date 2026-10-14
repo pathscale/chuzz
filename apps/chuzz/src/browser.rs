@@ -676,22 +676,18 @@ impl Browser {
         self.attached_lifecycle(tab_id);
         self.emit_state();
 
-        // A wasm page has nothing to fetch, so its bundle is complete the
-        // moment it is made and never goes near the network or the runtime.
-        // Matched on the URL rather than the tab id, so navigating this tab
-        // elsewhere is an ordinary navigation and coming back re-runs the guest.
-        if let Some(page) = self.0.wasm.as_ref().filter(|page| page.url == request.url) {
+        // Legacy guest URLs receive the same refusal as the retired entry points.
+        if request.url.path().ends_with(".wasm") {
             self.0.completed.lock().unwrap().push_back(PageBundle {
                 net: self.net(),
                 tab_id,
                 generation,
-                resolved_url: page.url.to_string(),
-                source: PageSource::Wasm {
-                    module: page.module.clone(),
+                resolved_url: request.url.to_string(),
+                source: PageSource::Html {
+                    html: error_html(&crate::wasm_retired::WasmUnsupported.to_string()),
+                    scripts: HashMap::new(),
                 },
-                // A guest that will not build becomes an error page where it is
-                // mounted, which is also where that outcome is decided.
-                outcome: PageOutcome::Ready,
+                outcome: PageOutcome::Error,
             });
             self.wake_document();
             return;
@@ -1217,7 +1213,7 @@ where
 /// JSON handlers for the chrome's existing command names.
 ///
 /// Register these on the izumo builder using the same Arc passed to manage.
-pub fn commands(browser: Arc<Browser>) -> [(&'static str, izumo::CommandHandler); 18] {
+pub fn commands(browser: Arc<Browser>) -> [(&'static str, izumo::CommandHandler); 21] {
     [
         (
             "list_tabs",
@@ -1741,6 +1737,29 @@ pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsS
 mod tests {
     use super::*;
 
+    // The retired guest remains a test fixture for the existing DOM assertions.
+    struct PageModule {
+        bytes: Vec<u8>,
+        selector: String,
+    }
+
+    fn mount_page_module(
+        html: &str,
+        module: &PageModule,
+        config: DocumentConfig,
+    ) -> Option<blitz_dom::BaseDocument> {
+        let document = blitz_html::HtmlDocument::from_html(html, config).into_inner();
+        let mount = document.query_selector(&module.selector).ok()??;
+        let fallback = document.get_node(mount)?.children.to_vec();
+        let mut document = crate::wasm_page::run_guest_bytes(&module.bytes, document, mount).ok()?;
+        let mut changes = document.mutate();
+        for node in fallback {
+            changes.remove_and_drop_node(node);
+        }
+        drop(changes);
+        Some(document)
+    }
+
     /// The browser's own pages have to be legible on their own.
     ///
     /// They declare no colours, so they took the engine's default black text
@@ -1828,6 +1847,7 @@ mod tests {
             loading: true,
             outcome: PageOutcome::Ready,
             generation: 0,
+            life: TabLife::default(),
         };
         assert_eq!(tab.snapshot().status, "loading");
         tab.loading = false;
