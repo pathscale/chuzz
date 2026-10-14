@@ -167,6 +167,7 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
             "bitness": usize::BITS.to_string(),
             "concurrency": std::thread::available_parallelism().map_or(1, usize::from),
             "version": env!("CARGO_PKG_VERSION"),
+            "languages": crate::languages::preferred_languages(),
         }),
         Operation::Random => {
             let provider = rustls::crypto::CryptoProvider::get_default()

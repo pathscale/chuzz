@@ -41,8 +41,6 @@ pub struct NetProvider {
     blocked_requests: Arc<Mutex<VecDeque<String>>>,
 }
 
-const DEFAULT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
-
 fn document_fetch_error(error: blitz_net::ProviderError) -> blitz_traits::platform::FetchError {
     match error {
         blitz_net::ProviderError::TlsPolicy(reason) => {
@@ -162,13 +160,7 @@ impl NetProvider {
     fn with_default_language(
         mut request: blitz_traits::net::Request,
     ) -> blitz_traits::net::Request {
-        use blitz_traits::net::http::header::{ACCEPT_LANGUAGE, HeaderValue};
-        if !request.headers.contains_key(ACCEPT_LANGUAGE) {
-            request.headers.insert(
-                ACCEPT_LANGUAGE,
-                HeaderValue::from_static(DEFAULT_ACCEPT_LANGUAGE),
-            );
-        }
+        crate::languages::insert_accept_language(&mut request.headers);
         request
     }
 
@@ -410,12 +402,21 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     });
   }
   if (globalThis.navigator) {
-    if (typeof globalThis.navigator.language === 'undefined') {
-      globalThis.navigator.language = 'en-US';
-    }
-    if (typeof globalThis.navigator.languages === 'undefined') {
-      globalThis.navigator.languages = ['en-US', 'en'];
-    }
+    var chuzzLanguageTags = Object.freeze(
+      (globalThis.__chuzzLanguages && globalThis.__chuzzLanguages.length)
+        ? globalThis.__chuzzLanguages.slice()
+        : ['en-US', 'en']
+    );
+    Object.defineProperty(globalThis.navigator, 'language', {
+      configurable: true,
+      enumerable: true,
+      get: function () { return chuzzLanguageTags[0]; }
+    });
+    Object.defineProperty(globalThis.navigator, 'languages', {
+      configurable: true,
+      enumerable: true,
+      get: function () { return chuzzLanguageTags; }
+    });
     if (typeof globalThis.navigator.sendBeacon !== 'function') {
       globalThis.navigator.sendBeacon = function () { return false; };
     }
@@ -2588,6 +2589,9 @@ pub(crate) fn install_web_api_shim(
     document.with_js_context(|context| {
         context.set_execution_time_limit(Some(std::time::Duration::from_secs(8)));
     });
+    let languages = serde_json::to_string(crate::languages::preferred_languages())
+        .expect("language tags serialize as JSON");
+    document.eval(&format!("globalThis.__chuzzLanguages = {languages};"));
     document.eval_named(WEB_API_SHIM, "<chuzz-webapi>");
     let user_agent = serde_json::to_string(net_provider.user_agent())
         .expect("a user-agent string always serializes as JSON");

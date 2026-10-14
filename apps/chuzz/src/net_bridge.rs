@@ -345,9 +345,7 @@ impl ScriptHost {
             }
             wire.headers.append(name, value);
         }
-        wire.headers
-            .entry(HeaderName::from_static("accept-language"))
-            .or_insert(HeaderValue::from_static("en-US,en;q=0.9"));
+        crate::languages::insert_accept_language(&mut wire.headers);
         // The page cannot set Referer; the browser sends one under the default
         // strict-origin-when-cross-origin policy, as for engine subresources.
         if let Some(referrer) = self
@@ -408,6 +406,7 @@ impl ScriptHost {
                             .map_err(|error| error.to_string())?,
                     );
                 }
+                crate::languages::insert_accept_language(&mut preflight.headers);
                 let response = fetch_response(&self.omit, preflight)
                     .await
                     .map_err(|error| error.to_string())?;
