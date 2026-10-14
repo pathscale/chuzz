@@ -116,6 +116,8 @@ mod tests {
 
     #[test]
     fn embedded_ui_bundle_builds_the_solid_shell_in_boa() {
+        // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: test-only big stack.
+        #[allow(clippy::disallowed_methods)]
         std::thread::Builder::new()
             .name("chuzz-ui-bundle-test".to_owned())
             .stack_size(16 * 1024 * 1024)

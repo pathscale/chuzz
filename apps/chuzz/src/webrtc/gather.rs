@@ -131,6 +131,12 @@ pub(super) fn socket_address(value: Addr) -> Result<SocketAddr, String> {
     match value {
         Addr::V4(ip, port) => Ok(SocketAddr::new(Ipv4Addr::from(ip).into(), port)),
         Addr::V6(ip, port) => Ok(SocketAddr::new(Ipv6Addr::from(ip).into(), port)),
+        Addr::V6Scoped(ip, port, scope_id) => Ok(SocketAddr::V6(std::net::SocketAddrV6::new(
+            Ipv6Addr::from(ip),
+            port,
+            0,
+            scope_id,
+        ))),
         Addr::Path(_) => Err("OperationError: expected an IP datagram address".into()),
     }
 }

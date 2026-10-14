@@ -122,7 +122,7 @@ rustls = { version = "^0.23.27", default-features = false, features = [
 cursor-icon = "^1"
 cookie_store = "^0.22.1"
 psl = "^2"
-nagoya = { version = "^0.1.14", features = ["reactor"] }
+nagoya = { version = "^0.1.16", features = ["reactor"] }
 # Pure-Rust global allocator for every chuzz binary (owner decision: no C allocator).
 rusty_alloc = { package = "ps-rusty_alloc", version = "^2.3.3" }
 url = "2.5"
