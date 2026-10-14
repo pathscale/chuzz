@@ -78,7 +78,7 @@ impl TabLife {
         if let Some(signal) = self.load_signal.take() { blitz_traits::net::AbortController { signal }.abort(); }
         self.stash.take(); self.preview.take(); self.preview_surface.take(); self.record_charge.take();
         self.discarded = false; self.await_preview = false;
-        if self.phase != TabPhase::Discarding { self.phase = TabPhase::Dormant; }
+        if !matches!(self.phase, TabPhase::Discarding | TabPhase::Freezing) { self.phase = TabPhase::Dormant; }
     }
 }
 
@@ -241,7 +241,7 @@ impl Browser {
     }
 
     fn commit_sleep(&self, ui: &mut blitz_script::ScriptDocument, id: u64, generation: u64, epoch: u64, automatic: bool) -> bool {
-        let (mount, url, entry, replayable, record_bytes, loading) = {
+        let (mount, url, entry, replayable, record_bytes, mut loading) = {
             let mut state = self.0.state.lock().unwrap();
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id && tab.generation == generation && tab.life.epoch == epoch) else { return false; };
             if tab.loading && !automatic || tab.life.phase != TabPhase::Live || automatic && (tab.life.visible
@@ -254,11 +254,11 @@ impl Browser {
             (mount, tab.request().url.clone(), tab.current as u64, matches!(tab.request().method.as_str(), "GET" | "HEAD"), record_bytes, tab.loading)
         };
         if record_bytes > 32 * 1024 { return false; }
-        let mut charge = self.0.sleeping_budget.reserve(record_bytes);
+        let mut charge = self.0.sleeping_budget.reserve(32 * 1024);
         if charge.is_err() {
             let mut state = self.0.state.lock().unwrap();
             for tab in &mut state.tabs { tab.life.preview.take(); }
-            charge = self.0.sleeping_budget.reserve(record_bytes);
+            charge = self.0.sleeping_budget.reserve(32 * 1024);
         }
         let Ok(charge) = charge else { return false; };
         {
@@ -271,7 +271,11 @@ impl Browser {
             document.set_page_visible(false);
             document.freeze();
             let still_current = self.0.state.lock().unwrap().tabs.iter().any(|tab| tab.id == id && tab.generation == generation && tab.life.epoch == epoch);
-            if !still_current { document.resume(); return false; }
+            if !still_current {
+                let navigation_only = self.0.state.lock().unwrap().tabs.iter().any(|tab| tab.id == id && tab.generation == generation
+                    && tab.life.phase == TabPhase::Freezing && tab.loading);
+                if navigation_only { loading = true; } else { document.resume(); return false; }
+            }
             document.inner_mut().classify_stash();
             let forms = if loading { Vec::new() } else { crate::tab_native::capture_forms(&mut document.inner_mut()) };
             let scroll = document.inner().viewport_scroll();
