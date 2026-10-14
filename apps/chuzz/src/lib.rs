@@ -82,6 +82,7 @@ pub mod dump;
 pub mod frontend;
 pub mod identity;
 pub mod image_document;
+pub mod languages;
 // The browser's own documents: view source, the error page. Pages rather than
 // chrome, so the headless host reaches them too.
 pub mod internal_pages;

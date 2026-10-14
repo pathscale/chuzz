@@ -145,6 +145,24 @@
   g.BroadcastChannel = BroadcastChannel;
 
   const navigator = g.navigator || (g.navigator = {});
+  const languageTags = Object.freeze((Array.isArray(info.languages) && info.languages.length
+    ? info.languages : ["en-US", "en"]).map(tag => String(tag)));
+  Object.defineProperty(navigator, "language", {
+    configurable: true, enumerable: true, get: () => languageTags[0]
+  });
+  Object.defineProperty(navigator, "languages", {
+    configurable: true, enumerable: true, get: () => languageTags
+  });
+  if (typeof g.importScripts === "function") {
+    const WorkerNavigator = function WorkerNavigator() {
+      throw new TypeError("Illegal constructor");
+    };
+    Object.defineProperty(WorkerNavigator.prototype, Symbol.toStringTag, {
+      configurable: true, value: "WorkerNavigator"
+    });
+    Object.setPrototypeOf(navigator, WorkerNavigator.prototype);
+    g.WorkerNavigator = WorkerNavigator;
+  }
   const properties = {
     platform: info.platform, cookieEnabled: true, onLine: true,
     hardwareConcurrency: info.concurrency, maxTouchPoints: 0, vendor: "Google Inc.",
