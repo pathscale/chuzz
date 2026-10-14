@@ -22,8 +22,7 @@ use blitz_traits::net::Request;
 #[cfg(feature = "capture")]
 use crate::decode::decode_body;
 
-#[cfg(all(feature = "capture", feature = "javascript"))]
-use blitz_traits::net::Url;
+use blitz_traits::net::{Credentials, Initiator, ResourcePolicy, Url};
 #[cfg(all(feature = "capture", feature = "javascript"))]
 use std::collections::HashMap;
 
@@ -36,6 +35,8 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct NetProvider {
     inner: Arc<blitz_net::Provider>,
+    policy: Arc<ResourcePolicy>,
+    initiator: Initiator,
     cookies: Arc<crate::cookie_store::BrowserCookieStore>,
     waker: Arc<dyn blitz_traits::net::NetWaker>,
     blocked_requests: Arc<Mutex<VecDeque<String>>>,
@@ -126,10 +127,50 @@ impl NetProvider {
                 user_agent,
                 Arc::clone(&cookies),
             )),
+            policy: Arc::new(ResourcePolicy::default()),
+            initiator: Initiator::Unknown,
             cookies,
             waker,
             blocked_requests: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+
+    /// Application-owned policy, supplied before sharing the root provider.
+    pub fn with_resource_policy(mut self, policy: Arc<ResourcePolicy>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub fn browser_initiator(&self, url: Url) -> Initiator {
+        self.policy.browser(url)
+    }
+
+    pub fn initiator(&self) -> Initiator {
+        self.initiator.clone()
+    }
+
+    pub fn for_document(&self, url: Url, navigation: &Initiator) -> Self {
+        let mut provider = self.clone();
+        provider.initiator = self.policy.document(url, navigation);
+        provider
+    }
+
+    fn bind(&self, mut request: blitz_traits::net::Request) -> blitz_traits::net::Request {
+        if !matches!(self.initiator, Initiator::Unknown) {
+            request.initiator = self.initiator.clone();
+        }
+        Self::with_default_language(request)
+    }
+
+    pub async fn fetch_platform_async(
+        &self,
+        mut request: blitz_traits::platform::FetchRequest,
+    ) -> Result<blitz_traits::platform::FetchResponse, blitz_traits::platform::FetchError> {
+        if !matches!(self.initiator, Initiator::Unknown) {
+            request.initiator = self.initiator.clone();
+        }
+        crate::languages::insert_accept_language(&mut request.headers);
+        self.inner.fetch_platform_async(request).await
     }
 
     pub fn user_agent(&self) -> &str {
@@ -170,7 +211,7 @@ impl NetProvider {
     ) -> Result<blitz_traits::platform::FetchResponse, blitz_net::ProviderError> {
         let response = self
             .inner
-            .fetch_response_async(Self::with_default_language(request))
+            .fetch_response_async(self.bind(request))
             .await?;
         dump_script_for_debugging(&response);
         Ok(response)
@@ -183,11 +224,8 @@ impl NetProvider {
         &self,
         mut request: blitz_traits::net::Request,
     ) -> Result<(String, blitz_traits::net::Bytes), blitz_traits::platform::FetchError> {
-        let initiator = request
-            .headers
-            .get("referer")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| url::Url::parse(value).ok());
+        request = self.bind(request);
+        let initiator = request.initiator.document_url().cloned();
         crate::identity::stamp_request_headers(
             &mut request.headers,
             self.user_agent(),
@@ -210,7 +248,10 @@ impl NetProvider {
             let mut wire =
                 blitz_traits::platform::FetchRequest::get(request.url).method(request.method);
             wire.headers = request.headers;
-            crate::net_bridge::fetch_response(&self.inner, wire).await?
+            wire.signal = request.signal;
+            wire.initiator = request.initiator;
+            wire.credentials = request.credentials;
+            self.fetch_platform_async(wire).await?
         };
         Ok(Self::document_response(&requested_url, response))
     }
@@ -273,11 +314,8 @@ impl blitz_traits::net::NetProvider for NetProvider {
         mut request: blitz_traits::net::Request,
         handler: Box<dyn blitz_traits::net::NetHandler>,
     ) {
-        let initiator = request
-            .headers
-            .get("referer")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| url::Url::parse(value).ok());
+        request = self.bind(request);
+        let initiator = request.initiator.document_url().cloned();
         let destination = request.destination.as_str();
         crate::identity::stamp_request_headers(
             &mut request.headers,
@@ -296,37 +334,29 @@ impl blitz_traits::net::NetProvider for NetProvider {
             provider.waker.wake(doc_id);
             return;
         }
+        let request_url = request.url.to_string();
         let _detached = nagoya::spawn(async move {
-            let result = if let Some(signal) = signal {
-                let mut fetch = Box::pin(provider.fetch_response_async(request));
-                let mut aborted = Box::pin(async move {
-                    while !signal.aborted() {
-                        nagoya::sleep(std::time::Duration::from_millis(5)).await;
-                    }
-                });
-
-                std::future::poll_fn(|context| {
-                    match std::future::Future::poll(fetch.as_mut(), context) {
-                        std::task::Poll::Ready(result) => std::task::Poll::Ready(Some(result)),
-                        std::task::Poll::Pending => {
-                            match std::future::Future::poll(aborted.as_mut(), context) {
-                                std::task::Poll::Ready(()) => std::task::Poll::Ready(None),
-                                std::task::Poll::Pending => std::task::Poll::Pending,
-                            }
-                        }
-                    }
-                })
-                .await
-            } else {
-                Some(provider.fetch_response_async(request).await)
-            };
-
-            if let Some(Ok(response)) = result {
-                handler.bytes(response.url.to_string(), response.body);
+            let result = provider.fetch_response_async(request).await;
+            if signal.as_ref().is_some_and(|signal| signal.aborted()) { return; }
+            match result {
+                Ok(response) => handler.bytes(response.url.to_string(), response.body),
+                Err(blitz_net::ProviderError::Abort) => return,
+                Err(error) => {
+                    eprintln!("chuzz: resource {request_url}: {error}");
+                    // Settle the engine's pending resource even when denied.
+                    handler.bytes(request_url, blitz_traits::net::Bytes::new());
+                }
             }
-            // The consumer must see the bytes when it responds to this wake.
             provider.waker.wake(doc_id);
         });
+    }
+
+    fn resource_initiator(&self) -> Initiator { self.initiator() }
+
+    fn for_child_document(&self, url: Url) -> Option<Arc<dyn blitz_traits::net::NetProvider>> {
+        let mut provider = self.clone();
+        provider.initiator = self.initiator.child(url);
+        Some(Arc::new(provider))
     }
 
     fn is_noop(&self) -> bool {
@@ -2622,12 +2652,17 @@ pub(crate) fn install_web_api_shim(
 /// capture, which loads one page and has nothing to carry.
 #[cfg(feature = "capture")]
 pub async fn load_for_capture(
-    request: Request,
+    mut request: Request,
     net_provider: Arc<NetProvider>,
     prelude: &str,
     viewport: Option<blitz_traits::shell::Viewport>,
 ) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
     use blitz_dom::Document as _;
+
+    if matches!(request.initiator, Initiator::Browser(_)) {
+        request.initiator = net_provider.browser_initiator(request.url.clone());
+    }
+    let navigation = request.initiator.clone();
 
     // `view-source:` is the browser's, and a capture that could not take it was
     // the one address a tab could show and a PNG could not. The scheme is not a
@@ -2647,7 +2682,7 @@ pub async fn load_for_capture(
         let inner = request.url.path().to_owned();
         let url = Url::parse(&inner).map_err(|error| format!("{inner} is not a URL: {error}"))?;
         let (_, bytes) = net_provider
-            .fetch_async(Request::get(url))
+            .fetch_async(Request::get(url).initiator(navigation.clone()))
             .await
             .map_err(document_fetch_error)?;
         let html = crate::internal_pages::source_html(&decode_body(&bytes));
@@ -2667,6 +2702,7 @@ pub async fn load_for_capture(
     let html = decode_body(&bytes);
 
     let resolved_url = Url::parse(&resolved_url)?;
+    let net_provider = Arc::new(net_provider.for_document(resolved_url.clone(), &navigation));
     let mut config = DocumentConfig {
         base_url: Some(resolved_url.to_string()),
         net_provider: Some(Arc::clone(&net_provider) as _),
