@@ -95,14 +95,14 @@ function startup(result: { code: number; stdout: string; stderr: string }, failu
   if (result.code !== (failure ? 1 : 0)) throw new Error(`sandbox2-startup: exit ${result.code}`);
 }
 
-const work = await mkdtemp(join(tmpdir(), "chuzz-sandbox2-"));
+const work = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "chuzz-sandbox2-"));
 const servers: Server[] = [];
 const sockets = new Set<import("node:net").Socket>();
 let sequence = 0;
 async function environment(extra: Record<string, string | undefined> = {}) {
   const cache = join(work, `cache-${sequence++}`);
   await mkdir(cache, { mode: 0o700 });
-  return { ...process.env, CHUZZ_CACHE_DIR: cache, CHUZZ_PROFILE_DIR: join(cache, "profile"), CHUZZ_HEADLESS_MODE: "qa", PS_QA_HEADLESS: "true", SANDBOX2_DEFECT: undefined, SANDBOX2_TLS_DEFECT: undefined, ...extra };
+  return { ...process.env, ...(process.platform === "darwin" ? { TMPDIR: "/tmp" } : {}), CHUZZ_CACHE_DIR: cache, CHUZZ_PROFILE_DIR: join(cache, "profile"), CHUZZ_HEADLESS_MODE: "qa", PS_QA_HEADLESS: "true", SANDBOX2_DEFECT: undefined, SANDBOX2_TLS_DEFECT: undefined, ...extra };
 }
 
 async function qa(host: string, page: string, checks: string, env: Record<string, string | undefined>) {
@@ -113,21 +113,30 @@ async function sign(path: string, entitlements: string) {
   await requireCommand(["/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime", "--entitlements", entitlements, path]);
 }
 
-async function tlsServer(cert: string, key: string, ca: string, version: "TLSv1.2" | "TLSv1.3", cipher: string) {
-  const server = createServer({ cert, key, minVersion: version, maxVersion: version, ciphers: cipher, ALPNProtocols: ["http/1.1"] }, (_request, response) => {
-    response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" });
-    response.end('<!doctype html><html><body style="background:white;color:black;font:24px sans-serif"><h1 id="chacha-loaded">CHACHA LOADED</h1></body></html>');
-  });
-  server.on("connection", socket => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
-  server.on("tlsClientError", () => {});
-  servers.push(server);
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("TLS fixture did not bind TCP");
+async function tlsServer(ca: string, version: "TLSv1.2" | "TLSv1.3", cipher: string, tlsDir: string, certPath: string, keyPath: string) {
+  const { createServer: createNetServer } = await import("node:net");
+  const probe = createNetServer();
+  await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(0, "127.0.0.1", resolve); });
+  const address = probe.address();
+  if (!address || typeof address === "string") throw new Error("TLS fixture probe did not bind TCP");
+  const port = address.port;
+  await new Promise<void>(resolve => probe.close(() => resolve()));
+  await Bun.write(join(tlsDir, "index.html"), 'HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncache-control: no-store\r\nconnection: close\r\n\r\n<!doctype html><html><body style="background:white;color:black;font:24px sans-serif"><h1 id="chacha-loaded">CHACHA LOADED</h1></body></html>');
+  const flag = version === "TLSv1.2" ? "-tls1_2" : "-tls1_3";
+  const child = Bun.spawn(["/usr/bin/openssl", "s_server", "-accept", String(port), "-cert", certPath, "-key", keyPath, flag, "-cipher", cipher, "-alpn", "http/1.1", "-HTTP"], { cwd: tlsDir, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  children.add(child);
+  const reader = child.stdout.getReader();
+  let banner = "";
+  while (!banner.includes("ACCEPT")) {
+    const chunk = await reader.read();
+    if (chunk.done) throw new Error("openssl s_server exited before ACCEPT");
+    banner += new TextDecoder().decode(chunk.value);
+  }
+  reader.releaseLock();
   // Independently confirm that the fixture can authenticate and negotiates
   // its declared single suite before asking chuzz to refuse or load it.
   await new Promise<void>((resolve, reject) => {
-    const socket = connect({ host: "127.0.0.1", port: address.port, servername: "localhost", ca, minVersion: version, maxVersion: version, ciphers: cipher, ALPNProtocols: ["http/1.1"] });
+    const socket = connect({ host: "127.0.0.1", port, servername: "localhost", ca, minVersion: version, maxVersion: version, ...(version === "TLSv1.2" ? { ciphers: cipher } : {}), ALPNProtocols: ["http/1.1"] });
     socket.once("error", reject);
     socket.once("secureConnect", () => {
       const valid = socket.getProtocol() === version && socket.getCipher().name === cipher;
@@ -135,7 +144,7 @@ async function tlsServer(cert: string, key: string, ca: string, version: "TLSv1.
       if (valid) resolve(); else reject(new Error(`TLS fixture did not negotiate ${version} ${cipher}`));
     });
   });
-  return `https://127.0.0.1:${address.port}/`;
+  return `https://127.0.0.1:${port}/index.html`;
 }
 
 try {
@@ -176,10 +185,10 @@ try {
     await requireCommand(["openssl", "req", "-new", "-key", leafKey, "-subj", "/CN=localhost", "-out", leafCsr]);
     await Bun.write(leafExt, "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1,DNS:localhost\n");
     await requireCommand(["openssl", "x509", "-req", "-in", leafCsr, "-CA", caFile, "-CAkey", caKey, "-CAcreateserial", "-sha256", "-days", "2", "-extfile", leafExt, "-out", leafFile]);
-    const cert = await Bun.file(leafFile).text(), key = await Bun.file(leafKey).text(), ca = await Bun.file(caFile).text();
+    const ca = await Bun.file(caFile).text();
     for (const version of ["TLSv1.2", "TLSv1.3"] as const) {
-      const chacha = await tlsServer(cert, key, ca, version, version === "TLSv1.2" ? "ECDHE-ECDSA-CHACHA20-POLY1305" : "TLS_CHACHA20_POLY1305_SHA256");
-      const aes = await tlsServer(cert, key, ca, version, version === "TLSv1.2" ? "ECDHE-ECDSA-AES128-GCM-SHA256" : "TLS_AES_128_GCM_SHA256");
+      const chacha = await tlsServer(ca, version, version === "TLSv1.2" ? "ECDHE-ECDSA-CHACHA20-POLY1305" : "TLS_CHACHA20_POLY1305_SHA256", tls, leafFile, leafKey);
+      const aes = await tlsServer(ca, version, version === "TLSv1.2" ? "ECDHE-ECDSA-AES128-GCM-SHA256" : "TLS_AES_128_GCM_SHA256", tls, leafFile, leafKey);
       const trust = { SSL_CERT_FILE: caFile, SANDBOX2_TLS_CA_FILE: caFile };
       judge(await qa(shipped, chacha, "chacha.ron", await environment(trust)), ["tls-chacha-load"]);
       judge(await qa(shipped, aes, "required.ron", await environment(trust)), ["tls-chacha-required"]);
