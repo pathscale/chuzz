@@ -583,7 +583,9 @@
       return element;
     };
   });
-  if (typeof globalThis.Image === "undefined") {
+  // Replace the standalone preloader fallback once real image transport is
+  // available. Constructed images must use the same decoded DOM path as img.
+  {
     globalThis.Image = function (width, height) {
       var element = document.createElement("img");
       if (width !== undefined) { element.width = width; }
