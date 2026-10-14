@@ -92,6 +92,8 @@ pub mod internal_pages;
 #[cfg(feature = "javascript")]
 pub mod media;
 pub mod nav;
+#[cfg(feature = "gui")]
+pub mod tab_records;
 pub mod net_bridge;
 // A built site needs an origin before it is a site. Only the headless host
 // reaches for it, but it is not conditional on that mode: what it does is a

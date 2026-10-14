@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::decode::decode_body;
 use crate::document_loader::{NetProvider, install_web_api_shim};
 use crate::nav::{NEW_TAB_URL, display_title, request_from_input};
+use crate::tab_records::{DocumentGeneration, Residency, TabId, TabRegistry};
 
 /// The document an empty tab shows.
 ///
@@ -36,6 +37,7 @@ pub struct FrontendTab {
     status: &'static str,
     can_go_back: bool,
     can_go_forward: bool,
+    residency: Residency,
 }
 
 #[derive(Clone, Serialize)]
@@ -107,6 +109,7 @@ impl TabState {
 
             can_go_back: self.current > 0,
             can_go_forward: self.current + 1 < self.history.len(),
+            residency: if self.loading { Residency::Loading } else if self.mounted.is_some() { Residency::Live } else { Residency::Dormant },
         }
     }
 }
@@ -174,6 +177,7 @@ impl DebugLog {
 
 struct BrowserState {
     tabs: Vec<TabState>,
+    records: TabRegistry,
     active: u64,
     next_tab_id: u64,
     panel: PanelState,
@@ -448,6 +452,11 @@ impl Browser {
                     outcome: PageOutcome::Blank,
                     generation: 0,
                 }],
+                records: {
+                    let mut records = TabRegistry::default();
+                    records.admit(TabId(0)).expect("initial tab admission");
+                    records
+                },
                 active: 0,
                 next_tab_id: 1,
                 panel: PanelState {
@@ -658,6 +667,7 @@ impl Browser {
 
             (tab.request().clone(), tab.generation)
         };
+        self.0.state.lock().unwrap().records.loading(TabId(tab_id), DocumentGeneration(generation));
         self.emit_state();
 
         // A wasm page has nothing to fetch, so its bundle is complete the
@@ -923,6 +933,7 @@ impl Browser {
                 tab.title = title;
                 tab.loading = false;
                 tab.outcome = outcome;
+                state.records.attached(TabId(bundle.tab_id), DocumentGeneration(bundle.generation));
             }
             changed = true;
         }
@@ -1499,6 +1510,12 @@ pub fn commands(browser: Arc<Browser>) -> [(&'static str, izumo::CommandHandler)
             }),
         ),
         (
+            "open_dormant_tab",
+            command_handler(&browser, |browser, args: OpenTabArgs| {
+                open_dormant_tab(browser, args.url)
+            }),
+        ),
+        (
             "close_tab",
             command_handler(&browser, |browser, args: TabArgs| {
                 close_tab(browser, args.id);
@@ -1592,16 +1609,26 @@ pub fn active_tab_id(browser: Arc<Browser>) -> u64 {
 
 pub fn select_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> {
     let mut state = browser.0.state.lock().unwrap();
+    let dormant = state.records.record(TabId(id)).is_some_and(|record| record.residency == Residency::Dormant);
     if !state.tabs.iter().any(|tab| tab.id == id) {
         return Err(format!("unknown tab {id}"));
     }
     state.active = id;
     drop(state);
+    if dormant { browser.schedule_current(id, false); }
     browser.emit_state();
     Ok(())
 }
 
 pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTab, String> {
+    open_tab_record(browser, url, true)
+}
+
+pub fn open_dormant_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTab, String> {
+    open_tab_record(browser, url, false)
+}
+
+fn open_tab_record(browser: Arc<Browser>, url: Option<String>, select: bool) -> Result<FrontendTab, String> {
     let request = match url {
         Some(url) => request_from_input(&url).ok_or_else(|| format!("invalid URL {url}"))?,
         None => crate::nav::browser_request(Url::parse(NEW_TAB_URL).unwrap()),
@@ -1609,7 +1636,8 @@ pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTa
     let id = {
         let mut state = browser.0.state.lock().unwrap();
         let id = state.next_tab_id;
-        state.next_tab_id += 1;
+        state.records.admit(TabId(id)).map_err(str::to_owned)?;
+        state.next_tab_id = id.checked_add(1).ok_or("tab-id-exhausted")?;
         state.tabs.push(TabState {
             id,
             mounted_generation: 0,
@@ -1621,10 +1649,10 @@ pub fn open_tab(browser: Arc<Browser>, url: Option<String>) -> Result<FrontendTa
             outcome: PageOutcome::Blank,
             generation: 0,
         });
-        state.active = id;
+        if select { state.active = id; }
         id
     };
-    browser.schedule_current(id, false);
+    if select { browser.schedule_current(id, false); } else { browser.emit_state(); }
     Ok(browser
         .0
         .state
@@ -1645,6 +1673,7 @@ fn close_tab_locked(state: &mut BrowserState, id: u64) -> bool {
         return false;
     };
     state.tabs.remove(index);
+    state.records.remove(TabId(id));
     if state.active == id {
         state.active = state.tabs[index.min(state.tabs.len() - 1)].id;
     }
@@ -1657,7 +1686,8 @@ pub fn close_tab(browser: Arc<Browser>, id: u64) {
         close_tab_locked(&mut state, id)
     };
     if closed {
-        browser.emit_state();
+        let active = browser.0.state.lock().unwrap().active;
+        let _ = select_tab(Arc::clone(&browser), active);
         browser.wake_document();
     }
 }
@@ -1669,7 +1699,8 @@ pub fn close_active_tab(browser: Arc<Browser>) {
         close_tab_locked(&mut state, id)
     };
     if closed {
-        browser.emit_state();
+        let active = browser.0.state.lock().unwrap().active;
+        let _ = select_tab(Arc::clone(&browser), active);
         browser.wake_document();
     }
 }
