@@ -689,6 +689,18 @@ impl Browser {
         });
     }
 
+    fn schedule_browser_navigation(&self, tab_id: u64, revalidate: bool) {
+        let net = self.net();
+        {
+            let mut state = self.0.state.lock().unwrap();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else { return; };
+            let url = tab.request().url.clone();
+            let current = tab.current;
+            tab.history[current].initiator = net.browser_initiator(url);
+        }
+        self.schedule_current(tab_id, revalidate);
+    }
+
     fn navigate_request(&self, tab_id: u64, request: Request) -> bool {
         {
             let mut state = self.0.state.lock().unwrap();
@@ -1684,7 +1696,7 @@ pub fn go_back(browser: Arc<Browser>, id: u64) {
             })
     };
     if moved {
-        browser.schedule_current(id, false);
+        browser.schedule_browser_navigation(id, false);
     }
 }
 
@@ -1706,12 +1718,12 @@ pub fn go_forward(browser: Arc<Browser>, id: u64) {
             })
     };
     if moved {
-        browser.schedule_current(id, false);
+        browser.schedule_browser_navigation(id, false);
     }
 }
 
 pub fn reload(browser: Arc<Browser>, id: u64) {
-    browser.schedule_current(id, true);
+    browser.schedule_browser_navigation(id, true);
 }
 
 pub fn panel_state(browser: Arc<Browser>) -> PanelState {
