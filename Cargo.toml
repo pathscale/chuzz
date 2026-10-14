@@ -166,12 +166,13 @@ codegen-units = 1
 debug = "line-tables-only"
 strip = "none"
 
-# No patch table. There was one: `[patch]` only applies from the top-level
-# workspace, so ps-blitz's own was ignored when chuzz is the root, and its
-# blitz-dom needs a `usvg` carrying `Tree::intrinsic_dimensions` and
-# `pub use svgtypes` that no published linebender usvg has. That had to be
-# copied here and kept in step by hand.
-#
-# The fork is published as `ps-usvg` now and ps-blitz depends on it by version,
-# so the requirement travels with the dependency instead of being restated by
-# every consumer.
+# Local lifecycle hooks must also reach transitive control-protocol consumers.
+[patch.crates-io]
+ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
+ps-blitz-html = { path = "../ps-blitz/packages/blitz-html" }
+ps-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
+ps-blitz-script = { path = "../ps-blitz/packages/blitz-script" }
+ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
+ps-blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
+ps-blitz-shell = { path = "../ps-blitz/packages/blitz-shell" }
+ps-blitz-debug-control = { path = "../ps-blitz/packages/blitz-debug-control" }
