@@ -135,9 +135,10 @@ pub(super) fn run() -> Result<(), String> {
     let proxy = egress::witness_proxy()?;
     let reactor = nagoya::reactor::Reactor::start().map_err(|error| error.to_string())?;
     page_ring()?;
+    nagoya::block_on(nagoya::timeout(Duration::from_secs(5), egress::witness(&proxy)))
+        .map_err(|_| "egress-accept: socket readiness or forwarding did not progress")??;
+    drop(proxy);
     nagoya::block_on(async {
-        nagoya::timeout(Duration::from_secs(5), egress::witness(&proxy)).await
-            .map_err(|_| "egress-accept: socket readiness or forwarding did not progress")??;
         cookies(&root.join("cookies")).await?;
         wall_timeout(&reactor.handle()).await?;
         cli(&reactor.handle(), &root).await?;
