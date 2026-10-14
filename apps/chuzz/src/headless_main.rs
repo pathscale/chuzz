@@ -36,6 +36,13 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if !serve::is_page_worker() {
+        if let Err(error) = serve::serve(&target) {
+            eprintln!("chuzz-headless: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // JavaScript frames live on a heap value stack. Native re-entry (a getter
     // or dispatchEvent nesting `Context::run`) holds this thread's stack. The
     // main thread's 8 MB ran out first on YouTube's Polymer, aborting the
