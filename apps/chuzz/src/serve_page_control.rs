@@ -56,6 +56,7 @@ fn take(request: Arc<DocumentRequest>) -> DocumentRequest {
 }
 
 impl Receiver {
+    #[cfg(feature = "reactor-witness")]
     pub(super) async fn recv_arc(&self) -> Result<Arc<DocumentRequest>, TryRecvError> {
         loop {
             if let Some(request) = self.queue.try_pop() { return Ok(request); }
