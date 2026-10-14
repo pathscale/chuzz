@@ -407,5 +407,6 @@ pub(super) async fn witness(proxy: &EgressProxy) -> Result<(), String> {
     upstream.close_write();
     if observed != b"abc" { return Err("egress-byte-cap: relay exceeded the remaining three bytes".into()); }
     let _ = task.await;
+    while proxy.active.count.load(Ordering::Acquire) != 0 { proxy.active.changed.notified().await; }
     Ok(())
 }
