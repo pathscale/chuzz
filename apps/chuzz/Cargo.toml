@@ -263,6 +263,9 @@ backend-se = { workspace = true, optional = true }
 # Device output only. This release uses CoreAudio C bindings without objc2.
 cpal = { version = "^0.15.3", default-features = false, optional = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "^0.2"
+
 [dev-dependencies]
 # Assembles `fixtures/panel.wat` into a module in-process, so the capture test
 # owns its guest instead of borrowing blitz-wasm's demo, and so it needs no
