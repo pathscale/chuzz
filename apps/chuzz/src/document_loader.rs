@@ -1637,7 +1637,18 @@ pub(crate) const WEB_API_SHIM: &str = r#"
     globalThis.frames = globalThis;
     globalThis.frameElement = null;
   }
-  // The WEBAPI bootstrap binds scrolling to the engine's viewport.
+  // Bind scrolling here too: the browser chrome installs only this shared
+  // shim, before the platform bootstrap a page receives.
+  ['scrollX', 'scrollY', 'pageXOffset', 'pageYOffset'].forEach(function (name, index) {
+    if (typeof globalThis[name] === 'undefined'
+        && typeof globalThis.__blitzViewportScroll === 'function') {
+      Object.defineProperty(globalThis, name, {
+        configurable: true,
+        enumerable: true,
+        get: function () { return globalThis.__blitzViewportScroll()[index % 2]; }
+      });
+    }
+  });
   if (typeof globalThis.requestIdleCallback === 'undefined') {
     globalThis.requestIdleCallback = function (callback) {
       return setTimeout(function () {
