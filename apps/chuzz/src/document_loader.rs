@@ -601,8 +601,9 @@ pub(crate) const WEB_API_SHIM: &str = r#"
   installCollectionMethods(globalThis.document && Object.getPrototypeOf(globalThis.document));
   installCollectionMethods(globalThis.document && globalThis.document.documentElement
     && Object.getPrototypeOf(globalThis.document.documentElement));
-  var actualElementPrototype = globalThis.document && globalThis.document.documentElement
-    && Object.getPrototypeOf(globalThis.document.documentElement);
+  // Native wrappers have per-tag prototypes. Install shared reflection on
+  // Element, rather than on the HTMLHtmlElement wrapper alone.
+  var actualElementPrototype = globalThis.Element && globalThis.Element.prototype;
   if (actualElementPrototype
       && !Object.getOwnPropertyDescriptor(actualElementPrototype, 'name')) {
     Object.defineProperty(actualElementPrototype, 'name', {
