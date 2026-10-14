@@ -59,7 +59,7 @@ pub fn document(browser: Browser, url: &str) -> Result<blitz_script::ScriptDocum
     Ok(document)
 }
 
-/// A stand-in for the Tauri command bridge, for tests that have no Tauri app.
+/// A stand-in for the izumo command bridge, for tests that have no native app.
 ///
 /// The interface bootstraps itself from `list_tabs`/`active_tab_id`/
 /// `panel_state`/`status`, so without a bridge the store keeps its empty
@@ -70,7 +70,7 @@ pub fn document(browser: Browser, url: &str) -> Result<blitz_script::ScriptDocum
 /// nothing. Canned answers here put one tab on screen so the rendezvous is
 /// exercised for real.
 #[cfg(test)]
-pub(crate) const TAURI_TEST_BRIDGE: &str = r#"
+pub(crate) const IZUMO_TEST_BRIDGE: &str = r#"
 (function () {
   var tabs = [{
     id: 0,
@@ -91,15 +91,8 @@ pub(crate) const TAURI_TEST_BRIDGE: &str = r#"
     nodeCount: 0,
     transferred: '0 B'
   };
-  var nextCallback = 1;
-  globalThis.__TAURI_INTERNALS__ = {
-    transformCallback: function (callback) {
-      var id = nextCallback++;
-      globalThis['_' + id] = callback;
-      return id;
-    },
-    unregisterCallback: function () {},
-    convertFileSrc: function (path) { return path; },
+  globalThis.__IZUMO__ = {
+    listen: function () { return Promise.resolve(function () {}); },
     invoke: function (cmd) {
       switch (cmd) {
         case 'list_tabs': return Promise.resolve(tabs);
@@ -132,7 +125,7 @@ mod tests {
                 document.set_ipc_handler(|_| {});
                 // Before the bundle runs: the interface reads the bridge during
                 // its own module evaluation.
-                document.eval(TAURI_TEST_BRIDGE);
+                document.eval(IZUMO_TEST_BRIDGE);
                 document.execute_scripts();
                 for _ in 0..64 {
                     document.poll(None);
