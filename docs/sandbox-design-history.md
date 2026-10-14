@@ -1,7 +1,9 @@
+> Historical reference only. Its measurements, implementation claims, proposed work and third-party comparisons are unverified as of 2026-10-14. This is not a work queue. All current work is maintained in [TODO.md](TODO.md); historical prescriptions below do not establish current status.
+
 # Sandbox plan: what Chrome and Firefox do, and what we should do instead
 
 Written 2026-08-11. Companion to
-[TODO-plan-what-exists-in-open-source.md](TODO-plan-what-exists-in-open-source.md).
+[platform-plan-history.md](platform-plan-history.md).
 
 > **Re-sited 2026-08-15.** The code anchors below were written against
 > `apps/chuzz/src/main.rs` and `dioxus_native::launch_cfg`, neither of which
@@ -25,12 +27,12 @@ not have, and we have one they do not: **we are Rust, and we own the only choke 
 ```
 
 **No origin check anywhere above it.** Any document that can cause a subresource fetch to a
-`file://` URL reads that file with the user's full permissions — a stylesheet `url()`, an
+`file://` URL reads that file with the user's full permissions ;  a stylesheet `url()`, an
 `<img src>`, an `<iframe>`, and directly via `fetch` the moment we ship it.
 
-`https://evil.example/` embedding `file:///Users/you/.ssh/id_rsa` is a file read today. What
-it can *do* with the bytes varies by context — an image leaks little, a stylesheet or script
-leaks a lot, `fetch` leaks everything — but the read happens regardless.
+`https://evil.example/` embedding `file:///example/private-file` is a file read today. What
+it can *do* with the bytes varies by context ;  an image leaks little, a stylesheet or script
+leaks a lot, `fetch` leaks everything ;  but the read happens regardless.
 
 **The fix is about five lines**: web-origin documents may not fetch `file:`. Only a
 top-level `file://` navigation the user performed may. No policy language, no spec, no
@@ -41,13 +43,13 @@ subsystem. **Do this before anything else on any list.**
 ## 1. What Chrome does
 
 - **Multi-process with a privileged broker.** Renderers have no direct filesystem or network
-  access; the browser process brokers everything over IPC. This is the whole architecture —
+  access; the browser process brokers everything over IPC. This is the whole architecture ;
   the sandbox is only meaningful because the renderer *cannot* do the thing directly.
 - **Site Isolation** since 2018, driven by Spectre: one renderer per site (eTLD+1), so a
   compromised renderer holds only one site's data. Costs roughly **10–13% memory**.
-- **macOS**: Seatbelt profiles plus entitlements, applied early — before any page content is
+- **macOS**: Seatbelt profiles plus entitlements, applied early ;  before any page content is
   touched.
-- **Linux**: layered — user namespaces plus a seccomp-bpf syscall filter.
+- **Linux**: layered ;  user namespaces plus a seccomp-bpf syscall filter.
 - **Windows**: restricted token, job object, desktop isolation, AppContainer.
 
 ## 2. What Firefox does
@@ -57,7 +59,7 @@ subsystem. **Do this before anything else on any list.**
 - Same per-platform primitives: Seatbelt on macOS, seccomp-bpf plus namespaces on Linux.
 - **RLBox**, which is the interesting one: risky **C libraries** are compiled to WebAssembly
   and run *inside* the process with their memory access confined. Applied to about five
-  libraries — font shaping, spell checking, XML, WOFF2, audio decode. Fine-grained,
+  libraries ;  font shaping, spell checking, XML, WOFF2, audio decode. Fine-grained,
   in-process, no IPC.
 
 ## 3. Why neither model transfers
@@ -88,7 +90,7 @@ where Firefox spent years getting to.**
 
 | Crate | Why it is there | Action |
 |---|---|---|
-| `openssl-sys` / `openssl-src` | `reqwest` is configured with `native-tls` | **Switch to `rustls-tls`.** Removes OpenSSL — and its build — from the tree entirely. Cheap, and it is the largest C dependency we have |
+| `openssl-sys` / `openssl-src` | `reqwest` is configured with `native-tls` | **Switch to `rustls-tls`.** Removes OpenSSL ;  and its build ;  from the tree entirely. Cheap, and it is the largest C dependency we have |
 | `dav1d-sys` | AV1 decode, C, historically CVE-prone | We do not decode video. Confirm it is not actually linked, and drop it if it is |
 | `libsqlite3-sys` | transitive | trace and drop if unused |
 
@@ -97,28 +99,28 @@ that is not worth doing yet.
 
 ## 4. What we should do instead
 
-Our sandbox's job is not memory containment — Rust does most of that. It is **capability
+Our sandbox's job is not memory containment ;  Rust does most of that. It is **capability
 restriction**: bounding what the process may touch, and what a *page* may ask the process to
 touch.
 
-### Layer 1: the resource choke point — cheapest, highest value
+### Layer 1: the resource choke point ;  cheapest, highest value
 
 `blitz-net::Provider::fetch_inner` is a single function every subresource passes through, and
 it already switches on `request.url.scheme()`. One `ResourcePolicy` there gives us, in order
 of value:
 
-1. **`file:` denied to web origins** (§0 — live bug)
+1. **`file:` denied to web origins** (§0 ;  live bug)
 2. **Private and loopback addresses denied to public origins.** A page on the internet must
    not reach `127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16` or `.local`. This is the
    attack CSP does nothing about: a web page port-scanning your dev servers, or hitting your
    router's admin panel. Chrome only added this recently as Private Network Access. **We can
    have it in one function** because we have one choke point
-3. **Cookie scoping** — `credentials: "same-origin"` by default, since `lib.rs:77` sets one
+3. **Cookie scoping** ;  `credentials: "same-origin"` by default, since `lib.rs:77` sets one
    process-wide `cookie_store(true)`
 4. Request count and total-byte caps per document, which also bounds runaway pages
 
 None of this is a policy language. It is a Rust struct owned by the browser, not declared by
-the page — which is the inversion that makes it simpler than CSP. **CSP asks the page what it
+the page ;  which is the inversion that makes it simpler than CSP. **CSP asks the page what it
 wants and enforces that. We decide what a page gets.**
 
 #### The one thing that makes this non-trivial: a `Request` has no origin
@@ -137,7 +139,7 @@ pub struct Request {
 ```
 
 There is no initiator, no origin, no referrer. So a policy at `fetch_inner` **cannot tell a
-page's request for `file:///etc/passwd` from the browser's own load of a local file** — which
+page's request for `file:///etc/passwd` from the browser's own load of a local file** ;  which
 is exactly the distinction §0 needs. This is the actual work; the deny rule itself is trivial.
 
 Two routes:
@@ -148,35 +150,35 @@ Two routes:
 | **B** | Resolve `doc_id` → base URL in the provider. `NetProvider::fetch(&self, doc_id: usize, …)` already carries it (`net.rs:20`) | `blitz-net` only | Less invasive but makes the network provider hold document state it otherwise does not, and `doc_id` is a `usize` with no lifetime guarantees |
 
 Take **A**. 13 call sites is an afternoon, the type system enumerates them, and every later
-policy — cookie scoping, private-network blocking, per-document caps — needs the same field.
+policy ;  cookie scoping, private-network blocking, per-document caps ;  needs the same field.
 Doing B first means doing A afterwards anyway.
 
 The enum matters more than the URL: `Origin::Browser` for a user-typed navigation or our own
 chrome, `Origin::Document(url)` for anything a page caused. The `file:` rule is then one
 match arm.
 
-### Layer 2: process sandbox — one model per platform, none of them invented here
+### Layer 2: process sandbox ;  one model per platform, none of them invented here
 
 An earlier draft of this section reached for `birdcage` (cross-platform, generic, last
 updated 2024-04) and then shrugged and said "write a profile". Both were wrong. **Each
 platform already has a reference implementation written for exactly our process type, and
-each is permissively licensed** — which is the difference between these and fastrender.
+each is permissively licensed** ;  which is the difference between these and fastrender.
 
 #### macOS: WebKit's own WebContent profile
 
 [`Source/WebKit/WebProcess/com.apple.WebProcess.sb.in`](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/WebProcess/com.apple.WebProcess.sb.in)
-— **62KB, BSD 2-clause, Apple, continuously maintained since 2010.** It pulls in
+;  **62KB, BSD 2-clause, Apple, continuously maintained since 2010.** It pulls in
 `Shared/Sandbox/macOS/common.sb`, `webcontent-defines.sb` and `preferences.sb`.
 
 This is Safari's web content sandbox: a Darwin-native SBPL profile for a process whose whole
-job is rendering untrusted web content — the same process we are. It is the better model
+job is rendering untrusted web content ;  the same process we are. It is the better model
 than Chrome's macOS sandbox, which is a port of a cross-platform design, and vastly better
 than anything we would write, because the hard part of an SBPL profile is not the deny-all
 line, it is knowing the dozens of Mach services and system paths a rendering process
 genuinely needs and the ones it does not.
 
 **BSD licence means we may actually adapt it**, not merely read it. Start from their
-deny-by-default structure and cut what we do not have — no Mach IPC to a UI process, no
+deny-by-default structure and cut what we do not have ;  no Mach IPC to a UI process, no
 media stack, no WebGL. We will end up with far less than 62KB, and we will have started
 from a profile Apple keeps current rather than one we guessed at.
 
@@ -188,7 +190,7 @@ Landlock and `setrlimit`; privileged mode with cgroups v2 and chroot; six seccom
 profiles; auto-detection between modes. Split into `sandbox-core`, `-seccomp`, `-landlock`,
 `-namespace`, `-cgroup`, `-fs`.
 
-That is the right layering for Linux and it matches what Chrome and Firefox both do there —
+That is the right layering for Linux and it matches what Chrome and Firefox both do there ;
 namespaces plus seccomp-bpf. Vendor it or depend on it and pin.
 
 #### Windows: not now
@@ -205,7 +207,7 @@ signed. `apps/chuzz/build-app.sh:57` signs **ad-hoc** (`codesign --force --deep 
 with no entitlements file at all.
 
 **Seatbelt instead, applied by the process to itself at runtime.** `sandbox_init` takes a
-profile string and needs no entitlement, no Developer ID and no change to signing — which is
+profile string and needs no entitlement, no Developer ID and no change to signing ;  which is
 exactly why it survives our ad-hoc cask flow untouched. It has been formally deprecated since
 10.8 and is still what Chrome and WebKit both use; there is no maintained Rust crate, so it is
 an `extern "C"` declaration and `libc`.
@@ -221,14 +223,14 @@ So: initialise the window, renderer and font stack, then apply the profile, **th
 first page.
 
 **There is no seam in `main` for that.** `apps/chuzz/src/tauri_main.rs:203` is
-`.run(|_, _| {})` on the end of the `izumo::builder()` chain, and it blocks —
+`.run(|_, _| {})` on the end of the `izumo::builder()` chain, and it blocks ;
 it owns the event loop, the window and the renderer. Everything before it is pre-graphics;
 everything after it is exit. So the two obvious options are:
 
 1. **Before the builder chain at `tauri_main.rs:163`**, and let Metal, the WindowServer
    connection and fontconfig initialise *inside* the sandbox. Simplest by far, and it puts
    the profile on before anything else runs. The cost is that the profile must permit
-   graphics and font initialisation, which is the fiddly part of an SBPL profile — but it is
+   graphics and font initialisation, which is the fiddly part of an SBPL profile ;  but it is
    also precisely what WebKit's `com.apple.WebProcess.sb.in` already spells out, so we are
    copying the answer rather than deriving it.
 2. **Inside the `.setup` closure at `tauri_main.rs:182`**, which runs once after the app is
@@ -245,15 +247,15 @@ to save profile lines.
 on the first line of `main`.
 
 Note the headless paths return before ever reaching the builder: `--capture-wasm` at
-`tauri_main.rs:41` and `--capture` at `tauri_main.rs:81`. Both render without a window —
-one from a URL, one from a WebAssembly module — so each needs its own call or they become
+`tauri_main.rs:41` and `--capture` at `tauri_main.rs:81`. Both render without a window ;
+one from a URL, one from a WebAssembly module ;  so each needs its own call or they become
 the unsandboxed way to render hostile input. `--wasm` does *not* need separate handling: it
 goes through the ordinary window path.
 
 #### The probe matters more than the profile
 
-fastrender ships **three separate binaries** — `macos_sandbox_probe`, `sandbox_probe`,
-`appcontainer_temp_smoke` — plus `scripts/trace_renderer_syscalls.sh`, whose only job is
+fastrender ships **three separate binaries** ;  `macos_sandbox_probe`, `sandbox_probe`,
+`appcontainer_temp_smoke` ;  plus `scripts/trace_renderer_syscalls.sh`, whose only job is
 asserting at runtime that the sandbox is actually applied.
 
 Copy that discipline whatever else we do. A Seatbelt profile that fails to apply is
@@ -268,7 +270,7 @@ Ours needs to be about ten lines and assert the things the profile claims:
 | read anywhere under `$HOME` outside our cache and profile dirs | denied |
 | write outside the cache dir | denied |
 | `std::process::Command::new("/bin/sh")` | denied |
-| read our own cache dir | **allowed** — a profile that denies everything is also broken |
+| read our own cache dir | **allowed** ;  a profile that denies everything is also broken |
 
 Run it two ways, because they catch different failures: as a `#[test]` in CI so a profile
 change that over-denies fails the build, and **at startup behind a flag in the shipped
@@ -303,9 +305,9 @@ Chrome's own accounting, and every layer above delivers more per hour today.
 | 5 | **Seatbelt profile adapted from WebKit's `com.apple.WebProcess.sb.in`** (BSD, Apple's own, 62KB), **plus a probe that fails loudly** | days, not weeks, and none of it invented | We ship a signed cask today |
 | 6 | Per-document request and byte caps | small | Bounds runaway and hostile pages |
 | 7 | Audit and drop `dav1d-sys`, `libsqlite3-sys` | investigation | Shrink C surface |
-| 8 | Linux: vendor or pin `ErickJ3/sandbox-rs` (MIT — archived, but that only means we own the maintenance) | small | Whenever we ship Linux |
+| 8 | Linux: vendor or pin `ErickJ3/sandbox-rs` (MIT ;  archived, but that only means we own the maintenance) | small | Whenever we ship Linux |
 | 9 | Windows: restricted token + job object + AppContainer | unknown | We do not ship Windows |
-| 10 | Site isolation / process separation | rearchitecture | **Not a performance item.** fastrender's process split *is* their trust boundary — see [the concurrency model](TODO-fastrender-what-we-can-learn.md#5a-their-concurrency-model-properly). Ours would be too |
+| 10 | Site isolation / process separation | rearchitecture | **Not a performance item.** fastrender's process split *is* their trust boundary ;  see [the concurrency model](renderer-research-history.md#5a-their-concurrency-model-properly). Ours would be too |
 
 **CSP is deliberately absent.** It asks the browser to enforce what a page declares about
 itself, which protects the page's authors from their own XSS and does nothing for the browser's

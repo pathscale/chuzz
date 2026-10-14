@@ -66,7 +66,7 @@ commits are that workstream:
 - `c66a9cf6` Use `ThinVec` for Node lists
 - `0b637cfb` Move Node fields to `ElementData` and `DocumentData`
 
-That is the shape [TODO-dom-related-work.md](TODO-dom-related-work.md) item 5 describes,
+That is the shape [dom-design-history.md](dom-design-history.md) item 5 describes,
 already written.
 
 ### 3. The `incremental` feature flag we carry a local hack for
@@ -97,7 +97,7 @@ whole browser down, and we cannot fix the page.
 | `7dcf159d` | Segfault on window close under Wayland, from the renderer surface outliving the window (#611) |
 
 And four correctness fixes in the mutation and invalidation paths, which is where our own
-[TODO-dom-related-work.md](TODO-dom-related-work.md) lives:
+[dom-design-history.md](dom-design-history.md) lives:
 
 - `7167d7bd` Keep the `get_element_by_id` index in sync with id attribute mutations (#682)
 - `8c7cfd91` Fix an inner HTML fragment root leak (#681)
