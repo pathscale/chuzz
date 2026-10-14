@@ -33,6 +33,11 @@ name = "chuzz-headless"
 path = "src/headless_main.rs"
 required-features = ["capture", "javascript"]
 
+[[bin]]
+name = "chuzz-reactor-witness"
+path = "src/reactor_witness_main.rs"
+required-features = ["capture", "javascript", "reactor-witness"]
+
 [features]
 reactor-witness = []
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on

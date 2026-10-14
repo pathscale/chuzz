@@ -437,6 +437,7 @@ struct WallTimeoutGuard(Option<nagoya::JoinHandle<Arc<()>>>);
 
 impl WallTimeoutGuard {
     fn start(timeout: Duration) -> Result<Self, String> {
+        if reactor_defect("wall-timeout") { return Ok(Self(None)); }
         let task = nagoya::spawn(async move {
             nagoya::sleep(timeout).await;
             eprintln!("chuzz-headless: bot child reached its wall-time limit");
@@ -511,6 +512,13 @@ fn reserve_proxy_bytes(
 /// `QA_INSPECT_PAGE` is how `ps-qa` tells a host which page to serve: it runs
 /// the binary named by `--host` with no arguments and that variable set. An
 /// explicit argument wins, so the same binary is usable by hand.
+#[cfg(feature = "reactor-witness")]
+#[path = "serve_witness.rs"]
+mod reactor_witness_impl;
+
+#[cfg(feature = "reactor-witness")]
+pub fn reactor_witness() -> Result<(), String> { reactor_witness_impl::run() }
+
 pub fn target_from(args: &[String]) -> Result<String, String> {
     if let Some(argument) = args.iter().skip(1).find(|arg| !arg.starts_with("--")) {
         return Ok(argument.clone());

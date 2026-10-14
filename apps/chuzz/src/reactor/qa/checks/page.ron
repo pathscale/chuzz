@@ -1,0 +1,1 @@
+[(id: "page-control-arc", group: "reactor", what: "a real control click reaches the isolated page and its timer commits a heading", open: None, hover: None, click: Some("#advance"), subject: "PAGE CONTROL ARC PASS", expect: PaintsNamed, outcome_timeout_ms: 5000)]

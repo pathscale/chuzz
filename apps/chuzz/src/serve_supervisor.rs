@@ -465,7 +465,7 @@ impl Supervisor {
         };
         trace(&message);
         if let Some(pending) = self.pending.take() {
-            pending.answer.fill(page_error(&message));
+            if !super::reactor_defect("supervisor-deadline") { pending.answer.fill(page_error(&message)); }
         }
         if let Some(session) = self.session.take() {
             let Session { mut child, .. } = session;
