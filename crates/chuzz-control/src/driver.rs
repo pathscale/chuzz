@@ -8,8 +8,9 @@
 //! not the same claim, and the difference is exactly where two bugs hid.
 //!
 //! The renderer exposes it as a loopback WebDriver server, published in a
-//! `0600` descriptor carrying its address and a token. It exists only when the
-//! browser is started with both:
+//! `0600` descriptor carrying discovery metadata. The authentication token
+//! comes from `TAURI_BLITZ_DRIVER_TOKEN` in process memory. It exists only when
+//! the browser is started with both:
 //!
 //! ```text
 //! TAURI_BLITZ_DRIVER=127.0.0.1:0 \
@@ -49,10 +50,8 @@ impl Driver {
             .as_str()
             .ok_or("the driver descriptor has no address")?
             .to_owned();
-        let token = descriptor["token"]
-            .as_str()
-            .ok_or("the driver descriptor has no token")?
-            .to_owned();
+        let token = std::env::var("TAURI_BLITZ_DRIVER_TOKEN")
+            .map_err(|_| "TAURI_BLITZ_DRIVER_TOKEN is required")?;
 
         let response = request(
             &address,
