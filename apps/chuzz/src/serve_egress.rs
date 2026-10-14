@@ -84,6 +84,21 @@ struct ProxyWork {
     policy: Arc<HeadlessPolicy>,
     transferred: Arc<AtomicUsize>,
     handle: Handle,
+    active: Arc<Active>,
+}
+
+struct Active {
+    count: AtomicUsize,
+    changed: nagoya::sync::Notify,
+}
+
+struct Lease(Arc<Active>);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.0.count.fetch_sub(1, Ordering::AcqRel);
+        self.0.changed.notify_one();
+    }
 }
 
 struct Connections(Vec<nagoya::JoinHandle<Arc<ProxyWork>>>);
@@ -95,7 +110,10 @@ impl Drop for Connections {
 }
 
 fn enqueue(work: Arc<ProxyWork>) -> nagoya::JoinHandle<Arc<ProxyWork>> {
+    work.active.count.fetch_add(1, Ordering::AcqRel);
+    let lease = Lease(Arc::clone(&work.active));
     nagoya::spawn(async move {
+        let _lease = lease;
         let client = work.client.lock().unwrap_or_else(|error| error.into_inner()).take();
         if let Some(client) = client {
             handle_connection(client, &work).await;
@@ -107,6 +125,8 @@ fn enqueue(work: Arc<ProxyWork>) -> nagoya::JoinHandle<Arc<ProxyWork>> {
 pub(super) struct EgressProxy {
     task: Option<nagoya::JoinHandle<Arc<()>>>,
     _reactor: Arc<Reactor>,
+    #[cfg(feature = "reactor-witness")]
+    active: Arc<Active>,
     original_environment: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }
 
@@ -138,6 +158,8 @@ impl EgressProxy {
         let listener = Listener { registration, socket, handle: handle.clone() };
         let policy = Arc::new(policy);
         let transferred = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(Active { count: AtomicUsize::new(0), changed: nagoya::sync::Notify::new() });
+        let accept_active = Arc::clone(&active);
         let task_reactor = Arc::clone(&reactor);
         let task = nagoya::spawn(async move {
             let _reactor = task_reactor;
@@ -147,7 +169,7 @@ impl EgressProxy {
                 connections.0.retain(|task| !task.is_finished());
                 let Ok(mut client) = listener.accept().await else { break; };
                 connections.0.retain(|task| !task.is_finished());
-                if connections.0.len() >= MAX_PROXY_CONNECTIONS && !super::reactor_defect("egress-connection-limit") {
+                if accept_active.count.load(Ordering::Acquire) >= MAX_PROXY_CONNECTIONS && !super::reactor_defect("egress-connection-limit") {
                     // A saturated peer cannot hold the accept task in its send.
                     let refusal = refuse(&mut client, "503 Service Unavailable");
                     let _ = nagoya::timeout(Duration::from_secs(2), refusal).await;
@@ -155,12 +177,15 @@ impl EgressProxy {
                 }
                 connections.0.push(enqueue(Arc::new(ProxyWork {
                     client: std::sync::Mutex::new(Some(client)),
-                    policy: Arc::clone(&policy), transferred: Arc::clone(&transferred), handle: handle.clone(),
+                    policy: Arc::clone(&policy), transferred: Arc::clone(&transferred), handle: handle.clone(), active: Arc::clone(&accept_active),
                 })));
             }
             Arc::new(())
         });
-        Ok(Self { task: Some(task), _reactor: reactor, original_environment })
+        Ok(Self { task: Some(task), _reactor: reactor, original_environment,
+            #[cfg(feature = "reactor-witness")]
+            active,
+        })
     }
 }
 
@@ -346,6 +371,7 @@ pub(super) async fn witness(proxy: &EgressProxy) -> Result<(), String> {
     if &status != b"HTTP/1.1 503" { return Err("egress-connection-limit: seventeenth peer entered the relay".into()); }
     drop(held);
     drop(excess);
+    while proxy.active.count.load(Ordering::Acquire) != 0 { proxy.active.changed.notified().await; }
 
     let mut client = TcpStream::connect(address, &handle).await.map_err(|error| error.to_string())?;
     client.write_all(b"CONNECT localhost:443 HTTP/1.1\r\n\r\n").await.map_err(|error| error.to_string())?;
