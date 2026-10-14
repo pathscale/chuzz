@@ -73,6 +73,8 @@ pub mod capture;
 pub mod cookie_store;
 pub mod decode;
 pub mod document_loader;
+#[cfg(unix)]
+pub mod headless_io;
 // `capture` writes the tree beside the PNG, so the two arrive together or the
 // pixels have nothing to be explained by.
 #[cfg(feature = "capture")]

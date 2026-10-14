@@ -19,9 +19,9 @@
 //! involved. A test that needs a sibling checkout built first is a test that
 //! does not run.
 
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use nagoya::process::Command;
+use std::process::Stdio;
+use std::time::Duration;
 
 use blitz_control_protocol::{
     AgentAction, AgentControlRequest, CaptureRequest, DebugEvent, DebugResponse, DebugStream,
@@ -110,12 +110,12 @@ async fn diagnostics(
 }
 
 /// Kill the host however the test ends, including on a panic.
-struct Host(std::process::Child);
+struct Host(nagoya::process::Child);
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.0.start_kill();
+        let _ = nagoya::block_on(self.0.wait());
     }
 }
 
@@ -141,61 +141,29 @@ fn serves_a_page_over_the_inspection_socket() {
             .as_nanos()
     )));
 
+    let reactor = nagoya::reactor::Reactor::start().expect("client reactor");
     let mut host = Host(
         Command::new(binary)
             .env("QA_INSPECT_PAGE", page)
             .env("CHUZZ_PROFILE_DIR", &profile.0)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .spawn()
+            .kill_on_drop(true)
+            .spawn(&reactor.handle())
             .expect("the host binary should start"),
     );
 
-    // The descriptor path, which the host prints once it is serving. Read on a
-    // thread with a deadline around it: a host that dies before announcing
-    // would otherwise block for ever on a pipe that will never produce a line.
     let stdout = host.0.stdout.take().expect("stdout was piped");
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = sender.send(line);
-    });
-
-    let announced = receiver
-        .recv_timeout(Duration::from_secs(60))
+    let announced = nagoya::block_on(chuzz::headless_io::read_announcement(stdout))
         .expect("the host should announce a descriptor");
     let descriptor = std::path::PathBuf::from(announced.trim());
-
     assert!(
         descriptor.is_file(),
         "the announced descriptor should exist: {}",
         descriptor.display()
     );
-
-    // The socket lives beside the descriptor, and the host writes the
-    // descriptor before it binds, so a connection can lose that race.
+    // The listener is bound before its descriptor is published.
     let socket = descriptor.with_extension("sock");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let connected = loop {
-        match std::os::unix::net::UnixStream::connect(&socket) {
-            Ok(stream) => break Some(stream),
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(_) => break None,
-        }
-    };
-
-    assert!(
-        connected.is_some(),
-        "the inspection socket should accept a connection at {}",
-        socket.display()
-    );
-
-    // The host serves on nagoya, and so does this client. Kept for the whole
-    // test: a dropped `Reactor` stops the thread that drives its sockets.
-    let reactor = nagoya::reactor::Reactor::start().expect("client reactor");
     nagoya::block_on(async {
         use std::os::unix::ffi::OsStrExt as _;
         let addr = nagoya::reactor::Addr::path(socket.as_os_str().as_bytes())
