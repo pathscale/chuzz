@@ -126,7 +126,7 @@ fn default_credentials() -> String {
 
 async fn fetch_response_owned(provider: &NetProvider, request: FetchRequest, lifetime: &Arc<blitz_dom::release::Teardown>) -> Result<FetchResponse, FetchError> {
     let _lease = lifetime.lease();
-    provider.fetch_platform_async(request).await
+    fetch_response(provider, request).await
 }
 
 pub(crate) async fn fetch_response(
