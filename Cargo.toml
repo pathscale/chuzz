@@ -32,11 +32,11 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same range gets the same crate rather than a second copy. To build against
 # a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
 # exercises what a release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", path = "../ps-blitz/packages/blitz-dom" }
-blitz-html = { package = "ps-blitz-html", path = "../ps-blitz/packages/blitz-html" }
-blitz-net = { package = "ps-blitz-net", version = "^0.6.3", path = "../ps-blitz/packages/blitz-net" }
-blitz-script = { package = "ps-blitz-script", path = "../ps-blitz/packages/blitz-script" }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.6.3", path = "../ps-blitz/packages/blitz-traits" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.6.5" }
+blitz-html = { package = "ps-blitz-html", version = "^0.6.5" }
+blitz-net = { package = "ps-blitz-net", version = "^0.6.5" }
+blitz-script = { package = "ps-blitz-script", version = "^0.6.5" }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.6.5" }
 
 # The MCP framing the control server speaks, same source and feature as
 # izumo uses for its agent-control surface.
@@ -84,7 +84,7 @@ anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.3",
 anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15", default-features = false, features = ["image_format_png", "image_format_jpeg", "image_format_gif", "image_format_webp"] }
 # Compiled-in open fonts for headless renders that must not depend on the machine.
 headless-fonts = "^0.1"
-blitz-paint = { package = "ps-blitz-paint", path = "../ps-blitz/packages/blitz-paint" }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.6.5" }
 png = "=0.18.1"
 
 flate2 = "1"
@@ -115,7 +115,7 @@ rustls = { version = "^0.23.27", default-features = false, features = [
 cursor-icon = "^1"
 cookie_store = "^0.22.1"
 psl = "^2"
-nagoya = { path = "../nagoya", features = ["reactor"] }
+nagoya = { version = "^0.1.18", features = ["reactor"] }
 # Pure-Rust global allocator for every chuzz binary (owner decision: no C allocator).
 rusty_alloc = { package = "ps-rusty_alloc", version = "^2.3.3" }
 url = "2.5"
@@ -136,7 +136,7 @@ worktable = "^1.11.0"
 # explaining. A window that would not paint could not be photographed by the
 # one thing that could photograph it, because the capability had been optimised
 # out of the binary that needed it.
-izumo = { path = "../izumo/crates/izumo", default-features = false, features = [
+izumo = { version = "^0.6.5", default-features = false, features = [
   "agent-control",
   "diagnostics",
 ] }
@@ -155,13 +155,3 @@ debug = "line-tables-only"
 strip = "none"
 
 # Local lifecycle hooks must also reach transitive control-protocol consumers.
-[patch.crates-io]
-nagoya = { path = "../nagoya" }
-ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
-ps-blitz-html = { path = "../ps-blitz/packages/blitz-html" }
-ps-blitz-net = { path = "../ps-blitz/packages/blitz-net" }
-ps-blitz-script = { path = "../ps-blitz/packages/blitz-script" }
-ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
-ps-blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
-ps-blitz-shell = { path = "../ps-blitz/packages/blitz-shell" }
-ps-blitz-debug-control = { path = "../ps-blitz/packages/blitz-debug-control" }
