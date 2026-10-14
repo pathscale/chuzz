@@ -651,6 +651,7 @@ impl Browser {
                 return;
             };
             if tab.life.phase == TabPhase::Discarding { tab.life.wake_requested = true; return; }
+            if tab.life.phase == TabPhase::Freezing { tab.loading = true; return; }
             if tab.life.discarded && tab.mounted.is_none() && !matches!(tab.request().method.as_str(), "GET" | "HEAD") {
                 tab.life.phase = TabPhase::RestoreFailed; tab.life.reason = "reload-requires-resubmission";
                 drop(state); self.emit_state(); return;
