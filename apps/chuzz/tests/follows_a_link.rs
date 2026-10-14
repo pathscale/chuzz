@@ -18,22 +18,23 @@
 //! The fixture is a directory rather than a file, so the host serves it as a
 //! site and the link resolves against a real origin.
 
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use nagoya::process::Command;
+use std::process::Stdio;
+use std::time::Duration;
 
 use blitz_control_protocol::{
-    AgentAction, AgentControlRequest, DebugResponse, JsonRpcId, MessageStream, NagoyaStream,
-    TransportStream, decode_response, encode_agent_request, framed_json_neutral,
+    AgentAction, AgentControlRequest, DebugEvent, DebugResponse, DebugStream, DiagnosticsRequest,
+    JsonRpcId, MessageStream, NagoyaStream, TransportStream, decode_diagnostics_event,
+    decode_response, encode_agent_request, encode_diagnostics_request, framed_json_neutral,
 };
 
 /// Kill the host however the test ends, including on a panic.
-struct Host(std::process::Child);
+struct Host(nagoya::process::Child);
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.0.start_kill();
+        let _ = nagoya::block_on(self.0.wait());
     }
 }
 
@@ -71,6 +72,35 @@ async fn request(
     }
 }
 
+async fn observe_paint(stream: &mut dyn MessageStream, next_id: &mut i64) {
+    *next_id += 1;
+    let id = JsonRpcId::Number(*next_id);
+    stream
+        .send(
+            encode_diagnostics_request(
+                id.clone(),
+                &DiagnosticsRequest::Observe {
+                    streams: vec![DebugStream::Paint],
+                },
+            )
+            .expect("encode observe request"),
+        )
+        .await
+        .expect("send observe request");
+    loop {
+        let message = nagoya::timeout(Duration::from_secs(5), stream.recv())
+            .await
+            .expect("host did not answer paint observation")
+            .expect("the host keeps serving")
+            .expect("read observe response");
+        if let Ok((response_id, DebugResponse::Ack)) = decode_response(message)
+            && response_id == id
+        {
+            return;
+        }
+    }
+}
+
 async fn tree(
     stream: &mut dyn MessageStream,
     next_id: &mut i64,
@@ -103,43 +133,22 @@ fn a_link_is_followed_and_storage_goes_with_it() {
             .as_nanos()
     )));
 
+    let reactor = nagoya::reactor::Reactor::start().expect("client reactor");
     let mut host = Host(
         Command::new(binary)
             .env("QA_INSPECT_PAGE", site)
             .env("CHUZZ_PROFILE_DIR", &profile.0)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .spawn()
+            .kill_on_drop(true)
+            .spawn(&reactor.handle())
             .expect("the host binary should start"),
     );
 
     let stdout = host.0.stdout.take().expect("stdout was piped");
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = sender.send(line);
-    });
-    let announced = receiver
-        .recv_timeout(Duration::from_secs(60))
+    let announced = nagoya::block_on(chuzz::headless_io::read_announcement(stdout))
         .expect("the host should announce a descriptor");
     let socket = std::path::PathBuf::from(announced.trim()).with_extension("sock");
-
-    // The host writes the descriptor before it binds, so a connection can lose
-    // that race.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "the inspection socket never accepted a connection at {}",
-            socket.display()
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    // The host serves on nagoya, and so does this client. Kept for the whole
-    // test: a dropped `Reactor` stops the thread that drives its sockets.
-    let reactor = nagoya::reactor::Reactor::start().expect("client reactor");
     nagoya::block_on(async {
         use std::os::unix::ffi::OsStrExt as _;
         let addr = nagoya::reactor::Addr::path(socket.as_os_str().as_bytes())
@@ -149,6 +158,12 @@ fn a_link_is_followed_and_storage_goes_with_it() {
             .expect("connect async client");
         let mut stream = TransportStream::new(framed_json_neutral(NagoyaStream::new(socket)));
         let mut next_id = 0;
+        let observer = nagoya::reactor::TcpStream::connect(addr, &reactor.handle())
+            .await
+            .expect("connect paint observer");
+        let mut observer = TransportStream::new(framed_json_neutral(NagoyaStream::new(observer)));
+        let mut observer_id = 0;
+        observe_paint(&mut observer, &mut observer_id).await;
 
         let first = tree(&mut stream, &mut next_id).await;
         let link = first
@@ -172,26 +187,31 @@ fn a_link_is_followed_and_storage_goes_with_it() {
             DebugResponse::Ack
         ));
 
-        /*
-         * The load happens after the click is answered, so the reply is timed
-         * as the click rather than as a page load. A caller inspects again
-         * before it asserts anything, which is what this does -- with a retry,
-         * because the next document is fetched and parsed rather than swapped
-         * in.
-         */
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let carried = loop {
-            let after = tree(&mut stream, &mut next_id).await;
-            if let Some(node) = after.nodes.iter().find(|node| node.name == "carried") {
-                break node.value.clone().unwrap_or_default();
+        // Navigation runs after the click answer. Wait for committed paint
+        // events on a separate observer so Inspect replies cannot consume them.
+        let carried = nagoya::timeout(Duration::from_secs(20), async {
+            loop {
+                let after = tree(&mut stream, &mut next_id).await;
+                if let Some(node) = after.nodes.iter().find(|node| node.name == "carried") {
+                    break node.value.clone().unwrap_or_default();
+                }
+                loop {
+                    let event = observer
+                        .recv()
+                        .await
+                        .expect("paint observer stays open")
+                        .expect("read paint event");
+                    if matches!(
+                        decode_diagnostics_event(event),
+                        Ok(DebugEvent::PaintCommitted { .. })
+                    ) {
+                        break;
+                    }
+                }
             }
-            assert!(
-                Instant::now() < deadline,
-                "clicking the link never loaded the second page; the tree is still {:?}",
-                after.nodes
-            );
-            nagoya::sleep(Duration::from_millis(200)).await;
-        };
+        })
+        .await
+        .expect("clicking the link never loaded the second page");
 
         assert!(
             carried.contains("local=wss://saved.example"),
