@@ -775,7 +775,10 @@ fn begin(owner: u64, prepared: Arc<Prepared>, notifications: &Arc<Notifications>
     if requests.active.is_some() || requests.jobs.len() >= MAX_PENDING_REQUESTS {
         return Error::denied().wire();
     }
-    let Ok(id) = NEXT_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    let Ok(id) =
+        crate::atomic_update::update_u64(&NEXT_ID, Ordering::Relaxed, Ordering::Relaxed, |id| {
+            id.checked_add(1)
+        })
     else {
         return Error::unknown().wire();
     };

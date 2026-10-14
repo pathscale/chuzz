@@ -548,10 +548,9 @@ impl Browser {
                 match request {
                     DiagnosticsRequest::Evaluate { script } => match document.eval_json(&script) {
                         Ok(value) => DebugResponse::Evaluated(value),
-                        Err(message) => DebugResponse::Error(blitz_control_protocol::target::error(
-                            "scriptError",
-                            &message,
-                        )),
+                        Err(message) => DebugResponse::Error(
+                            blitz_control_protocol::target::error("scriptError", &message),
+                        ),
                     },
                     DiagnosticsRequest::WebGpuInspect => crate::webgpu::inspect_gpu(document)
                         .map(DebugResponse::WebGpu)
