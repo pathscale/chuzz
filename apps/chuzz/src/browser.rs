@@ -134,8 +134,16 @@ impl TabState {
             lifecycle_reason: self.life.reason,
             visible: self.life.visible,
             preview_available: self.life.preview.is_some(),
-            preview_age_ms: self.life.preview.as_ref().map(|paint| nagoya::now_ns().saturating_sub(paint.captured_at_ns) / 1_000_000),
-            runtime_released: matches!(self.life.phase, TabPhase::Sleeping | TabPhase::RestoreFailed) && self.mounted.is_none() && self.life.release.is_none(),
+            preview_age_ms: self
+                .life
+                .preview
+                .as_ref()
+                .map(|paint| nagoya::now_ns().saturating_sub(paint.captured_at_ns) / 1_000_000),
+            runtime_released: matches!(
+                self.life.phase,
+                TabPhase::Sleeping | TabPhase::RestoreFailed
+            ) && self.mounted.is_none()
+                && self.life.release.is_none(),
         }
     }
 }
@@ -292,7 +300,6 @@ struct BrowserInner {
     sleeping_budget: Arc<crate::tab_stash::SleepingBudget>,
     sleep_delay_ns: u64,
     app: Mutex<Option<ChuzzAppHandle>>,
-
 }
 
 /// Queue embedded-page redraws without blocking network workers on AppKit.
@@ -610,7 +617,18 @@ impl Browser {
             transferred: "0 B",
             sleeping_bytes: self.0.sleeping_budget.used(),
             sleeping_warning: self.0.sleeping_budget.warning(),
-            live_page_count: state.tabs.iter().filter(|tab| tab.mounted.is_some() || tab.life.release.as_ref().is_some_and(|receipt| !receipt.complete())).count(),
+            live_page_count: state
+                .tabs
+                .iter()
+                .filter(|tab| {
+                    tab.mounted.is_some()
+                        || tab
+                            .life
+                            .release
+                            .as_ref()
+                            .is_some_and(|receipt| !receipt.complete())
+                })
+                .count(),
         };
         (tabs, active, state.panel.clone(), status)
     }
@@ -650,28 +668,53 @@ impl Browser {
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
                 return;
             };
-            if tab.life.phase == TabPhase::Discarding { tab.life.wake_requested = true; return; }
-            if tab.life.phase == TabPhase::Freezing { tab.loading = true; return; }
-            if tab.life.discarded && tab.mounted.is_none() && !matches!(tab.request().method.as_str(), "GET" | "HEAD") {
-                tab.life.phase = TabPhase::RestoreFailed; tab.life.reason = "reload-requires-resubmission";
-                drop(state); self.emit_state(); return;
+            if tab.life.phase == TabPhase::Discarding {
+                tab.life.wake_requested = true;
+                return;
+            }
+            if tab.life.phase == TabPhase::Freezing {
+                tab.loading = true;
+                return;
+            }
+            if tab.life.discarded
+                && tab.mounted.is_none()
+                && !matches!(tab.request().method.as_str(), "GET" | "HEAD")
+            {
+                tab.life.phase = TabPhase::RestoreFailed;
+                tab.life.reason = "reload-requires-resubmission";
+                drop(state);
+                self.emit_state();
+                return;
             }
             tab.life.cancel_deadline();
             tab.life.cancel_restore();
-            if let Some(signal) = tab.life.load_signal.take() { blitz_traits::net::AbortController { signal }.abort(); }
+            if let Some(signal) = tab.life.load_signal.take() {
+                blitz_traits::net::AbortController { signal }.abort();
+            }
             let signal = blitz_traits::net::AbortSignal::default();
             tab.life.load_signal = Some(signal);
             tab.life.await_preview = false;
-            if tab.life.discarded && tab.mounted.is_none() { tab.life.phase = TabPhase::Waking; }
-            else if tab.mounted.is_some() { tab.life.phase = TabPhase::Live; }
-            tab.generation = tab.generation.checked_add(1).expect("document generation exhausted");
+            if tab.life.discarded && tab.mounted.is_none() {
+                tab.life.phase = TabPhase::Waking;
+            } else if tab.mounted.is_some() {
+                tab.life.phase = TabPhase::Live;
+            }
+            tab.generation = tab
+                .generation
+                .checked_add(1)
+                .expect("document generation exhausted");
             tab.loading = true;
 
             let mut request = tab.request().clone();
             request.signal = tab.life.load_signal.clone();
             (request, tab.generation)
         };
-        self.0.state.lock().unwrap().records.loading(TabId(tab_id), DocumentGeneration(generation));
+        self.0
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .loading(TabId(tab_id), DocumentGeneration(generation));
         self.arm_restore(tab_id, generation);
         self.attached_lifecycle(tab_id);
         self.emit_state();
@@ -705,7 +748,9 @@ impl Browser {
         let net = self.net();
         {
             let mut state = self.0.state.lock().unwrap();
-            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else { return; };
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+                return;
+            };
             let url = tab.request().url.clone();
             let current = tab.current;
             tab.history[current].initiator = net.browser_initiator(url);
@@ -723,7 +768,10 @@ impl Browser {
             tab.history.truncate(tab.current + 1);
             tab.history.push(request);
             tab.current += 1;
-            if tab.history.len() > 128 { tab.history.remove(0); tab.current -= 1; }
+            if tab.history.len() > 128 {
+                tab.history.remove(0);
+                tab.current -= 1;
+            }
             tab.title.clear();
         }
         self.schedule_current(tab_id, false);
@@ -766,7 +814,10 @@ impl Browser {
             let net = Arc::clone(&bundle.net);
             let lifetime = blitz_dom::release::Teardown::new();
             let page_signal = blitz_traits::net::AbortSignal::default();
-            let page_net = Arc::new(crate::tab_resources::PageNet { net: Arc::clone(&net), lifetime: Arc::clone(&lifetime) });
+            let page_net = Arc::new(crate::tab_resources::PageNet {
+                net: Arc::clone(&net),
+                lifetime: Arc::clone(&lifetime),
+            });
             let make_config = || DocumentConfig {
                 base_url: Some(bundle.resolved_url.clone()),
                 net_provider: Some(Arc::clone(&page_net) as _),
@@ -785,7 +836,6 @@ impl Browser {
             // Preserve the outcome established during loading.
             let outcome = bundle.outcome;
             let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
-
                 PageSource::Html { html, scripts } => {
                     let mut page = crate::webgpu::script_document(&html, make_config())
                         .with_fetcher(crate::script_fetch::PageScripts::new(
@@ -793,7 +843,12 @@ impl Browser {
                             Arc::clone(&net),
                             WINDOW_SCRIPT_DEADLINE,
                         ));
-                    self.prepare_tab_page(&mut page, bundle.tab_id, bundle.generation, &bundle.resolved_url);
+                    self.prepare_tab_page(
+                        &mut page,
+                        bundle.tab_id,
+                        bundle.generation,
+                        &bundle.resolved_url,
+                    );
                     install_web_api_shim(&mut page, &net);
                     crate::net_bridge::install(
                         &mut page,
@@ -815,7 +870,6 @@ impl Browser {
                             .into_inner();
                     (Box::new(page), format!("source of {}", bundle.resolved_url))
                 }
-
             };
             self.note(
                 "info",
@@ -827,11 +881,23 @@ impl Browser {
                     outcome.name()
                 ),
             );
-            let failed_wake = outcome == PageOutcome::Error && self.0.state.lock().unwrap().tabs.iter().any(|tab| tab.id == bundle.tab_id && tab.life.phase == TabPhase::Waking);
+            let failed_wake = outcome == PageOutcome::Error
+                && self
+                    .0
+                    .state
+                    .lock()
+                    .unwrap()
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == bundle.tab_id && tab.life.phase == TabPhase::Waking);
             if failed_wake {
                 let receipt = page.dispose();
                 let mut state = self.0.state.lock().unwrap();
-                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == bundle.tab_id && tab.generation == bundle.generation) {
+                if let Some(tab) = state
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.id == bundle.tab_id && tab.generation == bundle.generation)
+                {
                     tab.loading = false;
                     tab.life.phase = TabPhase::RestoreFailed;
                     tab.life.cancel_restore();
@@ -840,7 +906,9 @@ impl Browser {
                     tab.outcome = outcome;
                 }
                 drop(state);
-                if !receipt.complete() { self.track_release(bundle.tab_id, receipt); }
+                if !receipt.complete() {
+                    self.track_release(bundle.tab_id, receipt);
+                }
                 changed = true;
                 continue;
             }
@@ -874,11 +942,18 @@ impl Browser {
                 tab.title = title;
                 tab.loading = false;
                 tab.life.visible = false;
-                if !tab.life.ever_live { tab.life.hidden_at = nagoya::now_ns(); tab.life.ever_live = true; }
+                if !tab.life.ever_live {
+                    tab.life.hidden_at = nagoya::now_ns();
+                    tab.life.ever_live = true;
+                }
                 tab.life.preview_surface.take();
-                if tab.life.phase != TabPhase::Waking { tab.life.phase = TabPhase::Live; }
+                if tab.life.phase != TabPhase::Waking {
+                    tab.life.phase = TabPhase::Live;
+                }
                 tab.outcome = outcome;
-                state.records.attached(TabId(bundle.tab_id), DocumentGeneration(bundle.generation));
+                state
+                    .records
+                    .attached(TabId(bundle.tab_id), DocumentGeneration(bundle.generation));
             }
             self.attached_lifecycle(bundle.tab_id);
             changed = true;
@@ -901,11 +976,13 @@ struct PageNavigation {
 impl NavigationProvider for PageNavigation {
     fn navigate_to(&self, options: NavigationOptions) {
         if let Some(inner) = self.browser.upgrade() {
-            Browser(inner).navigate_request(self.tab_id, options.into_request().initiator(self.initiator.clone()));
+            Browser(inner).navigate_request(
+                self.tab_id,
+                options.into_request().initiator(self.initiator.clone()),
+            );
         }
     }
 }
-
 
 pub(crate) fn page_node(document: &blitz_dom::BaseDocument, tab_id: u64) -> Option<NodeId> {
     if let Some(node) = document.get_element_by_id(&format!("chuzz-page-{tab_id}")) {
@@ -984,11 +1061,16 @@ async fn fetch_page(
         // failure is a red tab showing what went wrong, which is the same
         // reading as an ordinary failed page.
         let (source, outcome) = match Url::parse(&inner) {
-            Ok(url) => match net.fetch_async(Request::get(url.clone()).initiator(
-                if matches!(navigation, blitz_traits::net::Initiator::Browser(_)) {
-                    net.browser_initiator(url.clone())
-                } else { navigation.clone() }
-            )).await {
+            Ok(url) => match net
+                .fetch_async(Request::get(url.clone()).initiator(
+                    if matches!(navigation, blitz_traits::net::Initiator::Browser(_)) {
+                        net.browser_initiator(url.clone())
+                    } else {
+                        navigation.clone()
+                    },
+                ))
+                .await
+            {
                 Ok((_, bytes)) => {
                     browser.note(
                         "info",
@@ -1067,7 +1149,10 @@ async fn fetch_page(
     };
     // Worst-wins from here: the document arrived, so the floor is Ready, and
     // each thing the page named that did not arrive can only raise it.
-    net = Arc::new(net.for_document(Url::parse(&resolved_url).expect("provider returned a URL"), &navigation));
+    net = Arc::new(net.for_document(
+        Url::parse(&resolved_url).expect("provider returned a URL"),
+        &navigation,
+    ));
     let mut outcome = PageOutcome::Ready;
     browser.note(
         "info",
@@ -1270,11 +1355,15 @@ pub fn commands(browser: Arc<Browser>) -> [(&'static str, izumo::CommandHandler)
         ),
         (
             "sleep_tab",
-            command_handler(&browser, |browser, args: TabArgs| sleep_tab(browser, args.id)),
+            command_handler(&browser, |browser, args: TabArgs| {
+                sleep_tab(browser, args.id)
+            }),
         ),
         (
             "wake_tab",
-            command_handler(&browser, |browser, args: TabArgs| wake_tab(browser, args.id)),
+            command_handler(&browser, |browser, args: TabArgs| {
+                wake_tab(browser, args.id)
+            }),
         ),
         (
             "reload",
@@ -1343,14 +1432,30 @@ pub fn active_tab_id(browser: Arc<Browser>) -> u64 {
 
 pub fn select_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> {
     let mut state = browser.0.state.lock().unwrap();
-    let dormant = state.records.record(TabId(id)).is_some_and(|record| record.residency == Residency::Dormant);
-    let sleeping = state.tabs.iter().find(|tab| tab.id == id).is_some_and(|tab| matches!(tab.life.phase, TabPhase::Sleeping | TabPhase::Discarding | TabPhase::RestoreFailed));
+    let dormant = state
+        .records
+        .record(TabId(id))
+        .is_some_and(|record| record.residency == Residency::Dormant);
+    let sleeping = state
+        .tabs
+        .iter()
+        .find(|tab| tab.id == id)
+        .is_some_and(|tab| {
+            matches!(
+                tab.life.phase,
+                TabPhase::Sleeping | TabPhase::Discarding | TabPhase::RestoreFailed
+            )
+        });
     if !state.tabs.iter().any(|tab| tab.id == id) {
         return Err(format!("unknown tab {id}"));
     }
     state.active = id;
     drop(state);
-    if sleeping { let _ = browser.request_wake(id); } else if dormant { browser.schedule_current(id, false); }
+    if sleeping {
+        let _ = browser.request_wake(id);
+    } else if dormant {
+        browser.schedule_current(id, false);
+    }
     browser.emit_state();
     Ok(())
 }
@@ -1363,7 +1468,11 @@ pub fn open_dormant_tab(browser: Arc<Browser>, url: Option<String>) -> Result<Fr
     open_tab_record(browser, url, false)
 }
 
-fn open_tab_record(browser: Arc<Browser>, url: Option<String>, select: bool) -> Result<FrontendTab, String> {
+fn open_tab_record(
+    browser: Arc<Browser>,
+    url: Option<String>,
+    select: bool,
+) -> Result<FrontendTab, String> {
     let request = match url {
         Some(url) => request_from_input(&url).ok_or_else(|| format!("invalid URL {url}"))?,
         None => crate::nav::browser_request(Url::parse(NEW_TAB_URL).unwrap()),
@@ -1385,10 +1494,16 @@ fn open_tab_record(browser: Arc<Browser>, url: Option<String>, select: bool) -> 
             generation: 0,
             life: TabLife::default(),
         });
-        if select { state.active = id; }
+        if select {
+            state.active = id;
+        }
         id
     };
-    if select { browser.schedule_current(id, false); } else { browser.emit_state(); }
+    if select {
+        browser.schedule_current(id, false);
+    } else {
+        browser.emit_state();
+    }
     Ok(browser
         .0
         .state
@@ -1489,14 +1604,34 @@ pub fn go_forward(browser: Arc<Browser>, id: u64) {
     }
 }
 
-pub fn sleep_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> { browser.request_sleep(id) }
+pub fn sleep_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> {
+    browser.request_sleep(id)
+}
 
-pub fn wake_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> { browser.request_wake(id) }
+pub fn wake_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> {
+    browser.request_wake(id)
+}
 
 pub fn reload(browser: Arc<Browser>, id: u64) {
-    let sleeping = browser.0.state.lock().unwrap().tabs.iter().find(|tab| tab.id == id)
-        .is_some_and(|tab| matches!(tab.life.phase, TabPhase::Sleeping | TabPhase::Discarding | TabPhase::RestoreFailed));
-    if sleeping { let _ = browser.request_wake(id); } else { browser.schedule_browser_navigation(id, true); }
+    let sleeping = browser
+        .0
+        .state
+        .lock()
+        .unwrap()
+        .tabs
+        .iter()
+        .find(|tab| tab.id == id)
+        .is_some_and(|tab| {
+            matches!(
+                tab.life.phase,
+                TabPhase::Sleeping | TabPhase::Discarding | TabPhase::RestoreFailed
+            )
+        });
+    if sleeping {
+        let _ = browser.request_wake(id);
+    } else {
+        browser.schedule_browser_navigation(id, true);
+    }
 }
 
 pub fn panel_state(browser: Arc<Browser>) -> PanelState {
@@ -1751,7 +1886,8 @@ mod tests {
         let document = blitz_html::HtmlDocument::from_html(html, config).into_inner();
         let mount = document.query_selector(&module.selector).ok()??;
         let fallback = document.get_node(mount)?.children.to_vec();
-        let mut document = crate::wasm_page::run_guest_bytes(&module.bytes, document, mount).ok()?;
+        let mut document =
+            crate::wasm_page::run_guest_bytes(&module.bytes, document, mount).ok()?;
         let mut changes = document.mutate();
         for node in fallback {
             changes.remove_and_drop_node(node);

@@ -133,7 +133,8 @@ impl NetProvider {
             cookies,
             waker,
             blocked_requests: Arc::new(Mutex::new(VecDeque::new())),
-        }.with_resource_policy(application_policy)
+        }
+        .with_resource_policy(application_policy)
     }
 
     /// Application-owned policy, supplied before sharing the root provider.
@@ -215,10 +216,7 @@ impl NetProvider {
         &self,
         request: blitz_traits::net::Request,
     ) -> Result<blitz_traits::platform::FetchResponse, blitz_net::ProviderError> {
-        let response = self
-            .inner
-            .fetch_response_async(self.bind(request))
-            .await?;
+        let response = self.inner.fetch_response_async(self.bind(request)).await?;
         dump_script_for_debugging(&response);
         Ok(response)
     }
@@ -343,7 +341,9 @@ impl blitz_traits::net::NetProvider for NetProvider {
         let request_url = request.url.to_string();
         let _detached = nagoya::spawn(async move {
             let result = provider.fetch_response_async(request).await;
-            if signal.as_ref().is_some_and(|signal| signal.aborted()) { return; }
+            if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+                return;
+            }
             match result {
                 Ok(response) => handler.bytes(response.url.to_string(), response.body),
                 Err(blitz_net::ProviderError::Abort) => return,
@@ -357,7 +357,9 @@ impl blitz_traits::net::NetProvider for NetProvider {
         });
     }
 
-    fn resource_initiator(&self) -> Initiator { self.initiator() }
+    fn resource_initiator(&self) -> Initiator {
+        self.initiator()
+    }
 
     fn for_child_document(&self, url: Url) -> Option<Arc<dyn blitz_traits::net::NetProvider>> {
         let mut provider = self.clone();
@@ -2689,7 +2691,9 @@ pub async fn load_for_capture(
         let url = Url::parse(&inner).map_err(|error| format!("{inner} is not a URL: {error}"))?;
         let navigation = if matches!(navigation, Initiator::Browser(_)) {
             net_provider.browser_initiator(url.clone())
-        } else { navigation.clone() };
+        } else {
+            navigation.clone()
+        };
         let (_, bytes) = net_provider
             .fetch_async(Request::get(url).initiator(navigation.clone()))
             .await

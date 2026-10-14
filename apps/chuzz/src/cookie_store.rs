@@ -32,7 +32,9 @@ type CookieKey = (String, String, String);
 
 #[cfg(feature = "reactor-witness")]
 pub fn reactor_receipt() -> Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>> {
-    static RECEIPT: std::sync::OnceLock<Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>> = std::sync::OnceLock::new();
+    static RECEIPT: std::sync::OnceLock<
+        Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>,
+    > = std::sync::OnceLock::new();
     Arc::clone(RECEIPT.get_or_init(blitz_control_protocol::latest::Once::new))
 }
 
@@ -796,7 +798,10 @@ async fn record_durable_snapshot(
     }
     #[cfg(feature = "reactor-witness")]
     {
-        let durable = table.wait_for_ops().await.map_err(|error| error.to_string());
+        let durable = table
+            .wait_for_ops()
+            .await
+            .map_err(|error| error.to_string());
         reactor_receipt().fill(Arc::new(first_error.clone().map_or(durable, Err)));
     }
 }

@@ -227,7 +227,6 @@ fn write_png(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -322,9 +321,9 @@ mod tests {
             )),
             ..Default::default()
         });
-        let mut document = crate::wasm_page::run_guest(
-            &crate::wasm_page::fixture_module(), document, mount,
-        ).expect("the fixture guest should build its document");
+        let mut document =
+            crate::wasm_page::run_guest(&crate::wasm_page::fixture_module(), document, mount)
+                .expect("the fixture guest should build its document");
         let buffer = super::paint(&mut document, 1.0, 1440, 960, tree);
         super::write_png(&buffer, 1440, 960, png).expect("the fixture capture should succeed");
     }

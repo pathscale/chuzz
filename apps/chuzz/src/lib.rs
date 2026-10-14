@@ -20,7 +20,10 @@
 /// WSS configurations also name the provider explicitly, so an embedder's
 /// previously installed default cannot change their cryptography.
 pub fn install_crypto_provider() {
-    let _ = blitz_net::chacha_provider().as_ref().clone().install_default();
+    let _ = blitz_net::chacha_provider()
+        .as_ref()
+        .clone()
+        .install_default();
 }
 
 /// Configure the global allocator (rusty_alloc) for a long-running process: freed memory is purged
@@ -71,11 +74,11 @@ pub mod browser;
 #[cfg(feature = "capture")]
 pub mod capture;
 pub mod cookie_store;
-mod resource_parameters;
 pub mod decode;
 pub mod document_loader;
 #[cfg(unix)]
 pub mod headless_io;
+mod resource_parameters;
 // `capture` writes the tree beside the PNG, so the two arrive together or the
 // pixels have nothing to be explained by.
 #[cfg(feature = "capture")]
@@ -91,27 +94,27 @@ pub mod languages;
 pub mod internal_pages;
 #[cfg(feature = "javascript")]
 pub mod media;
-#[cfg(feature = "javascript")]
-pub mod tab_stash;
+pub mod nav;
+pub mod net_bridge;
 #[cfg(feature = "gui")]
 mod tab_native;
 #[cfg(feature = "gui")]
-mod tab_session;
+pub mod tab_records;
 #[cfg(feature = "gui")]
 mod tab_resources;
-pub mod nav;
 #[cfg(feature = "gui")]
-pub mod tab_records;
-pub mod net_bridge;
+mod tab_session;
+#[cfg(feature = "javascript")]
+pub mod tab_stash;
 // A built site needs an origin before it is a site. Only the headless host
 // reaches for it, but it is not conditional on that mode: what it does is a
 // fact about serving a directory, not about having no window.
 pub mod page_server;
-pub mod platform_hardening;
 #[cfg(feature = "pdf")]
 pub mod pdf;
-pub mod script_fetch;
+pub mod platform_hardening;
 pub mod sandbox;
+pub mod script_fetch;
 pub(crate) mod telemetry;
 mod tls;
 pub mod tls_status;
@@ -132,6 +135,6 @@ pub mod ws_bridge;
 // `javascript` carry.
 #[cfg(all(feature = "capture", feature = "javascript"))]
 pub mod serve;
-pub mod wasm_retired;
 #[cfg(test)]
 mod wasm_page;
+pub mod wasm_retired;

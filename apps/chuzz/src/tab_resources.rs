@@ -14,12 +14,23 @@ struct Callback {
 }
 
 impl NetHandler for Callback {
-    fn bytes(self: Box<Self>, url: String, bytes: Bytes) { self.handler.bytes(url, bytes); }
+    fn bytes(self: Box<Self>, url: String, bytes: Bytes) {
+        self.handler.bytes(url, bytes);
+    }
 }
 
 impl NetProvider for PageNet {
     fn fetch(&self, document: usize, request: Request, handler: Box<dyn NetHandler>) {
-        self.net.fetch(document, request, Box::new(Callback { handler, _lease: self.lifetime.lease() }));
+        self.net.fetch(
+            document,
+            request,
+            Box::new(Callback {
+                handler,
+                _lease: self.lifetime.lease(),
+            }),
+        );
     }
-    fn is_noop(&self) -> bool { self.net.is_noop() }
+    fn is_noop(&self) -> bool {
+        self.net.is_noop()
+    }
 }

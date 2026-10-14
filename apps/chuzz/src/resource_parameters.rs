@@ -17,9 +17,13 @@ pub(crate) fn from_environment() -> Arc<ResourcePolicy> {
     policy.warn_requests = value("CHUZZ_RESOURCE_WARN_REQUESTS", policy.warn_requests);
     policy.max_bytes = value("CHUZZ_RESOURCE_MAX_BYTES", policy.max_bytes);
     policy.warn_bytes = value("CHUZZ_RESOURCE_WARN_BYTES", policy.warn_bytes);
-    assert!(policy.max_requests > 0 && policy.max_bytes > 0,
-        "resource caps must be positive");
-    assert!(policy.warn_requests <= policy.max_requests && policy.warn_bytes <= policy.max_bytes,
-        "resource warning thresholds must not exceed caps");
+    assert!(
+        policy.max_requests > 0 && policy.max_bytes > 0,
+        "resource caps must be positive"
+    );
+    assert!(
+        policy.warn_requests <= policy.max_requests && policy.warn_bytes <= policy.max_bytes,
+        "resource warning thresholds must not exceed caps"
+    );
     Arc::new(policy)
 }

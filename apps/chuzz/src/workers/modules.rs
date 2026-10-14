@@ -7,7 +7,6 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-
 use blitz_script::boa_engine::module::{ModuleLoader, ModuleRequest, Referrer};
 use blitz_script::boa_engine::{Context, JsNativeError, JsResult, JsString, Module, Source};
 use blitz_traits::net::{Request, Url};
@@ -41,7 +40,9 @@ impl Loader {
                 .into());
         }
         if !matches!(url.scheme(), "http" | "https" | "data" | "file") {
-            return Err(JsNativeError::typ().with_message("unsupported script URL").into());
+            return Err(JsNativeError::typ()
+                .with_message("unsupported script URL")
+                .into());
         }
         let response = nagoya::block_on(cancellable(
             &self.endpoint,

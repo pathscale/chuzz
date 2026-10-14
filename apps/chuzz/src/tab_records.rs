@@ -44,7 +44,11 @@ impl Default for TabRegistry {
 impl TabRegistry {
     pub fn new(limit: usize, warn_at: usize) -> Self {
         assert!(limit > 0 && warn_at > 0 && warn_at <= limit);
-        Self { records: BTreeMap::new(), limit, warn_at }
+        Self {
+            records: BTreeMap::new(),
+            limit,
+            warn_at,
+        }
     }
 
     pub fn admit(&mut self, id: TabId) -> Result<(), &'static str> {
@@ -54,11 +58,14 @@ impl TabRegistry {
         if self.records.len() >= self.limit {
             return Err("tab-record-budget");
         }
-        self.records.insert(id, TabRecord {
-            id: id.0,
-            generation: 0,
-            residency: Residency::Dormant,
-        });
+        self.records.insert(
+            id,
+            TabRecord {
+                id: id.0,
+                generation: 0,
+                residency: Residency::Dormant,
+            },
+        );
         Ok(())
     }
 
@@ -78,7 +85,9 @@ impl TabRegistry {
     }
 
     pub fn sleeping(&mut self, id: TabId) {
-        if let Some(record) = self.records.get_mut(&id) { record.residency = Residency::Sleeping; }
+        if let Some(record) = self.records.get_mut(&id) {
+            record.residency = Residency::Sleeping;
+        }
     }
 
     pub fn remove(&mut self, id: TabId) {

@@ -50,9 +50,12 @@ struct BridgeReply {
 
 fn enqueue_reply(work: Arc<BridgeReply>) -> nagoya::JoinHandle<Arc<BridgeReply>> {
     nagoya::spawn(async move {
-        let response = work.legacy.recv().await.unwrap_or_else(|| ControlResponse::Error(ControlError::new(
-            "bridge_closed", "the UI-thread control bridge closed",
-        )));
+        let response = work.legacy.recv().await.unwrap_or_else(|| {
+            ControlResponse::Error(ControlError::new(
+                "bridge_closed",
+                "the UI-thread control bridge closed",
+            ))
+        });
         work.finished.fill(Arc::new(response));
         work
     })
@@ -71,10 +74,14 @@ impl ControlServer {
     /// the listener independently of the UI.
     pub fn start(bridge: ControlBridge) -> io::Result<Self> {
         let typed: ArcControlBridge = Arc::new(move |request| {
-            let request = Arc::try_unwrap(request).unwrap_or_else(|_| panic!("legacy bridge request ownership was retained"));
+            let request = Arc::try_unwrap(request)
+                .unwrap_or_else(|_| panic!("legacy bridge request ownership was retained"));
             let legacy = bridge(request);
             let finished = Once::new();
-            drop(enqueue_reply(Arc::new(BridgeReply { legacy, finished: Arc::clone(&finished) })));
+            drop(enqueue_reply(Arc::new(BridgeReply {
+                legacy,
+                finished: Arc::clone(&finished),
+            })));
             finished
         });
         Self::start_arc(typed)
@@ -215,15 +222,25 @@ async fn handle_connection(stream: TcpStream, bridge: ArcControlBridge) {
     let mut stream = framed_json_neutral(NagoyaStream::new(stream));
     while let Some(message) = stream.next().await {
         let response = match message {
-            Ok(WireMessage::Text(text)) => match serde_json::from_str::<AgentControlRequest>(&text) {
-                Ok(request) => bridge(Arc::new(request)).recv().await.unwrap_or_else(|| Arc::new(
-                    ControlResponse::Error(ControlError::new("bridge_closed", "the UI-thread control bridge closed")),
-                )),
-                Err(error) => Arc::new(ControlResponse::Error(ControlError::new("invalid_request", error.to_string()))),
+            Ok(WireMessage::Text(text)) => match serde_json::from_str::<AgentControlRequest>(&text)
+            {
+                Ok(request) => bridge(Arc::new(request)).recv().await.unwrap_or_else(|| {
+                    Arc::new(ControlResponse::Error(ControlError::new(
+                        "bridge_closed",
+                        "the UI-thread control bridge closed",
+                    )))
+                }),
+                Err(error) => Arc::new(ControlResponse::Error(ControlError::new(
+                    "invalid_request",
+                    error.to_string(),
+                ))),
             },
             Ok(WireMessage::Close(_)) => break,
             Ok(_) => continue,
-            Err(error) => Arc::new(ControlResponse::Error(ControlError::new("transport", error.to_string()))),
+            Err(error) => Arc::new(ControlResponse::Error(ControlError::new(
+                "transport",
+                error.to_string(),
+            ))),
         };
 
         let encoded = serde_json::to_string(response.as_ref()).unwrap_or_else(|error| {

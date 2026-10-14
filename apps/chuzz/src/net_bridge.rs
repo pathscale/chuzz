@@ -1,6 +1,5 @@
 //! Page networking, cookie access and completion wakeups shared by both hosts.
 
-
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 use std::time::Duration;
@@ -11,9 +10,7 @@ use blitz_script::boa_engine::{
     Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
 };
 use blitz_traits::net::Url;
-use blitz_traits::platform::{
-    FetchError, FetchRequest, FetchResponse,
-};
+use blitz_traits::platform::{FetchError, FetchRequest, FetchResponse};
 use blitz_traits::shell::ShellProvider;
 
 use crate::decode::decode_body;
@@ -59,7 +56,9 @@ impl PageWake {
     pub(crate) fn wake(&self) {
         let (waker, shell) = {
             let state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
-            if state.retired { return; }
+            if state.retired {
+                return;
+            }
             (state.waker.clone(), state.shell.clone())
         };
         if let Some(waker) = waker {
@@ -124,7 +123,11 @@ fn default_credentials() -> String {
     "same-origin".to_owned()
 }
 
-async fn fetch_response_owned(provider: &NetProvider, request: FetchRequest, lifetime: &Arc<blitz_dom::release::Teardown>) -> Result<FetchResponse, FetchError> {
+async fn fetch_response_owned(
+    provider: &NetProvider,
+    request: FetchRequest,
+    lifetime: &Arc<blitz_dom::release::Teardown>,
+) -> Result<FetchResponse, FetchError> {
     let _lease = lifetime.lease();
     fetch_response(provider, request).await
 }
@@ -264,7 +267,9 @@ impl ScriptHost {
             "omit" => blitz_traits::net::Credentials::Omit,
             _ => return Err("invalid credentials mode".to_owned()),
         };
-        let mut wire = FetchRequest::get(url.clone()).method(method.clone()).signal(self.signal.clone());
+        let mut wire = FetchRequest::get(url.clone())
+            .method(method.clone())
+            .signal(self.signal.clone());
         wire.credentials = credentials;
         wire.initiator = self.net.initiator();
         let mut unsafe_headers = Vec::new();
@@ -341,7 +346,9 @@ impl ScriptHost {
             {
                 unsafe_headers.sort();
                 unsafe_headers.dedup();
-                let mut preflight = FetchRequest::get(url.clone()).method(Method::OPTIONS).signal(self.signal.clone());
+                let mut preflight = FetchRequest::get(url.clone())
+                    .method(Method::OPTIONS)
+                    .signal(self.signal.clone());
                 preflight.credentials = blitz_traits::net::Credentials::Omit;
                 preflight.initiator = self.net.initiator();
                 preflight.headers.insert(
@@ -514,7 +521,6 @@ pub fn install(
     let signal = abort.signal.clone();
     document.add_teardown_hook(move || abort.abort());
     let host = ScriptHost {
-
         net,
         base,
         deadline,
@@ -556,10 +562,14 @@ pub fn install(
         wake: wake.clone(),
     };
     let handler_mailbox = mailbox.clone();
-    let sockets = crate::ws_bridge::Bridge::with_lifetime(wake.clone(), document.teardown_receipt());
+    let sockets =
+        crate::ws_bridge::Bridge::with_lifetime(wake.clone(), document.teardown_receipt());
     let retiring_sockets = sockets.clone();
     let retiring_wake = wake.clone();
-    document.add_teardown_hook(move || { retiring_sockets.retire(); retiring_wake.retire(); });
+    document.add_teardown_hook(move || {
+        retiring_sockets.retire();
+        retiring_wake.retire();
+    });
     let handler_sockets = sockets.clone();
     let handler_gpu = gpu.clone();
     let initial_scroll = document.inner().viewport_scroll();
