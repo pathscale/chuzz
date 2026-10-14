@@ -828,9 +828,10 @@ impl Browser {
                     tab.life.phase = TabPhase::RestoreFailed;
                     tab.life.reason = "reload-failed";
                     tab.life.preview_surface.take();
-                    if !receipt.complete() { tab.life.release = Some(receipt); }
                     tab.outcome = outcome;
                 }
+                drop(state);
+                if !receipt.complete() { self.track_release(bundle.tab_id, receipt); }
                 changed = true;
                 continue;
             }

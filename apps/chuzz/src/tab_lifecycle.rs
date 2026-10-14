@@ -238,13 +238,21 @@ impl Browser {
             tab.mounted.take(); tab.loading = false;
             // Retain method/URL only. Sleeping history cannot retain POST bodies or credentials.
             for request in &mut tab.history {
-                request.body = blitz_traits::net::Body::Empty;
-                request.headers.clear(); request.content_type.take(); request.signal.take();
+                let mut record = Request::get(request.url.clone());
+                record.method = request.method.clone();
+                record.destination = request.destination;
+                *request = record;
             }
             let next = tab.generation;
             state.records.loading(TabId(id), DocumentGeneration(next));
         }
         let Some(receipt) = ui.inner_mut().retire_sub_document(mount) else { return false; };
+        self.track_release(id, receipt);
+        ui.inner().shell_provider.request_redraw();
+        true
+    }
+
+    pub(super) fn track_release(&self, id: u64, receipt: Arc<Teardown>) {
         {
             let mut state = self.0.state.lock().unwrap();
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) { tab.life.release = Some(Arc::clone(&receipt)); }
@@ -258,12 +266,11 @@ impl Browser {
                 browser.wake_document();
             }
         });
-        ui.inner().shell_provider.request_redraw();
-        true
     }
 
     pub(super) fn poll_lifecycle(&self, ui: &mut blitz_script::ScriptDocument) -> bool {
-        let messages: Vec<_> = self.0.lifecycle.lock().unwrap().drain(..).collect();
+        let mut messages: Vec<_> = self.0.lifecycle.lock().unwrap().drain(..).collect();
+        messages.sort_by_key(|message| if matches!(message, LifecycleMessage::Surface(_)) { 0 } else { 1 });
         let mut changed = false;
         for message in messages {
             match message {
@@ -273,7 +280,8 @@ impl Browser {
                         let mut state = self.0.state.lock().unwrap();
                         let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else { continue; };
                         if tab.life.release.as_ref().is_none_or(|pending| !Arc::ptr_eq(pending, &receipt)) || !receipt.complete() { continue; }
-                        tab.life.release.take(); tab.life.phase = TabPhase::Sleeping;
+                        tab.life.release.take();
+                        if tab.life.phase != TabPhase::RestoreFailed { tab.life.phase = TabPhase::Sleeping; }
                         let wake = std::mem::take(&mut tab.life.wake_requested);
                         state.records.sleeping(TabId(id));
                         wake
