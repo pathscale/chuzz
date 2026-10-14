@@ -38,6 +38,26 @@ pub struct ControlDescriptor {
 pub type ControlBridge =
     Arc<dyn Fn(AgentControlRequest) -> Arc<Once<ControlResponse>> + Send + Sync + 'static>;
 
+/// Control work and its finished answer remain typed Arc pointers.
+pub type ArcControlBridge = Arc<
+    dyn Fn(Arc<AgentControlRequest>) -> Arc<Once<Arc<ControlResponse>>> + Send + Sync + 'static,
+>;
+
+struct BridgeReply {
+    legacy: Arc<Once<ControlResponse>>,
+    finished: Arc<Once<Arc<ControlResponse>>>,
+}
+
+fn enqueue_reply(work: Arc<BridgeReply>) -> nagoya::JoinHandle<Arc<BridgeReply>> {
+    nagoya::spawn(async move {
+        let response = work.legacy.recv().await.unwrap_or_else(|| ControlResponse::Error(ControlError::new(
+            "bridge_closed", "the UI-thread control bridge closed",
+        )));
+        work.finished.fill(Arc::new(response));
+        work
+    })
+}
+
 pub struct ControlServer {
     descriptor_path: PathBuf,
     socket_path: PathBuf,
@@ -50,6 +70,18 @@ impl ControlServer {
     /// Bind the socket and publish the descriptor. Reactor readiness drives
     /// the listener independently of the UI.
     pub fn start(bridge: ControlBridge) -> io::Result<Self> {
+        let typed: ArcControlBridge = Arc::new(move |request| {
+            let request = Arc::try_unwrap(request).unwrap_or_else(|_| panic!("legacy bridge request ownership was retained"));
+            let legacy = bridge(request);
+            let finished = Once::new();
+            drop(enqueue_reply(Arc::new(BridgeReply { legacy, finished: Arc::clone(&finished) })));
+            finished
+        });
+        Self::start_arc(typed)
+    }
+
+    /// Bind the same local protocol with typed Arc request/reply ownership.
+    pub fn start_arc(bridge: ArcControlBridge) -> io::Result<Self> {
         let socket_path = runtime_dir().join(format!("chuzz-{}.sock", std::process::id()));
         let descriptor_path = socket_path.with_extension("json");
         if let Some(parent) = socket_path.parent() {
@@ -140,7 +172,7 @@ fn write_descriptor(path: &std::path::Path, descriptor: &ControlDescriptor) -> i
         .open(path)?;
     file.write_all(&encoded)
 }
-async fn run(listener: TcpListener, bridge: ControlBridge, shutdown: Arc<Flag>) {
+async fn run(listener: TcpListener, bridge: ArcControlBridge, shutdown: Arc<Flag>) {
     use futures::StreamExt;
     use futures::future::{Either, select};
     use futures::stream::FuturesUnordered;
@@ -177,32 +209,24 @@ async fn run(listener: TcpListener, bridge: ControlBridge, shutdown: Arc<Flag>) 
     }
 }
 
-async fn handle_connection(stream: TcpStream, bridge: ControlBridge) {
+async fn handle_connection(stream: TcpStream, bridge: ArcControlBridge) {
     use futures::{SinkExt, StreamExt};
 
     let mut stream = framed_json_neutral(NagoyaStream::new(stream));
     while let Some(message) = stream.next().await {
         let response = match message {
-            // Ping, pong and close frames are transport bookkeeping, not
-            // requests: answering them with a protocol error would be wrong.
-            Ok(WireMessage::Text(text)) => match serde_json::from_str::<AgentControlRequest>(&text)
-            {
-                Ok(request) => bridge(request).recv().await.unwrap_or_else(|| {
-                    ControlResponse::Error(ControlError::new(
-                        "bridge_closed",
-                        "the UI-thread control bridge closed",
-                    ))
-                }),
-                Err(error) => {
-                    ControlResponse::Error(ControlError::new("invalid_request", error.to_string()))
-                }
+            Ok(WireMessage::Text(text)) => match serde_json::from_str::<AgentControlRequest>(&text) {
+                Ok(request) => bridge(Arc::new(request)).recv().await.unwrap_or_else(|| Arc::new(
+                    ControlResponse::Error(ControlError::new("bridge_closed", "the UI-thread control bridge closed")),
+                )),
+                Err(error) => Arc::new(ControlResponse::Error(ControlError::new("invalid_request", error.to_string()))),
             },
             Ok(WireMessage::Close(_)) => break,
             Ok(_) => continue,
-            Err(error) => ControlResponse::Error(ControlError::new("transport", error.to_string())),
+            Err(error) => Arc::new(ControlResponse::Error(ControlError::new("transport", error.to_string()))),
         };
 
-        let encoded = serde_json::to_string(&response).unwrap_or_else(|error| {
+        let encoded = serde_json::to_string(response.as_ref()).unwrap_or_else(|error| {
             // The fallback is a literal so it cannot itself fail to encode.
             format!(
                 r#"{{"result":"error","value":{{"code":"encode","message":"{}"}}}}"#,
