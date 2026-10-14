@@ -1,0 +1,59 @@
+; Copyright (C) 2022 Apple Inc. All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions
+; are met:
+; 1. Redistributions of source code must retain the above copyright
+; notice, this list of conditions and the following disclaimer.
+; 2. Redistributions in binary form must reproduce the above copyright
+; notice, this list of conditions and the following disclaimer in the
+; documentation and/or other materials provided with the distribution.
+;
+; THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+; THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+; PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
+; BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+; THE POSSIBILITY OF SUCH DAMAGE.
+
+; Adapted from WebKit Source/WebKit/WebProcess/com.apple.WebProcess.sb.in.
+; Includes the Darwin runtime rules from WebKit's compiled macOS profile.
+; Browser/broker are one process. L1 owns per-document network policy.
+(version 1)
+(deny default)
+(deny nvram* system-privilege)
+@PROCESS@
+(allow network*)
+(allow mach-bootstrap)
+(allow syscall-mach)
+(allow mach-kernel-endpoint)
+(allow system-audit)
+(allow process-info-pidinfo process-info-rusage process-codesigning-status* (target self))
+(allow signal (target self))
+(allow sysctl-read
+    (sysctl-name "hw.memsize" "hw.ncpu" "hw.activecpu" "hw.logicalcpu" "hw.physicalcpu" "hw.pagesize" "kern.osrelease" "kern.osversion" "kern.boottime")
+    (sysctl-name-prefix "hw.optional." "hw.perflevel" "net.routetable"))
+; Metadata does not permit file contents or directory enumeration.
+(allow file-read-metadata)
+(allow file-read*
+    (subpath "/System/Library" "/System/Cryptexes/OS" "/System/Volumes/Preboot/Cryptexes/OS" "/usr/lib" "/usr/share" "/private/var/db/timezone" "/Library/Fonts")
+    (literal "/dev/null" "/dev/zero" "/dev/random" "/dev/urandom")
+    (literal @SHELL@))
+(allow file-map-executable
+    (subpath "/System/Library" "/System/Cryptexes/OS" "/System/Volumes/Preboot/Cryptexes/OS" "/usr/lib")
+    (literal @SHELL@))
+(allow file-read* file-write* (subpath @CACHE@))
+@READS@
+(allow mach-lookup
+    (global-name "com.apple.CARenderServer" "com.apple.WindowServer" "com.apple.windowserver.active" "com.apple.FontObjectsServer" "com.apple.fonts" "com.apple.SecurityServer" "com.apple.trustd" "com.apple.trustd.agent" "com.apple.system.opendirectoryd.libinfo" "com.apple.SystemConfiguration.configd" "com.apple.cfprefsd.daemon" "com.apple.cfprefsd.agent" "com.apple.system.notification_center" "com.apple.notifyd" "com.apple.MTLCompilerService"))
+(allow mach-register (local-name "com.apple.axserver" "com.apple.tsm.portname"))
+(allow ipc-posix-shm-read* ipc-posix-shm-write-data (ipc-posix-name-prefix "com.apple.WindowServer"))
+(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))
+(allow iokit-open-user-client (iokit-user-client-class "IOSurfaceRootUserClient" "AGXDeviceUserClient" "IOAccelerator"))
+(allow iokit-open-service (iokit-user-client-class "IOSurfaceRoot") (iokit-registry-entry-class "IOAccelerator"))
+(allow dynamic-code-generation)

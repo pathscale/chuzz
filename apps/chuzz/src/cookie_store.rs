@@ -288,6 +288,9 @@ async fn run_persistence(
 /// user's browser state.  Ordinary launches use the platform's application
 /// data location.
 pub fn profile_directory() -> std::path::PathBuf {
+    if let Some(directories) = crate::sandbox::directories() {
+        return directories.profile.clone();
+    }
     if let Some(path) = std::env::var_os("CHUZZ_PROFILE_DIR") {
         return path.into();
     }
