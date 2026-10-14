@@ -135,7 +135,7 @@ impl EgressProxy {
         let socket = TcpListener::bind(Addr::localhost(0), 128)
             .map_err(|error| format!("could not bind the private egress filter: {error}"))?;
         let address = format!("http://127.0.0.1:{}", socket.local_addr().map_err(|error| error.to_string())?.port());
-        let original_environment = PROXY_ENVIRONMENT.iter().map(|name| (*name, std::env::var_os(name))).collect();
+        let original_environment: Vec<_> = PROXY_ENVIRONMENT.iter().map(|name| (*name, std::env::var_os(name))).collect();
         unsafe {
             for name in &PROXY_ENVIRONMENT[..6] { std::env::set_var(name, &address); }
             for name in &PROXY_ENVIRONMENT[6..] { std::env::set_var(name, ""); }
