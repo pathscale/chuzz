@@ -101,6 +101,19 @@ async fn cli(handle: &nagoya::reactor::Handle, root: &Path) -> Result<(), String
         .spawn(handle).map_err(|error| error.to_string())?;
     let announced = crate::headless_io::read_announcement(child.stdout.take().ok_or("stdout-announce: pipe missing")?).await?;
     let mut client = chuzz_control::client::Client::connect(Path::new(announced.trim())).await.map_err(|error| error.to_string())?;
+    let _ = client.inspect(None, 20).await.map_err(|error| error.to_string())?;
+    // SIGSTOP is a real native stall, independent of Boa's JS time limit.
+    let parent = child.id().ok_or("supervisor-deadline: host already exited")?;
+    let workers = nagoya::process::Command::new("pgrep").arg("-P").arg(parent.to_string())
+        .output(handle).await.map_err(|error| error.to_string())?;
+    let workers = std::str::from_utf8(&workers.stdout).map_err(|error| error.to_string())?;
+    let mut ids = workers.split_whitespace();
+    let pid: libc::pid_t = ids.next().ok_or("supervisor-deadline: page worker pid missing")?
+        .parse().map_err(|_| "supervisor-deadline: invalid page worker pid")?;
+    if ids.next().is_some() { return Err("supervisor-deadline: expected one isolated page worker".into()); }
+    // SAFETY: pgrep selected this host's live child. SIGSTOP creates the native
+    // stall; the production deadline path must kill and reap this child.
+    if unsafe { libc::kill(pid, libc::SIGSTOP) } != 0 { return Err("supervisor-deadline: could not stop page worker".into()); }
     let reply = nagoya::timeout(Duration::from_secs(12), client.call(serde_json::json!({ "command": "inspect", "params": { "root": null, "maxDepth": 20 } }))).await
         .map_err(|_| "supervisor-deadline: a hung page never produced its control error")?.map_err(|error| error.to_string())?;
     if reply["value"]["code"] != "pageUnresponsive" { return Err(format!("supervisor-deadline: expected pageUnresponsive, got {reply}")); }
