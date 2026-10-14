@@ -6,7 +6,16 @@ use std::time::Duration;
 use blitz_control_protocol::latest::Once;
 use super::{ControlBridgeRequest, DebugResponse};
 
-type DocumentRequest = (ControlBridgeRequest, Arc<Once<DebugResponse>>);
+pub(super) struct Reply(Arc<Once<Arc<DebugResponse>>>);
+
+impl Reply {
+    pub(super) fn new() -> Arc<Self> { Arc::new(Self(Once::new())) }
+    pub(super) fn fill(&self, result: DebugResponse) -> bool { self.0.fill(Arc::new(result)) }
+    pub(super) async fn recv(&self) -> Option<Arc<DebugResponse>> { self.0.recv().await }
+    async fn abandon(&self) { self.0.abandon().await; }
+}
+
+type DocumentRequest = (ControlBridgeRequest, Arc<Reply>);
 
 struct State {
     producer_open: bool,

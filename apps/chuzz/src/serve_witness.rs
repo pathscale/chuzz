@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use blitz_control_protocol::latest::Once;
 use blitz_control_protocol::{AgentControlRequest, DebugResponse};
 
 use super::{ControlBridgeRequest, egress, page_control};
@@ -19,7 +18,7 @@ fn argument(name: &str) -> Result<String, String> {
 
 fn page_ring() -> Result<(), String> {
     let (sender, receiver) = page_control::channel(4);
-    let answer = Once::new();
+    let answer = page_control::Reply::new();
     let work = Arc::new((ControlBridgeRequest::Agent(AgentControlRequest::Inspect { root: None, max_depth: 3 }), Arc::clone(&answer)));
     nagoya::block_on(async {
         let mut receiving = Box::pin(nagoya::timeout(Duration::from_secs(1), receiver.recv_arc()));
@@ -36,7 +35,7 @@ fn page_ring() -> Result<(), String> {
             .map_err(|_| "page-ring-wakeup: page receiver closed")?;
         if !Arc::ptr_eq(&work, &received) { return Err("page-ring-ownership: received request pointer changed".into()); }
         received.1.fill(DebugResponse::Ack);
-        if !matches!(answer.recv().await, Some(DebugResponse::Ack)) { return Err("page-ring-reply: action answer missing".into()); }
+        if !matches!(answer.recv().await.as_deref(), Some(DebugResponse::Ack)) { return Err("page-ring-reply: action answer missing".into()); }
         Ok(())
     })
 }

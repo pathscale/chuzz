@@ -72,6 +72,11 @@ enum WorkerFrame {
     Failed(String),
 }
 
+#[derive(Serialize)]
+enum BorrowedWorkerFrame<'a> {
+    Reply(&'a DebugResponse),
+}
+
 #[derive(Serialize, Deserialize)]
 enum WireRequest {
     Agent(AgentControlRequest),
@@ -152,7 +157,7 @@ pub(super) fn launch_route() -> Option<String> {
     std::env::var(ROUTE_ENV).ok()
 }
 
-fn send(frame: &WorkerFrame) {
+fn send(frame: &impl Serialize) {
     let result = (|| {
         let bytes = Arc::new(encode(frame)?);
         let wire = WORKER_WIRE
@@ -262,10 +267,10 @@ pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
             let Ok(request) = request else {
                 std::process::exit(0);
             };
-            let answer = Once::new();
+            let answer = page_control::Reply::new();
             match sender.try_send(Arc::new((request.into(), Arc::clone(&answer)))) {
                 Ok(()) => false,
-                Err(page_control::TrySendError::Full) => {
+                , Err(page_control::TrySendError::Full) => {
                     answer.fill(DebugResponse::Error(DebugError {
                         code: "documentBusy".into(),
                         message: "the page worker request queue is full".into(),
@@ -279,8 +284,8 @@ pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
             let response = answer
                 .recv()
                 .await
-                .unwrap_or_else(|| page_error("the page document loop closed its reply"));
-            send(&WorkerFrame::Reply(Box::new(response)));
+                .unwrap_or_else(|| Arc::new(page_error("the page document loop closed its reply")));
+            send(&BorrowedWorkerFrame::Reply(response.as_ref()));
         }
     }));
     Ok(())
