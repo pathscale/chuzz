@@ -45,6 +45,7 @@ pub fn set_device_audio_enabled(enabled: bool) {
     video::set_device_audio_enabled(enabled);
 }
 
+mod atomic_update;
 #[cfg(all(feature = "headless-fonts", not(feature = "system-fonts")))]
 mod headless_fonts;
 

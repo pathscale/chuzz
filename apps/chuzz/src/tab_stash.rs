@@ -100,11 +100,13 @@ impl SleepingBudget {
     }
 
     pub fn reserve(self: &Arc<Self>, bytes: usize) -> Result<Charge, &'static str> {
-        self.used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes).filter(|next| *next <= self.cap)
-            })
-            .map_err(|_| "sleeping-tab-budget")?;
+        crate::atomic_update::update_usize(
+            &self.used,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |used| used.checked_add(bytes).filter(|next| *next <= self.cap),
+        )
+        .map_err(|_| "sleeping-tab-budget")?;
         Ok(Charge {
             budget: Arc::clone(self),
             bytes,
