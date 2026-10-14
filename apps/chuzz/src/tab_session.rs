@@ -90,7 +90,7 @@ fn session(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsV
 }
 
 pub fn install(document: &mut ScriptDocument, backing: Option<Arc<SessionBucket>>) {
-    let origin = document.current_url().map(url::Url::origin).unwrap_or_else(|| url::Origin::new_opaque());
+    let origin = document.current_url().map(url::Url::origin).unwrap_or_else(url::Origin::new_opaque);
     document.with_js_context(|context| {
         context.insert_data(Host(Rc::new(RefCell::new(Store { origin, backing, entries: Vec::new(), sensitive: Vec::new(), no_stash: false }))));
         context.register_global_builtin_callable(JsString::from("__chuzzSession"), 3, NativeFunction::from_fn_ptr(session)).expect("native session owner");
