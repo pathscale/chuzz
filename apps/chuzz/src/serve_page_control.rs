@@ -1,11 +1,10 @@
-//! A single socket reader hands requests to the page without polling.
+//! Typed page requests on the existing SPSC ring, woken by Nagoya.
 
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
-
-use blitz_control_protocol::latest::Once;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::{ControlBridgeRequest, DebugResponse};
+use blitz_control_protocol::latest::Once;
 
 type DocumentRequest = (ControlBridgeRequest, Arc<Once<DebugResponse>>);
 
@@ -16,16 +15,16 @@ struct State {
 
 struct Wake {
     state: Mutex<State>,
-    ready: Condvar,
+    ready: nagoya::sync::Notify,
 }
 
 pub(super) struct Sender {
-    queue: spsc::Producer<DocumentRequest>,
+    queue: spsc::Producer<Arc<DocumentRequest>>,
     wake: Arc<Wake>,
 }
 
 pub(super) struct Receiver {
-    queue: spsc::Consumer<DocumentRequest>,
+    queue: spsc::Consumer<Arc<DocumentRequest>>,
     wake: Arc<Wake>,
 }
 
@@ -33,12 +32,10 @@ pub(super) enum TrySendError {
     Full,
     Disconnected,
 }
-
 pub(super) enum RecvTimeoutError {
     Timeout,
     Disconnected,
 }
-
 pub(super) enum TryRecvError {
     Empty,
     Disconnected,
@@ -51,7 +48,7 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
             producer_open: true,
             consumer_open: true,
         }),
-        ready: Condvar::new(),
+        ready: nagoya::sync::Notify::new(),
     });
     (
         Sender {
@@ -66,106 +63,85 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
 }
 
 impl Sender {
-    pub(super) fn try_send(&self, request: DocumentRequest) -> Result<(), TrySendError> {
-        let state = self
-            .wake
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if !state.consumer_open {
-            return Err(TrySendError::Disconnected);
-        }
-        match self.queue.try_push(request) {
-            Some(_) => Err(TrySendError::Full),
-            None => {
-                self.wake.ready.notify_one();
-                Ok(())
+    pub(super) fn try_send(&self, request: Arc<DocumentRequest>) -> Result<(), TrySendError> {
+        {
+            let state = self
+                .wake
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !state.consumer_open {
+                return Err(TrySendError::Disconnected);
+            }
+            if self.queue.try_push(request).is_some() {
+                return Err(TrySendError::Full);
             }
         }
+        if !super::reactor_defect("page-ring-wakeup") {
+            self.wake.ready.notify_one();
+        }
+        Ok(())
     }
 }
 
 impl Receiver {
+    async fn recv(&self) -> Result<DocumentRequest, TryRecvError> {
+        loop {
+            // notify_one retains a permit when publication precedes this wait.
+            match self.try_recv() {
+                Err(TryRecvError::Empty) => self.wake.ready.notified().await,
+                result => return result,
+            }
+        }
+    }
+
     pub(super) fn recv_timeout(
         &self,
         timeout: Duration,
     ) -> Result<DocumentRequest, RecvTimeoutError> {
-        if let Some(request) = self.queue.try_pop() {
-            return Ok(request);
-        }
-        let deadline = Instant::now() + timeout;
-        let mut state = self
-            .wake
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        loop {
-            // Recheck under the notification lock before parking or reporting
-            // closure. A producer may have published after the fast check.
-            if let Some(request) = self.queue.try_pop() {
-                return Ok(request);
-            }
-            if !state.producer_open {
-                return Err(RecvTimeoutError::Disconnected);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(RecvTimeoutError::Timeout);
-            }
-            let (next, _) = self
-                .wake
-                .ready
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(|error| error.into_inner());
-            state = next;
+        match nagoya::block_on(nagoya::timeout(timeout, self.recv())) {
+            Ok(Ok(request)) => Ok(request),
+            Ok(Err(_)) => Err(RecvTimeoutError::Disconnected),
+            Err(_) => Err(RecvTimeoutError::Timeout),
         }
     }
 
     pub(super) fn try_recv(&self) -> Result<DocumentRequest, TryRecvError> {
-        if let Some(request) = self.queue.try_pop() {
-            return Ok(request);
-        }
         let state = self
             .wake
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(request) = self.queue.try_pop() {
-            Ok(request)
-        } else if state.producer_open {
-            Err(TryRecvError::Empty)
-        } else {
-            Err(TryRecvError::Disconnected)
+        match self.queue.try_pop() {
+            // Enqueue transfers its sole request pointer; the consumer owns it.
+            Some(request) => Ok(Arc::try_unwrap(request)
+                .unwrap_or_else(|_| panic!("page request ownership was retained after enqueue"))),
+            None if state.producer_open => Err(TryRecvError::Empty),
+            None => Err(TryRecvError::Disconnected),
         }
     }
 }
 
 impl Drop for Sender {
     fn drop(&mut self) {
-        let mut state = self
-            .wake
+        self.wake
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        state.producer_open = false;
+            .unwrap_or_else(|error| error.into_inner())
+            .producer_open = false;
         self.wake.ready.notify_one();
     }
 }
 
 impl Drop for Receiver {
     fn drop(&mut self) {
-        {
-            let mut state = self
-                .wake
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            state.consumer_open = false;
-        }
-        // Publication is now disabled. Finish each outstanding reply without
-        // pretending its action ran, using the existing reply-close path.
-        while let Some((_, answer)) = self.queue.try_pop() {
-            nagoya::block_on(answer.abandon());
+        self.wake
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .consumer_open = false;
+        while let Some(request) = self.queue.try_pop() {
+            nagoya::block_on(request.1.abandon());
         }
     }
 }
