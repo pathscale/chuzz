@@ -1891,12 +1891,13 @@ pub struct StoredDiagnostics {
     pub profiling: bool,
 }
 
-/// What was chosen last time. Absent, unreadable, or malformed all mean "off",
-/// which is the safe answer for a switch that opens a socket.
+/// What was chosen last time. Absent, unreadable, malformed, or inconsistent
+/// settings all mean "off", which is the safe answer for a socket switch.
 pub fn stored_diagnostics() -> StoredDiagnostics {
     diagnostics_path()
         .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<StoredDiagnostics>(&bytes).ok())
+        .filter(|value| !value.profiling || value.inspection)
         .unwrap_or_default()
 }
 
@@ -1927,6 +1928,9 @@ pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsS
         // authority this run, and the window shows it as held by the
         // environment.
         return Ok(diagnostics_now());
+    }
+    if profiling && !inspection {
+        return Err("profiling requires inspection to be enabled".to_owned());
     }
     izumo::apply_runtime_debug_options(izumo::RuntimeDebugOptions {
         inspection_and_agent_control: inspection,

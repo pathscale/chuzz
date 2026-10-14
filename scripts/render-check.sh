@@ -7,6 +7,26 @@
 #
 # Output lands in target/render-check/<label>.{png,tree.txt,log.txt}.
 #
+# Per-capture process budgets, overridable through the named environment variables:
+#   APP_CAP_MAX_RSS=2G             resident bytes (2 GiB)
+#   APP_CAP_MAX_CPU_SECS=120       accumulated process CPU seconds
+#   APP_CAP_MAX_WALL_SECS=<timeout> elapsed process seconds
+#   APP_CAP_MAX_OPEN_FILES=1024    open descriptors
+#   APP_CAP_MAX_PROCS=32           direct child processes
+#   APP_CAP_MAX_THREADS=256        process threads
+# RENDER_CHECK_TIMEOUT defaults to 180 wall seconds; valid range is 1..86400.
+# Its watchdog remains active even when APP_CAP_MAX_WALL_SECS is overridden.
+# Caps accept positive integers and binary K/M/G suffixes. Invalid cap values
+# fail in bin_caps.rs with CAP_BAD_PARAMETER; empty overrides are invalid too.
+# APP_CAP_WARN_<NAME> may override warnings, which otherwise start at half the
+# maximum; require 0 < warning <= maximum. No cap CLI flags are supported.
+# APP_CAP_PROFILE=default alone supplies no limits for chuzz-gui.
+# Caps are sampled about once per second, not kernel allocation limits.
+# These budgets cover each capture process, not the build or total corpus.
+# Cap failures exit 78 and retain CAP_ERROR diagnostics in the page log.
+# Watchdog failures also remain in the page log; the corpus continues and
+# returns nonzero if any page fails.
+#
 # Three things this exists to stop repeating:
 #   - `CHUZZ_CAPTURE_TREE` is a *path*, not a flag. Setting it to `1` writes a
 #     file called `1` into the working directory, which is easy to miss and
@@ -27,7 +47,24 @@ height=${CHUZZ_CAPTURE_HEIGHT:-960}
 scale=${CHUZZ_CAPTURE_SCALE:-2}
 # Generous: a cold load with no disk cache refetches every asset. Still bounded,
 # because an unbounded wait is how a corpus run turns into a hung terminal.
-deadline=${RENDER_CHECK_TIMEOUT:-180}
+deadline=${RENDER_CHECK_TIMEOUT-180}
+case "$deadline" in
+  ''|*[!0-9]*|??????*)
+    echo "RENDER_CHECK_TIMEOUT must be an integer from 1 to 86400" >&2
+    exit 2
+    ;;
+esac
+if [ "$deadline" -lt 1 ] || [ "$deadline" -gt 86400 ]; then
+  echo "RENDER_CHECK_TIMEOUT must be an integer from 1 to 86400" >&2
+  exit 2
+fi
+
+max_rss=${APP_CAP_MAX_RSS-2G}
+max_cpu_secs=${APP_CAP_MAX_CPU_SECS-120}
+max_wall_secs=${APP_CAP_MAX_WALL_SECS-"$deadline"}
+max_open_files=${APP_CAP_MAX_OPEN_FILES-1024}
+max_procs=${APP_CAP_MAX_PROCS-32}
+max_threads=${APP_CAP_MAX_THREADS-256}
 
 mkdir -p "$out_dir"
 
@@ -45,11 +82,21 @@ capture_one() {
 
   printf '%-16s %s\n' "$label" "$url"
 
+  printf 'capture budgets: rss=%s cpu-secs=%s wall-secs=%s open-files=%s procs=%s threads=%s watchdog-secs=%s\n' \
+    "$max_rss" "$max_cpu_secs" "$max_wall_secs" "$max_open_files" \
+    "$max_procs" "$max_threads" "$deadline" >"$log"
+
   CHUZZ_CAPTURE_WIDTH="$width" \
   CHUZZ_CAPTURE_HEIGHT="$height" \
   CHUZZ_CAPTURE_SCALE="$scale" \
   CHUZZ_CAPTURE_TREE="$tree" \
-    "$binary" --capture "$png" "$url" >"$log" 2>&1 &
+  APP_CAP_MAX_RSS="$max_rss" \
+  APP_CAP_MAX_CPU_SECS="$max_cpu_secs" \
+  APP_CAP_MAX_WALL_SECS="$max_wall_secs" \
+  APP_CAP_MAX_OPEN_FILES="$max_open_files" \
+  APP_CAP_MAX_PROCS="$max_procs" \
+  APP_CAP_MAX_THREADS="$max_threads" \
+    "$binary" --capture "$png" "$url" >>"$log" 2>&1 &
   pid=$!
 
   # Watchdog. `kill -0` is a liveness probe, not a signal, so this polls without
@@ -59,7 +106,8 @@ capture_one() {
     if [ "$waited" -ge "$deadline" ]; then
       kill -9 "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
-      echo "  TIMEOUT after ${deadline}s, killed" >&2
+      printf 'RENDER_CHECK_TIMEOUT after %ss, killed\n' "$deadline" >>"$log"
+      echo "  TIMEOUT after ${deadline}s, killed; see $log" >&2
       return 1
     fi
     sleep 1
@@ -98,3 +146,4 @@ capture_one nofilter.io     https://nofilter.io      || status=1
 echo
 echo "output: $out_dir"
 exit "$status"
+
