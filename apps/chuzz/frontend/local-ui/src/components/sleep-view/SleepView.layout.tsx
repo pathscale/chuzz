@@ -14,7 +14,11 @@ export type SleepViewProps = {
 
 const SleepView: Layout<typeof sleepView, SleepViewProps> = () => (
   <section {...slot.root} aria-label={local.label}>
-    <img {...slot.image} id={`chuzz-saved-${local.tabId}`} alt={local.hasPreview ? "Saved view" : ""} />
+    <img
+      {...slot.image}
+      id={`chuzz-saved-${local.tabId}`}
+      alt={local.hasPreview ? "Saved view" : ""}
+    />
     <div {...slot.caption}>
       <Text>{local.label}</Text>
       <Text size="sm">{local.reason}</Text>

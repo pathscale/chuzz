@@ -39,7 +39,14 @@ export interface Tab {
   status: LoadStatus;
   canGoBack: boolean;
   canGoForward: boolean;
-  lifecycle?: "dormant" | "live" | "freezing" | "discarding" | "sleeping" | "waking" | "restore-failed";
+  lifecycle?:
+    | "dormant"
+    | "live"
+    | "freezing"
+    | "discarding"
+    | "sleeping"
+    | "waking"
+    | "restore-failed";
   lifecycleReason?: string;
   residency?: "dormant" | "loading" | "live" | "discarding" | "sleeping" | "waking";
   visible?: boolean;

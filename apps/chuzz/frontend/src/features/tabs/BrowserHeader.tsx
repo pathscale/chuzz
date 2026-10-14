@@ -52,15 +52,22 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
         id="chuzz-sleep-active"
         variant="outline"
         size="sm"
-        disabled={browser.activeTab()?.lifecycle === "waking" || browser.activeTab()?.lifecycle === "discarding"}
+        disabled={
+          browser.activeTab()?.lifecycle === "waking" ||
+          browser.activeTab()?.lifecycle === "discarding"
+        }
         onClick={() => {
           const tab = browser.activeTab();
           if (!tab) return;
-          if (tab.lifecycle === "sleeping" || tab.lifecycle === "restore-failed") browser.wakeTab(tab.id);
+          if (tab.lifecycle === "sleeping" || tab.lifecycle === "restore-failed")
+            browser.wakeTab(tab.id);
           else browser.sleepTab(tab.id);
         }}
       >
-        {browser.activeTab()?.lifecycle === "sleeping" || browser.activeTab()?.lifecycle === "restore-failed" ? "Wake tab" : "Sleep tab"}
+        {browser.activeTab()?.lifecycle === "sleeping" ||
+        browser.activeTab()?.lifecycle === "restore-failed"
+          ? "Wake tab"
+          : "Sleep tab"}
       </Button>
       <Button
         id="chuzz-settings"

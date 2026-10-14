@@ -109,4 +109,3 @@ export interface BrowserEvents {
 }
 
 export type BrowserEvent = keyof BrowserEvents;
-
