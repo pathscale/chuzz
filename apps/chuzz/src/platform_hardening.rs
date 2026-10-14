@@ -22,9 +22,9 @@ pub fn core_limit_zero() -> bool {
     {
         let mut limit = libc::rlimit { rlim_cur: 1, rlim_max: 1 };
         // The kernel writes exactly one initialized rlimit structure.
-        return unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) == 0 }
+        (unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) == 0 })
             && limit.rlim_cur == 0
-            && limit.rlim_max == 0;
+            && limit.rlim_max == 0
     }
     #[cfg(not(unix))]
     false
