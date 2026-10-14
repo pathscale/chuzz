@@ -1440,10 +1440,11 @@ fn fail_qa_inspect_storage(error: &str) -> ! {
     std::process::exit(2);
 }
 
-/// Load `target` and serve it over the inspection socket until killed.
+/// Report whether this process owns the inherited private page transport.
 /// Whether this process owns the inherited private page-worker transport.
 pub fn is_page_worker() -> bool { supervisor::is_worker() }
 
+/// Load `target` and serve it over the inspection socket until killed.
 pub fn serve(target: &str) -> Result<(), String> {
     let storage = read_qa_inspect_storage();
     if supervisor::is_worker() {
