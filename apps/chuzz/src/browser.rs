@@ -46,6 +46,7 @@ pub struct FrontendTab {
     visible: bool,
     preview_available: bool,
     runtime_released: bool,
+    preview_age_ms: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -133,6 +134,7 @@ impl TabState {
             lifecycle_reason: self.life.reason,
             visible: self.life.visible,
             preview_available: self.life.preview.is_some(),
+            preview_age_ms: self.life.preview.as_ref().map(|paint| nagoya::now_ns().saturating_sub(paint.captured_at_ns) / 1_000_000),
             runtime_released: matches!(self.life.phase, TabPhase::Sleeping | TabPhase::RestoreFailed) && self.mounted.is_none() && self.life.release.is_none(),
         }
     }
