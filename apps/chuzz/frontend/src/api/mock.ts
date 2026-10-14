@@ -110,6 +110,14 @@ export function createMockApi(): BrowserApi {
       emit("status-changed", readout());
     },
 
+    sleepTab: async (id) => {
+      tabs = tabs.map((tab) => tab.id === id ? { ...tab, lifecycle: "sleeping", runtimeReleased: true } : tab);
+      announce();
+    },
+    wakeTab: async (id) => {
+      tabs = tabs.map((tab) => tab.id === id ? { ...tab, lifecycle: "live", runtimeReleased: false } : tab);
+      announce();
+    },
     openTab: async (url) => {
       const target = url ?? HOME_URL;
       const tab: Tab = {

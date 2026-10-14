@@ -39,6 +39,12 @@ export interface Tab {
   status: LoadStatus;
   canGoBack: boolean;
   canGoForward: boolean;
+  lifecycle?: "dormant" | "live" | "freezing" | "discarding" | "sleeping" | "waking" | "restore-failed";
+  lifecycleReason?: string;
+  residency?: "dormant" | "loading" | "live" | "discarding" | "sleeping" | "waking";
+  visible?: boolean;
+  previewAvailable?: boolean;
+  runtimeReleased?: boolean;
 }
 
 /** Which inspector sections are open. Persisted by the shell, not the interface. */

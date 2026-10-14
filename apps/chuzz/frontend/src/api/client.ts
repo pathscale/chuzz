@@ -28,6 +28,8 @@ export interface BrowserApi {
   activeTabId(): Promise<TabId>;
 
   selectTab(id: TabId): Promise<void>;
+  sleepTab(id: TabId): Promise<void>;
+  wakeTab(id: TabId): Promise<void>;
   /**
    * Opens a tab on the home URL and returns it.
    *

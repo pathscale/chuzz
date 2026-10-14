@@ -46,6 +46,20 @@ export function BrowserHeader(props: { onOpenSettings: () => void }): JSX.Elemen
       </TabList>
 
       <Button
+        id="chuzz-sleep-active"
+        variant="outline"
+        size="sm"
+        disabled={browser.activeTab()?.lifecycle === "waking" || browser.activeTab()?.lifecycle === "discarding"}
+        onClick={() => {
+          const tab = browser.activeTab();
+          if (!tab) return;
+          if (tab.lifecycle === "sleeping" || tab.lifecycle === "restore-failed") browser.wakeTab(tab.id);
+          else browser.sleepTab(tab.id);
+        }}
+      >
+        {browser.activeTab()?.lifecycle === "sleeping" || browser.activeTab()?.lifecycle === "restore-failed" ? "Wake tab" : "Sleep tab"}
+      </Button>
+      <Button
         id="chuzz-settings"
         variant="outline"
         size="sm"
@@ -112,7 +126,7 @@ function TabPill(props: { tab: Tab; isActive: boolean }): JSX.Element {
   return (
     <BrowserTab
       id={props.tab.id}
-      title={props.tab.title}
+      title={`${props.tab.title}${props.tab.lifecycle === "sleeping" ? " (Sleeping)" : props.tab.lifecycle === "waking" ? " (Waking)" : ""}`}
       status={props.tab.status}
       active={props.isActive}
       closable={browser.state.tabs.length > 1}
