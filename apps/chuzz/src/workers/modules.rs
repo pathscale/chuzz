@@ -7,7 +7,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use blitz_script::ScriptFetcher;
+
 use blitz_script::boa_engine::module::{ModuleLoader, ModuleRequest, Referrer};
 use blitz_script::boa_engine::{Context, JsNativeError, JsResult, JsString, Module, Source};
 use blitz_traits::net::{Request, Url};
@@ -40,16 +40,8 @@ impl Loader {
                 .with_message("worker terminated")
                 .into());
         }
-        if matches!(url.scheme(), "data" | "file") {
-            let source = blitz_script::DefaultScriptFetcher
-                .fetch(url)
-                .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-            return Ok((url.clone(), source));
-        }
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(JsNativeError::typ()
-                .with_message("unsupported script URL")
-                .into());
+        if !matches!(url.scheme(), "http" | "https" | "data" | "file") {
+            return Err(JsNativeError::typ().with_message("unsupported script URL").into());
         }
         let response = nagoya::block_on(cancellable(
             &self.endpoint,

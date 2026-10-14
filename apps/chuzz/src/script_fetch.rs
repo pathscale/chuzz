@@ -70,11 +70,8 @@ impl blitz_script::ScriptFetcher for PageScripts {
         if let Some(source) = self.scripts.get(url) {
             return Ok(source.clone());
         }
-        match url.scheme() {
-            "http" | "https" => self.fetch_over_network(url),
-            // `file:` and `data:` still belong to the default fetcher: it
-            // decodes data URLs correctly and needs no network.
-            _ => blitz_script::DefaultScriptFetcher.fetch(url),
-        }
+        // Local scripts must pass through the same document capability as
+        // network scripts. The default fetcher reads files directly.
+        self.fetch_over_network(url)
     }
 }

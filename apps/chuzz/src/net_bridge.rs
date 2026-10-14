@@ -1,8 +1,8 @@
 //! Page networking, cookie access and completion wakeups shared by both hosts.
 
-use std::future::poll_fn;
+
 use std::sync::{Arc, Mutex};
-use std::task::{Poll, Waker};
+use std::task::Waker;
 use std::time::Duration;
 
 use blitz_dom::Document as _;
@@ -12,7 +12,7 @@ use blitz_script::boa_engine::{
 };
 use blitz_traits::net::Url;
 use blitz_traits::platform::{
-    FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse,
+    FetchError, FetchRequest, FetchResponse,
 };
 use blitz_traits::shell::ShellProvider;
 
@@ -114,86 +114,17 @@ fn default_credentials() -> String {
     "same-origin".to_owned()
 }
 
-struct ScriptCookies {
-    jar: Arc<crate::cookie_store::BrowserCookieStore>,
-    origin: Option<Url>,
-}
-
-impl ScriptCookies {
-    fn allows(&self, url: &Url) -> bool {
-        self.origin
-            .as_ref()
-            .is_some_and(|origin| origin.origin() == url.origin())
-    }
-}
-
-impl blitz_traits::net::CookieJar for ScriptCookies {
-    fn cookies_header(&self, url: &Url) -> Option<blitz_traits::net::http::HeaderValue> {
-        if self.allows(url) {
-            blitz_traits::net::CookieJar::cookies_header(self.jar.as_ref(), url)
-        } else {
-            None
-        }
-    }
-
-    fn store_from_response(&self, url: &Url, headers: &blitz_traits::net::http::HeaderMap) {
-        if self.allows(url) {
-            blitz_traits::net::CookieJar::store_from_response(self.jar.as_ref(), url, headers);
-        }
-    }
-}
-
-type FetchResult = Result<FetchResponse, FetchError>;
-
-#[derive(Default)]
-struct CompletionState {
-    result: Option<FetchResult>,
-    waker: Option<Waker>,
-}
-
-#[derive(Clone, Default)]
-struct Completion(Arc<Mutex<CompletionState>>);
-
-impl FetchHandler for Completion {
-    fn complete(self: Box<Self>, result: FetchResult) {
-        let waker = {
-            let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
-            state.result = Some(result);
-            state.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
-}
-
 pub(crate) async fn fetch_response(
-    provider: &blitz_net::Provider,
+    provider: &NetProvider,
     request: FetchRequest,
-) -> FetchResult {
-    let completion = Completion::default();
-    FetchProvider::fetch(provider, request, Box::new(completion.clone()));
-    poll_fn(|context| {
-        let mut state = completion
-            .0
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if let Some(result) = state.result.take() {
-            Poll::Ready(result)
-        } else {
-            state.waker = Some(context.waker().clone());
-            Poll::Pending
-        }
-    })
-    .await
+) -> Result<FetchResponse, FetchError> {
+    provider.fetch_platform_async(request).await
 }
 
 #[derive(Clone)]
 struct ScriptHost {
     net: Arc<NetProvider>,
-    same_origin: Arc<blitz_net::Provider>,
-    include: Arc<blitz_net::Provider>,
-    omit: Arc<blitz_net::Provider>,
+
     base: Option<Url>,
     deadline: Duration,
 }
@@ -309,13 +240,15 @@ impl ScriptHost {
         if matches!(method.as_str(), "CONNECT" | "TRACE" | "TRACK") {
             return Err("forbidden request method".to_owned());
         }
-        let provider = match request.credentials.as_str() {
-            "same-origin" => &self.same_origin,
-            "include" => &self.include,
-            "omit" => &self.omit,
+        let credentials = match request.credentials.as_str() {
+            "same-origin" => blitz_traits::net::Credentials::SameOrigin,
+            "include" => blitz_traits::net::Credentials::Include,
+            "omit" => blitz_traits::net::Credentials::Omit,
             _ => return Err("invalid credentials mode".to_owned()),
         };
         let mut wire = FetchRequest::get(url.clone()).method(method.clone());
+        wire.credentials = credentials;
+        wire.initiator = self.net.initiator();
         let mut unsafe_headers = Vec::new();
         for (name, value) in request.headers {
             let name =
@@ -391,6 +324,8 @@ impl ScriptHost {
                 unsafe_headers.sort();
                 unsafe_headers.dedup();
                 let mut preflight = FetchRequest::get(url.clone()).method(Method::OPTIONS);
+                preflight.credentials = blitz_traits::net::Credentials::Omit;
+                preflight.initiator = self.net.initiator();
                 preflight.headers.insert(
                     HeaderName::from_static("origin"),
                     HeaderValue::from_str(origin).map_err(|error| error.to_string())?,
@@ -407,7 +342,7 @@ impl ScriptHost {
                     );
                 }
                 crate::languages::insert_accept_language(&mut preflight.headers);
-                let response = fetch_response(&self.omit, preflight)
+                let response = fetch_response(&self.net, preflight)
                     .await
                     .map_err(|error| error.to_string())?;
                 let methods = header_tokens(&response, "access-control-allow-methods");
@@ -429,7 +364,7 @@ impl ScriptHost {
             }
         }
 
-        let response = fetch_response(provider, wire)
+        let response = fetch_response(&self.net, wire)
             .await
             .map_err(|error| error.to_string())?;
         let response_cross_origin = matches!(response.url.scheme(), "http" | "https")
@@ -558,20 +493,7 @@ pub fn install(
 ) {
     let handler_net = Arc::clone(&net);
     let host = ScriptHost {
-        same_origin: Arc::new(blitz_net::Provider::with_user_agent_and_cookie_provider(
-            None,
-            net.user_agent(),
-            Arc::new(ScriptCookies {
-                jar: net.cookie_store(),
-                origin: base.clone(),
-            }),
-        )),
-        include: Arc::new(blitz_net::Provider::with_user_agent_and_cookie_provider(
-            None,
-            net.user_agent(),
-            net.cookie_store(),
-        )),
-        omit: Arc::new(blitz_net::Provider::with_user_agent(None, net.user_agent())),
+
         net,
         base,
         deadline,
