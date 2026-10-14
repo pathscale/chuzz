@@ -5,6 +5,7 @@ import { command, verifySignature } from "../../scripts/verify-sandbox2-signatur
 
 const script = import.meta.dir;
 const repository = resolve(script, "../..");
+process.chdir(repository);
 const args = Bun.argv.slice(2);
 const profile = args[0] === "debug" || args[0] === "release" ? args.shift()! : "release";
 for (let index = 0; index < args.length; index += 2) {
@@ -51,7 +52,7 @@ for (const name of ["chuzz-headless", "chuzz-gui"]) {
 await command(["/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime", "--entitlements", join(script, "entitlements.plist"), bundle]);
 await command(["/usr/bin/codesign", "--verify", "--deep", "--strict", bundle]);
 await verifySignature(join(macos, "chuzz-gui"));
-await command([process.execPath, join(repository, "scripts/qa-sandbox2.ts"), "--startup-only"]);
+await command([process.execPath, join(repository, "scripts/qa-sandbox2.ts"), "--startup-only", "--bundle", bundle]);
 const now = new Date();
 await utimes(bundle, now, now);
 console.log(bundle);
