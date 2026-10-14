@@ -36,14 +36,15 @@
 (allow process-info-pidinfo process-info-rusage process-codesigning-status* (target self))
 (allow signal (target self))
 (allow sysctl-read
-    (sysctl-name "hw.memsize" "hw.ncpu" "hw.activecpu" "hw.logicalcpu" "hw.physicalcpu" "hw.pagesize" "kern.osrelease" "kern.osversion" "kern.boottime")
+    (sysctl-name "hw.memsize" "hw.ncpu" "hw.activecpu" "hw.logicalcpu" "hw.physicalcpu" "hw.pagesize" "kern.osrelease" "kern.osversion" "kern.boottime" "kern.osproductversion" "kern.ostype" "kern.maxfilesperproc" "hw.cputype" "hw.cpusubtype" "hw.machine" "sysctl.name2oid")
     (sysctl-name-prefix "hw.optional." "hw.perflevel" "net.routetable"))
 ; Metadata does not permit file contents or directory enumeration.
 (allow file-read-metadata)
 (allow file-read*
-    (subpath "/System/Library" "/System/Cryptexes/OS" "/System/Volumes/Preboot/Cryptexes/OS" "/usr/lib" "/usr/share" "/private/var/db/timezone" "/Library/Fonts")
+    (subpath "/System/Library" "/System/Cryptexes/OS" "/System/Volumes/Preboot/Cryptexes/OS" "/usr/lib" "/usr/share" "/private/var/db/timezone" "/Library/Fonts" "/Library/Apple/System")
     (literal "/dev/null" "/dev/zero" "/dev/random" "/dev/urandom")
     (literal @SHELL@))
+(allow file-write-data (literal "/dev/null"))
 (allow file-map-executable
     (subpath "/System/Library" "/System/Cryptexes/OS" "/System/Volumes/Preboot/Cryptexes/OS" "/usr/lib")
     (literal @SHELL@))

@@ -58,7 +58,7 @@ pub(crate) fn probe_html() -> Option<String> {
 fn own_directory(path: &Path, home: &Path) -> Result<PathBuf, String> {
     let path = path.canonicalize().map_err(|error| error.to_string())?;
     if !path.is_dir() || home.starts_with(&path)
-        || ["/", "/Users", "/private", "/private/tmp", "/private/var", "/System", "/Library", "/usr", "/opt"].iter().any(|root| path == Path::new(root))
+        || ["/", "/Users", "/private", "/private/tmp", "/private/var", "/private/etc", "/private/var/db", "/bin", "/sbin", "/System", "/Library", "/usr", "/opt"].iter().any(|root| path == Path::new(root))
     {
         return Err("sandbox-directory-too-broad: select a browser or content directory".to_owned());
     }
@@ -88,7 +88,10 @@ fn install() -> Result<Arc<Directories>, String> {
     let old_profile = home.join("Library/Application Support/ai.chuzz.browser");
     if std::env::var_os("CHUZZ_PROFILE_DIR").is_none() && !profile.exists() && old_profile.is_dir() {
         let old_profile = own_directory(&old_profile, &home)?;
-        migrate_profile(&old_profile, &profile)?;
+        let staging = cache.join("profile-import");
+        if staging.exists() { std::fs::remove_dir_all(&staging).map_err(|error| error.to_string())?; }
+        migrate_profile(&old_profile, &staging)?;
+        std::fs::rename(&staging, &profile).map_err(|error| error.to_string())?;
     }
     std::fs::create_dir_all(&profile).map_err(|error| error.to_string())?;
     let profile = own_directory(&profile, &home)?;
