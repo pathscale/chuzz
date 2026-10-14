@@ -1,6 +1,6 @@
 //! WebAuthn client policy over one process-wide CTAP2 platform authenticator.
 //!
-//! The page thread only validates requests and polls owned results. Secure
+//! The page thread validates requests and takes notified Arc results. Secure
 //! Enclave signing and credential persistence run on a blocking host thread.
 
 use std::collections::HashMap;
@@ -556,7 +556,133 @@ struct Job {
     owner: u64,
     deadline: Instant,
     discarded: AtomicBool,
-    result: Mutex<Option<Result<Json>>>,
+    result: Mutex<Option<Arc<Result<Json>>>>,
+    notifications: std::sync::Weak<Notifications>,
+    completed: nagoya::sync::Notify,
+}
+
+struct CompletionRing {
+    producer: spsc::Producer<Arc<Job>>,
+    consumer: spsc::Consumer<Arc<Job>>,
+    closed: bool,
+}
+
+pub(crate) struct Notifications {
+    ring: Mutex<CompletionRing>,
+    wake: crate::net_bridge::PageWake,
+    ready: nagoya::sync::Notify,
+}
+
+impl Notifications {
+    pub(crate) fn new(wake: crate::net_bridge::PageWake) -> Arc<Self> {
+        let (producer, consumer) = spsc::make(128);
+        Arc::new(Self {
+            ring: Mutex::new(CompletionRing {
+                producer,
+                consumer,
+                closed: false,
+            }),
+            wake,
+            ready: nagoya::sync::Notify::new(),
+        })
+    }
+
+    fn enqueue(&self, job: Arc<Job>) {
+        let ring = lock(&self.ring);
+        if ring.closed {
+            return;
+        }
+        if let Some(job) = ring.producer.try_push(job) {
+            // Native status/abort callers may have consumed old completions.
+            // At most 64 requests still own a result, so compact those entries.
+            let mut live = Vec::new();
+            while let Some(old) = ring.consumer.try_pop() {
+                if !old.discarded.load(Ordering::Acquire) && lock(&old.result).is_some() {
+                    live.push(old);
+                }
+            }
+            for old in live {
+                assert!(
+                    ring.producer.try_push(old).is_none(),
+                    "WebAuthn live completion limit"
+                );
+            }
+            assert!(
+                ring.producer.try_push(job).is_none(),
+                "WebAuthn live completion limit"
+            );
+        }
+        drop(ring);
+        self.ready.notify_one();
+        self.wake.wake();
+    }
+
+    pub(crate) async fn changed(&self) {
+        self.ready.notified().await;
+    }
+
+    pub(crate) fn bind(&self, waker: Option<&std::task::Waker>) {
+        self.wake.bind(waker);
+    }
+
+    pub(crate) fn close(&self) {
+        let mut ring = lock(&self.ring);
+        ring.closed = true;
+        while ring.consumer.try_pop().is_some() {}
+        drop(ring);
+        self.ready.notify_one();
+    }
+
+    pub(crate) fn take(&self, owner: u64) -> Vec<(u64, Arc<Json>)> {
+        let completed = {
+            let ring = lock(&self.ring);
+            let mut completed = Vec::new();
+            while let Some(job) = ring.consumer.try_pop() {
+                completed.push(job);
+            }
+            completed
+        };
+        let mut requests = lock(&REQUESTS);
+        completed
+            .into_iter()
+            .filter_map(|job| {
+                if job.owner != owner
+                    || !requests
+                        .jobs
+                        .get(&job.id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &job))
+                {
+                    return None;
+                }
+                let result = lock(&job.result).take()?;
+                requests.jobs.remove(&job.id);
+                let response = match result.as_ref() {
+                    Ok(value) => serde_json::json!({ "result": value }),
+                    Err(error) => error.clone().wire(),
+                };
+                Some((job.id, Arc::new(response)))
+            })
+            .collect()
+    }
+}
+
+fn complete(job: Arc<Job>, result: Arc<Result<Json>>) {
+    {
+        let mut current = lock(&job.result);
+        if current.is_some() || job.discarded.load(Ordering::Acquire) {
+            return;
+        }
+        *current = Some(result);
+    }
+    job.completed.notify_one();
+    if cfg!(feature = "reactor-witness")
+        && std::env::var("CHUZZ_REACTOR_DEFECT").as_deref() == Ok("webauthn-notification")
+    {
+        return;
+    }
+    if let Some(notifications) = job.notifications.upgrade() {
+        notifications.enqueue(job);
+    }
 }
 
 impl Job {
@@ -571,21 +697,33 @@ impl Job {
     }
 }
 
-pub(crate) fn create(owner: u64, origin: &str, secure: bool, options: CreationOptions) -> Json {
+pub(crate) fn create(
+    owner: u64,
+    origin: &str,
+    secure: bool,
+    options: CreationOptions,
+    notifications: &Arc<Notifications>,
+) -> Json {
     match prepare_create(origin, secure, options) {
-        Ok(prepared) => begin(owner, prepared),
+        Ok(prepared) => begin(owner, Arc::new(prepared), notifications),
         Err(error) => error.wire(),
     }
 }
 
-pub(crate) fn get(owner: u64, origin: &str, secure: bool, options: RequestOptions) -> Json {
+pub(crate) fn get(
+    owner: u64,
+    origin: &str,
+    secure: bool,
+    options: RequestOptions,
+    notifications: &Arc<Notifications>,
+) -> Json {
     match prepare_get(origin, secure, options) {
-        Ok(prepared) => begin(owner, prepared),
+        Ok(prepared) => begin(owner, Arc::new(prepared), notifications),
         Err(error) => error.wire(),
     }
 }
 
-fn begin(owner: u64, prepared: Prepared) -> Json {
+fn begin(owner: u64, prepared: Arc<Prepared>, notifications: &Arc<Notifications>) -> Json {
     let mut requests = lock(&REQUESTS);
     if requests.active.is_some() || requests.jobs.len() >= 64 {
         return Error::denied().wire();
@@ -597,25 +735,32 @@ fn begin(owner: u64, prepared: Prepared) -> Json {
         deadline: Instant::now() + Duration::from_millis(prepared.timeout.clamp(1, 120_000)),
         discarded: AtomicBool::new(false),
         result: Mutex::new(None),
+        notifications: Arc::downgrade(notifications),
+        completed: nagoya::sync::Notify::new(),
     });
     requests.active = Some(id);
     requests.jobs.insert(id, Arc::clone(&job));
     drop(requests);
 
     let worker_job = Arc::clone(&job);
+    // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: blocking platform authenticator.
+    #[allow(clippy::disallowed_methods)]
     let spawned = std::thread::Builder::new()
         .name("chuzz-webauthn".into())
         .spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| perform(&prepared, &worker_job)))
                 .unwrap_or_else(|_| Err(Error::unknown()));
-            *lock(&worker_job.result) = Some(result);
-            let mut requests = lock(&REQUESTS);
-            if requests.active == Some(worker_job.id) {
-                requests.active = None;
+            {
+                let mut requests = lock(&REQUESTS);
+                if requests.active == Some(worker_job.id) {
+                    requests.active = None;
+                }
+                if worker_job.discarded.load(Ordering::Acquire) {
+                    requests.jobs.remove(&worker_job.id);
+                }
             }
-            if worker_job.discarded.load(Ordering::Acquire) {
-                requests.jobs.remove(&worker_job.id);
-            }
+            complete(Arc::clone(&worker_job), Arc::new(result));
+            worker_job
         });
     if spawned.is_err() {
         let mut requests = lock(&REQUESTS);
@@ -625,6 +770,18 @@ fn begin(owner: u64, prepared: Prepared) -> Json {
         }
         return Error::unknown().wire();
     }
+    drop(nagoya::spawn(async move {
+        if nagoya::timeout(
+            job.deadline.saturating_duration_since(Instant::now()),
+            job.completed.notified(),
+        )
+        .await
+        .is_err()
+        {
+            complete(Arc::clone(&job), Arc::new(Err(Error::denied())));
+        }
+        job
+    }));
     serde_json::json!(id)
 }
 
@@ -670,9 +827,9 @@ pub(crate) fn status(owner: u64, id: u64) -> Json {
     let result = lock(&job.result).take();
     if let Some(result) = result {
         requests.jobs.remove(&id);
-        return match result {
+        return match result.as_ref() {
             Ok(result) => serde_json::json!({ "result": result }),
-            Err(error) => error.wire(),
+            Err(error) => error.clone().wire(),
         };
     }
     if Instant::now() >= job.deadline {
@@ -689,6 +846,7 @@ pub(crate) fn abort(owner: u64, id: u64) {
         && let Some(job) = requests.jobs.remove(&id)
     {
         job.discarded.store(true, Ordering::Release);
+        job.completed.notify_one();
     }
     // A blocking SE call still owns active until its worker returns.
 }
@@ -698,6 +856,7 @@ pub(crate) fn release_realm(owner: u64) {
     requests.jobs.retain(|_, job| {
         if job.owner == owner {
             job.discarded.store(true, Ordering::Release);
+            job.completed.notify_one();
             false
         } else {
             true
