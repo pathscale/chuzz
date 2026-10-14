@@ -65,11 +65,10 @@ impl Error {
 }
 
 pub(super) fn allocate() -> Result<u64, Error> {
-    NEXT_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            (value < MAX_ID).then_some(value + 1)
-        })
-        .map_err(|_| Error::named("QuotaExceededError", "media handle space exhausted"))
+    crate::atomic_update::update_u64(&NEXT_ID, Ordering::Relaxed, Ordering::Relaxed, |value| {
+        (value < MAX_ID).then_some(value + 1)
+    })
+    .map_err(|_| Error::named("QuotaExceededError", "media handle space exhausted"))
 }
 
 struct Store {

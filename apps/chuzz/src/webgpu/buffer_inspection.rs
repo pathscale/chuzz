@@ -270,12 +270,11 @@ impl DeviceConnection {
         // WebGPU only permits copies of a multiple of four bytes. An odd tail
         // cannot appear in an aligned request, but size still reports that tail.
         let bytes = entry.size / 4 * 4;
-        if budget
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes)
-                    .filter(|total| *total <= SNAPSHOT_BYTES_LIMIT)
-            })
-            .is_err()
+        if crate::atomic_update::update_u64(&budget, Ordering::AcqRel, Ordering::Acquire, |used| {
+            used.checked_add(bytes)
+                .filter(|total| *total <= SNAPSHOT_BYTES_LIMIT)
+        })
+        .is_err()
         {
             *lock(&history.error) = Some("WebGPU buffer snapshot memory limit reached".to_owned());
             return;

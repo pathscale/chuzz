@@ -22,12 +22,14 @@ struct StartupSlot;
 
 impl StartupSlot {
     fn acquire() -> Option<Self> {
-        STARTING
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < STARTUP_LIMIT).then_some(count + 1)
-            })
-            .ok()
-            .map(|_| Self)
+        crate::atomic_update::update_usize(
+            &STARTING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |count| (count < STARTUP_LIMIT).then_some(count + 1),
+        )
+        .ok()
+        .map(|_| Self)
     }
 }
 
