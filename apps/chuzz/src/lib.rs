@@ -126,7 +126,6 @@ pub mod ws_bridge;
 // `javascript` carry.
 #[cfg(all(feature = "capture", feature = "javascript"))]
 pub mod serve;
-// Shared by `--wasm` in the window and `--capture-wasm` headlessly, so a
-// guest-built page cannot render one way in a tab and another in a capture.
-#[cfg(feature = "wasm")]
-pub mod wasm_page;
+pub mod wasm_retired;
+#[cfg(test)]
+mod wasm_page;
