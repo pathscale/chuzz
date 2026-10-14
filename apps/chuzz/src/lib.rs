@@ -97,6 +97,8 @@ pub mod tab_stash;
 mod tab_native;
 #[cfg(feature = "gui")]
 mod tab_session;
+#[cfg(feature = "gui")]
+mod tab_resources;
 pub mod nav;
 #[cfg(feature = "gui")]
 pub mod tab_records;

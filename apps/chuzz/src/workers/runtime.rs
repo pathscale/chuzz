@@ -435,7 +435,7 @@ pub(super) fn run(
             async {
                 use std::future::Future;
                 use std::task::Poll;
-                let mut input = Box::pin(endpoint.inbox.recv());
+                let mut input = Box::pin(async { super::cancellable(&endpoint, endpoint.inbox.recv()).await.unwrap_or(Input::Stop) });
                 let mut completed = Box::pin(async {
                     match &notifications {
                         Some(notifications) => notifications.changed().await,
@@ -455,6 +455,7 @@ pub(super) fn run(
             break;
         }
         match input {
+            Ok(Some(Input::Stop)) => break,
             Ok(Some(Input::Message(wire))) if startup.is_some() => deferred.push_back(wire),
             Ok(Some(Input::Message(wire))) => dispatch(&host, wire, &mut context),
             Ok(Some(Input::Fetch { id, metadata, body })) => {

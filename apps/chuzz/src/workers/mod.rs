@@ -102,6 +102,7 @@ impl<T> Queue<T> {
 }
 
 enum Input {
+    Stop,
     Message(Wire),
     Fetch {
         id: u64,
@@ -128,11 +129,14 @@ struct Endpoint {
     finished: AtomicBool,
     inbox: Queue<Input>,
     runtime: Arc<nagoya::runtime::Runtime>,
+    abort: blitz_traits::net::AbortSignal,
+    _release: blitz_dom::release::ReleaseLease,
 }
 
 impl Endpoint {
     fn terminate(&self) {
         self.canceled.store(true, Ordering::Release);
+        blitz_traits::net::AbortController { signal: self.abort.clone() }.abort();
         self.inbox.clear();
         self.runtime.pool().shut_down();
     }
@@ -159,14 +163,19 @@ struct Page {
     next_id: AtomicU64,
     workers: Mutex<HashMap<u64, Arc<Endpoint>>>,
     ready: Queue<Delivery>,
+    lifetime: Arc<blitz_dom::release::Teardown>,
+}
+
+impl Page {
+    fn retire(&self) {
+        let endpoints = std::mem::take(&mut *lock(&self.workers));
+        for endpoint in endpoints.values() { endpoint.terminate(); }
+        self.ready.clear();
+    }
 }
 
 impl Drop for Page {
-    fn drop(&mut self) {
-        for endpoint in lock(&self.workers).values() {
-            endpoint.terminate();
-        }
-    }
+    fn drop(&mut self) { self.retire(); }
 }
 
 #[derive(Clone)]
@@ -218,14 +227,7 @@ fn register(
 /// Socket futures continue to use the process's existing Nagoya networking.
 async fn cancellable<F: Future>(endpoint: &Endpoint, future: F) -> Result<F::Output, &'static str> {
     let mut future = Box::pin(future);
-    let mut cancellation = Box::pin(async {
-        loop {
-            if endpoint.stopped() {
-                return;
-            }
-            nagoya::sleep(Duration::from_millis(5)).await;
-        }
-    });
+    let mut cancellation = Box::pin(endpoint.abort.cancelled());
     poll_fn(|context| {
         if endpoint.stopped() {
             return Poll::Ready(Err("worker terminated"));
@@ -292,6 +294,8 @@ fn create(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
         finished: AtomicBool::new(false),
         inbox: Queue::default(),
         runtime: Arc::clone(&worker_runtime),
+        abort: Default::default(),
+        _release: page.lifetime.lease(),
     });
     lock(&page.workers).insert(id, Arc::clone(&endpoint));
     let weak_page = Arc::downgrade(&page);
@@ -320,6 +324,7 @@ fn create(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
                 })),
             );
         }
+        blitz_script::collect_retired_realms();
         endpoint.finished.store(true, Ordering::Release);
         endpoint.inbox.clear();
         endpoint.post(&weak_page, Output::Closed);
@@ -367,7 +372,10 @@ pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
         next_id: AtomicU64::new(1),
         workers: Mutex::new(HashMap::new()),
         ready: Queue::default(),
+        lifetime: document.teardown_receipt(),
     });
+    let retiring_page = Arc::downgrade(&page);
+    document.add_teardown_hook(move || { if let Some(page) = retiring_page.upgrade() { page.retire(); } });
     document.with_js_context(|context| {
         context.insert_data(PageHost(Arc::clone(&page)));
         context

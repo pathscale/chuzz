@@ -23,6 +23,7 @@ use crate::document_loader::NetProvider;
 struct WakeState {
     waker: Option<Waker>,
     shell: Option<Arc<dyn ShellProvider>>,
+    retired: bool,
 }
 
 /// Publish results before waking the document. Never hold a queue lock while
@@ -35,7 +36,15 @@ impl PageWake {
         Self(Arc::new(Mutex::new(WakeState {
             waker: None,
             shell: Some(shell),
+            retired: false,
         })))
+    }
+
+    fn retire(&self) {
+        let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        state.retired = true;
+        state.waker.take();
+        state.shell.take();
     }
 
     pub(crate) fn bind(&self, waker: Option<&Waker>) {
@@ -50,6 +59,7 @@ impl PageWake {
     pub(crate) fn wake(&self) {
         let (waker, shell) = {
             let state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+            if state.retired { return; }
             (state.waker.clone(), state.shell.clone())
         };
         if let Some(waker) = waker {
@@ -114,6 +124,11 @@ fn default_credentials() -> String {
     "same-origin".to_owned()
 }
 
+async fn fetch_response_owned(provider: &NetProvider, request: FetchRequest, lifetime: &Arc<blitz_dom::release::Teardown>) -> Result<FetchResponse, FetchError> {
+    let _lease = lifetime.lease();
+    provider.fetch_platform_async(request).await
+}
+
 pub(crate) async fn fetch_response(
     provider: &NetProvider,
     request: FetchRequest,
@@ -127,6 +142,8 @@ struct ScriptHost {
 
     base: Option<Url>,
     deadline: Duration,
+    signal: blitz_traits::net::AbortSignal,
+    lifetime: Arc<blitz_dom::release::Teardown>,
 }
 
 fn failure(message: impl std::fmt::Display) -> serde_json::Value {
@@ -207,6 +224,7 @@ fn header_tokens(response: &FetchResponse, name: &str) -> Vec<String> {
 
 impl ScriptHost {
     async fn perform(&self, request: NetRequest) -> (serde_json::Value, Option<Vec<u8>>) {
+        let _lease = self.lifetime.lease();
         match nagoya::timeout(self.deadline, self.perform_inner(request)).await {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => (failure(error), None),
@@ -246,7 +264,7 @@ impl ScriptHost {
             "omit" => blitz_traits::net::Credentials::Omit,
             _ => return Err("invalid credentials mode".to_owned()),
         };
-        let mut wire = FetchRequest::get(url.clone()).method(method.clone());
+        let mut wire = FetchRequest::get(url.clone()).method(method.clone()).signal(self.signal.clone());
         wire.credentials = credentials;
         wire.initiator = self.net.initiator();
         let mut unsafe_headers = Vec::new();
@@ -323,7 +341,7 @@ impl ScriptHost {
             {
                 unsafe_headers.sort();
                 unsafe_headers.dedup();
-                let mut preflight = FetchRequest::get(url.clone()).method(Method::OPTIONS);
+                let mut preflight = FetchRequest::get(url.clone()).method(Method::OPTIONS).signal(self.signal.clone());
                 preflight.credentials = blitz_traits::net::Credentials::Omit;
                 preflight.initiator = self.net.initiator();
                 preflight.headers.insert(
@@ -342,7 +360,7 @@ impl ScriptHost {
                     );
                 }
                 crate::languages::insert_accept_language(&mut preflight.headers);
-                let response = fetch_response(&self.net, preflight)
+                let response = fetch_response_owned(&self.net, preflight, &self.lifetime)
                     .await
                     .map_err(|error| error.to_string())?;
                 let methods = header_tokens(&response, "access-control-allow-methods");
@@ -364,7 +382,7 @@ impl ScriptHost {
             }
         }
 
-        let response = fetch_response(&self.net, wire)
+        let response = fetch_response_owned(&self.net, wire, &self.lifetime)
             .await
             .map_err(|error| error.to_string())?;
         let response_cross_origin = matches!(response.url.scheme(), "http" | "https")
@@ -492,11 +510,16 @@ pub fn install(
     base: Option<Url>,
 ) {
     let handler_net = Arc::clone(&net);
+    let abort = blitz_traits::net::AbortController::default();
+    let signal = abort.signal.clone();
+    document.add_teardown_hook(move || abort.abort());
     let host = ScriptHost {
 
         net,
         base,
         deadline,
+        signal,
+        lifetime: document.teardown_receipt(),
     };
     document.with_js_context(|context| {
         context.insert_data(host.clone());
@@ -533,7 +556,10 @@ pub fn install(
         wake: wake.clone(),
     };
     let handler_mailbox = mailbox.clone();
-    let sockets = crate::ws_bridge::Bridge::new(wake.clone());
+    let sockets = crate::ws_bridge::Bridge::with_lifetime(wake.clone(), document.teardown_receipt());
+    let retiring_sockets = sockets.clone();
+    let retiring_wake = wake.clone();
+    document.add_teardown_hook(move || { retiring_sockets.retire(); retiring_wake.retire(); });
     let handler_sockets = sockets.clone();
     let handler_gpu = gpu.clone();
     let initial_scroll = document.inner().viewport_scroll();
