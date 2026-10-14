@@ -173,6 +173,8 @@ pub struct Bridge {
     events: Arc<Mutex<Vec<Event>>>,
     senders: Arc<Mutex<HashMap<u64, Arc<Outbox>>>>,
     wake: crate::net_bridge::PageWake,
+    lifetime: Option<Arc<blitz_dom::release::Teardown>>,
+    signal: blitz_traits::net::AbortSignal,
 }
 
 impl Bridge {
@@ -183,7 +185,18 @@ impl Bridge {
         }
     }
 
+    pub(crate) fn with_lifetime(wake: crate::net_bridge::PageWake, lifetime: Arc<blitz_dom::release::Teardown>) -> Self {
+        Self { wake, lifetime: Some(lifetime), ..Default::default() }
+    }
+
+    pub(crate) fn retire(&self) {
+        blitz_traits::net::AbortController { signal: self.signal.clone() }.abort();
+        self.senders.lock().unwrap().clear();
+        self.events.lock().unwrap().clear();
+    }
+
     fn post(&self, id: u64, payload: serde_json::Value) {
+        if self.signal.aborted() { return; }
         crate::serve::verbose(&format!("socket {id} produced {payload}"));
         // A poisoned lock means a panic on the document thread while holding
         // it. The page is already lost; dropping the event beats panicking on
@@ -244,6 +257,9 @@ impl Bridge {
 
         let bridge = self.clone();
         nagoya::spawn(async move {
+            let _lease = bridge.lifetime.as_ref().map(|receipt| receipt.lease());
+            let mut cancelled = Box::pin(bridge.signal.cancelled());
+            let mut work = Box::pin(async {
             let connected = match open_socket(
                 &url,
                 &command.protocols,
@@ -279,6 +295,12 @@ impl Bridge {
                 .run_connection(id, connected.connection, &outbox)
                 .await;
             bridge.forget(id);
+            });
+            std::future::poll_fn(|cx| {
+                use std::future::Future;
+                if cancelled.as_mut().poll(cx).is_ready() { return std::task::Poll::Ready(()); }
+                work.as_mut().poll(cx)
+            }).await;
         });
     }
 
