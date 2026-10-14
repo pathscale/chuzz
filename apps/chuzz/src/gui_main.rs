@@ -38,7 +38,6 @@ fn control_override_enabled() -> bool {
     )
 }
 
-
 #[global_allocator]
 static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 
@@ -55,7 +54,6 @@ fn main() {
     // function's own comment for why the provider is named here rather than
     // left to the resolution.
     chuzz::install_crypto_provider();
-
 
     // Keep the process worker pool and socket reactor alive for captures,
     // page loads, and cookie persistence.

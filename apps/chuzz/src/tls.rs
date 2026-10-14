@@ -1,7 +1,7 @@
 //! WSS uses the same ChaCha-only provider and certificate verification as HTTPS.
 
-use std::sync::{Arc, OnceLock};
 use rustls::{ClientConfig, RootCertStore, crypto::CryptoProvider};
+use std::sync::{Arc, OnceLock};
 
 pub(crate) fn crypto_provider() -> Arc<CryptoProvider> {
     blitz_net::chacha_provider()
@@ -37,7 +37,8 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
     if let Some(path) = std::env::var_os("SANDBOX2_TLS_CA_FILE") {
         use rustls::pki_types::{CertificateDer, pem::PemObject};
         for certificate in CertificateDer::pem_file_iter(path).map_err(|error| error.to_string())? {
-            roots.add(certificate.map_err(|error| error.to_string())?)
+            roots
+                .add(certificate.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())?;
         }
     }
@@ -45,7 +46,10 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|error| error.to_string())?
         .dangerous()
-        .with_custom_certificate_verifier(blitz_net::certificate_verifier(roots, RootCertStore::empty())?)
+        .with_custom_certificate_verifier(blitz_net::certificate_verifier(
+            roots,
+            RootCertStore::empty(),
+        )?)
         .with_no_client_auth();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))

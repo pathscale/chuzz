@@ -69,9 +69,11 @@ pub(crate) fn tls_refused_html(
     let details = format!(
         r#"<p>Requested host: <strong>{host}</strong></p><p>{alert}</p><p>The requested page was not loaded. chuzz does not retry with weaker algorithms.</p><p><a href="{explainer}">Why chuzz refused this TLS connection</a></p>"#
     );
-    let chacha = matches!(reason,
+    let chacha = matches!(
+        reason,
         blitz_net::TlsPolicyError::CipherSuite
-        | blitz_net::TlsPolicyError::PeerRejectedAlgorithms { .. });
+            | blitz_net::TlsPolicyError::PeerRejectedAlgorithms { .. }
+    );
     #[cfg(feature = "sandbox2-witness")]
     let chacha = chacha && std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() != Some("tls-name");
     let details = if chacha {

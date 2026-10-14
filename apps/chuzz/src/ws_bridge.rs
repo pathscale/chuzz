@@ -178,18 +178,30 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub(crate) fn with_lifetime(wake: crate::net_bridge::PageWake, lifetime: Arc<blitz_dom::release::Teardown>) -> Self {
-        Self { wake, lifetime: Some(lifetime), ..Default::default() }
+    pub(crate) fn with_lifetime(
+        wake: crate::net_bridge::PageWake,
+        lifetime: Arc<blitz_dom::release::Teardown>,
+    ) -> Self {
+        Self {
+            wake,
+            lifetime: Some(lifetime),
+            ..Default::default()
+        }
     }
 
     pub(crate) fn retire(&self) {
-        blitz_traits::net::AbortController { signal: self.signal.clone() }.abort();
+        blitz_traits::net::AbortController {
+            signal: self.signal.clone(),
+        }
+        .abort();
         self.senders.lock().unwrap().clear();
         self.events.lock().unwrap().clear();
     }
 
     fn post(&self, id: u64, payload: serde_json::Value) {
-        if self.signal.aborted() { return; }
+        if self.signal.aborted() {
+            return;
+        }
         crate::serve::verbose(&format!("socket {id} produced {payload}"));
         // A poisoned lock means a panic on the document thread while holding
         // it. The page is already lost; dropping the event beats panicking on
@@ -253,47 +265,50 @@ impl Bridge {
             let _lease = bridge.lifetime.as_ref().map(|receipt| receipt.lease());
             let mut cancelled = Box::pin(bridge.signal.cancelled());
             let mut work = Box::pin(async {
-            let connected = match open_socket(
-                &url,
-                &command.protocols,
-                command.origin.as_deref(),
-                Arc::clone(&outbox),
-            )
-            .await
-            {
-                Ok(connected) => connected,
-                Err(error) => {
-                    // The page is told the same thing a browser tells it: the
-                    // connection failed. The detail goes in the error event
-                    // rather than being swallowed, because "it did not
-                    // connect" is the least useful sentence in networking.
-                    bridge.failed(id, "connect", error);
-                    bridge.forget(id);
-                    return;
-                }
-            };
+                let connected = match open_socket(
+                    &url,
+                    &command.protocols,
+                    command.origin.as_deref(),
+                    Arc::clone(&outbox),
+                )
+                .await
+                {
+                    Ok(connected) => connected,
+                    Err(error) => {
+                        // The page is told the same thing a browser tells it: the
+                        // connection failed. The detail goes in the error event
+                        // rather than being swallowed, because "it did not
+                        // connect" is the least useful sentence in networking.
+                        bridge.failed(id, "connect", error);
+                        bridge.forget(id);
+                        return;
+                    }
+                };
 
-            // The subprotocol the server actually chose, which is not always
-            // the first one offered and is what the page reads back off
-            // `socket.protocol`.
-            bridge.post(
-                id,
-                serde_json::json!({
-                    "type": "open",
-                    "protocol": connected.protocol.unwrap_or_default(),
-                }),
-            );
-            outbox.interruptible.store(true, Ordering::Release);
-            bridge
-                .run_connection(id, connected.connection, &outbox)
-                .await;
-            bridge.forget(id);
+                // The subprotocol the server actually chose, which is not always
+                // the first one offered and is what the page reads back off
+                // `socket.protocol`.
+                bridge.post(
+                    id,
+                    serde_json::json!({
+                        "type": "open",
+                        "protocol": connected.protocol.unwrap_or_default(),
+                    }),
+                );
+                outbox.interruptible.store(true, Ordering::Release);
+                bridge
+                    .run_connection(id, connected.connection, &outbox)
+                    .await;
+                bridge.forget(id);
             });
             std::future::poll_fn(|cx| {
                 use std::future::Future;
-                if cancelled.as_mut().poll(cx).is_ready() { return std::task::Poll::Ready(()); }
+                if cancelled.as_mut().poll(cx).is_ready() {
+                    return std::task::Poll::Ready(());
+                }
                 work.as_mut().poll(cx)
-            }).await;
+            })
+            .await;
         });
     }
 

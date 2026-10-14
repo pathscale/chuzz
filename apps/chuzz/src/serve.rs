@@ -437,7 +437,9 @@ struct WallTimeoutGuard(Option<nagoya::JoinHandle<Arc<()>>>);
 
 impl WallTimeoutGuard {
     fn start(timeout: Duration) -> Result<Self, String> {
-        if reactor_defect("wall-timeout") { return Ok(Self(None)); }
+        if reactor_defect("wall-timeout") {
+            return Ok(Self(None));
+        }
         let task = nagoya::spawn(async move {
             nagoya::sleep(timeout).await;
             eprintln!("chuzz-headless: bot child reached its wall-time limit");
@@ -517,7 +519,9 @@ fn reserve_proxy_bytes(
 mod reactor_witness_impl;
 
 #[cfg(feature = "reactor-witness")]
-pub fn reactor_witness() -> Result<(), String> { reactor_witness_impl::run() }
+pub fn reactor_witness() -> Result<(), String> {
+    reactor_witness_impl::run()
+}
 
 pub fn target_from(args: &[String]) -> Result<String, String> {
     if let Some(argument) = args.iter().skip(1).find(|arg| !arg.starts_with("--")) {
@@ -1358,7 +1362,6 @@ fn commit_render(events: &Latest<DebugEvent>, revision: &mut u64) {
     events.set_now(DebugEvent::PaintCommitted {
         revision: *revision,
     });
-
 }
 
 /// A data: page that names the URL that failed and why.
@@ -1388,7 +1391,11 @@ fn follow_navigation(
     document: &mut ScriptDocument,
     origin: &mut String,
     policy: &HeadlessPolicy,
-    load: &impl Fn(Url, Option<&StoredState>, blitz_traits::net::Initiator) -> Result<Box<ScriptDocument>, String>,
+    load: &impl Fn(
+        Url,
+        Option<&StoredState>,
+        blitz_traits::net::Initiator,
+    ) -> Result<Box<ScriptDocument>, String>,
     render: (&Latest<DebugEvent>, &mut u64),
     browser_initiated: bool,
 ) -> Result<(), String> {
@@ -1459,7 +1466,11 @@ fn serve_page(
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
     let policy = HeadlessPolicy::from_env()?;
-    let capacity = if policy.bot_child { BOT_CHILD_MAX_PENDING_REQUESTS } else { 64 };
+    let capacity = if policy.bot_child {
+        BOT_CHILD_MAX_PENDING_REQUESTS
+    } else {
+        64
+    };
     let (request_tx, request_rx) = page_control::channel(capacity);
     let _egress_proxy = if policy.bot_child {
         Some(EgressProxy::start(policy.clone())?)
@@ -1520,7 +1531,6 @@ fn serve_page(
         Target::Page(url) => url.clone(),
     };
 
-
     let cookies = if policy.bot_child {
         Arc::new(crate::cookie_store::BrowserCookieStore::default())
     } else {
@@ -1546,7 +1556,10 @@ fn serve_page(
     let animation_clock = std::time::Instant::now();
 
     let tls_status = std::cell::RefCell::new(None::<(Url, Option<blitz_net::TlsPolicyError>)>);
-    let load = |url: Url, carried: Option<&StoredState>, initiator: blitz_traits::net::Initiator| -> Result<Box<ScriptDocument>, String> {
+    let load = |url: Url,
+                carried: Option<&StoredState>,
+                initiator: blitz_traits::net::Initiator|
+     -> Result<Box<ScriptDocument>, String> {
         // Includes HTML and external-script fetches, script execution, loader
         // pumping, shim evaluation and the initial viewport settle.
         let _load = supervisor::operation(supervisor::Operation::Load);
@@ -1676,7 +1689,8 @@ fn serve_page(
             trace(&format!("top-level load failed: {error}"));
             let page = failure_page_url(&failed_url, &error)?;
             nagoya::block_on(crate::document_loader::load_for_capture(
-                blitz_traits::net::Request::get(page.clone()).initiator(net_provider.browser_initiator(page)),
+                blitz_traits::net::Request::get(page.clone())
+                    .initiator(net_provider.browser_initiator(page)),
                 Arc::clone(&net_provider),
                 "",
                 Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
@@ -1728,7 +1742,9 @@ fn serve_page(
         let wait = if document.has_pending_jobs() {
             Some(std::time::Duration::ZERO)
         } else {
-            document.next_timer_deadline().map(|due| due.saturating_duration_since(std::time::Instant::now()))
+            document
+                .next_timer_deadline()
+                .map(|due| due.saturating_duration_since(std::time::Instant::now()))
         };
         let received = match queued_request.take() {
             Some(pair) => Ok(pair),

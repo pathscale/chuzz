@@ -136,7 +136,10 @@ struct Endpoint {
 impl Endpoint {
     fn terminate(&self) {
         self.canceled.store(true, Ordering::Release);
-        blitz_traits::net::AbortController { signal: self.abort.clone() }.abort();
+        blitz_traits::net::AbortController {
+            signal: self.abort.clone(),
+        }
+        .abort();
         self.inbox.clear();
         self.runtime.pool().shut_down();
     }
@@ -169,13 +172,17 @@ struct Page {
 impl Page {
     fn retire(&self) {
         let endpoints = std::mem::take(&mut *lock(&self.workers));
-        for endpoint in endpoints.values() { endpoint.terminate(); }
+        for endpoint in endpoints.values() {
+            endpoint.terminate();
+        }
         self.ready.clear();
     }
 }
 
 impl Drop for Page {
-    fn drop(&mut self) { self.retire(); }
+    fn drop(&mut self) {
+        self.retire();
+    }
 }
 
 #[derive(Clone)]
@@ -375,7 +382,11 @@ pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
         lifetime: document.teardown_receipt(),
     });
     let retiring_page = Arc::downgrade(&page);
-    document.add_teardown_hook(move || { if let Some(page) = retiring_page.upgrade() { page.retire(); } });
+    document.add_teardown_hook(move || {
+        if let Some(page) = retiring_page.upgrade() {
+            page.retire();
+        }
+    });
     document.with_js_context(|context| {
         context.insert_data(PageHost(Arc::clone(&page)));
         context

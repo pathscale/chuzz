@@ -435,7 +435,11 @@ pub(super) fn run(
             async {
                 use std::future::Future;
                 use std::task::Poll;
-                let mut input = Box::pin(async { super::cancellable(&endpoint, endpoint.inbox.recv()).await.unwrap_or(Input::Stop) });
+                let mut input = Box::pin(async {
+                    super::cancellable(&endpoint, endpoint.inbox.recv())
+                        .await
+                        .unwrap_or(Input::Stop)
+                });
                 let mut completed = Box::pin(async {
                     match &notifications {
                         Some(notifications) => notifications.changed().await,

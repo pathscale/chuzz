@@ -750,14 +750,24 @@ fn begin(owner: u64, prepared: Arc<Prepared>, notifications: &Arc<Notifications>
                 .unwrap_or_else(|_| Err(Error::unknown()));
             {
                 let mut requests = lock(&REQUESTS);
-                if requests.active == Some(worker_job.id) { requests.active = None; }
-                if worker_job.discarded.load(Ordering::Acquire) { requests.jobs.remove(&worker_job.id); }
+                if requests.active == Some(worker_job.id) {
+                    requests.active = None;
+                }
+                if worker_job.discarded.load(Ordering::Acquire) {
+                    requests.jobs.remove(&worker_job.id);
+                }
             }
             complete(Arc::clone(&worker_job), Arc::new(result));
             worker_job
         }));
         drop(nagoya::spawn(async move {
-            if nagoya::timeout(job.deadline.saturating_duration_since(Instant::now()), job.completed.notified()).await.is_err() {
+            if nagoya::timeout(
+                job.deadline.saturating_duration_since(Instant::now()),
+                job.completed.notified(),
+            )
+            .await
+            .is_err()
+            {
                 complete(Arc::clone(&job), Arc::new(Err(Error::denied())));
             }
             job
