@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use cookie_store::{
     Cookie as StoredCookie, CookieError, CookieStore as RfcCookieStore, StoreAction,
@@ -30,197 +30,248 @@ worktable!(
 
 type CookieKey = (String, String, String);
 
-enum PersistenceCommand {
-    Apply(u64),
-    Flush {
-        snapshot: Option<String>,
-        reply: mpsc::Sender<Result<(), String>>,
-    },
-    Close {
-        snapshot: Option<String>,
-        reply: mpsc::Sender<Result<(), String>>,
-    },
+const COOKIE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(25);
+
+struct PersistenceCommand {
+    snapshot: Option<Arc<String>>,
+    close: bool,
+    answer: Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>,
 }
 
-struct PendingSnapshot {
-    wake: u64,
-    value: String,
+struct PersistenceState {
+    pending: Mutex<PendingPersistence>,
+    changed: nagoya::sync::Notify,
 }
 
-#[derive(Default)]
-struct PendingSnapshots {
-    next_wake: u64,
-    pending: Option<PendingSnapshot>,
+struct PendingPersistence {
+    producer: spsc::Producer<Arc<PersistenceCommand>>,
+    snapshot: Option<Arc<String>>,
+    generation: u64,
+    open: bool,
 }
 
-impl PendingSnapshots {
-    fn replace(&mut self, value: String) -> Option<u64> {
-        if let Some(pending) = &mut self.pending {
-            pending.value = value;
-            return None;
-        }
-
-        self.next_wake = self
-            .next_wake
-            .checked_add(1)
-            .expect("cookie persistence wake id exhausted");
-        let wake = self.next_wake;
-        self.pending = Some(PendingSnapshot { wake, value });
-        Some(wake)
-    }
-
-    fn take_for_wake(&mut self, wake: u64) -> Option<String> {
-        // A Flush can take the snapshot while its older Apply is still queued.
-        // The wake id keeps that stale Apply from stealing a mutation queued
-        // on the far side of the barrier.
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.wake == wake)
-        {
-            self.take()
-        } else {
-            None
-        }
-    }
-
-    fn take(&mut self) -> Option<String> {
-        self.pending.take().map(|pending| pending.value)
-    }
+struct PersistenceWork {
+    shared: Arc<PersistenceState>,
+    table: Mutex<Option<BrowserCookieWorkTable>>,
+    consumer: Mutex<Option<spsc::Consumer<Arc<PersistenceCommand>>>>,
 }
 
 struct CookiePersistence {
-    sender: mpsc::Sender<PersistenceCommand>,
-    // Cookie callbacks are synchronous, so avoid putting every snapshot on the
-    // control queue. Keep one replaceable snapshot beside it instead: a
-    // mutation burst then costs one pending jar and one wake, while Flush and
-    // Close remain FIFO barriers after that wake.
-    latest: Arc<Mutex<PendingSnapshots>>,
+    shared: Arc<PersistenceState>,
 }
 
 impl CookiePersistence {
     fn start(table: BrowserCookieWorkTable) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let latest = Arc::new(Mutex::new(PendingSnapshots::default()));
-        let worker_latest = Arc::clone(&latest);
-        std::thread::Builder::new()
-            .name("chuzz-cookie-persistence".into())
-            .spawn(move || {
-                let mut table = Some(table);
-                let mut first_error: Option<String> = None;
-                while let Ok(command) = receiver.recv() {
-                    match command {
-                        PersistenceCommand::Apply(wake) => {
-                            let snapshot = worker_latest
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .take_for_wake(wake);
-                            nagoya::block_on(record_durable_snapshot(
-                                table.as_ref().expect("the cookie table is open"),
-                                snapshot,
-                                &mut first_error,
-                            ));
-                        }
-                        PersistenceCommand::Flush { snapshot, reply } => {
-                            nagoya::block_on(record_durable_snapshot(
-                                table.as_ref().expect("the cookie table is open"),
-                                snapshot,
-                                &mut first_error,
-                            ));
-                            let drain = nagoya::block_on(
-                                table
-                                    .as_ref()
-                                    .expect("the cookie table is open")
-                                    .wait_for_ops(),
-                            )
-                            .map_err(|error| error.to_string());
-                            let result = first_error.clone().map_or(drain, Err);
-                            let _ = reply.send(result);
-                        }
-                        PersistenceCommand::Close { snapshot, reply } => {
-                            nagoya::block_on(record_durable_snapshot(
-                                table.as_ref().expect("the cookie table is open"),
-                                snapshot,
-                                &mut first_error,
-                            ));
-                            let close = nagoya::block_on(
-                                table.take().expect("the cookie table is open").close(),
-                            )
-                            .map_err(|error| error.to_string());
-                            let result = first_error.clone().map_or(close, Err);
-                            let _ = reply.send(result);
-                            return;
-                        }
-                    }
-                }
-                if let Some(table) = table {
-                    let _ = nagoya::block_on(table.close());
-                }
-            })
-            .expect("cookie persistence worker thread");
-        Self { sender, latest }
+        let (producer, consumer) = spsc::make(128);
+        let shared = Arc::new(PersistenceState {
+            pending: Mutex::new(PendingPersistence {
+                producer,
+                snapshot: None,
+                generation: 0,
+                open: true,
+            }),
+            changed: nagoya::sync::Notify::new(),
+        });
+        drop(enqueue_writer(Arc::new(PersistenceWork {
+            shared: Arc::clone(&shared),
+            table: Mutex::new(Some(table)),
+            consumer: Mutex::new(Some(consumer)),
+        })));
+        Self { shared }
     }
 
-    fn enqueue(&self, snapshot: String) -> Result<(), CookieStoreError> {
-        let mut latest = self
-            .latest
+    fn enqueue(&self, snapshot: Arc<String>) -> Result<(), CookieStoreError> {
+        let mut pending = self
+            .shared
+            .pending
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let wake = latest.replace(snapshot);
-        if let Some(wake) = wake
-            && self.sender.send(PersistenceCommand::Apply(wake)).is_err()
-        {
-            // Keep the slot locked across the nonblocking send. Otherwise
-            // another callback can replace this unsent generation, return
-            // success, and leave the slot permanently occupied after the
-            // worker has stopped.
-            let _ = latest.take_for_wake(wake);
+            .unwrap_or_else(|error| error.into_inner());
+        if !pending.open {
             return Err(CookieStoreError::Persistence(
                 "cookie persistence worker stopped".into(),
             ));
         }
+        pending.generation = pending
+            .generation
+            .checked_add(1)
+            .expect("cookie snapshot generation exhausted");
+        pending.snapshot = Some(snapshot);
+        drop(pending);
+        self.shared.changed.notify_one();
         Ok(())
     }
 
-    fn request_flush(&self) -> Result<mpsc::Receiver<Result<(), String>>, CookieStoreError> {
-        let (reply, result) = mpsc::channel();
-        let snapshot = self.take_pending();
-        self.sender
-            .send(PersistenceCommand::Flush { snapshot, reply })
-            .map_err(|_| {
-                CookieStoreError::Persistence("cookie persistence worker stopped".into())
-            })?;
-        Ok(result)
+    fn request(&self, close: bool) -> Result<Arc<PersistenceCommand>, CookieStoreError> {
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !pending.open {
+            return Err(CookieStoreError::Persistence(
+                "cookie persistence worker stopped".into(),
+            ));
+        }
+        let command = Arc::new(PersistenceCommand {
+            snapshot: pending.snapshot.clone(),
+            close,
+            answer: blitz_control_protocol::latest::Once::new(),
+        });
+        if pending.producer.try_push(Arc::clone(&command)).is_some() {
+            return Err(CookieStoreError::Persistence(
+                "cookie persistence request queue is full".into(),
+            ));
+        }
+        pending.snapshot = None;
+        if close {
+            pending.open = false;
+        }
+        drop(pending);
+        self.shared.changed.notify_one();
+        Ok(command)
+    }
+
+    fn request_flush(&self) -> Result<Arc<PersistenceCommand>, CookieStoreError> {
+        self.request(false)
     }
 
     async fn close(self) -> Result<(), CookieStoreError> {
-        let (reply, result) = mpsc::channel();
-        let snapshot = self.take_pending();
-        self.sender
-            .send(PersistenceCommand::Close { snapshot, reply })
-            .map_err(|_| {
-                CookieStoreError::Persistence("cookie persistence worker stopped".into())
-            })?;
-        Self::wait_for_reply(result).await
+        Self::wait_for_reply(self.request(true)?).await
     }
 
-    async fn wait_for_reply(
-        receiver: mpsc::Receiver<Result<(), String>>,
-    ) -> Result<(), CookieStoreError> {
-        nagoya::spawn(async move { receiver.recv() })
-            .await
-            .ok_or_else(|| {
-                CookieStoreError::Persistence("cookie persistence worker stopped".into())
-            })?
-            .map_err(|_| CookieStoreError::Persistence("cookie persistence worker stopped".into()))?
+    async fn wait_for_reply(command: Arc<PersistenceCommand>) -> Result<(), CookieStoreError> {
+        let result = command.answer.recv().await.ok_or_else(|| {
+            CookieStoreError::Persistence("cookie persistence worker stopped".into())
+        })?;
+        result
+            .as_ref()
+            .clone()
             .map_err(CookieStoreError::Persistence)
     }
+}
 
-    fn take_pending(&self) -> Option<String> {
-        self.latest
+impl Drop for CookiePersistence {
+    fn drop(&mut self) {
+        self.shared
+            .pending
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
+            .open = false;
+        self.shared.changed.notify_one();
+    }
+}
+
+fn enqueue_writer(work: Arc<PersistenceWork>) -> nagoya::JoinHandle<Arc<PersistenceWork>> {
+    nagoya::spawn(async move {
+        let table = work
+            .table
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .take()
+            .expect("one writer owns the table");
+        let consumer = work
+            .consumer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .expect("one writer owns the ring consumer");
+        run_persistence(&work.shared, table, consumer).await;
+        work
+    })
+}
+
+enum PersistenceAction {
+    Command(Arc<PersistenceCommand>),
+    Snapshot(Arc<String>),
+    Debounce(u64),
+    Wait,
+    Close,
+}
+
+async fn run_persistence(
+    shared: &PersistenceState,
+    table: BrowserCookieWorkTable,
+    consumer: spsc::Consumer<Arc<PersistenceCommand>>,
+) {
+    let mut table = Some(table);
+    let mut first_error = None;
+    let mut due_generation = None;
+    loop {
+        let action = {
+            let mut pending = shared
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            // Queue and snapshot ownership are chosen under the publication
+            // lock, so a newer mutation cannot overtake a Flush barrier.
+            if let Some(command) = consumer.try_pop() {
+                PersistenceAction::Command(command)
+            } else if pending.snapshot.is_some()
+                && (!pending.open || due_generation == Some(pending.generation))
+            {
+                PersistenceAction::Snapshot(
+                    pending.snapshot.take().expect("snapshot checked above"),
+                )
+            } else if !pending.open {
+                PersistenceAction::Close
+            } else if pending.snapshot.is_some() {
+                PersistenceAction::Debounce(pending.generation)
+            } else {
+                PersistenceAction::Wait
+            }
+        };
+        match action {
+            PersistenceAction::Command(command) => {
+                record_durable_snapshot(
+                    table.as_ref().expect("cookie table open"),
+                    command.snapshot.clone(),
+                    &mut first_error,
+                )
+                .await;
+                let result = if command.close {
+                    table
+                        .take()
+                        .expect("cookie table open")
+                        .close()
+                        .await
+                        .map_err(|error| error.to_string())
+                } else {
+                    table
+                        .as_ref()
+                        .expect("cookie table open")
+                        .wait_for_ops()
+                        .await
+                        .map_err(|error| error.to_string())
+                };
+                command
+                    .answer
+                    .fill(Arc::new(first_error.clone().map_or(result, Err)));
+                due_generation = None;
+                if command.close {
+                    return;
+                }
+            }
+            PersistenceAction::Snapshot(snapshot) => {
+                record_durable_snapshot(
+                    table.as_ref().expect("cookie table open"),
+                    Some(snapshot),
+                    &mut first_error,
+                )
+                .await;
+                due_generation = None;
+            }
+            PersistenceAction::Debounce(generation) => {
+                due_generation = nagoya::timeout(COOKIE_DEBOUNCE, shared.changed.notified())
+                    .await
+                    .err()
+                    .map(|_| generation);
+            }
+            PersistenceAction::Wait => shared.changed.notified().await,
+            PersistenceAction::Close => {
+                let _ = table.take().expect("cookie table open").close().await;
+                return;
+            }
+        }
     }
 }
 
@@ -615,9 +666,9 @@ impl BrowserCookieStore {
     }
 
     fn enqueue_snapshot(&self, snapshot: String) -> Result<(), CookieStoreError> {
-        self.persistence
-            .as_ref()
-            .map_or(Ok(()), |persistence| persistence.enqueue(snapshot))
+        self.persistence.as_ref().map_or(Ok(()), |persistence| {
+            persistence.enqueue(Arc::new(snapshot))
+        })
     }
 
     fn lock_mutations(&self) -> MutexGuard<'_, ()> {
@@ -691,9 +742,9 @@ fn read_durable_snapshot(table: &BrowserCookieWorkTable) -> String {
 
 async fn apply_durable_snapshot(
     table: &BrowserCookieWorkTable,
-    snapshot: String,
+    snapshot: impl AsRef<str>,
 ) -> Option<String> {
-    let slices = snapshot_slices(&snapshot);
+    let slices = snapshot_slices(snapshot.as_ref());
     for (id, slice) in (0u64..).zip(slices.iter()) {
         if let Err(error) = table
             .upsert(BrowserCookieRow {
@@ -719,13 +770,18 @@ async fn apply_durable_snapshot(
 
 async fn record_durable_snapshot(
     table: &BrowserCookieWorkTable,
-    snapshot: Option<String>,
+    snapshot: Option<Arc<String>>,
     first_error: &mut Option<String>,
 ) {
     let Some(snapshot) = snapshot else {
         return;
     };
-    let error = apply_durable_snapshot(table, snapshot).await;
+    if cfg!(feature = "reactor-witness")
+        && std::env::var("CHUZZ_REACTOR_DEFECT").as_deref() == Ok("cookie-snapshot-drop")
+    {
+        return;
+    }
+    let error = apply_durable_snapshot(table, snapshot.as_str()).await;
     if first_error.is_none() {
         *first_error = error;
     }
@@ -865,51 +921,6 @@ mod tests {
             }
         );
         assert_eq!(store.cookie_header(&page), None);
-    }
-
-    #[test]
-    fn a_stale_wake_cannot_take_a_snapshot_after_a_barrier() {
-        let mut pending = PendingSnapshots::default();
-        let first_wake = pending
-            .replace("first".to_owned())
-            .expect("an empty slot queues a wake");
-        assert_eq!(pending.replace("before barrier".to_owned()), None);
-        assert_eq!(pending.take().as_deref(), Some("before barrier"));
-
-        let second_wake = pending
-            .replace("after barrier".to_owned())
-            .expect("the emptied slot queues a new wake");
-        assert_eq!(pending.take_for_wake(first_wake), None);
-        assert_eq!(
-            pending.take_for_wake(second_wake).as_deref(),
-            Some("after barrier")
-        );
-    }
-
-    #[test]
-    fn a_stopped_worker_does_not_leave_an_unsent_snapshot_pending() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        drop(receiver);
-        let persistence = CookiePersistence {
-            sender,
-            latest: Arc::new(Mutex::new(PendingSnapshots::default())),
-        };
-
-        for value in ["first", "retry"] {
-            assert!(matches!(
-                persistence.enqueue(value.to_owned()),
-                Err(CookieStoreError::Persistence(message))
-                    if message == "cookie persistence worker stopped"
-            ));
-            assert!(
-                persistence
-                    .latest
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .pending
-                    .is_none()
-            );
-        }
     }
 
     fn scratch_profile(label: &str) -> std::path::PathBuf {
