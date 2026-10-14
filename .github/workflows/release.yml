@@ -284,6 +284,14 @@ jobs:
             exit 1
           fi
 
+      - name: Build the security witness host
+        run: cargo build --release -p chuzz --bin chuzz-headless --features sandbox2-witness
+
+      - name: Drive Seatbelt, platform and TLS functional checks
+        env:
+          QA_HOST_WITNESS_BIN: target/release/chuzz-headless
+        run: bun scripts/qa-sandbox2.ts
+
       - name: Drive the exact release bundle
         env:
           QA_ARTIFACT_DIR: ${{ runner.temp }}/chuzz-visible-qa

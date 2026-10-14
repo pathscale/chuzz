@@ -74,7 +74,7 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 mod page_control;
 #[path = "serve_shadow.rs"]
 mod shadow_inspect;
-#[path = "serve_supervisor.rs"]
+#[path = "single_process_control.rs"]
 mod supervisor;
 
 fn reactor_defect(name: &str) -> bool {
@@ -1556,7 +1556,7 @@ fn serve_page(
     };
     let net_provider = Arc::new(
         crate::document_loader::NetProvider::with_user_agent_and_cookies(
-            None,
+            Some(supervisor::network_wake()),
             &crate::identity::user_agent_from_env(),
             cookies,
         ),

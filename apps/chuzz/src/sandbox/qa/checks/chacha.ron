@@ -1,0 +1,7 @@
+[
+    (
+        id: "tls-chacha-load", group: "sandbox2-tls", what: "an authenticated ChaCha-only local server loads its real response document",
+        open: None, hover: None, click: None, subject: "#chacha-loaded",
+        expect: VisibleInk, outcome_timeout_ms: 5000,
+    ),
+]
