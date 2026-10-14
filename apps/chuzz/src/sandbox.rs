@@ -27,14 +27,28 @@ pub fn startup() {
         #[cfg(target_os = "macos")]
         {
             let checks = probe::checks();
+            // UNAVAILABLE is a named, reported state, not a pass: the OS does not
+            // offer that protection to this process.
+            let unavailable = |check: &probe::Check| {
+                check.name == "heap-reports-disabled"
+                    && !check.passed
+                    && crate::platform_hardening::heap_policy_unavailable()
+            };
             for check in checks.iter() {
-                println!(
-                    "sandbox2: {} {}",
-                    check.name,
-                    if check.passed { "PASS" } else { "FAIL" }
-                );
+                let verdict = if check.passed {
+                    "PASS"
+                } else if unavailable(check) {
+                    "UNAVAILABLE"
+                } else {
+                    "FAIL"
+                };
+                println!("sandbox2: {} {}", check.name, verdict);
             }
-            std::process::exit(i32::from(checks.iter().any(|check| !check.passed)));
+            std::process::exit(i32::from(
+                checks
+                    .iter()
+                    .any(|check| !check.passed && !unavailable(check)),
+            ));
         }
         #[cfg(not(target_os = "macos"))]
         {

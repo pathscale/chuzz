@@ -3,6 +3,9 @@
 use std::sync::OnceLock;
 
 static HEAP_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The OS refused the heap-report policy as unsupported for this process.
+static HEAP_POLICY_UNAVAILABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 static HARDENED: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -31,6 +34,11 @@ pub fn core_limit_zero() -> bool {
     }
     #[cfg(not(unix))]
     false
+}
+
+/// True when the OS does not offer the heap-report policy to this process.
+pub fn heap_policy_unavailable() -> bool {
+    HEAP_POLICY_UNAVAILABLE.load(std::sync::atomic::Ordering::Acquire)
 }
 
 pub fn heap_reports_disabled() -> bool {
@@ -78,6 +86,7 @@ fn install() -> Result<(), String> {
         if result == KERN_NOT_SUPPORTED {
             eprintln!("chuzz: platform-hardening: heap-report-policy-unavailable");
             heap_policy = false;
+            HEAP_POLICY_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Release);
         } else if result != 0 {
             return Err(format!(
                 "heap-reports-disabled: task policy returned {result}"
