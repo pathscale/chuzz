@@ -104,7 +104,6 @@ fn parse_options() -> Result<Options, String> {
         command: Vec::new(),
     };
     let mut args = std::env::args().skip(1);
-    app_caps::stage("parse inspection options");
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
@@ -241,7 +240,6 @@ fn is_interesting(node: &Value) -> bool {
 fn print_tree(nodes: &[Value], all: bool) {
     let mut children: BTreeMap<u64, Vec<&Value>> = BTreeMap::new();
     let mut roots: Vec<&Value> = Vec::new();
-    app_caps::check("cache-entries", nodes.len() as u64);
     let known: std::collections::HashSet<u64> = nodes
         .iter()
         .filter_map(|node| node["id"].as_u64())
@@ -302,7 +300,6 @@ fn run_driver(options: &Options) -> Result<bool, Box<dyn std::error::Error>> {
 }
 
 async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
-    app_caps::turn("inspection command");
     if run_driver(&options)? {
         return Ok(());
     }
@@ -524,11 +521,7 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[path = "app_caps/mod.rs"]
-mod app_caps;
-
 fn main() {
-    let _caps = app_caps::start(&[]);
     let options = match parse_options() {
         Ok(options) => options,
         Err(message) => {

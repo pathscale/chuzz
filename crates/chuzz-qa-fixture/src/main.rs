@@ -54,11 +54,7 @@ fn io_error(error: impl std::fmt::Display) -> io::Error {
 #[global_allocator]
 static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 
-#[path = "bin_caps.rs"]
-mod app_caps;
-
 fn main() -> io::Result<()> {
-    let _caps = app_caps::start(&[]);
     let mut port = 49_123;
     let mut echo_host = None;
     let mut front_port = None;
@@ -122,10 +118,7 @@ fn main() -> io::Result<()> {
         loop {
             let (stream, _) = listener.accept().await.map_err(io_error)?;
             let echoes = Arc::clone(&echoes);
-            app_caps::turn("accept fixture connection");
-            let connection = app_caps::connection();
             let _detached = nagoya::spawn(async move {
-                let _connection = connection;
                 match nagoya::timeout(Duration::from_secs(15), serve(stream, echoes, scheme, port))
                     .await
                 {
@@ -169,7 +162,6 @@ async fn serve(
             )
             .await;
         }
-        app_caps::check("input-bytes", head.len() as u64 + 1);
         head.push(byte[0]);
     }
     let head = String::from_utf8(head).map_err(io_error)?;
@@ -192,7 +184,6 @@ async fn serve(
             )
             .await;
         };
-        app_caps::check("cache-entries", headers.len() as u64 + 1);
         headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
     }
     let header = |name: &str| {
@@ -229,8 +220,6 @@ async fn serve(
     if length > body_limit {
         return respond(&mut stream, "413 Content Too Large", "text/plain", b"body").await;
     }
-    app_caps::check("input-bytes", length as u64);
-    app_caps::reserve_bytes(length as u64);
     let mut request_body = vec![0; length];
     let mut read = 0;
     while read < length {
