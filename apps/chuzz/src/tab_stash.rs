@@ -13,7 +13,7 @@ pub struct Text(Vec<u16>);
 
 impl Text {
     pub fn capture(value: impl Iterator<Item = u16>, limit: usize) -> Option<Self> {
-        let mut result = Self(Vec::new());
+        let mut result = Self(Vec::with_capacity(limit / 2));
         for unit in value {
             if result.0.len() >= limit / 2 { return None; }
             result.0.push(unit);
@@ -27,9 +27,12 @@ impl Text {
 
 impl Drop for Text {
     fn drop(&mut self) {
-        self.0.resize(self.0.capacity(), 0);
-        self.0.zeroize();
+        self.zeroize();
     }
+}
+
+impl Zeroize for Text {
+    fn zeroize(&mut self) { self.0.zeroize(); }
 }
 
 pub struct Bytes(Vec<u8>);
@@ -108,7 +111,22 @@ impl FormState {
     }
 }
 
+impl Zeroize for FormState {
+    fn zeroize(&mut self) {
+        self.locator.form.zeroize();
+        self.locator.field.zeroize();
+        self.locator.action.zeroize();
+        self.value.zeroize();
+        self.checked.zeroize();
+        self.selection.zeroize();
+    }
+}
+
 pub struct SessionPair { pub key: Text, pub value: Text }
+
+impl Zeroize for SessionPair {
+    fn zeroize(&mut self) { self.key.zeroize(); self.value.zeroize(); }
+}
 
 pub struct SessionBucket {
     origin: url::Origin,
@@ -136,7 +154,15 @@ impl SessionBucket {
     }
 }
 
+impl Drop for SessionBucket {
+    fn drop(&mut self) { self.pairs.zeroize(); }
+}
+
 pub struct ScrollState { pub x: f64, pub y: f64 }
+
+impl Drop for ScrollState {
+    fn drop(&mut self) { self.x.zeroize(); self.y.zeroize(); }
+}
 
 /// No Request, upload, authorization header, POST body or guest value.
 pub struct PageStash {
@@ -186,6 +212,10 @@ impl PageStash {
         if !self.accepts(destination, entry) { return Err("stash-origin-or-entry-mismatch"); }
         Ok(RestoreState(self))
     }
+}
+
+impl Drop for PageStash {
+    fn drop(&mut self) { self.forms.zeroize(); }
 }
 
 pub struct RestoreState(Arc<PageStash>);
