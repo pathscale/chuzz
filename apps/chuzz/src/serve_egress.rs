@@ -33,6 +33,7 @@ impl Socket {
         let socket = TcpSocket::connect(address)?;
         let registration = handle.register(socket.raw(), Interest::WRITABLE)?;
         poll_fn(|cx| {
+            if !registration.take_writable_or_park(cx.waker()) { return Poll::Pending; }
             match socket.connect_error() {
                 Err(error) => return Poll::Ready(Err(error)),
                 Ok(()) if socket.peer_addr().is_ok() => return Poll::Ready(Ok(())),
@@ -332,17 +333,6 @@ pub(super) async fn witness(proxy: &EgressProxy) -> Result<(), String> {
     let handle = proxy._reactor.handle();
     let url = super::Url::parse(&std::env::var("HTTP_PROXY").map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     let address = Addr::localhost(url.port().ok_or("egress-accept: proxy port missing")?);
-    let mut client = TcpStream::connect(address, &handle).await.map_err(|error| error.to_string())?;
-    client.write_all(b"CONNECT localhost:443 HTTP/1.1\r\n\r\n").await.map_err(|error| error.to_string())?;
-    let mut response = Vec::new();
-    let mut byte = [0; 1];
-    while !response.ends_with(b"\r\n\r\n") {
-        if response.len() > 4096 || client.read(&mut byte).await.map_err(|error| error.to_string())? == 0 { return Err("egress-accept: CONNECT refusal missing".into()); }
-        response.push(byte[0]);
-    }
-    if !response.starts_with(b"HTTP/1.1 403 Forbidden\r\n") { return Err("egress-accept: local CONNECT escaped policy".into()); }
-    drop(client);
-
     let mut held = Vec::new();
     for _ in 0..MAX_PROXY_CONNECTIONS { held.push(TcpStream::connect(address, &handle).await.map_err(|error| error.to_string())?); }
     let mut excess = TcpStream::connect(address, &handle).await.map_err(|error| error.to_string())?;
@@ -356,6 +346,17 @@ pub(super) async fn witness(proxy: &EgressProxy) -> Result<(), String> {
     if &status != b"HTTP/1.1 503" { return Err("egress-connection-limit: seventeenth peer entered the relay".into()); }
     drop(held);
     drop(excess);
+
+    let mut client = TcpStream::connect(address, &handle).await.map_err(|error| error.to_string())?;
+    client.write_all(b"CONNECT localhost:443 HTTP/1.1\r\n\r\n").await.map_err(|error| error.to_string())?;
+    let mut response = Vec::new();
+    let mut byte = [0; 1];
+    while !response.ends_with(b"\r\n\r\n") {
+        if response.len() > 4096 || client.read(&mut byte).await.map_err(|error| error.to_string())? == 0 { return Err("egress-accept: CONNECT refusal missing".into()); }
+        response.push(byte[0]);
+    }
+    if !response.starts_with(b"HTTP/1.1 403 Forbidden\r\n") { return Err("egress-accept: local CONNECT escaped policy".into()); }
+    drop(client);
 
     let (mut client, proxy_client) = pair(&handle).await?;
     let (proxy_upstream, mut upstream) = pair(&handle).await?;
