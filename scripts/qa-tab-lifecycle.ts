@@ -12,7 +12,7 @@ const ordinary = process.env.QA_HOST_BIN || join(repository, "target/release/chu
 const manifestPath = process.env.QA_TAB_MUTANTS;
 if (!manifestPath) throw new Error("QA_TAB_MUTANTS must name the six prebuilt production mutants from qa-tab-defects.ts");
 const binaries = await Bun.file(manifestPath).json() as Record<string, string>;
-const delay = process.argv.includes("--short") ? 2000 : 300000;
+const delay = 300000;
 const html = await Bun.file(join(fixtures, "fixture.html")).text();
 const worker = await Bun.file(join(fixtures, "worker.ts")).text();
 const cases = [
@@ -127,10 +127,11 @@ async function run(mode: typeof cases[number], binary: string, defect?: string):
     if (mode.mode === "visible" || mode.mode === "hidden") {
       if (mode.mode === "hidden") await rpc.invoke("open_tab", { url: "about:blank" });
       await Bun.sleep(delay + 500);
-      if (mode.mode === "hidden") await rpc.tabsUntil(tabs => tabs.some(tab => tab.id === 0 && tab.lifecycle === "sleeping"), 3000);
+      if (mode.mode === "hidden" && !defect) await rpc.tabsUntil(tabs => tabs.some(tab => tab.id === 0 && tab.lifecycle === "sleeping"), 3000);
     } else {
       await rpc.invoke("sleep_tab", { id: 0 });
-      const tabs = await rpc.tabsUntil(tabs => tabs.some(tab => tab.id === 0 && tab.lifecycle === "sleeping"), 10000);
+      const tabs = await rpc.tabsUntil(tabs => tabs.some(tab => tab.id === 0
+        && (tab.lifecycle === "sleeping" || defect === "stash-retain-worker-owner" && tab.lifecycle === "discarding")), 10000);
       const sleeping = tabs.find(tab => tab.id === 0);
       if (!defect && (!sleeping?.runtimeReleased || sleeping.lifecycle !== "sleeping")) throw new Error("ordinary sleep lacks the native release receipt");
       if (!defect) {
