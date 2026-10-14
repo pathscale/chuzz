@@ -187,12 +187,12 @@ fn decode_svg(bytes: &[u8]) -> Result<Option<Arc<RasterImageData>>, GpuError> {
     if !might_be_svg(bytes) {
         return Ok(None);
     }
-    let tree =
-        match anyrender_svg::usvg::Tree::from_data(bytes, &anyrender_svg::usvg::Options::default())
-        {
-            Ok(tree) => tree,
-            Err(_) => return Ok(None),
-        };
+    let mut options = anyrender_svg::usvg::Options::default();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    let tree = match anyrender_svg::usvg::Tree::from_data(bytes, &options) {
+        Ok(tree) => tree,
+        Err(_) => return Ok(None),
+    };
     let size = tree.size();
     let width = svg_pixels(size.width())?;
     let height = svg_pixels(size.height())?;

@@ -13,8 +13,7 @@ use blitz_script::boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsString, JsValue, Module, Source,
 };
 use blitz_script::boa_runtime;
-use blitz_traits::net::http::header::{HeaderName, HeaderValue};
-use blitz_traits::net::{Body, Method, Request, Url};
+use blitz_traits::net::Url;
 
 use crate::document_loader::NetProvider;
 
@@ -28,6 +27,8 @@ struct Host {
     endpoint: Arc<Endpoint>,
     page: Weak<Page>,
     net: Arc<NetProvider>,
+    creator_base: Option<Url>,
+    lifetime: Arc<blitz_dom::release::Teardown>,
     loader: Rc<Loader>,
     url: Url,
     module: bool,
@@ -173,60 +174,47 @@ fn fetch(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVal
             .with_message("worker fetch requires an HTTP URL")
             .into());
     }
-    let mut request = Request::get(url);
-    request.method = Method::from_bytes(options.method.as_bytes())
-        .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-    for (name, value) in options.headers {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-        let value = HeaderValue::from_str(&value)
-            .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-        request.headers.append(name, value);
-    }
     let body = argument(args, 1);
-    if let Some(object) = body.as_object() {
+    let body = if let Some(object) = body.as_object() {
         let buffer = JsArrayBuffer::from_object(object)?;
-        let bytes = buffer
-            .to_vec()
-            .ok_or_else(|| JsNativeError::typ().with_message("detached request body"))?;
-        request.body = Body::Bytes(bytes.into());
-    }
+        Some(
+            buffer
+                .to_vec()
+                .ok_or_else(|| JsNativeError::typ().with_message("detached request body"))?,
+        )
+    } else {
+        None
+    };
+    let id = options.id;
+    let request = crate::net_bridge::NetRequest {
+        id,
+        url: url.to_string(),
+        method: options.method,
+        headers: options.headers,
+        body,
+        credentials: "same-origin".to_owned(),
+    };
     let endpoint = Arc::clone(&host.endpoint);
     let net = Arc::clone(&host.net);
+    let base = host.creator_base.clone();
+    let signal = host.endpoint.abort.clone();
+    let lifetime = Arc::clone(&host.lifetime);
     drop(nagoya::spawn(async move {
         let result = cancellable(
             &endpoint,
-            nagoya::timeout(DEADLINE, net.fetch_response_async(request)),
+            nagoya::timeout(
+                DEADLINE,
+                crate::net_bridge::worker_fetch(net, base, signal, lifetime, request),
+            ),
         )
         .await;
         if endpoint.stopped() || endpoint.closing.load(Ordering::Acquire) {
             return;
         }
         let (metadata, body) = match result {
-            Ok(Ok(Ok(response))) => {
-                let headers = response
-                    .headers
-                    .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.as_str().to_owned(),
-                            value.to_str().unwrap_or_default().to_owned(),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                (
-                    serde_json::json!({
-                        "ok": true,
-                        "status": response.status.as_u16(),
-                        "statusText": response.status.canonical_reason().unwrap_or_default(),
-                        "url": response.url.as_str(),
-                        "headers": headers,
-                    }),
-                    AlignedVec::from_iter(0, response.body.iter().copied()),
-                )
-            }
+            Ok(Ok(Ok((metadata, bytes)))) => (metadata, AlignedVec::from_iter(0, bytes)),
             Ok(Ok(Err(error))) => (
-                serde_json::json!({"ok": false, "error": format!("{error:?}")}),
+                serde_json::json!({"ok": false, "error": error}),
                 AlignedVec::from_iter(0, []),
             ),
             Ok(Err(_)) => (
@@ -239,7 +227,7 @@ fn fetch(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVal
             ),
         };
         endpoint.inbox.push(Input::Fetch {
-            id: options.id,
+            id,
             metadata: metadata.to_string(),
             body,
         });
@@ -272,6 +260,12 @@ pub(super) fn run(
     module: bool,
     name: String,
 ) {
+    let Some(creator) = page.upgrade() else {
+        return;
+    };
+    let creator_base = creator.base.clone();
+    let lifetime = Arc::clone(&creator.lifetime);
+    drop(creator);
     if endpoint.stopped() {
         return;
     }
@@ -315,6 +309,8 @@ pub(super) fn run(
         endpoint: Arc::clone(&endpoint),
         page,
         net,
+        creator_base,
+        lifetime,
         loader: Rc::clone(&loader),
         url: url.clone(),
         module,

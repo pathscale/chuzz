@@ -93,6 +93,7 @@ struct TabState {
     mounted_generation: u64,
     mounted: Option<MountedPage>,
     history: Vec<Request>,
+    pending_navigation: Option<Request>,
     current: usize,
     title: String,
     loading: bool,
@@ -106,7 +107,9 @@ struct TabState {
 
 impl TabState {
     fn request(&self) -> &Request {
-        &self.history[self.current]
+        self.pending_navigation
+            .as_ref()
+            .unwrap_or(&self.history[self.current])
     }
 
     fn snapshot(&self) -> FrontendTab {
@@ -224,6 +227,7 @@ struct PageBundle {
     resolved_url: String,
     source: PageSource,
     outcome: PageOutcome,
+    navigation_loaded: bool,
 }
 
 /// How a load went, in the five states the tab indicator can show.
@@ -429,6 +433,7 @@ impl Browser {
                     mounted_generation: 0,
                     mounted: None,
                     history: vec![crate::nav::browser_request(first)],
+                    pending_navigation: None,
                     current: 0,
                     title: String::new(),
                     loading: false,
@@ -658,11 +663,17 @@ impl Browser {
     }
 
     fn schedule_current(&self, tab_id: u64, revalidate: bool) {
+        let net = self.net();
         let (request, generation) = {
             let mut state = self.0.state.lock().unwrap();
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
                 return;
             };
+            tab.generation = tab
+                .generation
+                .checked_add(1)
+                .expect("document generation exhausted");
+            let generation = tab.generation;
             if tab.life.phase == TabPhase::Discarding {
                 tab.life.wake_requested = true;
                 return;
@@ -677,6 +688,8 @@ impl Browser {
             {
                 tab.life.phase = TabPhase::RestoreFailed;
                 tab.life.reason = "reload-requires-resubmission";
+                tab.loading = false;
+                tab.outcome = PageOutcome::Error;
                 drop(state);
                 self.emit_state();
                 return;
@@ -686,23 +699,51 @@ impl Browser {
             if let Some(signal) = tab.life.load_signal.take() {
                 blitz_traits::net::AbortController { signal }.abort();
             }
-            let signal = blitz_traits::net::AbortSignal::default();
-            tab.life.load_signal = Some(signal);
-            tab.life.await_preview = false;
+
+            let replay = tab.pending_navigation.is_none();
+            let mut request = tab.request().clone();
+            if replay {
+                let non_browser_resubmission =
+                    !matches!(&request.initiator, blitz_traits::net::Initiator::Browser(_))
+                        && (!matches!(request.method.as_str(), "GET" | "HEAD")
+                            || !matches!(request.body, blitz_traits::net::Body::Empty));
+                let missing_document_source = matches!(
+                    &request.initiator,
+                    blitz_traits::net::Initiator::Document(_)
+                ) && request.initiator.document_url().is_none();
+                if non_browser_resubmission || missing_document_source {
+                    tab.life.phase = TabPhase::RestoreFailed;
+                    tab.life.reason = "reload-requires-resubmission";
+                    tab.loading = false;
+                    tab.outcome = PageOutcome::Error;
+                    drop(state);
+                    self.emit_state();
+                    return;
+                }
+                match &request.initiator {
+                    blitz_traits::net::Initiator::Browser(_) => {
+                        request.initiator = net.browser_initiator(request.url.clone());
+                    }
+                    blitz_traits::net::Initiator::Document(_) => {
+                        if let Some(source) = request.initiator.document_url().cloned() {
+                            request.initiator = request.initiator.child(source);
+                        }
+                    }
+                    blitz_traits::net::Initiator::Unknown => {}
+                }
+            }
+
             if tab.life.discarded && tab.mounted.is_none() {
                 tab.life.phase = TabPhase::Waking;
             } else if tab.mounted.is_some() {
                 tab.life.phase = TabPhase::Live;
             }
-            tab.generation = tab
-                .generation
-                .checked_add(1)
-                .expect("document generation exhausted");
+            tab.life.await_preview = false;
             tab.loading = true;
-
-            let mut request = tab.request().clone();
-            request.signal = tab.life.load_signal.clone();
-            (request, tab.generation)
+            let signal = blitz_traits::net::AbortSignal::default();
+            tab.life.load_signal = Some(signal.clone());
+            request.signal = Some(signal);
+            (request, generation)
         };
         self.0
             .state
@@ -726,6 +767,7 @@ impl Browser {
                     scripts: HashMap::new(),
                 },
                 outcome: PageOutcome::Error,
+                navigation_loaded: false,
             });
             self.wake_document();
             return;
@@ -739,20 +781,6 @@ impl Browser {
         });
     }
 
-    fn schedule_browser_navigation(&self, tab_id: u64, revalidate: bool) {
-        let net = self.net();
-        {
-            let mut state = self.0.state.lock().unwrap();
-            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
-                return;
-            };
-            let url = tab.request().url.clone();
-            let current = tab.current;
-            tab.history[current].initiator = net.browser_initiator(url);
-        }
-        self.schedule_current(tab_id, revalidate);
-    }
-
     fn navigate_request(&self, tab_id: u64, request: Request) -> bool {
         {
             let mut state = self.0.state.lock().unwrap();
@@ -760,13 +788,7 @@ impl Browser {
                 return false;
             };
             tab.life.navigate();
-            tab.history.truncate(tab.current + 1);
-            tab.history.push(request);
-            tab.current += 1;
-            if tab.history.len() > 128 {
-                tab.history.remove(0);
-                tab.current -= 1;
-            }
+            tab.pending_navigation = Some(request);
             tab.title.clear();
         }
         self.schedule_current(tab_id, false);
@@ -928,11 +950,29 @@ impl Browser {
                 else {
                     continue;
                 };
+                let resolved_url = Url::parse(&bundle.resolved_url).ok();
                 ui.inner_mut().set_sub_document(target, page);
                 tab.mounted_generation += 1;
                 tab.mounted = Some(mounted);
-                if let Ok(url) = Url::parse(&bundle.resolved_url) {
-                    tab.history[tab.current].url = url;
+                if bundle.navigation_loaded {
+                    if let Some(url) = resolved_url {
+                        if let Some(mut request) = tab.pending_navigation.take() {
+                            request.url = url;
+                            tab.history.truncate(tab.current + 1);
+                            tab.history.push(request);
+                            tab.current += 1;
+                            if tab.history.len() > 128 {
+                                tab.history.remove(0);
+                                tab.current -= 1;
+                            }
+                        } else {
+                            tab.history[tab.current].url = url;
+                        }
+                    } else {
+                        tab.pending_navigation = None;
+                    }
+                } else {
+                    tab.pending_navigation = None;
                 }
                 tab.title = title;
                 tab.loading = false;
@@ -1031,6 +1071,7 @@ async fn fetch_page(
                 scripts: HashMap::new(),
             },
             outcome: PageOutcome::Ready,
+            navigation_loaded: true,
         };
     }
     if request.url.scheme() == "about" {
@@ -1044,6 +1085,7 @@ async fn fetch_page(
                 scripts: HashMap::new(),
             },
             outcome: PageOutcome::Blank,
+            navigation_loaded: true,
         };
     }
     // `view-source:` is answered by fetching what it names and showing the
@@ -1091,6 +1133,7 @@ async fn fetch_page(
                                 scripts: HashMap::new(),
                             },
                             outcome: PageOutcome::Error,
+                            navigation_loaded: false,
                         };
                     }
                     (
@@ -1108,6 +1151,7 @@ async fn fetch_page(
             resolved_url: request.url.to_string(),
             source: PageSource::Source { text: source },
             outcome,
+            navigation_loaded: outcome != PageOutcome::Error,
         };
     }
     if force_revalidate {
@@ -1139,6 +1183,7 @@ async fn fetch_page(
                     scripts: HashMap::new(),
                 },
                 outcome: PageOutcome::Error,
+                navigation_loaded: false,
             };
         }
     };
@@ -1224,6 +1269,7 @@ async fn fetch_page(
         resolved_url,
         source: PageSource::Html { html, scripts },
         outcome,
+        navigation_loaded: true,
     }
 }
 
@@ -1482,6 +1528,7 @@ fn open_tab_record(
             mounted_generation: 0,
             mounted: None,
             history: vec![request],
+            pending_navigation: None,
             current: 0,
             title: String::new(),
             loading: false,
@@ -1563,8 +1610,9 @@ pub fn go_back(browser: Arc<Browser>, id: u64) {
             .iter_mut()
             .find(|tab| tab.id == id)
             .is_some_and(|tab| {
+                let cancelled_pending = tab.pending_navigation.take().is_some();
                 if tab.current == 0 {
-                    false
+                    cancelled_pending
                 } else {
                     tab.current -= 1;
                     tab.title.clear();
@@ -1573,7 +1621,7 @@ pub fn go_back(browser: Arc<Browser>, id: u64) {
             })
     };
     if moved {
-        browser.schedule_browser_navigation(id, false);
+        browser.schedule_current(id, false);
     }
 }
 
@@ -1585,8 +1633,9 @@ pub fn go_forward(browser: Arc<Browser>, id: u64) {
             .iter_mut()
             .find(|tab| tab.id == id)
             .is_some_and(|tab| {
+                let cancelled_pending = tab.pending_navigation.take().is_some();
                 if tab.current + 1 >= tab.history.len() {
-                    false
+                    cancelled_pending
                 } else {
                     tab.current += 1;
                     tab.title.clear();
@@ -1595,7 +1644,7 @@ pub fn go_forward(browser: Arc<Browser>, id: u64) {
             })
     };
     if moved {
-        browser.schedule_browser_navigation(id, false);
+        browser.schedule_current(id, false);
     }
 }
 
@@ -1625,7 +1674,7 @@ pub fn reload(browser: Arc<Browser>, id: u64) {
     if sleeping {
         let _ = browser.request_wake(id);
     } else {
-        browser.schedule_browser_navigation(id, true);
+        browser.schedule_current(id, true);
     }
 }
 
@@ -1949,6 +1998,7 @@ mod tests {
             mounted_generation: 0,
             mounted: None,
             history: vec![Request::get(Url::parse("https://example.com/").unwrap())],
+            pending_navigation: None,
             current: 0,
             title: String::new(),
             loading: true,
