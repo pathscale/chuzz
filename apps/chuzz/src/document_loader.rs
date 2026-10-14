@@ -3178,7 +3178,8 @@ mod tests {
                 &mut document,
                 "[navigator.userAgent, navigator.language, navigator.languages.join(','), \
                   location.origin, new URL('/next', location.origin).href, \
-                  typeof PerformanceObserver, typeof navigator.sendBeacon]"
+                  typeof PerformanceObserver, typeof navigator.sendBeacon, \
+                  PerformanceObserver.supportedEntryTypes]"
             ),
             serde_json::json!([
                 "Browser/123",
@@ -3186,9 +3187,20 @@ mod tests {
                 "en-US,en",
                 "https://example.test:8443",
                 "https://example.test:8443/next",
-                "undefined",
-                "function"
+                "function",
+                "function",
+                []
             ])
+        );
+        assert_eq!(
+            value(
+                &mut document,
+                "(function () { var delivered = false; \
+                  var observer = new PerformanceObserver(function () { delivered = true; }); \
+                  observer.observe({entryTypes: []}); performance.mark('probe'); \
+                  observer.disconnect(); return [observer.takeRecords(), delivered]; })()"
+            ),
+            serde_json::json!([[], false])
         );
     }
 
