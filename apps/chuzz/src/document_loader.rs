@@ -121,6 +121,7 @@ impl NetProvider {
         cookies: Arc<crate::cookie_store::BrowserCookieStore>,
     ) -> Self {
         let waker = waker.unwrap_or_else(|| Arc::new(|_| {}));
+        let application_policy = crate::resource_parameters::from_environment();
         Self {
             inner: Arc::new(blitz_net::Provider::with_user_agent_and_cookie_provider(
                 None,
@@ -132,7 +133,7 @@ impl NetProvider {
             cookies,
             waker,
             blocked_requests: Arc::new(Mutex::new(VecDeque::new())),
-        }
+        }.with_resource_policy(application_policy)
     }
 
     /// Application-owned policy, supplied before sharing the root provider.

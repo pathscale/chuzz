@@ -71,6 +71,7 @@ pub mod browser;
 #[cfg(feature = "capture")]
 pub mod capture;
 pub mod cookie_store;
+mod resource_parameters;
 pub mod decode;
 pub mod document_loader;
 #[cfg(unix)]
