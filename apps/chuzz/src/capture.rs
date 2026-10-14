@@ -173,7 +173,6 @@ pub fn capture_wasm(
 }
 
 /// Lay `document` out at `scale`, dump the tree if asked, and rasterise.
-
 fn paint(
     document: &mut BaseDocument,
     scale: f32,
@@ -244,7 +243,9 @@ mod tests {
     #[derive(Debug)]
     struct Box_ {
         name: String,
-
+        y: f32,
+        width: f32,
+        height: f32,
     }
 
     fn boxes(dump: &str) -> Vec<Box_> {
@@ -254,10 +255,13 @@ mod tests {
                 let mut tokens = line.split_whitespace();
                 let _node_id = tokens.next()?;
                 let name = tokens.next()?;
-
+                let (_x, y) = tokens.next()?.split_once(',')?;
+                let (width, height) = tokens.next()?.split_once('*')?;
                 Some(Box_ {
                     name: name.to_owned(),
-
+                    y: y.parse().ok()?,
+                    width: width.parse().ok()?,
+                    height: height.parse().ok()?,
                 })
             })
             .collect()
@@ -307,12 +311,29 @@ mod tests {
         lowest: u32,
     }
 
+    // Exercise the existing guest fixture without reopening its production entry point.
+    fn capture_guest_fixture(png: &Path, tree: Option<&Path>) {
+        let (document, mount) = crate::wasm_page::empty_document(blitz_dom::DocumentConfig {
+            viewport: Some(blitz_traits::shell::Viewport::new(
+                1440,
+                960,
+                1.0,
+                super::capture_color_scheme(),
+            )),
+            ..Default::default()
+        });
+        let mut document = crate::wasm_page::run_guest(
+            &crate::wasm_page::fixture_module(), document, mount,
+        ).expect("the fixture guest should build its document");
+        let buffer = super::paint(&mut document, 1.0, 1440, 960, tree);
+        super::write_png(&buffer, 1440, 960, png).expect("the fixture capture should succeed");
+    }
+
     #[test]
     fn a_wasm_built_page_paints_something() {
         let png = scratch("paints.png");
         let _ = std::fs::remove_file(&png);
-        super::capture_wasm(&crate::wasm_page::fixture_module(), 1440, 960, &png, None)
-            .expect("the wasm capture should succeed");
+        capture_guest_fixture(&png, None);
 
         let painted = non_background_pixels(&png);
         // Not "at least one": a single stray pixel would satisfy that and is
@@ -352,14 +373,7 @@ mod tests {
         let png = scratch("tree.png");
         let tree = scratch("tree.txt");
         let _ = std::fs::remove_file(&tree);
-        super::capture_wasm(
-            &crate::wasm_page::fixture_module(),
-            1440,
-            960,
-            &png,
-            Some(&tree),
-        )
-        .expect("the wasm capture should succeed");
+        capture_guest_fixture(&png, Some(&tree));
 
         let dump = std::fs::read_to_string(&tree).expect("the tree dump should have been written");
         let boxes = boxes(&dump);
