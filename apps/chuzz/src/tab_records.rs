@@ -14,6 +14,9 @@ pub enum Residency {
     Dormant,
     Loading,
     Live,
+    Discarding,
+    Sleeping,
+    Waking,
 }
 
 /// Public metadata contains no page values, request bodies or DOM ownership.
@@ -72,6 +75,10 @@ impl TabRegistry {
         {
             record.residency = Residency::Live;
         }
+    }
+
+    pub fn sleeping(&mut self, id: TabId) {
+        if let Some(record) = self.records.get_mut(&id) { record.residency = Residency::Sleeping; }
     }
 
     pub fn remove(&mut self, id: TabId) {

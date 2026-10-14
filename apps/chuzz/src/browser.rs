@@ -14,6 +14,9 @@ use crate::decode::decode_body;
 use crate::document_loader::{NetProvider, install_web_api_shim};
 use crate::nav::{NEW_TAB_URL, display_title, request_from_input};
 use crate::tab_records::{DocumentGeneration, Residency, TabId, TabRegistry};
+#[path = "tab_lifecycle.rs"]
+mod lifecycle;
+use lifecycle::{LifecycleMessage, TabLife, TabPhase};
 
 /// The document an empty tab shows.
 ///
@@ -38,6 +41,10 @@ pub struct FrontendTab {
     can_go_back: bool,
     can_go_forward: bool,
     residency: Residency,
+    lifecycle: TabPhase,
+    lifecycle_reason: &'static str,
+    visible: bool,
+    preview_available: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -89,6 +96,7 @@ struct TabState {
     /// new one's address.
     outcome: PageOutcome,
     generation: u64,
+    life: TabLife,
 }
 
 impl TabState {
@@ -109,7 +117,18 @@ impl TabState {
 
             can_go_back: self.current > 0,
             can_go_forward: self.current + 1 < self.history.len(),
-            residency: if self.loading { Residency::Loading } else if self.mounted.is_some() { Residency::Live } else { Residency::Dormant },
+            residency: match self.life.phase {
+                TabPhase::Sleeping | TabPhase::RestoreFailed => Residency::Sleeping,
+                TabPhase::Discarding | TabPhase::Freezing => Residency::Discarding,
+                TabPhase::Waking => Residency::Waking,
+                _ if self.loading => Residency::Loading,
+                _ if self.mounted.is_some() => Residency::Live,
+                _ => Residency::Dormant,
+            },
+            lifecycle: self.life.phase,
+            lifecycle_reason: self.life.reason,
+            visible: self.life.visible,
+            preview_available: self.life.preview.is_some(),
         }
     }
 }
@@ -262,6 +281,9 @@ struct BrowserInner {
     net: Mutex<Arc<NetProvider>>,
     user_agent_spoofing: Mutex<bool>,
     completed: Mutex<VecDeque<PageBundle>>,
+    lifecycle: Mutex<VecDeque<LifecycleMessage>>,
+    sleeping_budget: Arc<crate::tab_stash::SleepingBudget>,
+    sleep_delay_ns: u64,
     app: Mutex<Option<ChuzzAppHandle>>,
 
 }
@@ -403,6 +425,7 @@ impl Browser {
                     loading: false,
                     outcome: PageOutcome::Blank,
                     generation: 0,
+                    life: TabLife::default(),
                 }],
                 records: {
                     let mut records = TabRegistry::default();
@@ -432,6 +455,9 @@ impl Browser {
             ))),
             user_agent_spoofing: Mutex::new(user_agent_spoofing),
             completed: Mutex::new(VecDeque::new()),
+            lifecycle: Mutex::new(VecDeque::new()),
+            sleeping_budget: Arc::new(crate::tab_stash::SleepingBudget::default()),
+            sleep_delay_ns: lifecycle::sleep_delay_ns(),
             app: Mutex::new(None),
         }))
     }
@@ -442,6 +468,7 @@ impl Browser {
     }
 
     pub fn install_document_lifecycle(&self, document: &mut blitz_script::ScriptDocument) {
+        self.install_surface_lifecycle();
         #[cfg(unix)]
         {
             let weak = Arc::downgrade(&self.0);
@@ -613,7 +640,14 @@ impl Browser {
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
                 return;
             };
-            tab.generation += 1;
+            if tab.life.phase == TabPhase::Discarding { tab.life.wake_requested = true; return; }
+            if tab.life.discarded && tab.mounted.is_none() && !matches!(tab.request().method.as_str(), "GET" | "HEAD") {
+                tab.life.phase = TabPhase::RestoreFailed; tab.life.reason = "reload-requires-resubmission";
+                drop(state); self.emit_state(); return;
+            }
+            tab.life.cancel_deadline();
+            tab.life.await_preview = false;
+            tab.generation = tab.generation.checked_add(1).expect("document generation exhausted");
             tab.loading = true;
 
             (tab.request().clone(), tab.generation)
@@ -668,9 +702,11 @@ impl Browser {
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
                 return false;
             };
+            tab.life.navigate();
             tab.history.truncate(tab.current + 1);
             tab.history.push(request);
             tab.current += 1;
+            if tab.history.len() > 128 { tab.history.remove(0); tab.current -= 1; }
             tab.title.clear();
         }
         self.schedule_current(tab_id, false);
@@ -684,7 +720,7 @@ impl Browser {
     ) -> bool {
         pending.extend(self.0.completed.lock().unwrap().drain(..));
         let mut retained = VecDeque::new();
-        let mut changed = false;
+        let mut changed = self.poll_lifecycle(ui);
 
         while let Some(bundle) = pending.pop_front() {
             let current = {
@@ -711,9 +747,14 @@ impl Browser {
             };
 
             let net = Arc::clone(&bundle.net);
+            let lifetime = blitz_dom::release::Teardown::new();
+            let page_signal = blitz_traits::net::AbortSignal::default();
+            let page_net = Arc::new(crate::tab_resources::PageNet { net: Arc::clone(&net), lifetime: Arc::clone(&lifetime) });
             let make_config = || DocumentConfig {
                 base_url: Some(bundle.resolved_url.clone()),
-                net_provider: Some(Arc::clone(&net) as _),
+                net_provider: Some(Arc::clone(&page_net) as _),
+                teardown: Some(Arc::clone(&lifetime)),
+                abort_signal: Some(page_signal.clone()),
                 navigation_provider: Some(Arc::new(PageNavigation {
                     browser: Arc::downgrade(&self.0),
                     tab_id: bundle.tab_id,
@@ -735,6 +776,7 @@ impl Browser {
                             Arc::clone(&net),
                             WINDOW_SCRIPT_DEADLINE,
                         ));
+                    self.prepare_tab_page(&mut page, bundle.tab_id, bundle.generation, &bundle.resolved_url);
                     install_web_api_shim(&mut page, &net);
                     crate::net_bridge::install(
                         &mut page,
@@ -797,9 +839,17 @@ impl Browser {
                 }
                 tab.title = title;
                 tab.loading = false;
+                tab.life.visible = false;
+                tab.life.hidden_at = nagoya::now_ns();
+                tab.life.preview_surface.take();
+                if tab.life.phase != TabPhase::Waking { tab.life.phase = TabPhase::Live; }
+                if outcome == PageOutcome::Error && tab.life.phase == TabPhase::Waking {
+                    tab.life.phase = TabPhase::RestoreFailed; tab.life.reason = "reload-failed";
+                }
                 tab.outcome = outcome;
                 state.records.attached(TabId(bundle.tab_id), DocumentGeneration(bundle.generation));
             }
+            self.attached_lifecycle(bundle.tab_id);
             changed = true;
         }
 
@@ -1188,6 +1238,14 @@ pub fn commands(browser: Arc<Browser>) -> [(&'static str, izumo::CommandHandler)
             }),
         ),
         (
+            "sleep_tab",
+            command_handler(&browser, |browser, args: TabArgs| sleep_tab(browser, args.id)),
+        ),
+        (
+            "wake_tab",
+            command_handler(&browser, |browser, args: TabArgs| wake_tab(browser, args.id)),
+        ),
+        (
             "reload",
             command_handler(&browser, |browser, args: TabArgs| {
                 reload(browser, args.id);
@@ -1255,12 +1313,13 @@ pub fn active_tab_id(browser: Arc<Browser>) -> u64 {
 pub fn select_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> {
     let mut state = browser.0.state.lock().unwrap();
     let dormant = state.records.record(TabId(id)).is_some_and(|record| record.residency == Residency::Dormant);
+    let sleeping = state.tabs.iter().find(|tab| tab.id == id).is_some_and(|tab| matches!(tab.life.phase, TabPhase::Sleeping | TabPhase::Discarding | TabPhase::RestoreFailed));
     if !state.tabs.iter().any(|tab| tab.id == id) {
         return Err(format!("unknown tab {id}"));
     }
     state.active = id;
     drop(state);
-    if dormant { browser.schedule_current(id, false); }
+    if sleeping { let _ = browser.request_wake(id); } else if dormant { browser.schedule_current(id, false); }
     browser.emit_state();
     Ok(())
 }
@@ -1293,6 +1352,7 @@ fn open_tab_record(browser: Arc<Browser>, url: Option<String>, select: bool) -> 
             loading: false,
             outcome: PageOutcome::Blank,
             generation: 0,
+            life: TabLife::default(),
         });
         if select { state.active = id; }
         id
@@ -1398,8 +1458,14 @@ pub fn go_forward(browser: Arc<Browser>, id: u64) {
     }
 }
 
+pub fn sleep_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> { browser.request_sleep(id) }
+
+pub fn wake_tab(browser: Arc<Browser>, id: u64) -> Result<(), String> { browser.request_wake(id) }
+
 pub fn reload(browser: Arc<Browser>, id: u64) {
-    browser.schedule_browser_navigation(id, true);
+    let sleeping = browser.0.state.lock().unwrap().tabs.iter().find(|tab| tab.id == id)
+        .is_some_and(|tab| matches!(tab.life.phase, TabPhase::Sleeping | TabPhase::Discarding | TabPhase::RestoreFailed));
+    if sleeping { let _ = browser.request_wake(id); } else { browser.schedule_browser_navigation(id, true); }
 }
 
 pub fn panel_state(browser: Arc<Browser>) -> PanelState {
