@@ -4,6 +4,15 @@ Audited 2026-10-14.
 
 This is the sole current work queue. Each entry states the gap, its location and where to start. Checked chuzz through `4eb8d1d`, published ps-blitz 0.6.5 sources and matching local history; no build was run. "Unverified" means current runtime behavior or external proof could not be established. Historical design notes are references, not additional queues.
 
+## CI: the `app` job fails in the TLS functional checks (open, 2026-10-14)
+
+- `scripts/qa-sandbox2.ts:185` runs `required.ron` against the local AES-only TLS server. The
+  check `tls-chacha-required` passes, but ps-qa exits 1: `uncovered component control: role=link
+  name="Why chuzz refused this TLS connection"`. The refusal page has a visible link that no check
+  in `apps/chuzz/src/sandbox/qa/checks/required.ron` covers, and ps-qa's coverage gate fails any
+  run with an uncovered visible control. Start: add a check (and `covers` entry) for that link in
+  `required.ron`; do not disable the coverage gate. Everything earlier in the job passes.
+
 ## Security and native execution
 
 - A01: Sandbox v2 per-agent cages are not integrated into production page execution; ekojit `crates/ekojit-cage` reserves 4 GiB plus guards, but `crates/ekojit/src/baseline/numeric.rs` uses host address space; start by connecting guest accesses to ps-codegen H4, proving guard faults and zeroed block reuse after the H1-H9 integration gate.
