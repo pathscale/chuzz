@@ -13,9 +13,10 @@ pub struct Text(Vec<u16>);
 
 impl Text {
     pub fn capture(value: impl Iterator<Item = u16>, limit: usize) -> Option<Self> {
-        let mut result = Self(Vec::with_capacity(limit / 2));
+        let capacity = value.size_hint().1.unwrap_or(limit / 2).min(limit / 2);
+        let mut result = Self(Vec::with_capacity(capacity));
         for unit in value {
-            if result.0.len() >= limit / 2 { return None; }
+            if result.0.len() >= capacity { return None; }
             result.0.push(unit);
         }
         Some(result)
@@ -40,7 +41,15 @@ pub struct Bytes(Vec<u8>);
 impl Bytes {
     pub fn new(bytes: Vec<u8>) -> Self { Self(bytes) }
     pub fn bytes(&self) -> &[u8] { &self.0 }
+    pub fn extend(&mut self, bytes: &[u8]) {
+        assert!(self.0.len() + bytes.len() <= self.0.capacity());
+        self.0.extend_from_slice(bytes);
+    }
     pub fn allocated_bytes(&self) -> usize { self.0.capacity() }
+}
+
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] { self.bytes() }
 }
 
 impl Drop for Bytes {
@@ -147,6 +156,7 @@ impl SessionBucket {
     }
 
     pub fn pairs(&self) -> &[SessionPair] { &self.pairs }
+    pub fn into_pairs(mut self) -> Vec<SessionPair> { std::mem::take(&mut self.pairs) }
 
     fn allocated_bytes(&self) -> usize {
         self.pairs.capacity() * size_of::<SessionPair>()

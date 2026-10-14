@@ -60,6 +60,10 @@ default = [
 gui = [
   "dep:izumo",
   "izumo/runtime",
+  "dep:blitz-paint",
+  "dep:anyrender",
+  "dep:anyrender_vello_cpu",
+  "dep:peniko",
   # The window paints glyphs, so it wants real faces. On Linux this reaches
   # parley's enumeration and therefore fontconfig, which is why it is here and
   # not in the base dependencies. Rendered QA opts in through the same feature.
@@ -269,7 +273,7 @@ wasmi = "^1.1"
 wat = "^1"
 
 [build-dependencies]
-nagoya = "^0.1.12"
+nagoya.workspace = true
 brotli.workspace = true
 
 
