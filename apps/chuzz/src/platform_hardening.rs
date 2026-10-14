@@ -38,6 +38,9 @@ pub fn heap_reports_disabled() -> bool {
 }
 
 fn install() -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[allow(unused_mut)]
+    let mut heap_policy = true;
     #[cfg(unix)]
     {
         let value = u64::from(crate::sandbox::defect("core-limit-zero"));
@@ -68,7 +71,14 @@ fn install() -> Result<(), String> {
                 )
             }
         };
-        if result != 0 {
+        // KERN_NOT_SUPPORTED: this macOS does not offer the policy to this
+        // process. RLIMIT_CORE stays 0; report the protection as absent rather
+        // than refusing to start.
+        const KERN_NOT_SUPPORTED: i32 = 46;
+        if result == KERN_NOT_SUPPORTED {
+            eprintln!("chuzz: platform-hardening: heap-report-policy-unavailable");
+            heap_policy = false;
+        } else if result != 0 {
             return Err(format!(
                 "heap-reports-disabled: task policy returned {result}"
             ));
@@ -86,7 +96,7 @@ fn install() -> Result<(), String> {
     }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     HEAP_DISABLED.store(
-        !crate::sandbox::defect("heap-reports-disabled"),
+        heap_policy && !crate::sandbox::defect("heap-reports-disabled"),
         std::sync::atomic::Ordering::Release,
     );
     // A panic payload can contain page bytes, credentials or heap values.
