@@ -75,13 +75,16 @@ pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
         .map_err(|error| error.to_string())?;
+    // Short: the socket lives under the cache directory and a Unix socket
+    // path is limited to 104 bytes on macOS.
     let instance = format!(
-        "{}-{:x}",
+        "{:x}{:04x}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
-            .as_nanos()
+            .subsec_nanos()
+            & 0xffff
     );
     let descriptor = directory.join(format!("{instance}.json"));
     let socket = descriptor.with_extension("sock");

@@ -133,12 +133,10 @@ fn serves_a_page_over_the_inspection_socket() {
     let page = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixture/page.html");
     let binary = env!("CARGO_BIN_EXE_chuzz-headless");
     let profile = TestProfile(std::env::temp_dir().join(format!(
-        "chuzz-inspection-profile-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
+        // Short: the host binds its control socket under this directory, and
+        // macOS limits a Unix socket path to 104 bytes.
+        "chuzz-insp-{:x}",
+        std::process::id()
     )));
 
     let reactor = nagoya::reactor::Reactor::start().expect("client reactor");
