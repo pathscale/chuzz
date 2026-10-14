@@ -419,11 +419,6 @@ impl Browser {
         Self::build(startup)
     }
 
-    /// Compatibility entry point for callers of the retired guest API.
-    pub fn with_wasm_page(_module: std::path::PathBuf) -> Result<Self, String> {
-        Err(crate::wasm_retired::WasmUnsupported.to_string())
-    }
-
     fn build(startup: Option<Url>) -> Self {
         let first = startup.unwrap_or_else(|| Url::parse(NEW_TAB_URL).unwrap());
         let user_agent_spoofing = stored_user_agent().spoofing;
@@ -1872,30 +1867,6 @@ pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsS
 mod tests {
     use super::*;
 
-    // The retired guest remains a test fixture for the existing DOM assertions.
-    struct PageModule {
-        bytes: Vec<u8>,
-        selector: String,
-    }
-
-    fn mount_page_module(
-        html: &str,
-        module: &PageModule,
-        config: DocumentConfig,
-    ) -> Option<blitz_dom::BaseDocument> {
-        let document = blitz_html::HtmlDocument::from_html(html, config).into_inner();
-        let mount = document.query_selector(&module.selector).ok()??;
-        let fallback = document.get_node(mount)?.children.to_vec();
-        let mut document =
-            crate::wasm_page::run_guest_bytes(&module.bytes, document, mount).ok()?;
-        let mut changes = document.mutate();
-        for node in fallback {
-            changes.remove_and_drop_node(node);
-        }
-        drop(changes);
-        Some(document)
-    }
-
     /// The browser's own pages have to be legible on their own.
     ///
     /// They declare no colours, so they took the engine's default black text
@@ -2050,90 +2021,19 @@ mod tests {
         );
     }
 
-    /// The fallback is the whole degradation story, so each way of failing has
-    /// to leave it standing. A partial mount, or an emptied mount after a
-    /// failed instantiate, turns a working static page into a blank one.
-    #[test]
-    fn a_failed_module_leaves_the_fallback_standing() {
-        const HTML: &str = r#"<!doctype html><html><body>
-            <div id="root"><p id="fallback">fallback</p></div>
-            </body></html>"#;
-
-        let config = || DocumentConfig {
-            html_parser_provider: Some(Arc::new(HtmlProvider)),
-            ..Default::default()
-        };
-        let good = std::fs::read(crate::wasm_page::fixture_module()).expect("fixture module");
-
-        let cases: Vec<(&str, PageModule)> = vec![
-            (
-                "a selector matching nothing",
-                PageModule {
-                    bytes: good.clone(),
-                    selector: "#nowhere".to_owned(),
-                },
-            ),
-            (
-                "bytes that are not a module",
-                PageModule {
-                    bytes: b"<!doctype html>".to_vec(),
-                    selector: "#root".to_owned(),
-                },
-            ),
-            (
-                "a module whose entry export is missing",
-                PageModule {
-                    // Valid wasm, no `run` export: instantiates, then fails.
-                    bytes: wat::parse_str("(module (memory (export \"memory\") 1))").unwrap(),
-                    selector: "#root".to_owned(),
-                },
-            ),
-        ];
-
-        for (what, module) in cases {
-            assert!(
-                mount_page_module(HTML, &module, config()).is_none(),
-                "{what} should not mount"
-            );
-        }
-
-        // And the success case does replace it, so the assertions above are not
-        // passing because nothing ever mounts.
-        let mounted = mount_page_module(
-            HTML,
-            &PageModule {
-                bytes: good,
-                selector: "#root".to_owned(),
-            },
-            config(),
-        )
-        .expect("the fixture module should mount");
-        let mount = mounted.query_selector("#root").unwrap().unwrap();
-        let children = mounted.get_node(mount).unwrap().children.to_vec();
-        assert!(!children.is_empty(), "the guest built nothing");
-        assert!(
-            mounted.query_selector("#fallback").unwrap().is_none(),
-            "the fallback survived a successful mount"
-        );
-        assert!(
-            mounted.query_selector(".panel").unwrap().is_some(),
-            "the guest's tree is not in the document"
-        );
-    }
-
     /// What you read has to be what arrived. For a page whose whole claim is
     /// "there is no script here", a source view that re-serialised a parsed
     /// tree would be answering a different question.
     #[test]
     fn view_source_shows_the_bytes_verbatim() {
         let page = r##"<div id="root"><p>fallback</p></div>
-<script type="application/wasm" src="/demo.wasm" mount="#root"></script>"##;
+<script type="application/javascript" src="/demo.js" defer></script>"##;
         let shown = source_html(page);
 
         // The tag survives, escaped, so a reader can see there is exactly one
         // script and what type it is.
-        assert!(shown.contains("&lt;script type=\"application/wasm\""));
-        assert!(shown.contains("mount=\"#root\"&gt;"));
+        assert!(shown.contains("&lt;script type=\"application/javascript\""));
+        assert!(shown.contains("src=\"/demo.js\" defer&gt;"));
 
         // Escaped, not executed or parsed away.
         assert!(
@@ -2157,87 +2057,5 @@ mod tests {
         assert_eq!(tabs.len(), 1);
         assert_eq!(active, 0);
         assert_eq!(status.url, NEW_TAB_URL);
-    }
-
-    /// `--wasm` puts a guest-built document on the real tab mount.
-    ///
-    /// The window cannot be screenshotted on every machine, and "the process
-    /// stayed alive" is not evidence that anything rendered. This drives the
-    /// actual path instead — `schedule_current`, the bundle queue,
-    /// `poll_document`, `page_node`, `set_sub_document` — against the real
-    /// chrome document, and then reads the page back out of the mount.
-    ///
-    /// It asserts through `page_node` rather than a CSS query for the same
-    /// reason the frontend test does: that lookup is what decides whether a
-    /// page is ever attached, and it is the thing that regressed once.
-    #[test]
-    fn a_wasm_page_is_attached_to_the_tab_mount() {
-        // Boa needs the stack, the same as the frontend test.
-        // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: test-only big stack.
-        #[allow(clippy::disallowed_methods)]
-        std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(|| {
-                let module = crate::wasm_page::fixture_module();
-                let browser = Browser::with_wasm_page(module).expect("the fixture module exists");
-
-                let mut chrome = crate::frontend::document(browser.clone(), "chuzz://ui/").unwrap();
-                chrome.set_ipc_handler(|_| {});
-                chrome.eval(crate::frontend::TAURI_TEST_BRIDGE);
-                chrome.execute_scripts();
-                for _ in 0..64 {
-                    chrome.poll(None);
-                }
-
-                // No app handle in a test, so `emit_state` and `wake_document`
-                // return early; the wasm branch still queues the bundle, which
-                // is the part under test.
-                browser.schedule_current(0, false);
-                let mut pending = VecDeque::new();
-                assert!(
-                    browser.poll_document(&mut chrome, &mut pending),
-                    "the bundle should have been attached, not retained"
-                );
-
-                let mut inner = chrome.inner_mut();
-                inner.set_viewport(blitz_traits::shell::Viewport::new(
-                    1440,
-                    960,
-                    1.0,
-                    blitz_traits::shell::ColorScheme::Dark,
-                ));
-                inner.resolve(0.0);
-
-                let mount = page_node(&inner, 0).expect("page mount");
-                let page = inner
-                    .get_node(mount)
-                    .and_then(|node| node.element_data())
-                    .and_then(|element| element.sub_doc_data())
-                    .expect("a document should be attached to the tab mount");
-
-                // The guest's tree, read out of the document the window holds.
-                let page = page.inner();
-                let panel = page
-                    .query_selector(".panel")
-                    .ok()
-                    .flatten()
-                    .expect("the guest's panel should be in the attached document");
-                let rows = page.query_selector_all(".row").unwrap();
-                assert_eq!(rows.len(), 3, "the guest's three rows should be there");
-
-                // Attached is not the same as rendered. Without a box the
-                // document would be correct and the window would look empty,
-                // which is the failure the frontend test exists to catch on the
-                // mount and this one catches on the page.
-                let layout = page.get_node(panel).unwrap().final_layout();
-                assert!(
-                    layout.size.width > 0.0 && layout.size.height > 0.0,
-                    "the guest's panel has no box: {:?}",
-                    layout.size
-                );
-            })
-            .unwrap()
-            .join()
-            .unwrap();
     }
 }
