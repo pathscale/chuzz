@@ -262,6 +262,7 @@ cpal = { version = "^0.15.3", default-features = false, optional = true }
 wat = "1"
 
 [build-dependencies]
+nagoya = "^0.1.12"
 brotli.workspace = true
 
 

@@ -47,7 +47,11 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
 #[global_allocator]
 static ALLOC: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
 
+#[path = "bin_caps.rs"]
+mod app_caps;
+
 fn main() {
+    let _caps = app_caps::start(&[]);
     chuzz::tune_allocator();
     // Before any of the entry points below can reach the network. See the
     // function's own comment for why the provider is named here rather than
