@@ -20,7 +20,7 @@
 /// WSS configurations also name the provider explicitly, so an embedder's
 /// previously installed default cannot change their cryptography.
 pub fn install_crypto_provider() {
-    let _ = ps_rustcrypto::provider().install_default();
+    let _ = blitz_net::chacha_provider().as_ref().clone().install_default();
 }
 
 /// Configure the global allocator (rusty_alloc) for a long-running process: freed memory is purged

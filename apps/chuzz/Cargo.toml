@@ -39,6 +39,8 @@ path = "src/reactor_witness_main.rs"
 required-features = ["capture", "javascript", "reactor-witness"]
 
 [features]
+# Compile-time gated defects and local trust anchors for functional witnesses.
+sandbox2-witness = ["blitz-net/sandbox2-witness"]
 reactor-witness = []
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
