@@ -50,11 +50,11 @@
     (literal @SHELL@))
 (allow file-read* file-write* (subpath @CACHE@))
 @READS@
+(allow user-preference-read)
 (allow mach-lookup
-    (global-name "com.apple.CARenderServer" "com.apple.WindowServer" "com.apple.windowserver.active" "com.apple.FontObjectsServer" "com.apple.fonts" "com.apple.SecurityServer" "com.apple.trustd" "com.apple.trustd.agent" "com.apple.system.opendirectoryd.libinfo" "com.apple.SystemConfiguration.configd" "com.apple.cfprefsd.daemon" "com.apple.cfprefsd.agent" "com.apple.system.notification_center" "com.apple.notifyd" "com.apple.MTLCompilerService"))
+    (global-name "com.apple.CARenderServer" "com.apple.WindowServer" "com.apple.windowserver.active" "com.apple.FontObjectsServer" "com.apple.fonts" "com.apple.SecurityServer" "com.apple.trustd" "com.apple.trustd.agent" "com.apple.system.opendirectoryd.libinfo" "com.apple.SystemConfiguration.configd" "com.apple.cfprefsd.daemon" "com.apple.cfprefsd.agent" "com.apple.system.notification_center" "com.apple.notifyd" "com.apple.MTLCompilerService" "com.apple.coreservices.launchservicesd" "com.apple.CoreServices.coreservicesd" "com.apple.lsd.mapdb" "com.apple.lsd.modifydb" "com.apple.dock.server" "com.apple.hiservices-xpcservice" "com.apple.pbs.fetch_services" "com.apple.runningboard"))
 (allow mach-register (local-name "com.apple.axserver" "com.apple.tsm.portname"))
 (allow ipc-posix-shm-read* ipc-posix-shm-write-data (ipc-posix-name-prefix "com.apple.WindowServer"))
-(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))
-(allow iokit-open-user-client (iokit-user-client-class "IOSurfaceRootUserClient" "AGXDeviceUserClient" "IOAccelerator"))
-(allow iokit-open-service (iokit-user-client-class "IOSurfaceRoot") (iokit-registry-entry-class "IOAccelerator"))
+(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center") (ipc-posix-name-prefix "apple.cfprefs."))
+(allow iokit-open* iokit-get-properties)
 (allow dynamic-code-generation)
