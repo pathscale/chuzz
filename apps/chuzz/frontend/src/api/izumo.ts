@@ -17,10 +17,7 @@ interface IzumoEvent<T> {
 
 interface IzumoBridge {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
-  listen<T>(
-    event: string,
-    handler: (message: IzumoEvent<T>) => void,
-  ): Promise<Unlisten>;
+  listen<T>(event: string, handler: (message: IzumoEvent<T>) => void): Promise<Unlisten>;
 }
 
 declare global {
@@ -57,8 +54,7 @@ export function createIzumoApi(): BrowserApi {
     reload: (id) => izumo.invoke<void>("reload", { id }),
 
     panelState: () => izumo.invoke<PanelState>("panel_state"),
-    setPanelCollapsed: (collapsed) =>
-      izumo.invoke<void>("set_panel_collapsed", { collapsed }),
+    setPanelCollapsed: (collapsed) => izumo.invoke<void>("set_panel_collapsed", { collapsed }),
     toggleSection: (section) => izumo.invoke<void>("toggle_section", { section }),
 
     status: () => izumo.invoke<StatusReadout>("status"),
@@ -81,4 +77,3 @@ export function createIzumoApi(): BrowserApi {
     },
   };
 }
-

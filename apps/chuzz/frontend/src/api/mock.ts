@@ -111,11 +111,15 @@ export function createMockApi(): BrowserApi {
     },
 
     sleepTab: async (id) => {
-      tabs = tabs.map((tab) => tab.id === id ? { ...tab, lifecycle: "sleeping", runtimeReleased: true } : tab);
+      tabs = tabs.map((tab) =>
+        tab.id === id ? { ...tab, lifecycle: "sleeping", runtimeReleased: true } : tab,
+      );
       announce();
     },
     wakeTab: async (id) => {
-      tabs = tabs.map((tab) => tab.id === id ? { ...tab, lifecycle: "live", runtimeReleased: false } : tab);
+      tabs = tabs.map((tab) =>
+        tab.id === id ? { ...tab, lifecycle: "live", runtimeReleased: false } : tab,
+      );
       announce();
     },
     openTab: async (url) => {

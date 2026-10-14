@@ -6,7 +6,28 @@
 
 @import "./styles/theme.css";
 
-.sleep-view { position: absolute; inset: 0; z-index: 2; background: var(--az-surface); }
-.sleep-view__image { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
-.sleep-view__caption { position: absolute; top: 1rem; left: 1rem; padding: 1rem; border-radius: 0.5rem; background: var(--az-surface); }
-.sleep-view__actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+.sleep-view {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: var(--az-surface);
+}
+.sleep-view__image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.sleep-view__caption {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  background: var(--az-surface);
+}
+.sleep-view__actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}

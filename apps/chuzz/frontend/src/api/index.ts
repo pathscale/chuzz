@@ -24,4 +24,3 @@ function isIzumo(): boolean {
  * not succeed against a stand-in.
  */
 export const api: BrowserApi = isIzumo() ? createIzumoApi() : createMockApi();
-

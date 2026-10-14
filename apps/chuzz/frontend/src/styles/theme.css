@@ -448,9 +448,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    /* biome-ignore lint/style/noDescendingSpecificity: this sets animation and
-       transition only, and shares no property with the selection rules above
-       it, so the specificity order cannot decide anything between them. */
     *,
     *::before,
     *::after {
