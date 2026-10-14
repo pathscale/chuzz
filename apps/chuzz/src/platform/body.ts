@@ -676,32 +676,35 @@
             if (signal?.aborted) { abort(); return; }
             if (signal) signal.addEventListener("abort", abort, { once: true });
             const hasBody = request.body !== null;
+            // A sibling callback keeps Boa's recursive expression parser from
+            // descending through both promise and transport callbacks at once.
+            function received(result) {
+              if (aborted) return;
+              if (!result.ok) { cleanup(); reject(new TypeError("fetch failed: " + result.error)); return; }
+              try {
+                const finalURL = new URL(result.url || request.url, request.url);
+                if (request.mode === "same-origin" && finalURL.origin !== new URL(request.url).origin) {
+                  throw new TypeError("Cross-origin redirect in same-origin mode");
+                }
+                const body = request.method === "HEAD" || [204, 205, 304].includes(result.status)
+                  ? null : new Uint8Array(result.bytes);
+                resultResponse = response(body, {
+                  status: result.status, statusText: result.statusText, headers: result.headers
+                }, {
+                  immutable: true, url: finalURL.href, redirected: finalURL.href !== request.url,
+                  type: finalURL.origin === new URL(g.location.href).origin ? "basic" : "cors"
+                });
+                if (resultResponse.body) streams.closed(resultResponse.body).then(cleanup, cleanup);
+                else cleanup();
+                resolve(resultResponse);
+              } catch (error) { cleanup(); reject(error); }
+            }
             consume(request, signal).then(bytes => {
               if (aborted) return;
               id = send({
                 url: request.url, method: request.method, headers: Array.from(request.headers),
                 body: hasBody ? Array.from(bytes) : null, credentials: request.credentials
-              }, result => {
-                if (aborted) return;
-                if (!result.ok) { cleanup(); reject(new TypeError("fetch failed: " + result.error)); return; }
-                try {
-                  const finalURL = new URL(result.url || request.url, request.url);
-                  if (request.mode === "same-origin" && finalURL.origin !== new URL(request.url).origin) {
-                    throw new TypeError("Cross-origin redirect in same-origin mode");
-                  }
-                  const body = request.method === "HEAD" || [204, 205, 304].includes(result.status)
-                    ? null : new Uint8Array(result.bytes);
-                  resultResponse = response(body, {
-                    status: result.status, statusText: result.statusText, headers: result.headers
-                  }, {
-                    immutable: true, url: finalURL.href, redirected: finalURL.href !== request.url,
-                    type: finalURL.origin === new URL(g.location.href).origin ? "basic" : "cors"
-                  });
-                  if (resultResponse.body) streams.closed(resultResponse.body).then(cleanup, cleanup);
-                  else cleanup();
-                  resolve(resultResponse);
-                } catch (error) { cleanup(); reject(error); }
-              });
+              }, received);
             }, error => { cleanup(); reject(error); });
           });
         };
