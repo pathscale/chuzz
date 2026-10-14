@@ -10,11 +10,12 @@
 //! The renderer exposes it as a loopback WebDriver server, published in a
 //! `0600` descriptor carrying discovery metadata. The authentication token
 //! comes from `TAURI_BLITZ_DRIVER_TOKEN` in process memory. It exists only when
-//! the browser is started with both:
+//! the browser is started with the address, descriptor path, and token settings:
 //!
 //! ```text
 //! TAURI_BLITZ_DRIVER=127.0.0.1:0 \
 //! TAURI_BLITZ_DRIVER_DESCRIPTOR=/tmp/chuzz-driver.json \
+//! TAURI_BLITZ_DRIVER_TOKEN="$DRIVER_TOKEN" \
 //! CHUZZ_CONTROL=1 target/release/chuzz-gui
 //! ```
 //!
