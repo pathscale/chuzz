@@ -16,7 +16,7 @@ pub(super) fn task_context() -> Context<'static> { transport::task_context() }
 
 pub(super) struct NetworkWake;
 impl blitz_traits::net::NetWaker for NetworkWake {
-    fn wake(&self, _document: usize) { transport::task_context().waker().wake_by_ref(); }
+    fn wake(&self, _document: usize) { transport::network_wake().wake_by_ref(); }
 }
 pub(super) fn network_wake() -> Arc<NetworkWake> { Arc::new(NetworkWake) }
 

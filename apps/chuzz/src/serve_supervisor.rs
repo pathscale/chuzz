@@ -8,16 +8,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Waker};
 use std::time::Duration;
 
-use blitz_control_protocol::latest::{Flag, Latest, Once};
+use blitz_control_protocol::latest::{Flag, Latest};
 use blitz_control_protocol::server::ControlBridgeRequest;
 use blitz_control_protocol::{
     self as protocol, DebugDescriptor, DebugEvent, DebugResponse, DebugStream,
     DiagnosticsRequest, IncomingRequest, NagoyaStream, framed_json_neutral,
 };
 use blitz_traits::net::Url;
-use endpoint_libs::libs::ws::{MessageStream, StreamError, WireMessage};
+use endpoint_libs::libs::ws::WireMessage;
 use endpoint_libs::libs::ws::mcp_wire::{INVALID_REQUEST, JsonRpcError};
-use endpoint_libs::libs::ws::transport::TransportStream;
+use endpoint_libs::libs::ws::transport::FramedError;
+use futures::{SinkExt, StreamExt};
 use futures::future::{Either, select};
 use nagoya::net::{TcpListener, TcpStream};
 use nagoya::reactor::{Addr, Reactor};
@@ -108,8 +109,8 @@ async fn listen(state: Arc<ControlState>) -> Arc<ControlState> {
 struct ConnectionWork { state: Arc<ControlState>, stream: Mutex<Option<TcpStream>> }
 
 enum Input {
-    Message(Option<Result<WireMessage, StreamError>>),
-    Event(Option<DebugEvent>, u64),
+    Message(Option<Result<WireMessage, FramedError>>),
+    Event(Option<Box<DebugEvent>>, u64),
 }
 
 fn selected(streams: &[DebugStream], event: &DebugEvent) -> bool {
@@ -140,17 +141,17 @@ async fn response(state: &ControlState, request: ControlBridgeRequest) -> DebugR
 async fn connection(work: Arc<ConnectionWork>) -> Arc<ConnectionWork> {
     let _lease = work.state.gate.acquire().await;
     let socket = work.stream.lock().unwrap_or_else(|poison| poison.into_inner()).take().expect("one connection task");
-    let mut wire = TransportStream::new(framed_json_neutral(NagoyaStream::new(socket)));
+    let mut wire = framed_json_neutral(NagoyaStream::new(socket));
     let mut observed = Vec::new();
     let mut seen = work.state.events.revision();
     loop {
-        let input = if observed.is_empty() { Input::Message(wire.recv().await) } else {
-            let message = wire.recv();
+        let input = if observed.is_empty() { Input::Message(wire.next().await) } else {
+            let message = wire.next();
             let changed = work.state.events.changed_since(seen);
             futures::pin_mut!(message, changed);
             match select(message, changed).await {
                 Either::Left((message, _)) => Input::Message(message),
-                Either::Right(((event, revision), _)) => Input::Event(event, revision),
+                Either::Right(((event, revision), _)) => Input::Event(event.map(Box::new), revision),
             }
         };
         let message = match input {

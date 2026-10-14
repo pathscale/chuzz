@@ -246,6 +246,8 @@ async fn handle_connection(stream: TcpStream, bridge: ArcControlBridge) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use endpoint_libs::libs::ws::MessageStream;
+    use endpoint_libs::libs::ws::transport::TransportStream;
 
     #[test]
     fn the_descriptor_round_trips() {

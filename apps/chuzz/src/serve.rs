@@ -1389,8 +1389,7 @@ fn follow_navigation(
     origin: &mut String,
     policy: &HeadlessPolicy,
     load: &impl Fn(Url, Option<&StoredState>, blitz_traits::net::Initiator) -> Result<Box<ScriptDocument>, String>,
-    render_events: &Latest<DebugEvent>,
-    render_revision: &mut u64,
+    render: (&Latest<DebugEvent>, &mut u64),
     browser_initiated: bool,
 ) -> Result<(), String> {
     let _navigation = supervisor::operation(supervisor::Operation::Load);
@@ -1414,7 +1413,7 @@ fn follow_navigation(
     *document = *next;
     *origin = arriving;
     supervisor::ready(document.inner().url());
-    commit_render(render_events, render_revision);
+    commit_render(render.0, render.1);
     Ok(())
 }
 
@@ -1459,9 +1458,9 @@ fn serve_page(
 ) -> Result<(), String> {
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
-    let (request_tx, request_rx) = page_control::channel(64);
-
     let policy = HeadlessPolicy::from_env()?;
+    let capacity = if policy.bot_child { BOT_CHILD_MAX_PENDING_REQUESTS } else { 64 };
+    let (request_tx, request_rx) = page_control::channel(capacity);
     let _egress_proxy = if policy.bot_child {
         Some(EgressProxy::start(policy.clone())?)
     } else {
@@ -1733,7 +1732,10 @@ fn serve_page(
         };
         let received = match queued_request.take() {
             Some(pair) => Ok(pair),
-            None => request_rx.receive(wait),
+            None => match wait {
+                Some(timeout) => request_rx.recv_timeout(timeout),
+                None => request_rx.receive(None),
+            },
         };
         let (request, reply) = match received {
             Ok(pair) => pair,
@@ -1749,8 +1751,7 @@ fn serve_page(
                         &mut origin,
                         &policy,
                         &load,
-                        &render_events,
-                        &mut render_revision,
+                        (&render_events, &mut render_revision),
                         false,
                     )
                 {
@@ -1871,13 +1872,21 @@ fn serve_page(
                 && !policy.bot_child
                 && target_context.is_none()
             {
+                let capture_reply = blitz_control_protocol::latest::Once::new();
                 crate::webgpu::capture_gpu_buffer_reply(
                     &mut document,
                     target,
                     *offset,
                     *length,
-                    Arc::clone(&reply),
+                    Arc::clone(&capture_reply),
                 );
+                let page_reply = Arc::clone(&reply);
+                drop(nagoya::spawn(async move {
+                    if let Some(response) = capture_reply.recv().await {
+                        page_reply.fill(response);
+                    }
+                    page_reply
+                }));
                 true
             } else {
                 false
@@ -1932,8 +1941,7 @@ fn serve_page(
                                 &mut origin,
                                 &policy,
                                 &load,
-                                &render_events,
-                                &mut render_revision,
+                                (&render_events, &mut render_revision),
                                 true,
                             ) {
                                 Ok(()) => DebugResponse::Ack,
@@ -2185,8 +2193,7 @@ fn serve_page(
                 &mut origin,
                 &policy,
                 &load,
-                &render_events,
-                &mut render_revision,
+                (&render_events, &mut render_revision),
                 false,
             ) {
                 Ok(()) => {}
@@ -2463,6 +2470,7 @@ mod tests {
                 selected: false,
                 bounds: None,
                 slot: Some("s".repeat(4000)),
+                attributes: Default::default(),
             }],
             ..AgentSnapshot::default()
         };
