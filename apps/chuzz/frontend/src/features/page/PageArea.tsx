@@ -49,6 +49,7 @@ export function PageArea(): JSX.Element {
                   tabId={String(tab.id)}
                   label={tab.lifecycle === "waking" ? "Waking, saved view" : tab.lifecycle === "discarding" ? "Releasing page" : tab.lifecycle === "restore-failed" ? "Reload failed, saved view" : "Sleeping, saved view"}
                   reason={tab.lifecycleReason ?? ""}
+                  ageSeconds={Math.floor((tab.previewAgeMs ?? 0) / 1000)}
                 >
                   <div>
                     <Button id={`chuzz-wake-${tab.id}`} disabled={tab.lifecycle === "waking" || tab.lifecycle === "discarding"} onClick={() => tab.lifecycleReason === "reload-requires-resubmission" ? void browser.navigate(tab.url) : browser.wakeTab(tab.id)}>

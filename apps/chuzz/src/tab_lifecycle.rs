@@ -144,13 +144,14 @@ impl Browser {
         let preview = {
             let mut state = self.0.state.lock().unwrap();
             let tab = state.tabs.iter_mut().find(|tab| tab.id == id).ok_or("unknown tab")?;
-            if tab.life.phase == TabPhase::Discarding { tab.life.wake_requested = true; return Ok(()); }
+            if tab.life.phase == TabPhase::Discarding || tab.life.release.is_some() { tab.life.wake_requested = true; return Ok(()); }
             if !matches!(tab.life.phase, TabPhase::Sleeping | TabPhase::RestoreFailed) { return Err("tab-is-not-sleeping".into()); }
             if !matches!(tab.request().method.as_str(), "GET" | "HEAD") {
                 tab.life.phase = TabPhase::RestoreFailed; tab.life.reason = "reload-requires-resubmission";
                 drop(state); self.emit_state(); return Ok(());
             }
             tab.life.phase = TabPhase::Waking;
+            tab.life.preview_surface.take();
             tab.life.reason = "";
             tab.life.await_preview = tab.life.preview.is_some();
             tab.life.await_preview

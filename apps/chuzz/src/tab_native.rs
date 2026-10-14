@@ -20,6 +20,12 @@ fn field_kind(document: &BaseDocument, id: NodeId) -> Option<FieldKind> {
 
 fn identity(document: &BaseDocument, id: NodeId) -> Option<(&str, &str, &str)> {
     let node = document.get_node(id)?;
+    let mut scope = node.parent;
+    while let Some(id) = scope {
+        let ancestor = document.get_node(id)?;
+        if ancestor.is_shadow_root() { return None; }
+        scope = ancestor.parent;
+    }
     let element = node.element_data()?;
     let field = element.attr(local_name!("id"))?;
     if field.is_empty() || document.tree().iter().filter(|(_, node)| node.attr(local_name!("id")) == Some(field)).count() != 1 { return None; }

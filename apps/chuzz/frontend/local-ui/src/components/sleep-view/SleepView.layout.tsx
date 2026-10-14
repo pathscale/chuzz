@@ -7,6 +7,7 @@ export type SleepViewProps = {
   tabId: string;
   label: string;
   reason: string;
+  ageSeconds: number;
   children: JSX.Element;
 };
 
@@ -16,6 +17,7 @@ const SleepView: Layout<typeof sleepView, SleepViewProps> = () => (
     <div {...slot.caption}>
       <Text>{local.label}</Text>
       <Text size="sm">{local.reason}</Text>
+      <Text size="sm">Saved {local.ageSeconds}s ago</Text>
       <div {...slot.actions}>{children}</div>
     </div>
   </section>
