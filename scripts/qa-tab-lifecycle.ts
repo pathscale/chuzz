@@ -78,7 +78,7 @@ async function stop(child: Bun.Subprocess): Promise<void> {
 }
 
 async function run(mode: typeof cases[number], binary: string, defect?: string): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "chuzz-tab-witness-"));
+  const directory = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "chuzz-tab-witness-"));
   const privateTmp = join(directory, "tmp");
   const descriptors = join(privateTmp, "tauri-blitz-agent");
   await mkdir(descriptors, { recursive: true, mode: 0o700 });
@@ -104,7 +104,7 @@ async function run(mode: typeof cases[number], binary: string, defect?: string):
   let rpc: Rpc | undefined;
   try {
     child = Bun.spawn([binary, `${front.url}fixture?case=${mode.mode}`], { stdin: "ignore", stdout: "pipe", stderr: "pipe",
-      env: { ...process.env, TMPDIR: privateTmp, CHUZZ_PROFILE_DIR: join(directory, "profile"), CHUZZ_TAB_SLEEP_MS: String(delay),
+      env: { ...process.env, TMPDIR: privateTmp, CHUZZ_CACHE_DIR: directory, CHUZZ_PROFILE_DIR: join(directory, "profile"), CHUZZ_TAB_SLEEP_MS: String(delay),
         CHUZZ_CONTROL: "1" } });
     const logs = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
     const descriptor = await deadline(Promise.race([ready.promise, child.exited.then(code => { throw new Error(`preparation GUI exited ${code}`); })]), 20000, "GUI descriptor deadline");

@@ -546,6 +546,13 @@ impl Browser {
             izumo::set_page_diagnostics_handler(|document, request| {
                 use blitz_control_protocol::{DebugResponse, DiagnosticsRequest};
                 match request {
+                    DiagnosticsRequest::Evaluate { script } => match document.eval_json(&script) {
+                        Ok(value) => DebugResponse::Evaluated(value),
+                        Err(message) => DebugResponse::Error(blitz_control_protocol::target::error(
+                            "scriptError",
+                            &message,
+                        )),
+                    },
                     DiagnosticsRequest::WebGpuInspect => crate::webgpu::inspect_gpu(document)
                         .map(DebugResponse::WebGpu)
                         .unwrap_or_else(DebugResponse::Error),
