@@ -32,9 +32,8 @@ type CookieKey = (String, String, String);
 
 #[cfg(feature = "reactor-witness")]
 pub fn reactor_receipt() -> Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>> {
-    static RECEIPT: std::sync::OnceLock<
-        Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>,
-    > = std::sync::OnceLock::new();
+    type Receipt = Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>;
+    static RECEIPT: std::sync::OnceLock<Receipt> = std::sync::OnceLock::new();
     Arc::clone(RECEIPT.get_or_init(blitz_control_protocol::latest::Once::new))
 }
 
