@@ -13,7 +13,6 @@ use blitz_dom::Document as _;
 use blitz_dom::NodeId;
 use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
 use blitz_script::ScriptDocument;
-use blitz_script::boa_engine::{JsString, JsValue};
 use blitz_traits::net::Url;
 
 use crate::document_loader::NetProvider;
@@ -27,6 +26,8 @@ mod planar;
 mod sink;
 mod source;
 mod stream;
+#[path = "video_script.rs"]
+mod video_script;
 
 pub(crate) use stream::{Frames, frame_registry, take_frame};
 
@@ -495,40 +496,7 @@ impl Entry {
     }
 
     fn publish(&mut self, document: &mut ScriptDocument, id: u64) {
-        let network_state = if self.error.is_some() {
-            3
-        } else if self.decoder.is_none() || self.enough || self.paused && self.metadata {
-            1
-        } else {
-            2
-        };
-        let payload = serde_json::json!({
-            "src": self.src,
-            "duration": self.duration.filter(|duration| duration.is_finite()),
-            "durationInfinite": self.duration == Some(f64::INFINITY),
-            "frameInk": self.pixels.as_chunks::<4>().0.iter().any(|pixel| {
-                pixel[..3].iter().any(|channel| *channel != 0)
-            }),
-            "time": self.position,
-            "paused": self.paused,
-            "ended": self.ended,
-            "seeking": self.seeking,
-            "readyState": self.ready_state,
-            "networkState": network_state,
-            "buffered": self.buffered,
-            "seekable": self.seekable,
-            "hasFrame": self.has_frame,
-            "totalVideoFrames": self.total_frames,
-            "width": self.width,
-            "height": self.height,
-            "error": self.error,
-            "events": std::mem::take(&mut self.events),
-        });
-        self.dirty = false;
-        document.eval(&format!(
-            "globalThis.__chuzzVideoUpdate({id}, {}, {payload});",
-            self.generation
-        ));
+        video_script::publish(self, document, id);
     }
 }
 
@@ -538,176 +506,6 @@ struct Host {
     frames: Arc<Frames>,
     streams: stream::Host,
     entries: HashMap<u64, Entry>,
-}
-
-impl Host {
-    fn poll(&mut self, document: &mut ScriptDocument) -> bool {
-        let now = Instant::now();
-        let loaded_nodes = document.with_js_context(|context| {
-            let requests = blitz_script::media::take_load_requests(context);
-            let mut nodes = HashMap::new();
-            if requests.is_empty() {
-                return nodes;
-            }
-            let load = context
-                .global_object()
-                .get(JsString::from("__chuzzVideoLoad"), context)
-                .ok()
-                .and_then(|value| value.as_object())
-                .filter(|function| function.is_callable());
-            let Some(load) = load else {
-                eprintln!("Media load hook is unavailable");
-                return nodes;
-            };
-            for request in requests {
-                let node = request.node_id;
-                match load.call(
-                    &JsValue::undefined(),
-                    &[request.element.clone().into()],
-                    context,
-                ) {
-                    Ok(value) => {
-                        if let Some(id) = value.as_number() {
-                            nodes.insert(id as u64, node);
-                        }
-                    }
-                    Err(error) => eprintln!("Media load request: {error}"),
-                }
-            }
-            nodes
-        });
-        // Called natively: a script eval here would request a redraw on every
-        // poll, and the redraw polls again, so an idle page never stopped painting.
-        let commands = document
-            .with_js_context(|context| {
-                let drain = context
-                    .global_object()
-                    .get(JsString::from("__chuzzVideoDrain"), context)
-                    .ok()?
-                    .as_object()
-                    .filter(|function| function.is_callable())?;
-                let value = drain
-                    .call(&JsValue::undefined(), &[], context)
-                    .inspect_err(|error| eprintln!("Media drain: {error}"))
-                    .ok()?;
-                if let Err(error) = context.run_jobs() {
-                    eprintln!("Media drain jobs: {error}");
-                }
-                value.to_json(context).ok().flatten()
-            })
-            .and_then(|value| serde_json::from_value::<Vec<Command>>(value).ok())
-            .unwrap_or_default();
-        let mut changed = !loaded_nodes.is_empty();
-
-        for command in commands {
-            if command.op == "load" || command.op == "release" {
-                let existing_node = self.entries.get(&command.id).map(|entry| entry.node);
-                self.frames.remove(command.id);
-                changed |= self.streams.remove(document, command.id);
-                if let Some(mut previous) = self.entries.remove(&command.id) {
-                    let _ = set_image(document, previous.node, None, &mut previous.pixels);
-                    changed = true;
-                }
-                if command.op == "release" {
-                    continue;
-                }
-                if command.tracks.is_some() {
-                    self.streams.load(&command, now);
-                    changed = true;
-                    continue;
-                }
-                if command.src.as_deref().is_none_or(str::is_empty) {
-                    continue;
-                }
-                let selector = format!(
-                    "video[data-chuzz-video='{}'],audio[data-chuzz-video='{}']",
-                    command.id, command.id
-                );
-                let node = loaded_nodes
-                    .get(&command.id)
-                    .copied()
-                    .or(existing_node)
-                    .or_else(|| document.inner().query_selector(&selector).ok().flatten());
-                let Some(node) = node else {
-                    continue;
-                };
-                let url = document
-                    .inner()
-                    .url()
-                    .join(command.src.as_deref().unwrap_or_default());
-                let Ok(url) = url else {
-                    continue;
-                };
-                let mut entry = Entry::new(node, url, &command, now);
-                if let Some(source) = command.mse {
-                    entry.requested = true;
-                    match self.mse.decoder(source) {
-                        Ok(decoder) => {
-                            entry.decoder = Some(decoder);
-                            entry.configure_decoder();
-                        }
-                        Err(error) => entry.fail(error),
-                    }
-                } else if !matches!(entry.url.scheme(), "http" | "https" | "file" | "data") {
-                    entry.fail(MediaError::unsupported("unsupported video URL"));
-                }
-                self.entries.insert(command.id, entry);
-                continue;
-            }
-
-            if self.streams.command(&command) {
-                continue;
-            }
-            if let Some(entry) = self.entries.get_mut(&command.id)
-                && entry.generation == command.generation
-                && let Err(error) = entry.command(&command)
-            {
-                entry.fail(error);
-            }
-        }
-
-        let frames = &self.frames;
-        self.entries.retain(|id, entry| {
-            let live = document.inner().get_node(entry.node).is_some();
-            if !live {
-                frames.remove(*id);
-            }
-            live
-        });
-        for (&id, entry) in &mut self.entries {
-            match entry.tick(&self.net, now) {
-                Ok(Some(frame)) => {
-                    let result = set_image(document, entry.node, Some(frame), &mut entry.pixels)
-                        .and_then(|()| {
-                            self.frames
-                                .publish(
-                                    id,
-                                    entry.generation,
-                                    entry.width,
-                                    entry.height,
-                                    Arc::clone(&entry.pixels),
-                                )
-                                .map_err(MediaError::decode)
-                        });
-                    match result {
-                        Ok(()) => entry.total_frames += 1,
-                        Err(error) => {
-                            self.frames.remove(id);
-                            entry.fail(error);
-                        }
-                    }
-                    changed = true;
-                }
-                Ok(None) => {}
-                Err(error) => entry.fail(error),
-            }
-            if entry.dirty || !entry.events.is_empty() {
-                entry.publish(document, id);
-                changed = true;
-            }
-        }
-        changed | self.streams.poll(document, now)
-    }
 }
 
 fn set_image(
@@ -759,23 +557,5 @@ fn set_image(
 }
 
 pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
-    let mse = mse::install(document);
-    let (capture, frames) = document.with_js_context(|context| {
-        let capture = crate::media::host(context).expect("page capture host");
-        let frames = frame_registry(context);
-        stream::install_frame_bridge(context);
-        (capture, frames)
-    });
-    document.eval("globalThis.__chuzzVideoSupported = true;");
-    document.eval_named(include_str!("video.ts"), "<chuzz-video>");
-    document.eval_named(include_str!("video/mse.ts"), "<chuzz-mse>");
-    document.eval_named(include_str!("video/stream.ts"), "<chuzz-stream>");
-    let mut host = Host {
-        net,
-        mse,
-        streams: stream::Host::new(capture, Arc::clone(&frames)),
-        frames,
-        entries: HashMap::new(),
-    };
-    document.add_poll_hook(move |document, _| host.poll(document));
+    video_script::install(document, net);
 }

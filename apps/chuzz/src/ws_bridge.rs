@@ -36,6 +36,9 @@ use nago_wss::stream::{ByteStream, Errno, StreamExt};
 use nagoya::net::TcpStream;
 use nagoya::reactor::Reactor;
 
+#[path = "ws_bridge_script.rs"]
+mod script;
+
 // The default 16 MiB frame cap disconnects pages that send a self-contained
 // image-rich JSON result in one frame. Keep a bounded cap, with room for the
 // 38 MiB OpenCaptchaWorld image-matching response and similarly sized pages.
@@ -141,30 +144,56 @@ impl ByteStream for Transport {
 
 impl StreamExt for Transport {}
 
-/// One thing that happened to one socket, waiting for the document thread.
+#[derive(Debug)]
 struct Event {
     id: u64,
-    payload: serde_json::Value,
+    reply: SocketReply,
 }
 
-/// What JavaScript asked for.
-#[derive(serde::Deserialize)]
-struct Command {
-    /// Present only on this bridge's messages. The IPC channel is shared, so
-    /// this is what distinguishes a socket command from a fetch.
-    ws: String,
-    id: u64,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    protocols: Vec<String>,
-    /// Accepted for wire compatibility. Native document identity supplies Origin.
-    #[serde(default, rename = "origin")]
-    _origin: Option<String>,
-    #[serde(default)]
-    data: Option<String>,
-    #[serde(default)]
-    code: Option<u16>,
+/// Native operations accepted by the socket subsystem.
+pub enum SocketRequest {
+    Connect {
+        id: u64,
+        url: Option<String>,
+        protocols: Vec<String>,
+    },
+    Send {
+        id: u64,
+        data: Option<String>,
+    },
+    Close {
+        id: u64,
+        code: Option<u16>,
+    },
+}
+
+/// Native replies produced by the socket subsystem.
+#[derive(Debug)]
+pub enum SocketReply {
+    Open { protocol: String },
+    Message { data: String },
+    Error { message: String },
+    Close { code: u16, reason: String },
+}
+
+/// Errors returned by native socket operations.
+#[derive(Debug)]
+pub enum SocketError {
+    MissingUrl,
+    RegistryPoisoned,
+    ActiveLimitReached,
+    BadCloseCode,
+}
+
+impl std::fmt::Display for SocketError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingUrl => formatter.write_str("no url"),
+            Self::RegistryPoisoned => formatter.write_str("socket registry poisoned"),
+            Self::ActiveLimitReached => formatter.write_str("active socket limit reached"),
+            Self::BadCloseCode => formatter.write_str("bad close code"),
+        }
+    }
 }
 
 /// Open sockets and the events they have produced.
@@ -204,16 +233,16 @@ impl Bridge {
         self.events.lock().unwrap().clear();
     }
 
-    fn post(&self, id: u64, payload: serde_json::Value) {
+    fn post(&self, id: u64, reply: SocketReply) {
         if self.signal.aborted() {
             return;
         }
-        crate::serve::verbose(&format!("socket {id} produced {payload}"));
+        crate::serve::verbose(&format!("socket {id} produced {reply:?}"));
         // A poisoned lock means a panic on the document thread while holding
         // it. The page is already lost; dropping the event beats panicking on
         // top of the first one.
         if let Ok(mut queue) = self.events.lock() {
-            queue.push(Event { id, payload });
+            queue.push(Event { id, reply });
         }
         self.wake.wake();
     }
@@ -227,58 +256,69 @@ impl Bridge {
     fn failed(&self, id: u64, _reason: &str, _error: impl std::fmt::Display) {
         self.post(
             id,
-            serde_json::json!({
-                "type": "error",
-                "message": "WebSocket connection failed",
-            }),
+            SocketReply::Error {
+                message: "WebSocket connection failed".to_owned(),
+            },
         );
-        self.post(id, closed(1006, ""));
+        self.post(
+            id,
+            SocketReply::Close {
+                code: 1006,
+                reason: String::new(),
+            },
+        );
+    }
+
+    fn reject(&self, id: u64, error: SocketError) {
+        if matches!(error, SocketError::BadCloseCode) {
+            self.post(
+                id,
+                SocketReply::Error {
+                    message: "bad close code".to_owned(),
+                },
+            );
+        } else {
+            self.failed(id, "connect", error);
+        }
+    }
+
+    /// Apply one native socket operation.
+    pub fn operate(&self, request: SocketRequest) -> Result<(), SocketError> {
+        match request {
+            SocketRequest::Connect { id, url, protocols } => self.connect(id, url, protocols),
+            SocketRequest::Send { id, data } => self.send(id, data),
+            SocketRequest::Close { id, code } => self.close(id, code),
+        }
     }
 
     /// Take one IPC message if it is a socket command. Returns whether it was.
     pub fn handle(&self, message: &str) -> bool {
-        let Ok(command) = serde_json::from_str::<Command>(message) else {
-            return false;
-        };
-        match command.ws.as_str() {
-            "connect" => self.connect(command),
-            "send" => self.send(command),
-            "close" => self.close(command),
-            // A command shape we know, naming an operation we do not. Claimed
-            // rather than passed on: it is addressed to this bridge.
-            _ => {}
-        }
-        true
+        script::handle(self, message)
     }
 
-    fn connect(&self, command: Command) {
+    fn connect(
+        &self,
+        id: u64,
+        url: Option<String>,
+        protocols: Vec<String>,
+    ) -> Result<(), SocketError> {
         if self.signal.aborted() {
-            return;
+            return Ok(());
         }
 
-        let id = command.id;
-        let Some(url) = command.url else {
-            self.failed(id, "handshake", "no url");
-            return;
-        };
-
+        let url = url.ok_or(SocketError::MissingUrl)?;
         let outbox = Arc::new(Outbox::default());
         match self.senders.lock() {
             Ok(mut open) => {
                 if self.signal.aborted() || open.contains_key(&id) {
-                    return;
+                    return Ok(());
                 }
                 if open.len() >= MAX_ACTIVE_SOCKETS {
-                    drop(open);
-                    self.failed(id, "connect", "active socket limit reached");
-                    return;
+                    return Err(SocketError::ActiveLimitReached);
                 }
                 open.insert(id, Arc::clone(&outbox));
             }
-            Err(_) => {
-                self.failed(id, "connect", "socket registry poisoned");
-                return;
-            }
+            Err(_) => return Err(SocketError::RegistryPoisoned),
         }
 
         let bridge = self.clone();
@@ -286,30 +326,25 @@ impl Bridge {
             let _lease = bridge.lifetime.as_ref().map(|receipt| receipt.lease());
             let mut cancelled = Box::pin(bridge.signal.cancelled());
             let mut work = Box::pin(async {
-                let connected = match open_socket(
-                    &url,
-                    &command.protocols,
-                    &bridge.initiator,
-                    Arc::clone(&outbox),
-                )
-                .await
-                {
-                    Ok(connected) => connected,
-                    Err(error) => {
-                        bridge.failed(id, "connect", error);
-                        return;
-                    }
-                };
+                let connected =
+                    match open_socket(&url, &protocols, &bridge.initiator, Arc::clone(&outbox))
+                        .await
+                    {
+                        Ok(connected) => connected,
+                        Err(error) => {
+                            bridge.failed(id, "connect", error);
+                            return;
+                        }
+                    };
 
                 // The subprotocol the server actually chose, which is not always
                 // the first one offered and is what the page reads back off
                 // `socket.protocol`.
                 bridge.post(
                     id,
-                    serde_json::json!({
-                        "type": "open",
-                        "protocol": connected.protocol.unwrap_or_default(),
-                    }),
+                    SocketReply::Open {
+                        protocol: connected.protocol.unwrap_or_default(),
+                    },
                 );
                 outbox.interruptible.store(true, Ordering::Release);
                 bridge
@@ -326,6 +361,7 @@ impl Bridge {
             .await;
             bridge.forget(id);
         });
+        Ok(())
     }
 
     async fn run_connection(
@@ -346,7 +382,13 @@ impl Bridge {
                     break;
                 }
                 if let Some(code) = closing {
-                    self.post(id, closed(code, ""));
+                    self.post(
+                        id,
+                        SocketReply::Close {
+                            code,
+                            reason: String::new(),
+                        },
+                    );
                     break;
                 }
                 continue;
@@ -355,10 +397,9 @@ impl Bridge {
             match connection.read().await {
                 Ok(Some(Message::Text(bytes))) => self.post(
                     id,
-                    serde_json::json!({
-                        "type": "message",
-                        "data": String::from_utf8_lossy(&bytes),
-                    }),
+                    SocketReply::Message {
+                        data: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
                 ),
                 // Binary arrives as text here on purpose. The pages
                 // this exists for speak JSON; handing them a string
@@ -366,10 +407,9 @@ impl Bridge {
                 // promise this does not yet keep.
                 Ok(Some(Message::Binary(bytes))) => self.post(
                     id,
-                    serde_json::json!({
-                        "type": "message",
-                        "data": String::from_utf8_lossy(&bytes),
-                    }),
+                    SocketReply::Message {
+                        data: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
                 ),
                 Ok(Some(Message::Close(frame))) => {
                     let (code, reason) = match &frame {
@@ -381,7 +421,7 @@ impl Bridge {
                     };
                     // nago-wss exposes control frames to its caller.
                     let _ = connection.close(frame).await;
-                    self.post(id, closed(code, &reason));
+                    self.post(id, SocketReply::Close { code, reason });
                     break;
                 }
                 Ok(Some(Message::Ping(payload))) => {
@@ -399,74 +439,60 @@ impl Bridge {
                     break;
                 }
                 Ok(None) => {
-                    self.post(id, closed(1006, ""));
+                    self.post(
+                        id,
+                        SocketReply::Close {
+                            code: 1006,
+                            reason: String::new(),
+                        },
+                    );
                     break;
                 }
             }
         }
     }
 
-    fn send(&self, command: Command) {
-        let Some(data) = command.data else { return };
+    fn send(&self, id: u64, data: Option<String>) -> Result<(), SocketError> {
+        let Some(data) = data else {
+            return Ok(());
+        };
         let sender = self
             .senders
             .lock()
             .ok()
-            .and_then(|open| open.get(&command.id).cloned());
+            .and_then(|open| open.get(&id).cloned());
         // A send on a socket that has closed is dropped rather than reported.
         // That is what a browser does: `send` after close is a no-op, and the
         // close event has already told the page.
         if let Some(sender) = sender {
             sender.push(Message::Text(data.into_bytes().into()));
         }
+        Ok(())
     }
 
-    fn close(&self, command: Command) {
+    fn close(&self, id: u64, code: Option<u16>) -> Result<(), SocketError> {
         let sender = self
             .senders
             .lock()
             .ok()
-            .and_then(|open| open.get(&command.id).cloned());
+            .and_then(|open| open.get(&id).cloned());
         if let Some(sender) = sender {
             let frame = CloseFrame {
-                code: command.code.unwrap_or(1000).into(),
+                code: code.unwrap_or(1000).into(),
                 reason: Default::default(),
             };
             if !frame.code.is_sendable() {
-                self.post(
-                    command.id,
-                    serde_json::json!({"type": "error", "message": "bad close code"}),
-                );
-                return;
+                return Err(SocketError::BadCloseCode);
             }
             sender.push(Message::Close(Some(frame)));
         }
+        Ok(())
     }
 
-    /// Hand every event  the last poll to the page.
+    /// Hand every event from the last poll to the page.
     pub fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        let ready = match self.events.lock() {
-            Ok(mut queue) => std::mem::take(&mut *queue),
-            Err(_) => Vec::new(),
-        };
-        if ready.is_empty() {
-            return false;
-        }
-        for event in ready {
-            crate::serve::verbose(&format!("socket {} delivering {}", event.id, event.payload));
-            // `serde_json` renders a JavaScript-safe literal, so a message
-            // carrying quotes cannot become a syntax error in the receiver.
-            document.eval(&format!(
-                "globalThis.__chuzzWsEvent({}, {});",
-                event.id, event.payload
-            ));
-        }
-        true
+        script::drain_into(self, document)
     }
-}
-
-fn closed(code: u16, reason: &str) -> serde_json::Value {
-    serde_json::json!({"type": "close", "code": code, "reason": reason})
 }
 
 /// A handshake carrying the subprotocols the page asked for.

@@ -4,11 +4,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::task::Waker;
+use std::time::Instant;
 
-use blitz_script::ScriptDocument;
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -23,8 +20,19 @@ const COMMANDS: usize = 64;
 const EVENTS: usize = 4096;
 const MAX_ID: u64 = 9_007_199_254_740_991;
 
+#[path = "host_script.rs"]
+mod script;
+pub(super) use script::install;
+
 pub(super) fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+pub(super) trait Resources {
+    fn media_epoch(&self) -> Result<Instant, String>;
+    fn media(&self) -> Result<Arc<crate::media::Host>, String>;
+    fn register_audio(&self, track: Arc<crate::audio::pcm::Track>) -> Result<u64, String>;
+    fn audio(&self, id: u64) -> Result<Arc<crate::audio::pcm::Track>, String>;
 }
 
 #[derive(Default, Serialize)]
@@ -194,7 +202,7 @@ struct State {
     reader: Option<Waker>,
 }
 
-struct Page {
+pub(super) struct Page {
     state: Mutex<State>,
 }
 
@@ -242,7 +250,7 @@ impl Page {
     }
 }
 
-struct NativeHost(Arc<Page>);
+pub(super) struct NativeHost(pub Arc<Page>);
 
 impl Drop for NativeHost {
     fn drop(&mut self) {
@@ -257,7 +265,11 @@ fn integer(data: &Value, key: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("TypeError: invalid {key} identifier"))
 }
 
-fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, String> {
+pub(super) fn execute(
+    page: &Arc<Page>,
+    data: Value,
+    resources: &dyn Resources,
+) -> Result<Value, String> {
     let op = data["op"]
         .as_str()
         .ok_or("TypeError: a peer operation is required")?;
@@ -286,7 +298,7 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
         let id = peer.id;
         state.peers.insert(id, Arc::clone(&peer));
         drop(state);
-        let epoch = crate::audio::media_epoch(context).map_err(|error| error.to_string())?;
+        let epoch = resources.media_epoch()?;
         drop(nagoya::spawn(transport::run(peer, config, epoch)));
         return Ok(json!(id));
     }
@@ -309,8 +321,8 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
                 return Err("OperationError: receiver limit reached".into());
             }
             let video = Arc::new(Video::default());
-            let descriptor = crate::media::host(context)
-                .map_err(|error| error.to_string())?
+            let descriptor = resources
+                .media()?
                 .video_receiver(Arc::clone(&video))
                 .map_err(|error| format!("{}: {}", error.name, error.message))?;
             videos.push(video);
@@ -324,8 +336,7 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
             return Err("OperationError: receiver limit reached".into());
         }
         let output = AudioTrack::new(48_000, 2)?;
-        let id = crate::audio::register_track(context, Arc::clone(&output))
-            .map_err(|error| error.to_string())?;
+        let id = resources.register_audio(Arc::clone(&output))?;
         outputs.push(output);
         return Ok(json!({"track": id}));
     }
@@ -342,8 +353,8 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
     if matches!(op, "add" | "replace") {
         integer(&data, "slot")?;
         if let Some(handle) = data["handle"].as_u64() {
-            let leased = crate::media::host(context)
-                .map_err(|error| error.to_string())?
+            let leased = resources
+                .media()?
                 .track(handle)
                 .map_err(|error| format!("{}: {}", error.name, error.message))?;
             if leased.is_stopped() {
@@ -364,7 +375,7 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
     }
     if matches!(op, "add" | "bind") {
         integer(&data, "slot")?;
-        let media = crate::media::host(context).map_err(|error| error.to_string())?;
+        let media = resources.media()?;
         let leased = media
             .track(integer(&data, "receiverHandle")?)
             .map_err(|error| format!("{}: {}", error.name, error.message))?;
@@ -379,8 +390,7 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
                 return Err("InvalidAccessError: video receiver belongs to another peer".into());
             }
         } else {
-            let audio = crate::audio::registered_track(context, integer(&data, "audio")?)
-                .map_err(|error| error.to_string())?;
+            let audio = resources.audio(integer(&data, "audio")?)?;
             if !leased
                 .source
                 .audio()
@@ -419,67 +429,4 @@ fn execute(page: &Arc<Page>, data: Value, context: &Context) -> Result<Value, St
         receiver,
     })?;
     Ok(json!({"tracks": updates}))
-}
-
-fn control(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let page = context
-        .get_data::<NativeHost>()
-        .map(|host| Arc::clone(&host.0))
-        .ok_or_else(|| JsNativeError::typ().with_message("peer host is unavailable"))?;
-    let text = args
-        .first()
-        .cloned()
-        .unwrap_or_default()
-        .to_string(context)?
-        .to_std_string_escaped();
-    let result = if text.len() > 192 * 1024 {
-        Err("OperationError: peer command exceeds 192 KiB".into())
-    } else {
-        serde_json::from_str::<Value>(&text)
-            .map_err(|_| "TypeError: invalid peer command".to_owned())
-            .and_then(|data| execute(&page, data, context))
-    };
-    let reply = match result {
-        Ok(value) => json!({"ok": true, "value": value}),
-        Err(error) => json!({"ok": false, "error": error}),
-    };
-    Ok(JsString::from(reply.to_string()).into())
-}
-
-pub(super) fn install(document: &mut ScriptDocument) {
-    let page = Arc::new(Page {
-        state: Mutex::new(State::default()),
-    });
-    document.with_js_context(|context| {
-        context.insert_data(NativeHost(Arc::clone(&page)));
-        context
-            .register_global_builtin_callable(
-                JsString::from("__chuzzPeerControl"),
-                1,
-                NativeFunction::from_fn_ptr(control),
-            )
-            .expect("peer metadata bridge");
-    });
-    document.eval_named(include_str!("../webrtc.ts"), "<chuzz-webrtc>");
-    document.add_poll_hook(move |document, task_context| {
-        let events: Vec<_> = {
-            let mut state = lock(&page.state);
-            if let Some(context) = task_context {
-                state.reader = Some(context.waker().clone());
-            }
-            let count = state.events.len().min(64);
-            let events = state.events.drain(..count).collect();
-            if !state.events.is_empty()
-                && let Some(reader) = &state.reader
-            {
-                reader.wake_by_ref();
-            }
-            events
-        };
-        if events.is_empty() {
-            return false;
-        }
-        document.eval(&format!("globalThis.__chuzzPeerEvents({});", json!(events)));
-        true
-    });
 }

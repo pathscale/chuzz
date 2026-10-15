@@ -7,6 +7,7 @@ mod host;
 mod opus;
 mod pcmu;
 mod qa;
+mod qa_script;
 mod receive;
 mod sdp;
 mod transport;

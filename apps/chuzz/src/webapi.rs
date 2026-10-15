@@ -5,11 +5,12 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
-use blitz_script::boa_engine::object::builtins::{AlignedVec, JsArrayBuffer};
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
-};
 use blitz_traits::net::Url;
+use serde::Deserialize;
+use serde_json::Value as Json;
+
+#[path = "webapi_script.rs"]
+mod script;
 
 const LIMIT: usize = 64 * 1024 * 1024;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -83,10 +84,7 @@ impl Drop for Realm {
     }
 }
 
-#[derive(Clone)]
-struct Host(Arc<Realm>);
-
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 enum Operation {
     Info,
@@ -129,57 +127,113 @@ enum Operation {
     },
 }
 
-fn text(args: &[JsValue], index: usize, context: &mut Context) -> JsResult<String> {
-    Ok(args
-        .get(index)
-        .cloned()
-        .unwrap_or_default()
-        .to_string(context)?
-        .to_std_string_escaped())
+struct InfoReply {
+    origin: String,
+    secure: bool,
+    platform: &'static str,
+    ua_platform: &'static str,
+    architecture: String,
+    bitness: String,
+    concurrency: usize,
+    version: &'static str,
+    languages: Vec<String>,
 }
 
-fn native_error(message: impl std::fmt::Display) -> blitz_script::boa_engine::JsError {
-    JsNativeError::typ()
-        .with_message(message.to_string())
-        .into()
+struct BroadcastDelivery {
+    id: u64,
+    wire: Arc<str>,
 }
 
-fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let host = context
-        .get_data::<Host>()
-        .cloned()
-        .ok_or_else(|| native_error("web API realm is unavailable"))?;
-    let description = text(args, 0, context)?;
-    if description.len() > LIMIT {
-        return Err(native_error("web API message exceeds the allocation limit"));
-    }
-    let operation: Operation = serde_json::from_str(&description).map_err(native_error)?;
-    let realm = &host.0;
-    let result = match operation {
-        Operation::Info => serde_json::json!({
-            "origin": realm.public_origin,
-            "secure": realm.secure,
-            "platform": if cfg!(target_os = "macos") { "MacIntel" }
-                else if cfg!(target_os = "windows") { "Win32" } else { "Linux" },
-            "uaPlatform": if cfg!(target_os = "macos") { "macOS" }
-                else if cfg!(target_os = "windows") { "Windows" } else { "Linux" },
-            "architecture": if cfg!(target_arch = "aarch64") { "arm" }
-                else if cfg!(any(target_arch = "x86", target_arch = "x86_64")) { "x86" }
-                else { std::env::consts::ARCH },
-            "bitness": usize::BITS.to_string(),
-            "concurrency": std::thread::available_parallelism().map_or(1, usize::from),
-            "version": env!("CARGO_PKG_VERSION"),
-            "languages": crate::languages::preferred_languages(),
-        }),
+struct LockEntry {
+    name: String,
+    mode: &'static str,
+    client_id: String,
+}
+
+enum Reply {
+    Info(InfoReply),
+    Random([u8; 16]),
+    Id(u64),
+    Null,
+    BroadcastDeliveries(Vec<BroadcastDelivery>),
+    LockQuery {
+        held: Vec<LockEntry>,
+        pending: Vec<LockEntry>,
+    },
+    Boolean(bool),
+    Webauthn(Json),
+}
+
+fn new_realm(url: Option<&Url>, wake: crate::net_bridge::PageWake) -> Arc<Realm> {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let public_origin = url
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "null".to_owned());
+    let origin = if public_origin == "null" {
+        format!("opaque:{id}")
+    } else {
+        public_origin.clone()
+    };
+    let secure = url.is_some_and(|url| {
+        matches!(url.scheme(), "https" | "file")
+            || url.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host.ends_with(".localhost")
+                    || host
+                        .trim_matches(['[', ']'])
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|address| address.is_loopback())
+            })
+    });
+    Arc::new(Realm {
+        id,
+        origin: Arc::from(origin),
+        public_origin,
+        secure,
+        notifications: crate::webauthn::Notifications::new(wake),
+    })
+}
+
+fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
+    match operation {
+        Operation::Info => Ok(Reply::Info(InfoReply {
+            origin: realm.public_origin.clone(),
+            secure: realm.secure,
+            platform: if cfg!(target_os = "macos") {
+                "MacIntel"
+            } else if cfg!(target_os = "windows") {
+                "Win32"
+            } else {
+                "Linux"
+            },
+            ua_platform: if cfg!(target_os = "macos") {
+                "macOS"
+            } else if cfg!(target_os = "windows") {
+                "Windows"
+            } else {
+                "Linux"
+            },
+            architecture: if cfg!(target_arch = "aarch64") {
+                "arm".to_owned()
+            } else if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+                "x86".to_owned()
+            } else {
+                std::env::consts::ARCH.to_owned()
+            },
+            bitness: usize::BITS.to_string(),
+            concurrency: std::thread::available_parallelism().map_or(1, usize::from),
+            version: env!("CARGO_PKG_VERSION"),
+            languages: crate::languages::preferred_languages().to_vec(),
+        })),
         Operation::Random => {
             let provider = rustls::crypto::CryptoProvider::get_default()
-                .ok_or_else(|| native_error("secure random provider is unavailable"))?;
+                .ok_or_else(|| "secure random provider is unavailable".to_owned())?;
             let mut bytes = [0_u8; 16];
             provider
                 .secure_random
                 .fill(&mut bytes)
-                .map_err(|_| native_error("secure random generation failed"))?;
-            serde_json::json!(bytes)
+                .map_err(|_| "secure random generation failed".to_owned())?;
+            Ok(Reply::Random(bytes))
         }
         Operation::BroadcastOpen { name } => {
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -192,7 +246,7 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                     incoming: VecDeque::new(),
                 },
             );
-            serde_json::json!(id)
+            Ok(Reply::Id(id))
         }
         Operation::BroadcastClose { id } => {
             let mut process = lock(&PROCESS);
@@ -203,7 +257,7 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
             {
                 process.channels.remove(&id);
             }
-            serde_json::Value::Null
+            Ok(Reply::Null)
         }
         Operation::BroadcastPost { id, wire } => {
             let mut process = lock(&PROCESS);
@@ -212,14 +266,14 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                 .get(&id)
                 .filter(|channel| channel.owner == realm.id)
                 .map(|channel| channel.name.clone())
-                .ok_or_else(|| native_error("broadcast channel is closed"))?;
+                .ok_or_else(|| "broadcast channel is closed".to_owned())?;
             let wire: Arc<str> = Arc::from(wire);
             for (other_id, channel) in &mut process.channels {
                 if *other_id != id && channel.origin == realm.origin && channel.name == name {
                     channel.incoming.push_back(Arc::clone(&wire));
                 }
             }
-            serde_json::Value::Null
+            Ok(Reply::Null)
         }
         Operation::BroadcastRead => {
             let mut process = lock(&PROCESS);
@@ -230,14 +284,11 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                         let Some(wire) = channel.incoming.pop_front() else {
                             break;
                         };
-                        deliveries.push(serde_json::json!({
-                            "id": id,
-                            "wire": wire.as_ref(),
-                        }));
+                        deliveries.push(BroadcastDelivery { id: *id, wire });
                     }
                 }
             }
-            serde_json::json!(deliveries)
+            Ok(Reply::BroadcastDeliveries(deliveries))
         }
         Operation::LockRequest {
             name,
@@ -251,7 +302,7 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                     && (!lease.held || !shared || !lease.shared)
             });
             if available && blocked {
-                serde_json::Value::Null
+                Ok(Reply::Null)
             } else {
                 let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                 process.leases.push(Lease {
@@ -263,17 +314,14 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                     held: false,
                 });
                 process.grant();
-                serde_json::json!(id)
+                Ok(Reply::Id(id))
             }
         }
         Operation::LockStatus { id } => {
             let process = lock(&PROCESS);
-            serde_json::json!(
-                process
-                    .leases
-                    .iter()
-                    .any(|lease| { lease.id == id && lease.owner == realm.id && lease.held })
-            )
+            Ok(Reply::Boolean(process.leases.iter().any(|lease| {
+                lease.id == id && lease.owner == realm.id && lease.held
+            })))
         }
         Operation::LockRelease { id } => {
             let mut process = lock(&PROCESS);
@@ -281,7 +329,7 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                 .leases
                 .retain(|lease| lease.id != id || lease.owner != realm.id);
             process.grant();
-            serde_json::Value::Null
+            Ok(Reply::Null)
         }
         Operation::LockQuery => {
             let process = lock(&PROCESS);
@@ -290,41 +338,43 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                     .leases
                     .iter()
                     .filter(|lease| lease.origin == realm.origin && lease.held == held)
-                    .map(|lease| {
-                        serde_json::json!({
-                            "name": lease.name,
-                            "mode": if lease.shared { "shared" } else { "exclusive" },
-                            "clientId": lease.owner.to_string(),
-                        })
+                    .map(|lease| LockEntry {
+                        name: lease.name.clone(),
+                        mode: if lease.shared { "shared" } else { "exclusive" },
+                        client_id: lease.owner.to_string(),
                     })
                     .collect::<Vec<_>>()
             };
-            serde_json::json!({"held": entries(true), "pending": entries(false)})
+            Ok(Reply::LockQuery {
+                held: entries(true),
+                pending: entries(false),
+            })
         }
-        Operation::WebauthnInfo => {
-            serde_json::json!(realm.secure && crate::webauthn::platform_available())
-        }
-        Operation::WebauthnCreate { options } => crate::webauthn::create(
+        Operation::WebauthnInfo => Ok(Reply::Boolean(
+            realm.secure && crate::webauthn::platform_available(),
+        )),
+        Operation::WebauthnCreate { options } => Ok(Reply::Webauthn(crate::webauthn::create(
             realm.id,
             &realm.public_origin,
             realm.secure,
             options,
             &realm.notifications,
-        ),
-        Operation::WebauthnGet { options } => crate::webauthn::get(
+        ))),
+        Operation::WebauthnGet { options } => Ok(Reply::Webauthn(crate::webauthn::get(
             realm.id,
             &realm.public_origin,
             realm.secure,
             options,
             &realm.notifications,
-        ),
-        Operation::WebauthnStatus { id } => crate::webauthn::status(realm.id, id),
+        ))),
+        Operation::WebauthnStatus { id } => {
+            Ok(Reply::Webauthn(crate::webauthn::status(realm.id, id)))
+        }
         Operation::WebauthnAbort { id } => {
             crate::webauthn::abort(realm.id, id);
-            serde_json::Value::Null
+            Ok(Reply::Null)
         }
-    };
-    JsValue::from_json(&result, context)
+    }
 }
 
 fn inflate(format: &str, input: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -371,161 +421,39 @@ fn inflate(format: &str, input: &[u8]) -> std::io::Result<Vec<u8>> {
     }
 }
 
-fn codec(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let format = text(args, 0, context)?;
-    if !matches!(format.as_str(), "gzip" | "deflate" | "deflate-raw") {
-        return Err(native_error("unsupported compression format"));
+fn compress(format: &str, input: &[u8], decode: bool) -> Result<Vec<u8>, String> {
+    if !matches!(format, "gzip" | "deflate" | "deflate-raw") {
+        return Err("unsupported compression format".to_owned());
     }
-    let object = args
-        .get(1)
-        .and_then(JsValue::as_object)
-        .ok_or_else(|| native_error("compression requires an ArrayBuffer"))?;
-    let input = JsArrayBuffer::from_object(object)?
-        .to_vec()
-        .ok_or_else(|| native_error("detached compression input"))?;
     if input.len() > LIMIT {
-        return Err(native_error("compression allocation limit exceeded"));
+        return Err("compression allocation limit exceeded".to_owned());
     }
-    let decode = args.get(2).is_some_and(JsValue::to_boolean);
     let output = if decode {
-        inflate(&format, &input)
+        inflate(format, input)
     } else {
-        match format.as_str() {
+        match format {
             "gzip" => {
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(&input).and_then(|()| encoder.finish())
+                encoder.write_all(input).and_then(|()| encoder.finish())
             }
             "deflate" => {
                 let mut encoder =
                     flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(&input).and_then(|()| encoder.finish())
+                encoder.write_all(input).and_then(|()| encoder.finish())
             }
             _ => {
                 let mut encoder =
                     flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(&input).and_then(|()| encoder.finish())
+                encoder.write_all(input).and_then(|()| encoder.finish())
             }
         }
     }
-    .map_err(native_error)?;
+    .map_err(|error| error.to_string())?;
     if output.len() > LIMIT {
-        return Err(native_error("compression output allocation limit exceeded"));
+        return Err("compression output allocation limit exceeded".to_owned());
     }
-    Ok(JsArrayBuffer::from_byte_block(AlignedVec::from_iter(0, output), context)?.into())
+    Ok(output)
 }
 
-pub(crate) fn notifications(context: &Context) -> Option<Arc<crate::webauthn::Notifications>> {
-    context
-        .get_data::<Host>()
-        .map(|host| Arc::clone(&host.0.notifications))
-}
-
-pub(crate) fn drain_notifications(context: &mut Context) -> bool {
-    let Some(host) = context.get_data::<Host>().cloned() else {
-        return false;
-    };
-    let deliveries = host.0.notifications.take(host.0.id);
-    let changed = !deliveries.is_empty();
-    for (id, result) in deliveries {
-        let delivery = (|| -> JsResult<()> {
-            let callback = context
-                .global_object()
-                .get(JsString::from("__chuzzWebauthnResolve"), context)?
-                .as_object()
-                .filter(|function| function.is_callable())
-                .ok_or_else(|| native_error("WebAuthn completion hook unavailable"))?;
-            let value = JsValue::from_json(&result, context)?;
-            callback.call(
-                &JsValue::undefined(),
-                &[JsValue::from(id as f64), value],
-                context,
-            )?;
-            context.run_jobs()
-        })();
-        if let Err(error) = delivery {
-            eprintln!("WebAuthn completion: {error}");
-        }
-    }
-    changed
-}
-
-pub(crate) fn install_context(context: &mut Context, url: Option<&Url>) -> JsResult<()> {
-    install_context_with_wake(context, url, crate::net_bridge::PageWake::default())
-}
-
-fn install_context_with_wake(
-    context: &mut Context,
-    url: Option<&Url>,
-    wake: crate::net_bridge::PageWake,
-) -> JsResult<()> {
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let public_origin = url
-        .map(|url| url.origin().ascii_serialization())
-        .unwrap_or_else(|| "null".to_owned());
-    let origin = if public_origin == "null" {
-        format!("opaque:{id}")
-    } else {
-        public_origin.clone()
-    };
-    let secure = url.is_some_and(|url| {
-        matches!(url.scheme(), "https" | "file")
-            || url.host_str().is_some_and(|host| {
-                host == "localhost"
-                    || host.ends_with(".localhost")
-                    || host
-                        .trim_matches(['[', ']'])
-                        .parse::<std::net::IpAddr>()
-                        .is_ok_and(|address| address.is_loopback())
-            })
-    });
-    context.insert_data(Host(Arc::new(Realm {
-        id,
-        origin: Arc::from(origin),
-        public_origin,
-        secure,
-        notifications: crate::webauthn::Notifications::new(wake),
-    })));
-    for (name, length, function) in [
-        (
-            "__chuzzPlatformCall",
-            1,
-            platform as fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
-        ),
-        ("__chuzzCodec", 3, codec),
-    ] {
-        context.register_global_builtin_callable(
-            JsString::from(name),
-            length,
-            NativeFunction::from_fn_ptr(function),
-        )?;
-    }
-    context.eval(Source::from_bytes(include_str!("platform/common.ts")))?;
-    Ok(())
-}
-
-pub(crate) fn install(document: &mut blitz_script::ScriptDocument) {
-    use blitz_dom::Document as _;
-    let url = document.current_url().cloned();
-    let wake = crate::net_bridge::PageWake::new(Arc::clone(&document.inner().shell_provider));
-    document.with_js_context(|context| {
-        install_context_with_wake(context, url.as_ref(), wake).expect("web API native bootstrap");
-        for source in [
-            include_str!("platform/streams.ts"),
-            include_str!("platform/body.ts"),
-            include_str!("platform/window.ts"),
-        ] {
-            context
-                .eval(Source::from_bytes(source))
-                .expect("web API page bootstrap");
-        }
-    });
-    document.add_poll_hook(|document, task_context| {
-        document.with_js_context(|context| {
-            if let Some(notifications) = notifications(context) {
-                notifications.bind(task_context.map(|context| context.waker()));
-            }
-            drain_notifications(context)
-        })
-    });
-}
+pub(crate) use script::{drain_notifications, install, install_context, notifications};

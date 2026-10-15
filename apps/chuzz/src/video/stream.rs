@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 use blitz_dom::Document as _;
 use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
 use blitz_script::ScriptDocument;
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-};
 use serde_json::json;
+
+#[path = "stream_script.rs"]
+mod script;
+
+pub(super) use script::install_frame_bridge;
+pub(crate) use script::{frame_registry, take_frame};
 
 use super::sink::HeadlessSink;
 use super::{Command, MediaError, TIMEUPDATE_INTERVAL};
@@ -34,6 +37,13 @@ struct Registry {
     leases: HashMap<u64, (Instant, FrameLease)>,
     next: u64,
     closed: bool,
+}
+
+#[derive(serde::Serialize)]
+struct FrameDescriptor {
+    handle: u64,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Default)]
@@ -90,7 +100,7 @@ impl Frames {
         }
     }
 
-    fn acquire(&self, id: u64, generation: u64) -> Result<serde_json::Value, String> {
+    fn acquire(&self, id: u64, generation: u64) -> Result<FrameDescriptor, String> {
         let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
         if registry.closed {
             return Err("video document has closed".to_owned());
@@ -124,13 +134,12 @@ impl Frames {
         }
         registry.next += 1;
         let handle = registry.next;
-        let descriptor = json!({
-            "handle": handle,
-            "width": frame.image.width,
-            "height": frame.image.height
-        });
-        registry.leases.insert(handle, (now, frame));
-        Ok(descriptor)
+        registry.leases.insert(handle, (now, frame.clone()));
+        Ok(FrameDescriptor {
+            handle,
+            width: frame.image.width,
+            height: frame.image.height,
+        })
     }
 
     pub(crate) fn take(&self, handle: u64) -> Result<FrameLease, String> {
@@ -155,63 +164,6 @@ impl Frames {
             registry.leases.clear();
         }
     }
-}
-
-struct NativeFrames(Arc<Frames>);
-
-impl Drop for NativeFrames {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-
-pub(crate) fn frame_registry(context: &mut Context) -> Arc<Frames> {
-    if let Some(registry) = context.get_data::<NativeFrames>() {
-        return Arc::clone(&registry.0);
-    }
-    let frames = Arc::new(Frames::default());
-    context.insert_data(NativeFrames(Arc::clone(&frames)));
-    frames
-}
-
-pub(crate) fn take_frame(context: &Context, handle: u64) -> Result<FrameLease, String> {
-    context
-        .get_data::<NativeFrames>()
-        .ok_or("native video registry is unavailable")?
-        .0
-        .take(handle)
-}
-
-fn acquire(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let mut numbers = [0_u64; 2];
-    for (index, number) in numbers.iter_mut().enumerate() {
-        let value = args
-            .get(index)
-            .cloned()
-            .unwrap_or_default()
-            .to_number(context)?;
-        if !value.is_finite() || value.fract() != 0.0 || !(0.0..=MAX_HANDLE as f64).contains(&value)
-        {
-            return Err(JsNativeError::typ()
-                .with_message("invalid video handle")
-                .into());
-        }
-        *number = value as u64;
-    }
-    let value = frame_registry(context)
-        .acquire(numbers[0], numbers[1])
-        .map_err(|error| JsNativeError::typ().with_message(error))?;
-    Ok(JsString::from(value.to_string()).into())
-}
-
-pub(super) fn install_frame_bridge(context: &mut Context) {
-    context
-        .register_global_builtin_callable(
-            JsString::from("__chuzzVideoAcquire"),
-            2,
-            NativeFunction::from_fn_ptr(acquire),
-        )
-        .expect("native video frame leases");
 }
 
 type FrameKey = (u64, i64, u32, u32, (bool, bool, bool));
