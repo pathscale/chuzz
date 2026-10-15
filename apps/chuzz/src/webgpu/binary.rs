@@ -207,7 +207,7 @@ impl Table {
             .ok_or_else(|| GpuError::validation("invalid WebGPU readback"))
     }
 
-    fn close(&self) {
+    pub(super) fn close(&self) {
         let mut entries = lock(&self.0);
         entries.closed = true;
         entries.values.clear();

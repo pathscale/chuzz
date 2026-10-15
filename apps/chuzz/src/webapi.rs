@@ -12,6 +12,9 @@ use serde_json::Value as Json;
 #[path = "webapi_script.rs"]
 mod script;
 
+#[path = "webapi_host.rs"]
+pub mod native_host;
+
 const LIMIT: usize = 64 * 1024 * 1024;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static PROCESS: LazyLock<Mutex<Process>> = LazyLock::new(Mutex::default);

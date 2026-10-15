@@ -20,15 +20,22 @@ pub(super) use script::install;
 const SOURCE_LIMIT: usize = 128 * 1024 * 1024;
 const DOCUMENT_LIMIT: usize = 256 * 1024 * 1024;
 const UPLOAD_LIMIT: usize = 16 * 1024 * 1024;
-const MAX_ID: u64 = 9_007_199_254_740_991;
+pub(super) const MAX_ID: u64 = 9_007_199_254_740_991;
 
 #[derive(serde::Serialize)]
-struct Error {
-    name: &'static str,
-    message: String,
+pub(super) struct Error {
+    pub(super) name: &'static str,
+    pub(super) message: String,
 }
 
 impl Error {
+    fn typ(message: &str) -> Self {
+        Self {
+            name: "TypeError",
+            message: message.into(),
+        }
+    }
+
     fn state(message: &str) -> Self {
         Self {
             name: "InvalidStateError",
@@ -508,34 +515,74 @@ pub(super) struct Host {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Request {
-    op: String,
-    source: u64,
+pub(super) struct Request {
+    pub(super) op: String,
+    pub(super) source: u64,
     #[serde(default)]
-    buffer: u64,
+    pub(super) buffer: u64,
     #[serde(default)]
-    mime: String,
+    pub(super) mime: String,
     #[serde(default)]
-    handle: Option<u64>,
+    pub(super) handle: Option<u64>,
     #[serde(default)]
-    value: Option<f64>,
+    pub(super) value: Option<f64>,
     #[serde(default)]
-    start: f64,
+    pub(super) start: f64,
     #[serde(default)]
-    end: Option<f64>,
+    pub(super) end: Option<f64>,
     #[serde(default)]
-    timestamp_offset: f64,
+    pub(super) timestamp_offset: f64,
     #[serde(default)]
-    append_window_start: f64,
+    pub(super) append_window_start: f64,
     #[serde(default)]
-    append_window_end: Option<f64>,
+    pub(super) append_window_end: Option<f64>,
     #[serde(default)]
-    sequence: bool,
+    pub(super) sequence: bool,
     #[serde(default)]
-    error: String,
+    pub(super) error: String,
 }
 
 impl Host {
+    pub(super) fn put_bytes(&self, bytes: &[u8]) -> Result<u64, Error> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| Error::typ("MSE store was poisoned"))?;
+        let length = bytes.len();
+        if length > UPLOAD_LIMIT {
+            return Err(Error::typ("MSE quota exceeded"));
+        }
+        if store.uploads.len() >= 128
+            || store.memory().saturating_add(length) > DOCUMENT_LIMIT
+            || store.next_upload >= MAX_ID
+        {
+            return Err(Error::typ("MSE quota exceeded"));
+        }
+        store.next_upload += 1;
+        let id = store.next_upload;
+        store.uploads.insert(id, Arc::new(bytes.to_vec()));
+        Ok(id)
+    }
+
+    pub(super) fn release_upload(&self, id: u64) -> Result<(), Error> {
+        self.store
+            .lock()
+            .map_err(|_| Error::typ("MSE store was poisoned"))?
+            .uploads
+            .remove(&id);
+        Ok(())
+    }
+
+    pub(super) fn close_all(&self) {
+        if let Ok(store) = self.store.lock() {
+            for source in store.sources.values() {
+                if let Ok(mut source) = source.lock() {
+                    source.closed = true;
+                }
+            }
+        }
+    }
+
     pub fn decoder(&self, id: u64) -> Result<Box<dyn VideoDecoder>, MediaError> {
         let source = self
             .store
@@ -548,7 +595,7 @@ impl Host {
         Ok(Box::new(playback::open(source)))
     }
 
-    fn control(&self, request: Request) -> Result<Value, Error> {
+    pub(super) fn control(&self, request: Request) -> Result<Value, Error> {
         let mut store = self
             .store
             .lock()

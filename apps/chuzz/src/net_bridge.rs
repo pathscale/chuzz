@@ -3,6 +3,9 @@
 #[path = "net_bridge_script.rs"]
 mod script;
 
+#[path = "net_bridge_host.rs"]
+pub mod native_host;
+
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 use std::time::Duration;
@@ -24,10 +27,10 @@ struct WakeState {
 /// Publish results before waking the document. Never hold a queue lock while
 /// calling a host waker or the window's queued shell provider.
 #[derive(Clone, Default)]
-pub(crate) struct PageWake(Arc<Mutex<WakeState>>);
+pub struct PageWake(Arc<Mutex<WakeState>>);
 
 impl PageWake {
-    pub(crate) fn new(shell: Arc<dyn ShellProvider>) -> Self {
+    pub fn new(shell: Arc<dyn ShellProvider>) -> Self {
         Self(Arc::new(Mutex::new(WakeState {
             waker: None,
             shell: Some(shell),
@@ -35,14 +38,14 @@ impl PageWake {
         })))
     }
 
-    fn retire(&self) {
+    pub fn retire(&self) {
         let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         state.retired = true;
         state.waker.take();
         state.shell.take();
     }
 
-    pub(crate) fn bind(&self, waker: Option<&Waker>) {
+    pub fn bind(&self, waker: Option<&Waker>) {
         if let Some(waker) = waker {
             self.0
                 .lock()

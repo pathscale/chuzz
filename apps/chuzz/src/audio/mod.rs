@@ -6,6 +6,8 @@
 mod analysis;
 mod audio_script;
 mod graph;
+#[path = "audio_host_bridge.rs"]
+pub mod native_host;
 pub mod pcm;
 mod resample;
 

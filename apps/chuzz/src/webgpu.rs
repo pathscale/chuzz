@@ -21,6 +21,8 @@ mod encoder;
 mod external;
 mod host;
 mod inspector;
+#[path = "webgpu/webgpu_host_bridge.rs"]
+pub mod native_host;
 mod pipeline;
 mod readback;
 mod resources;

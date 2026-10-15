@@ -298,7 +298,7 @@ impl Bridge {
         script::install(self, document);
     }
 
-    fn inspection_session(&self) -> Arc<Session> {
+    pub(super) fn inspection_session(&self) -> Arc<Session> {
         Arc::clone(&self.state().inspection)
     }
 
@@ -360,7 +360,7 @@ impl Bridge {
         }
     }
 
-    fn inspect(&self) -> WebGpuReport {
+    pub(super) fn inspect(&self) -> WebGpuReport {
         let (session, devices) = {
             let state = self.state();
             (

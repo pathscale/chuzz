@@ -39,6 +39,9 @@ use nagoya::reactor::Reactor;
 #[path = "ws_bridge_script.rs"]
 mod script;
 
+#[path = "ws_bridge_host.rs"]
+pub mod native_host;
+
 // The default 16 MiB frame cap disconnects pages that send a self-contained
 // image-rich JSON result in one frame. Keep a bounded cap, with room for the
 // 38 MiB OpenCaptchaWorld image-matching response and similarly sized pages.

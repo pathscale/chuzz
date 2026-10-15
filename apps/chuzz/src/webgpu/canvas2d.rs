@@ -141,7 +141,7 @@ pub(super) fn from_html(
 }
 
 #[derive(Clone)]
-struct Host {
+pub(super) struct Host {
     canvases: Arc<Mutex<HashMap<u64, Canvas>>>,
     sources: Arc<Mutex<HashMap<u64, ImageData>>>,
     image_cache: Arc<Mutex<ImageCache>>,
@@ -1241,11 +1241,129 @@ impl Canvas {
     }
 }
 
-enum CanvasReply {
+pub(super) enum CanvasReply {
     Empty,
     Bytes(Arc<Vec<u8>>),
     Text(String),
     Bool(bool),
+}
+
+pub(super) fn native_host(bridge: Bridge) -> Host {
+    let image_cache = Arc::clone(&bridge.state().images.image_cache);
+    Host {
+        canvases: Arc::new(Mutex::new(HashMap::new())),
+        sources: Arc::new(Mutex::new(HashMap::new())),
+        image_cache,
+        transferred: Arc::new(Mutex::new(0)),
+        fonts: Fonts(Arc::new(Mutex::new(default_fonts()))),
+        bridge,
+    }
+}
+
+pub(super) fn native_execute(
+    host: &Host,
+    value: serde_json::Value,
+    inputs: Vec<Arc<Vec<u8>>>,
+) -> std::result::Result<CanvasReply, String> {
+    if value.to_string().len() > 8 * 1024 * 1024 {
+        return Err("canvas descriptor limit reached in chuzz".to_owned());
+    }
+    let mut request: Request = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    if request.action == "path" {
+        let commands = paths::svg_commands(&request.value)?;
+        return serde_json::to_string(&commands)
+            .map(CanvasReply::Text)
+            .map_err(|error| error.to_string());
+    }
+    if request.action == "color" {
+        return Ok(CanvasReply::Bool(color(&request.value).is_ok()));
+    }
+    if request.action == "font" {
+        let font = text::parse_font(&request.value, request.font_base, request.root_base)?;
+        return Ok(CanvasReply::Text(font));
+    }
+    if request.action == "stats" {
+        let cache = lock(&host.image_cache);
+        return serde_json::to_string(&serde_json::json!({
+            "transferredBytes": *lock(&host.transferred),
+            "cacheBytes": cache.retained_bytes(),
+            "cacheLimit": cache.byte_limit(),
+            "cacheEntries": cache.len(),
+            "cacheHits": cache.hits(),
+            "cacheMisses": cache.misses(),
+        }))
+        .map(CanvasReply::Text)
+        .map_err(|error| error.to_string());
+    }
+    if request.action == "release" {
+        lock(&host.canvases).remove(&request.id);
+        if let Some(image) = lock(&host.sources).remove(&request.id) {
+            lock(&host.image_cache).remove(image.data.id());
+        }
+        host.bridge.state().images.paint.remove(&request.id);
+        return Ok(CanvasReply::Empty);
+    }
+    if request.action == "source" {
+        return Err("native canvas source requires a raster image object".to_owned());
+    }
+    if request.commands.len() > COMMAND_LIMIT {
+        return Err("canvas command limit reached in chuzz".to_owned());
+    }
+    let input_size = inputs
+        .iter()
+        .fold(0usize, |size, input| size.saturating_add(input.len()));
+    if inputs.len() > 1024 {
+        return Err("canvas command limit reached in chuzz".to_owned());
+    }
+    if input_size > IMAGE_LIMIT {
+        return Err("canvas transfer limit reached in chuzz".to_owned());
+    }
+    {
+        let mut transferred = lock(&host.transferred);
+        *transferred = transferred.saturating_add(input_size as u64);
+    }
+    execute(host, &mut request, &inputs)
+}
+
+pub(super) fn native_set_source(
+    host: &Host,
+    id: u64,
+    image: Arc<RasterImageData>,
+) -> std::result::Result<(u32, u32), String> {
+    if id == 0 || id > 9_007_199_254_740_991 {
+        return Err("invalid native canvas source handle".to_owned());
+    }
+    let size = byte_count(image.width, image.height)?;
+    if size != image.data.len() {
+        return Err("invalid native canvas source pixels".to_owned());
+    }
+    let mut sources = lock(&host.sources);
+    let previous = sources.get(&id).map_or(0, |image| image.data.len());
+    let allocated = sources
+        .values()
+        .map(|image| image.data.len())
+        .sum::<usize>();
+    if (!sources.contains_key(&id) && sources.len() >= 8192)
+        || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
+    {
+        return Err("native canvas source allocation limit reached".to_owned());
+    }
+    if let Some(previous) = sources.insert(id, raster_image(&image))
+        && previous.data.id() != image.data.id()
+    {
+        lock(&host.image_cache).remove(previous.data.id());
+    }
+    Ok((image.width, image.height))
+}
+
+pub(super) fn native_source(host: &Host, id: u64) -> Option<Arc<RasterImageData>> {
+    lock(&host.sources).get(&id).map(|image| {
+        Arc::new(RasterImageData::new(
+            image.width,
+            image.height,
+            Arc::new(image.data.data().to_vec()),
+        ))
+    })
 }
 
 fn execute(host: &Host, request: &mut Request, inputs: &[Arc<Vec<u8>>]) -> Result<CanvasReply> {
