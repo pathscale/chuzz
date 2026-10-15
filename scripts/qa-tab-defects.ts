@@ -65,10 +65,10 @@ export const defects = [
     "check": "tab-visible-never-sleeps",
     "changes": [
       {
-        "repo": "izumo",
-        "path": "crates/izumo/src/runtime.rs",
-        "search": "                    events.push(crate::surfaces::SurfaceEvent::Visibility { page, visible });",
-        "replacement": "                    events.push(crate::surfaces::SurfaceEvent::Visibility { page, visible: page.document_id == page.owner_document_id && visible });"
+        "repo": "chuzz",
+        "path": "apps/chuzz/src/tab_lifecycle.rs",
+        "search": "                        if tab.life.phase != TabPhase::Waking {\n                            continue;\n                        }\n                        if tab.life.await_preview",
+        "replacement": "                        if tab.life.phase == TabPhase::Live\n                            && tab.life.visible\n                            && page.document_id != page.owner_document_id\n                        {\n                            tab.life.visible = false;\n                            tab.life.hidden_at = nagoya::now_ns();\n                            tab.life.cancel_deadline();\n                            drop(state);\n                            self.arm_hidden(page.tab_id);\n                            changed = true;\n                            continue;\n                        }\n                        if tab.life.phase != TabPhase::Waking {\n                            continue;\n                        }\n                        if tab.life.await_preview"
       }
     ]
   },
