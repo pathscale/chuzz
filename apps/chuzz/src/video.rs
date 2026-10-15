@@ -21,6 +21,8 @@ mod backend;
 mod demux;
 mod fragments;
 mod mse;
+#[path = "video/video_host_bridge.rs"]
+pub mod native_host;
 mod output;
 mod planar;
 mod sink;
@@ -497,6 +499,28 @@ impl Entry {
 
     fn publish(&mut self, document: &mut ScriptDocument, id: u64) {
         video_script::publish(self, document, id);
+    }
+
+    fn take_update(&mut self) -> serde_json::Value {
+        let network_state = if self.error.is_some() {
+            3
+        } else if self.decoder.is_none() || self.enough || self.paused && self.metadata {
+            1
+        } else {
+            2
+        };
+        let value = serde_json::json!({
+            "src": self.src, "duration": self.duration.filter(|value| value.is_finite()),
+            "durationInfinite": self.duration == Some(f64::INFINITY),
+            "frameInk": self.pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|value| *value != 0)),
+            "time": self.position, "paused": self.paused, "ended": self.ended,
+            "seeking": self.seeking, "readyState": self.ready_state, "networkState": network_state,
+            "buffered": self.buffered, "seekable": self.seekable, "hasFrame": self.has_frame,
+            "totalVideoFrames": self.total_frames, "width": self.width, "height": self.height,
+            "error": self.error, "events": std::mem::take(&mut self.events),
+        });
+        self.dirty = false;
+        value
     }
 }
 

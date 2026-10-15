@@ -10,7 +10,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Images {
     pub bitmaps: HashMap<u64, Arc<RasterImageData>>,
-    snapshots: HashMap<u64, Arc<RasterImageData>>,
+    pub(super) snapshots: HashMap<u64, Arc<RasterImageData>>,
     pub canvases: HashMap<u64, (u64, Arc<RasterImageData>)>,
     pub paint: HashMap<u64, Arc<RasterImageData>>,
     pub image_cache: Arc<Mutex<anyrender_vello_cpu::ImageCache>>,

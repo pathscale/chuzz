@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use blitz_dom::Document as _;
 use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
 use blitz_script::ScriptDocument;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[path = "stream_script.rs"]
 mod script;
@@ -40,7 +40,7 @@ struct Registry {
 }
 
 #[derive(serde::Serialize)]
-struct FrameDescriptor {
+pub(super) struct FrameDescriptor {
     handle: u64,
     width: u32,
     height: u32,
@@ -100,7 +100,7 @@ impl Frames {
         }
     }
 
-    fn acquire(&self, id: u64, generation: u64) -> Result<FrameDescriptor, String> {
+    pub(super) fn acquire(&self, id: u64, generation: u64) -> Result<FrameDescriptor, String> {
         let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
         if registry.closed {
             return Err("video document has closed".to_owned());
@@ -157,7 +157,7 @@ impl Frames {
         Ok(frame)
     }
 
-    fn close(&self) {
+    pub(super) fn close(&self) {
         if let Ok(mut registry) = self.0.lock() {
             registry.closed = true;
             registry.current.clear();
@@ -294,7 +294,7 @@ impl Entry {
 
     fn tick(
         &mut self,
-        document: &mut ScriptDocument,
+        painter: &mut dyn FnMut(u64, Option<Arc<RasterImageData>>),
         capture: &crate::media::Host,
         frames: &Frames,
         id: u64,
@@ -360,12 +360,12 @@ impl Entry {
                 }
                 self.frame_key = Some(key);
                 self.total_frames += 1;
-                paint(document, id, Some(frames_image(frames, id)?));
+                painter(id, Some(frames_image(frames, id)?));
                 self.dirty = true;
             }
         } else if video.is_none() && self.frame_key.take().is_some() {
             frames.remove(id);
-            paint(document, id, None);
+            painter(id, None);
             self.width = 0;
             self.height = 0;
             self.ink = false;
@@ -407,7 +407,7 @@ impl Entry {
         Ok(())
     }
 
-    fn publish(&mut self, document: &mut ScriptDocument, id: u64, now: Instant) {
+    fn update(&mut self, now: Instant) -> Value {
         let payload = json!({
             "src": "",
             "duration": null,
@@ -431,6 +431,11 @@ impl Entry {
         });
         self.dirty = false;
         self.last_publish = now;
+        payload
+    }
+
+    fn publish(&mut self, document: &mut ScriptDocument, id: u64, now: Instant) {
+        let payload = self.update(now);
         document.eval(&format!(
             "globalThis.__chuzzVideoUpdate({id}, {}, {payload});",
             self.generation
@@ -495,10 +500,40 @@ impl Host {
         true
     }
 
+    pub(super) fn remove_native(&mut self, id: u64) {
+        self.entries.remove(&id);
+        self.frames.remove(id);
+    }
+
+    pub(super) fn poll_native(&mut self, now: Instant) -> Vec<NativeUpdate> {
+        let mut updates = Vec::new();
+        for (&id, entry) in &mut self.entries {
+            if let Err(error) = entry.tick(&mut |_, _| {}, &self.capture, &self.frames, id, now) {
+                self.frames.remove(id);
+                entry.fail(error);
+            }
+            if entry.dirty || !entry.events.is_empty() {
+                updates.push(NativeUpdate {
+                    id,
+                    generation: entry.generation,
+                    value: entry.update(now),
+                    image: frames_image(&self.frames, id).ok(),
+                });
+            }
+        }
+        updates
+    }
+
     pub(super) fn poll(&mut self, document: &mut ScriptDocument, now: Instant) -> bool {
         let mut changed = false;
         for (&id, entry) in &mut self.entries {
-            if let Err(error) = entry.tick(document, &self.capture, &self.frames, id, now) {
+            if let Err(error) = entry.tick(
+                &mut |id, image| paint(document, id, image),
+                &self.capture,
+                &self.frames,
+                id,
+                now,
+            ) {
                 self.frames.remove(id);
                 entry.fail(error);
             }
@@ -509,6 +544,13 @@ impl Host {
         }
         changed
     }
+}
+
+pub(super) struct NativeUpdate {
+    pub(super) id: u64,
+    pub(super) generation: u64,
+    pub(super) value: Value,
+    pub(super) image: Option<Arc<RasterImageData>>,
 }
 
 fn paint(document: &mut ScriptDocument, marker: u64, image: Option<Arc<RasterImageData>>) {

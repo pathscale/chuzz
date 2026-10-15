@@ -5,6 +5,9 @@ use crate::tab_stash::{SessionBucket, SessionPair, SleepingBudget, Text};
 #[path = "tab_session_script.rs"]
 mod script;
 
+#[path = "tab_session_host.rs"]
+pub mod native_host;
+
 pub(crate) enum SessionOperation {
     Length,
     Key { index: usize },

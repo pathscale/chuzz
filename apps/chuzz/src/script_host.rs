@@ -1,5 +1,16 @@
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::rc::Rc;
+
+pub use crate::audio::native_host as audio;
+pub use crate::media::native_host as media;
+pub use crate::net_bridge::native_host as network;
+pub use crate::tab_session::native_host as session;
+pub use crate::video::native_host as video;
+pub use crate::webapi::native_host as webapi;
+pub use crate::webgpu::native_host as webgpu;
+pub use crate::webrtc::native_host as webrtc;
+pub use crate::ws_bridge::native_host as websocket;
 
 /// Identity for one live script realm.
 pub struct HostRealm(Rc<()>);
@@ -221,13 +232,24 @@ pub enum HostValue {
     String(Rc<str>),
     Buffer(HostBuffer),
     Object(HostObject),
+    Array(Vec<HostValue>),
+    Record(BTreeMap<String, HostValue>),
 }
 
 /// A native script exception with its name and message preserved.
+#[derive(Debug)]
 pub struct HostError {
     pub name: String,
     pub message: String,
 }
+
+impl std::fmt::Display for HostError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.name, self.message)
+    }
+}
+
+impl std::error::Error for HostError {}
 
 impl HostError {
     pub fn new(name: impl Into<String>, message: impl Into<String>) -> Self {
@@ -243,6 +265,12 @@ pub type HostIntrinsic = fn(&mut dyn ChuzzScriptHost, &[HostValue]) -> Result<Ho
 
 /// Shared, engine-neutral contract for native callbacks.
 pub trait ChuzzScriptHost {
+    /// Store native resources in this realm. Replacing state drops its old owner.
+    fn set_state(&mut self, key: &'static str, value: HostObject) -> Result<(), HostError>;
+
+    /// Retain a native resource while an intrinsic uses it.
+    fn state(&self, key: &'static str) -> Option<HostObject>;
+
     fn register_intrinsic(
         &mut self,
         name: &'static str,
@@ -256,5 +284,128 @@ pub trait ChuzzScriptHost {
         args: &[HostValue],
     ) -> Result<HostValue, HostError>;
 
+    /// Drop this retention of a callback. Other cloned IDs retain their root.
     fn release_callback(&mut self, id: HostCallbackId) -> Result<(), HostError>;
+}
+
+/// Native resources shared by the subsystem installers for one page realm.
+///
+/// The owner aborts `signal` and retires `wake` when the realm is torn down.
+pub struct HostInstallContext {
+    pub net: std::sync::Arc<crate::document_loader::NetProvider>,
+    pub base: Option<url::Url>,
+    pub deadline: std::time::Duration,
+    pub wake: crate::net_bridge::PageWake,
+    pub lifetime: std::sync::Arc<blitz_dom::release::Teardown>,
+    pub signal: blitz_traits::net::AbortSignal,
+    pub session_backing: Option<std::sync::Arc<crate::tab_stash::SessionBucket>>,
+}
+
+/// Install the native subsystem surface in dependency order for one realm.
+///
+/// On failure, the caller must discard the partially installed realm. Native
+/// state is owned by the host and released when that realm is discarded.
+pub fn install_all_chuzz_hosts(
+    host: &mut dyn ChuzzScriptHost,
+    config: &HostInstallContext,
+) -> Result<(), HostError> {
+    session::install(host, config)?;
+    network::install(host, config)?;
+    websocket::install(host, config)?;
+    webapi::install(host, config)?;
+    media::install(host, config)?;
+    audio::install(host, config)?;
+    video::install(host, config)?;
+    webrtc::install(host, config)?;
+    webgpu::install(host, config)
+}
+
+/// Poll on the realm thread with its current waker. The renderer schedules
+/// animation turns for active video/capture sources and applies raster updates.
+pub fn poll_all_chuzz_hosts(
+    host: &mut dyn ChuzzScriptHost,
+    waker: Option<&std::task::Waker>,
+) -> Result<bool, HostError> {
+    let mut changed = network::poll(host, waker)?;
+    changed |= websocket::poll(host, waker)?;
+    changed |= webapi::poll(host, waker)?;
+    changed |= audio::poll(host, waker)?;
+    changed |= media::poll(host, waker)?;
+    changed |= video::poll(host, waker)?;
+    changed |= webrtc::poll(host, waker)?;
+    changed |= webgpu::poll(host, waker)?;
+    Ok(changed)
+}
+
+/// Convert structured native metadata without serializing or evaluating source.
+/// Binary payloads must use `HostValue::Buffer` separately.
+pub fn from_json(value: serde_json::Value) -> HostValue {
+    match value {
+        serde_json::Value::Null => HostValue::Null,
+        serde_json::Value::Bool(value) => HostValue::Boolean(value),
+        serde_json::Value::Number(value) => HostValue::Number(value.as_f64().unwrap_or(f64::NAN)),
+        serde_json::Value::String(value) => HostValue::String(value.into()),
+        serde_json::Value::Array(values) => {
+            HostValue::Array(values.into_iter().map(from_json).collect())
+        }
+        serde_json::Value::Object(values) => HostValue::Record(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, from_json(value)))
+                .collect(),
+        ),
+    }
+}
+
+pub fn to_json(value: &HostValue) -> Result<serde_json::Value, HostError> {
+    match value {
+        HostValue::Null => Ok(serde_json::Value::Null),
+        HostValue::Boolean(value) => Ok((*value).into()),
+        HostValue::Number(value) => {
+            // Host numbers use the script numeric representation. Preserve
+            // integral metadata as integers for native typed command decoders.
+            if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0 {
+                return Ok(serde_json::Value::Number(serde_json::Number::from(
+                    *value as i64,
+                )));
+            }
+            serde_json::Number::from_f64(*value)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| HostError::new("TypeError", "metadata number must be finite"))
+        }
+        HostValue::String(value) => Ok(value.to_string().into()),
+        HostValue::Utf16(value) => String::from_utf16(value)
+            .map(Into::into)
+            .map_err(|_| HostError::new("TypeError", "metadata contains an unpaired surrogate")),
+        HostValue::Array(values) => values
+            .iter()
+            .map(to_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        HostValue::Record(values) => values
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), to_json(value)?)))
+            .collect::<Result<serde_json::Map<_, _>, _>>()
+            .map(serde_json::Value::Object),
+        HostValue::Undefined | HostValue::Buffer(_) | HostValue::Object(_) => Err(HostError::new(
+            "TypeError",
+            "value is not structured metadata",
+        )),
+    }
+}
+
+pub fn string_arg(args: &[HostValue], index: usize) -> Result<String, HostError> {
+    match args.get(index) {
+        Some(HostValue::String(value)) => Ok(value.to_string()),
+        Some(HostValue::Utf16(value)) => String::from_utf16(value)
+            .map_err(|_| HostError::new("TypeError", "string contains an unpaired surrogate")),
+        _ => Err(HostError::new("TypeError", "expected a string argument")),
+    }
+}
+
+pub fn number_arg(args: &[HostValue], index: usize) -> Result<f64, HostError> {
+    match args.get(index) {
+        Some(HostValue::Number(value)) => Ok(*value),
+        _ => Err(HostError::new("TypeError", "expected a number argument")),
+    }
 }

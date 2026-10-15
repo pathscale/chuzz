@@ -11,36 +11,7 @@ use crate::document_loader::NetProvider;
 use super::{Command, Entry, Host, MediaError};
 
 pub(super) fn publish(entry: &mut Entry, document: &mut ScriptDocument, id: u64) {
-    let network_state = if entry.error.is_some() {
-        3
-    } else if entry.decoder.is_none() || entry.enough || entry.paused && entry.metadata {
-        1
-    } else {
-        2
-    };
-    let payload = serde_json::json!({
-        "src": entry.src,
-        "duration": entry.duration.filter(|duration| duration.is_finite()),
-        "durationInfinite": entry.duration == Some(f64::INFINITY),
-        "frameInk": entry.pixels.as_chunks::<4>().0.iter().any(|pixel| {
-            pixel[..3].iter().any(|channel| *channel != 0)
-        }),
-        "time": entry.position,
-        "paused": entry.paused,
-        "ended": entry.ended,
-        "seeking": entry.seeking,
-        "readyState": entry.ready_state,
-        "networkState": network_state,
-        "buffered": entry.buffered,
-        "seekable": entry.seekable,
-        "hasFrame": entry.has_frame,
-        "totalVideoFrames": entry.total_frames,
-        "width": entry.width,
-        "height": entry.height,
-        "error": entry.error,
-        "events": std::mem::take(&mut entry.events),
-    });
-    entry.dirty = false;
+    let payload = entry.take_update();
     document.eval(&format!(
         "globalThis.__chuzzVideoUpdate({id}, {}, {payload});",
         entry.generation

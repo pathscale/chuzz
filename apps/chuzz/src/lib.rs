@@ -103,7 +103,7 @@ mod tab_native;
 pub mod tab_records;
 #[cfg(feature = "gui")]
 mod tab_resources;
-#[cfg(feature = "gui")]
+#[cfg(feature = "javascript")]
 mod tab_session;
 #[cfg(feature = "javascript")]
 pub mod tab_stash;

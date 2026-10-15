@@ -195,15 +195,15 @@ impl Peer {
 }
 
 #[derive(Default)]
-struct State {
+pub(super) struct State {
     next: u64,
     peers: BTreeMap<u64, Arc<Peer>>,
-    events: VecDeque<Value>,
-    reader: Option<Waker>,
+    pub(super) events: VecDeque<Value>,
+    pub(super) reader: Option<Waker>,
 }
 
 pub(super) struct Page {
-    state: Mutex<State>,
+    pub(super) state: Mutex<State>,
 }
 
 impl Page {
@@ -241,7 +241,7 @@ impl Page {
             .ok_or_else(|| "InvalidStateError: unknown peer connection".into())
     }
 
-    fn close(&self) {
+    pub(super) fn close(&self) {
         let mut state = lock(&self.state);
         for peer in state.peers.values() {
             peer.close();

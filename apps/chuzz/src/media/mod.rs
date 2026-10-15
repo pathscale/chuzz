@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 mod media_script;
+#[path = "media_host_bridge.rs"]
+pub mod native_host;
 pub use media_script::host;
 pub(crate) use media_script::install;
 
