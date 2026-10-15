@@ -7,8 +7,8 @@ export const defects = [
       {
         "repo": "chuzz",
         "path": "apps/chuzz/src/workers/mod.rs",
-        "search": "        for endpoint in endpoints.values() { endpoint.terminate(); }",
-        "replacement": "        for endpoint in endpoints.values() { let _ = endpoint.id; }"
+        "search": "        for endpoint in endpoints.values() {\n            endpoint.terminate();\n        }",
+        "replacement": "        for endpoint in endpoints.values() {\n            let _ = endpoint.id;\n        }"
       }
     ]
   },
@@ -19,8 +19,8 @@ export const defects = [
       {
         "repo": "ps-blitz",
         "path": "packages/blitz-dom/src/stash_policy.rs",
-        "search": "    pub fn stash_sensitive(&self, id: NodeId) -> bool {\n        if self.stash_policy.no_stash { return true; }\n        let mut cursor = Some(id);\n        while let Some(id) = cursor {\n            if self.stash_policy.sensitive.contains(&id) { return true; }\n            cursor = self.get_node(id).and_then(|node| node.parent);\n        }\n        let Some(element) = self.get_node(id).and_then(|node| node.element_data()) else { return false; };\n        let form = element.attr(crate::local_name!(\"form\"))\n            .and_then(|name| self.get_element_by_id(name))\n            .or_else(|| self.controls_to_form.get(&id).copied());\n        form.is_some_and(|form| self.stash_policy.sensitive.contains(&form))\n    }\n}",
-        "replacement": "    pub fn stash_sensitive(&self, _id: NodeId) -> bool { false }\n}"
+        "search": "    pub fn stash_sensitive(&self, id: NodeId) -> bool {\n        if self.stash_policy.no_stash {\n            return true;\n        }\n        let mut cursor = Some(id);\n        while let Some(id) = cursor {\n            if self.stash_policy.sensitive.contains(&id) {\n                return true;\n            }\n            cursor = self.get_node(id).and_then(|node| node.parent);\n        }\n        let Some(element) = self.get_node(id).and_then(|node| node.element_data()) else {\n            return false;\n        };\n        let form = element\n            .attr(crate::local_name!(\"form\"))\n            .and_then(|name| self.get_element_by_id(name))\n            .or_else(|| self.controls_to_form.get(&id).copied());\n        form.is_some_and(|form| self.stash_policy.sensitive.contains(&form))\n    }",
+        "replacement": "    pub fn stash_sensitive(&self, _id: NodeId) -> bool {\n        false\n    }"
       }
     ]
   },
@@ -31,8 +31,8 @@ export const defects = [
       {
         "repo": "chuzz",
         "path": "apps/chuzz/src/tab_stash.rs",
-        "search": "    fn accepts(&self, destination: &url::Url, entry: u64) -> bool {\n        self.entry == entry && self.origin == destination.origin()\n            && self.route.units().iter().copied().eq(destination.as_str().encode_utf16())\n    }",
-        "replacement": "    fn accepts(&self, _destination: &url::Url, entry: u64) -> bool { self.entry == entry }"
+        "search": "    fn accepts(&self, destination: &url::Url, entry: u64) -> bool {\n        self.entry == entry\n            && self.origin == destination.origin()\n            && self\n                .route\n                .units()\n                .iter()\n                .copied()\n                .eq(destination.as_str().encode_utf16())\n    }",
+        "replacement": "    fn accepts(&self, _destination: &url::Url, entry: u64) -> bool {\n        self.entry == entry\n    }"
       }
     ]
   },
@@ -49,8 +49,14 @@ export const defects = [
       {
         "repo": "chuzz",
         "path": "apps/chuzz/src/browser.rs",
-        "search": "            if tab.life.discarded && tab.mounted.is_none() && !matches!(tab.request().method.as_str(), \"GET\" | \"HEAD\") {",
-        "replacement": "            if tab.life.discarded && tab.mounted.is_none() && tab.request().method.as_str().is_empty() {"
+        "search": "            if tab.life.discarded\n                && tab.mounted.is_none()\n                && !matches!(tab.request().method.as_str(), \"GET\" | \"HEAD\")\n            {",
+        "replacement": "            if tab.life.discarded\n                && tab.mounted.is_none()\n                && tab.request().method.as_str().is_empty()\n            {"
+      },
+      {
+        "repo": "chuzz",
+        "path": "apps/chuzz/src/browser.rs",
+        "search": "            if replay {",
+        "replacement": "            if replay {\n                if tab.life.discarded && tab.mounted.is_none() {\n                    request.initiator = net.browser_initiator(request.url.clone());\n                }"
       }
     ]
   },
@@ -61,8 +67,8 @@ export const defects = [
       {
         "repo": "izumo",
         "path": "crates/izumo/src/runtime.rs",
-        "search": "                    let on_screen = window_visible && root.surface_on_screen(mount);",
-        "replacement": "                    let on_screen = page.document_id == page.owner_document_id && window_visible && root.surface_on_screen(mount);"
+        "search": "                    events.push(crate::surfaces::SurfaceEvent::Visibility { page, visible });",
+        "replacement": "                    events.push(crate::surfaces::SurfaceEvent::Visibility { page, visible: page.document_id == page.owner_document_id && visible });"
       }
     ]
   },
@@ -74,13 +80,13 @@ export const defects = [
         "repo": "chuzz",
         "path": "apps/chuzz/src/tab_lifecycle.rs",
         "search": "        page.set_was_discarded(discarded);",
-        "replacement": "        page.set_was_discarded(discarded);\n        let refresh_owner = Arc::downgrade(&self.0);\n        page.add_poll_hook(move |_, _| {\n            if let Some(inner) = refresh_owner.upgrade() {\n                if let Some(tab) = inner.state.lock().unwrap().tabs.iter_mut().find(|tab| tab.id == id) { tab.life.hidden_at = nagoya::now_ns(); }\n            }\n            false\n        });"
+        "replacement": "        page.set_was_discarded(discarded);\n        let refresh_owner = Arc::downgrade(&self.0);\n        page.add_poll_hook(move |_, _| {\n            if let Some(inner) = refresh_owner.upgrade() {\n                if let Some(tab) = inner\n                    .state\n                    .lock()\n                    .unwrap()\n                    .tabs\n                    .iter_mut()\n                    .find(|tab| tab.id == id)\n                {\n                    tab.life.hidden_at = nagoya::now_ns();\n                }\n            }\n            false\n        });"
       },
       {
         "repo": "chuzz",
         "path": "apps/chuzz/src/tab_lifecycle.rs",
-        "search": "            if tab.loading && !automatic || tab.life.phase != TabPhase::Live || automatic && (tab.life.visible",
-        "replacement": "            if tab.loading && !automatic || tab.life.phase != TabPhase::Live || automatic && (nagoya::now_ns().saturating_sub(tab.life.hidden_at) < self.0.sleep_delay_ns || tab.life.visible"
+        "search": "            if tab.loading && !automatic\n                || tab.life.phase != TabPhase::Live\n                || automatic\n                    && (tab.life.visible\n                        || tab\n                            .life\n                            .deadline\n                            .as_ref()\n                            .is_none_or(|deadline| nagoya::now_ns() < deadline.due))\n            {",
+        "replacement": "            if tab.loading && !automatic\n                || tab.life.phase != TabPhase::Live\n                || automatic\n                    && (nagoya::now_ns().saturating_sub(tab.life.hidden_at)\n                        < self.0.sleep_delay_ns\n                        || tab.life.visible\n                        || tab\n                            .life\n                            .deadline\n                            .as_ref()\n                            .is_none_or(|deadline| nagoya::now_ns() < deadline.due))\n            {"
       }
     ]
   }
