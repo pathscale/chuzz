@@ -149,7 +149,7 @@ impl Receiver {
             loop {
                 let notification = self.ready.notification.notified();
                 futures::pin_mut!(notification);
-                let enabled = notification.as_mut().enable();
+                notification.as_mut().enable();
                 if let Some(request) = self.queue.try_pop() {
                     return Ok(take(request));
                 }
@@ -165,9 +165,10 @@ impl Receiver {
                 if self.ready.page.swap(false, Ordering::AcqRel) {
                     return Err(RecvTimeoutError::Timeout);
                 }
-                if !enabled {
-                    notification.await;
-                }
+                // Await even when enable reserved a permit. Polling consumes
+                // it; dropping an unpolled reservation returns the permit and
+                // makes the next empty receive spin on the same notification.
+                notification.await;
             }
         };
         nagoya::block_on(async {
