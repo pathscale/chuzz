@@ -9,8 +9,12 @@
 //! to this boundary; this module does not attach itself to a renderer.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
-use std::task::Waker;
+use std::sync::Arc;
+use std::task::{Context, Waker};
+use std::time::Duration;
 
 use crate::script_host::{
     self as script_host, ChuzzScriptHost, HostCallbackId, HostError, HostGeneration,
@@ -85,6 +89,20 @@ struct CallbackEntry {
     callback: RetainedCallback,
 }
 
+struct TimerEntry {
+    callback: HostCallbackId,
+    repeat: bool,
+    interval: Duration,
+    deadline_ns: u64,
+    wake: Pin<Box<dyn Future<Output = ()>>>,
+    wake_ready: bool,
+    firing: bool,
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// Persistent native state for one page realm.
 pub struct ChuzzRealmState {
     realm: HostRealm,
@@ -115,6 +133,8 @@ pub struct ChuzzPageRuntimeHost {
     torn_down: bool,
     frames: BTreeMap<(crate::script_host::HostFrameSource, u64), crate::script_host::HostFrame>,
     frame_sink: Option<FrameSink>,
+    timers: BTreeMap<u64, TimerEntry>,
+    next_timer_id: u64,
 }
 
 impl ChuzzPageRuntimeHost {
@@ -125,6 +145,8 @@ impl ChuzzPageRuntimeHost {
             torn_down: false,
             frames: BTreeMap::new(),
             frame_sink: None,
+            timers: BTreeMap::new(),
+            next_timer_id: 1,
         };
         let install_config = host.config.take().expect("config installed");
         let result = script_host::install_all_chuzz_hosts(&mut host, &install_config);
@@ -195,9 +217,152 @@ impl ChuzzPageRuntimeHost {
         callback(self, args)
     }
 
+    /// Schedule a retained callback. The caller keeps ownership of its callback
+    /// registration and may share it across timers until explicitly released.
+    pub fn schedule_timer(
+        &mut self,
+        callback: HostCallbackId,
+        delay: Duration,
+        repeat: bool,
+    ) -> Result<u64, HostError> {
+        self.ensure_live()?;
+        if !callback.is_scoped_to(&self.state.realm, &self.state.generation)
+            || !self
+                .state
+                .callbacks
+                .iter()
+                .any(|entry| entry.id.same_callback(&callback))
+        {
+            return Err(HostError::new(
+                "InvalidStateError",
+                "timer callback is unavailable in this realm",
+            ));
+        }
+
+        if self.timers.len() >= 4096 {
+            return Err(HostError::new(
+                "QuotaExceededError",
+                "page timer limit reached",
+            ));
+        }
+        let id = self.next_timer_id;
+        if id == 0 || self.timers.contains_key(&id) {
+            return Err(HostError::new(
+                "QuotaExceededError",
+                "timer identifier space exhausted",
+            ));
+        }
+        self.next_timer_id = id.checked_add(1).unwrap_or(0);
+
+        let interval = if repeat {
+            delay.max(Duration::from_millis(1))
+        } else {
+            delay
+        };
+        let deadline_ns = nagoya::now_ns().saturating_add(duration_ns(interval));
+        self.timers.insert(
+            id,
+            TimerEntry {
+                callback,
+                repeat,
+                interval,
+                deadline_ns,
+                wake: Box::pin(nagoya::sleep_until(deadline_ns)),
+                wake_ready: false,
+                firing: false,
+            },
+        );
+        if let Some(config) = &self.config {
+            config.wake.wake();
+        }
+        Ok(id)
+    }
+
+    pub fn cancel_timer(&mut self, id: u64) -> Result<bool, HostError> {
+        self.ensure_live()?;
+        Ok(self.timers.remove(&id).is_some())
+    }
+
+    /// Hosts that poll without a task waker can sleep until this deadline.
+    pub fn next_timer_deadline_ns(&self) -> Option<u64> {
+        self.timers.values().map(|timer| timer.deadline_ns).min()
+    }
+
+    pub fn seed_session(&mut self, entries: &[(String, String)]) -> Result<(), HostError> {
+        self.ensure_live()?;
+        script_host::session::seed(self, entries)
+    }
+
+    pub fn capture_session(
+        &self,
+        budget: &Arc<crate::tab_stash::SleepingBudget>,
+    ) -> Result<Option<Arc<crate::tab_stash::SessionBucket>>, HostError> {
+        self.ensure_live()?;
+        script_host::session::snapshot(self, budget)
+    }
+
     pub fn poll(&mut self, waker: Option<&Waker>) -> Result<bool, HostError> {
         self.ensure_live()?;
-        let poll_result = script_host::poll_all_chuzz_hosts(self, waker);
+
+        let mut first_error = None;
+        let mut changed = false;
+        match script_host::poll_all_chuzz_hosts(self, waker) {
+            Ok(did_change) => changed |= did_change,
+            Err(error) => first_error = Some(error),
+        }
+
+        let now = nagoya::now_ns();
+        if let Some(waker) = waker {
+            let mut context = Context::from_waker(waker);
+            for timer in self.timers.values_mut() {
+                if timer.firing || timer.wake_ready {
+                    continue;
+                }
+                if timer.wake.as_mut().poll(&mut context).is_ready() {
+                    timer.wake_ready = true;
+                }
+            }
+        }
+
+        let due: Vec<u64> = self
+            .timers
+            .iter()
+            .filter_map(|(id, timer)| {
+                (!timer.firing && (timer.wake_ready || timer.deadline_ns <= now)).then_some(*id)
+            })
+            .collect();
+
+        for id in due {
+            let Some(timer) = self.timers.get_mut(&id) else {
+                continue;
+            };
+            timer.firing = true;
+            let callback = timer.callback.clone();
+
+            match self.invoke_callback(callback, &[]) {
+                Ok(_) => changed = true,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+
+            if let Some(timer) = self.timers.get_mut(&id) {
+                if timer.repeat {
+                    timer.firing = false;
+                    timer.deadline_ns =
+                        nagoya::now_ns().saturating_add(duration_ns(timer.interval));
+                    timer.wake = Box::pin(nagoya::sleep_until(timer.deadline_ns));
+                    timer.wake_ready = false;
+                    if let Some(waker) = waker {
+                        let mut context = Context::from_waker(waker);
+                        timer.wake_ready = timer.wake.as_mut().poll(&mut context).is_ready();
+                    }
+                } else {
+                    self.timers.remove(&id);
+                }
+            }
+        }
+
         let had_frames = !self.frames.is_empty();
         let mut sink_error = None;
         if let Some(sink) = self.frame_sink.as_mut() {
@@ -211,16 +376,16 @@ impl ChuzzPageRuntimeHost {
                         self.frames.remove(&key);
                     }
                     Err(error) => {
-                        sink_error = Some(error);
-                        break;
+                        sink_error.get_or_insert(error);
                     }
                 }
             }
         }
-        match poll_result {
-            Err(error) => Err(error),
-            Ok(_) if sink_error.is_some() => Err(sink_error.expect("sink error recorded")),
-            Ok(changed) => Ok(changed || had_frames),
+
+        if let Some(error) = first_error.or(sink_error) {
+            Err(error)
+        } else {
+            Ok(changed || had_frames)
         }
     }
 
@@ -276,6 +441,7 @@ impl ChuzzPageRuntimeHost {
             config.lifetime.retire(Vec::new());
             drop(config);
         }
+        self.timers.clear();
         self.state.callbacks.clear();
         self.state.intrinsics.clear();
         self.state.states.clear();
@@ -334,6 +500,8 @@ impl ChuzzScriptHost for ChuzzPageRuntimeHost {
                 "callback has been released",
             ));
         }
+        self.timers
+            .retain(|_, timer| !timer.callback.same_callback(&id));
         Ok(())
     }
     fn deliver_frame(&mut self, frame: crate::script_host::HostFrame) -> Result<(), HostError> {
