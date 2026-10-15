@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{SessionOperation, SessionReply, SessionStore};
 use crate::script_host::{ChuzzScriptHost, HostError, HostInstallContext, HostObject, HostValue};
-use crate::tab_stash::{SessionBucket, SleepingBudget, Text};
+use crate::tab_stash::{SessionBucket, SessionPair, SleepingBudget, Text};
 
 const STATE_KEY: &str = "chuzz.session";
 
@@ -176,4 +176,73 @@ pub fn capture(
 ) -> Result<Option<Arc<SessionBucket>>, HostError> {
     let owner = session_owner(host)?;
     Ok(owner.borrow_mut().capture(budget))
+}
+
+/// Snapshot a running realm without consuming its live values. Sensitive keys
+/// are excluded from the snapshot while remaining available to the page.
+pub fn snapshot(
+    host: &dyn ChuzzScriptHost,
+    budget: &Arc<SleepingBudget>,
+) -> Result<Option<Arc<SessionBucket>>, HostError> {
+    let owner = session_owner(host)?;
+    let store = owner.borrow();
+    if store.no_stash {
+        return Ok(None);
+    }
+    let pairs = store
+        .pairs()
+        .iter()
+        .filter(|pair| {
+            !store
+                .sensitive
+                .iter()
+                .any(|key| key.units() == pair.key.units())
+        })
+        .map(|pair| {
+            Some(SessionPair {
+                key: Text::capture(pair.key.units().iter().copied(), 2048)?,
+                value: Text::capture(pair.value.units().iter().copied(), 8192)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            error(
+                "QuotaExceededError",
+                "sessionStorage snapshot quota exceeded",
+            )
+        })?;
+    Ok(SessionBucket::seal(budget, store.origin.clone(), pairs).ok())
+}
+
+/// Validate the complete seed before replacing the existing realm store.
+pub fn seed(host: &dyn ChuzzScriptHost, entries: &[(String, String)]) -> Result<(), HostError> {
+    let quota_error = || error("QuotaExceededError", "sessionStorage quota exceeded");
+    if entries.len() > 256 {
+        return Err(quota_error());
+    }
+    let mut seeded = Vec::with_capacity(entries.len());
+    let mut allocated = 0usize;
+    for (key, value) in entries {
+        let key = Text::capture(key.encode_utf16(), 2048).ok_or_else(quota_error)?;
+        let value = Text::capture(value.encode_utf16(), 8192).ok_or_else(quota_error)?;
+        allocated = allocated
+            .saturating_add(key.allocated_bytes())
+            .saturating_add(value.allocated_bytes());
+        if allocated > 24 * 1024 {
+            return Err(quota_error());
+        }
+        seeded.push((key, value));
+    }
+
+    let owner = session_owner(host)?;
+    let mut store = owner.borrow_mut();
+    store
+        .operate(SessionOperation::Clear)
+        .map_err(|_| quota_error())?;
+    for (key, value) in seeded {
+        store
+            .operate(SessionOperation::Set { key, value })
+            .map_err(|_| quota_error())?;
+    }
+    Ok(())
 }
