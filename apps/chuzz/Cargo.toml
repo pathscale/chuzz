@@ -38,6 +38,12 @@ name = "chuzz-reactor-witness"
 path = "src/reactor_witness_main.rs"
 required-features = ["capture", "javascript", "reactor-witness"]
 
+[[test]]
+name = "page-host-runtime"
+path = "src/page_host_witness_main.rs"
+harness = false
+required-features = ["capture", "javascript"]
+
 [features]
 # Compile-time gated defects and local trust anchors for functional witnesses.
 sandbox2-witness = ["blitz-net/sandbox2-witness"]

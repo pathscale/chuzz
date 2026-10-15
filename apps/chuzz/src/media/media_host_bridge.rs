@@ -54,8 +54,13 @@ fn replace_callback(
 ) -> Result<HostValue, HostError> {
     let id = callback_id(args.first())?;
     let previous = host.state(key);
+    let same_callback = previous
+        .as_ref()
+        .and_then(|object| object.downcast_ref::<HostCallbackId>())
+        .is_some_and(|previous| previous.same_callback(&id));
     host.set_state(key, HostObject::new(id))?;
-    if let Some(previous) = previous
+    if !same_callback
+        && let Some(previous) = previous
         && let Some(previous) = previous.downcast_ref::<HostCallbackId>()
     {
         host.release_callback(previous.clone())?;

@@ -211,6 +211,7 @@ fn subscribe_webauthn(
             .ok_or_else(|| type_error("WebAuthn callback root is invalid"))?,
         _ => return Err(type_error("WebAuthn callback root is required")),
     };
+    let incoming = callback.clone();
     let previous = {
         let mut callbacks = realm.callbacks.borrow_mut();
         if callbacks.len() >= COMPLETION_LIMIT && !callbacks.contains_key(&id) {
@@ -221,7 +222,7 @@ fn subscribe_webauthn(
         }
         callbacks.insert(id, callback)
     };
-    if let Some(previous) = previous {
+    if let Some(previous) = previous.filter(|previous| !previous.same_callback(&incoming)) {
         host.release_callback(previous)?;
     }
     Ok(HostValue::Null)
