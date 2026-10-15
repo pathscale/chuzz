@@ -116,6 +116,8 @@ pub mod pdf;
 pub mod platform_hardening;
 pub mod sandbox;
 pub mod script_fetch;
+#[cfg(feature = "javascript")]
+pub mod script_host;
 pub(crate) mod telemetry;
 mod tls;
 pub mod tls_status;
