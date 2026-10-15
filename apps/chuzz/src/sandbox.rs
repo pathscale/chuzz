@@ -202,8 +202,19 @@ fn install() -> Result<Arc<Directories>, String> {
             content_root(path, &home, &mut reads)?;
         }
     }
+    // Inline storage seeds require no filesystem access. Existing seed files
+    // still need admission before Seatbelt is applied; missing paths are left
+    // to the seed reader so it can report the storage configuration error.
+    if let Some(seed) = std::env::var_os("QA_INSPECT_STORAGE") {
+        let inline = seed
+            .to_str()
+            .is_some_and(|text| text.trim_start().starts_with('{'));
+        let path = PathBuf::from(seed);
+        if !inline && path.exists() {
+            content_root(path, &home, &mut reads)?;
+        }
+    }
     for name in [
-        "QA_INSPECT_STORAGE",
         "CHUZZ_PAGE_SERVER_TLS_CERT",
         "CHUZZ_PAGE_SERVER_TLS_KEY",
         "CHUZZ_DEBUG_EVAL",

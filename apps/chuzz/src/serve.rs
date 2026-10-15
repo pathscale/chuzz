@@ -34,13 +34,15 @@
 //! ```sh
 //! chuzz-headless /path/to/dist            # or a file, or an http(s) URL
 //! QA_INSPECT_PAGE=/path/to/dist chuzz-headless
+//! QA_INSPECT_PAGE=/path/to/dist QA_INSPECT_STORAGE='{"key":"value"}' chuzz-headless
 //! QA_INSPECT_PAGE=/path/to/dist QA_INSPECT_STORAGE=/path/to/storage.json chuzz-headless
 //! ```
 //!
-//! `QA_INSPECT_STORAGE` is a JSON object of string values. The host installs
-//! them into `localStorage` for the page origin before any page script runs,
-//! through the same prelude a navigation uses to restore storage. A missing,
-//! unreadable, or invalid file prints
+//! `QA_INSPECT_STORAGE` accepts either an inline JSON object of string values
+//! or a path to a file containing that object. The host installs the values
+//! into `localStorage` for the page origin before any page script runs, through
+//! the same prelude a navigation uses to restore storage. An invalid object,
+//! missing file, or unreadable file prints
 //! `chuzz-headless: QA_INSPECT_STORAGE: ...` and exits 2.
 //!
 //! It prints its descriptor path on stdout when it is ready, then serves until
@@ -1450,17 +1452,22 @@ fn follow_navigation(
 ///
 /// Read once per process. The supervisor validates before it announces a
 /// descriptor, and the page worker applies the map through the storage
-/// prelude. A bad file exits 2 here so the check cannot run without its state.
+/// prelude. A bad object or file exits 2 here so the check cannot run without
+/// its state.
 fn read_qa_inspect_storage() -> Option<std::collections::BTreeMap<String, String>> {
-    let path = match std::env::var("QA_INSPECT_STORAGE") {
-        Ok(path) if !path.is_empty() => path,
-        Ok(_) => fail_qa_inspect_storage("path is empty"),
+    let input = match std::env::var("QA_INSPECT_STORAGE") {
+        Ok(input) if !input.is_empty() => input,
+        Ok(_) => fail_qa_inspect_storage("value is empty"),
         Err(std::env::VarError::NotPresent) => return None,
         Err(error) => fail_qa_inspect_storage(&error.to_string()),
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) => fail_qa_inspect_storage(&format!("{path}: {error}")),
+    let text = if input.trim_start().starts_with('{') {
+        input
+    } else {
+        match std::fs::read_to_string(&input) {
+            Ok(text) => text,
+            Err(error) => fail_qa_inspect_storage(&format!("{input}: {error}")),
+        }
     };
     match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text) {
         Ok(map) => Some(map),
