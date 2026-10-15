@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Texture fidelity QA</title>
+  <style>
+    body { margin: 24px; background: #182335; color: white; font: 16px sans-serif; }
+    canvas { display: block; width: 128px; height: 128px; image-rendering: pixelated; margin-top: 16px; }
+    p { min-height: 24px; }
+  </style>
+</head>
+<body>
+  <h1>Texture fidelity QA</h1>
+  <button id="run" type="button">Run texture checks</button>
+  <p id="result" role="status">Ready to start</p>
+  <canvas id="stage" width="2" height="2" aria-label="sampled texture pixels"></canvas>
+  <script type="module">
+    const result = document.getElementById("result");
+    const button = document.getElementById("run");
+    const stage = document.getElementById("stage");
+    let started = false;
+
+    function fail(error) {
+      result.textContent = "FAIL: " + (error && error.message ? error.message : String(error));
+    }
+
+    function assert(condition, message) {
+      if (!condition) { throw new Error(message); }
+    }
+
+    function close(actual, expected, tolerance, label) {
+      for (let channel = 0; channel < 4; channel++) {
+        if (Math.abs(actual[channel] - expected[channel]) > tolerance) {
+          throw new Error(label + " pixel " + channel + " was " + actual[channel] + ", expected " + expected[channel]);
+        }
+      }
+    }
+
+    function bytesEqual(actual, expected, tolerance, label) {
+      assert(actual.length === expected.length, label + " pixel count mismatch");
+      for (let pixel = 0; pixel < expected.length; pixel++) {
+        close(actual[pixel], expected[pixel], tolerance, label + " texel " + pixel);
+      }
+    }
+
+    function pixelBytes(context, width, height) {
+      return Array.from(context.getImageData(0, 0, width, height).data)
+        .reduce((pixels, value, index, all) => {
+          if (index % 4 === 0) { pixels.push(all.slice(index, index + 4)); }
+          return pixels;
+        }, []);
+    }
+
+    function shaderModule(device, mip, alphaOnly) {
+      return device.createShaderModule({
+        label: "texture fidelity sample shader",
+        code: `
+          @group(0) @binding(0) var image: texture_2d<f32>;
+          struct Vertex { @builtin(position) position: vec4<f32> }
+          @vertex fn vs(@builtin(vertex_index) index: u32) -> Vertex {
+            let points = array<vec2<f32>, 3>(
+              vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0)
+            );
+            var output: Vertex;
+            output.position = vec4<f32>(points[index], 0.0, 1.0);
+            return output;
+          }
+          @fragment fn fs(input: Vertex) -> @location(0) vec4<f32> {
+            if input.position.x >= 32.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+            let level = ${mip};
+            let dimensions = textureDimensions(image, level);
+            let coordinate = min(vec2<i32>(input.position.xy), vec2<i32>(dimensions) - vec2<i32>(1));
+            let sampled = textureLoad(image, coordinate, level);
+            let color = ${alphaOnly ? "vec3<f32>(sampled.a)" : "sampled.rgb"};
+            return vec4<f32>(color, 1.0);
+          }
+        `
+      });
+    }
+
+    async function sample(device, texture, mip, alphaOnly) {
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      const context = stage.getContext("webgpu");
+      context.configure({ device, format, alphaMode: "opaque" });
+      const module = shaderModule(device, mip, alphaOnly);
+      const pipeline = device.createRenderPipeline({
+        label: "texture fidelity sample pipeline",
+        layout: "auto",
+        vertex: { module, entryPoint: "vs" },
+        fragment: { module, entryPoint: "fs", targets: [{ format }] },
+        primitive: { topology: "triangle-list" }
+      });
+      const group = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: texture.createView() }]
+      });
+      const encoder = device.createCommandEncoder({ label: "texture fidelity sample" });
+      const pass = encoder.beginRenderPass({ colorAttachments: [{
+        view: context.getCurrentTexture().createView(),
+        loadOp: "clear", storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 1 }
+      }] });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group);
+      pass.draw(3);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      await device.queue.onSubmittedWorkDone();
+      const probe = document.createElement("canvas");
+      probe.width = stage.width;
+      probe.height = stage.height;
+      const paint = probe.getContext("2d", { willReadFrequently: true });
+      paint.drawImage(stage, 0, 0);
+      return pixelBytes(paint, stage.width, stage.height);
+    }
+
+    async function loadBytes(path) {
+      const response = await fetch(new URL(path, location.href));
+      if (!response.ok) { throw new Error("could not load " + path + ": " + response.status); }
+      return new Uint8Array(await response.arrayBuffer());
+    }
+
+    async function checkImage(device, path, mime, expected, label, defaultAlpha = false) {
+      const bytes = await loadBytes(path);
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }), {
+        premultiplyAlpha: defaultAlpha ? "default" : "none",
+        colorSpaceConversion: "none",
+        imageOrientation: "flipY"
+      });
+      assert(bitmap.width === 2 && bitmap.height === 2, path + " dimensions changed");
+      const texture = device.createTexture({
+        label: "fidelity " + path,
+        size: [2, 2],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+      });
+      device.queue.copyExternalImageToTexture(
+        { source: bitmap }, { texture, colorSpace: "srgb" }, [2, 2]
+      );
+      await device.queue.onSubmittedWorkDone();
+      const pixels = await sample(device, texture, 0, false);
+      bytesEqual(pixels, expected.map(pixel => [...pixel.slice(0, 3), 255]), 0, label + " RGB");
+      const alpha = await sample(device, texture, 0, true);
+      const expectedAlpha = expected.map(pixel => [pixel[3], pixel[3], pixel[3], 255]);
+      bytesEqual(alpha, expectedAlpha, 0, label + " alpha");
+      bitmap.close();
+      texture.destroy();
+    }
+
+    function writeBits(bytes, offset, value, count) {
+      for (let bit = 0; bit < count; bit++) {
+        if ((value & (1 << bit)) !== 0) {
+          const position = offset + bit;
+          bytes[position >> 3] |= 1 << (position & 7);
+        }
+      }
+      return offset + count;
+    }
+
+    function compressedBlock(family) {
+      const color = [74, 142, 210, 254];
+      if (family === "bc") {
+        const bytes = new Uint8Array(16);
+        let bit = 0;
+        bit = writeBits(bytes, bit, 1 << 6, 1 + 6);
+        const quantized = color.map(value => value >> 1);
+        for (let channel = 0; channel < 4; channel++) {
+          bit = writeBits(bytes, bit, quantized[channel], 7);
+          bit = writeBits(bytes, bit, quantized[channel], 7);
+        }
+        bit = writeBits(bytes, bit, 0, 2);
+        for (let index = 0; index < 16; index++) {
+          bit = writeBits(bytes, bit, 0, index === 0 ? 3 : 4);
+        }
+        assert(bit === 128, "BC7 block packing was incomplete");
+        return { bytes, expected: [...color.slice(0, 3), 255], tolerance: 2, format: "bc7-rgba-unorm", feature: "texture-compression-bc", bytesPerBlock: 16 };
+      }
+      if (family === "astc") {
+        const bytes = new Uint8Array(16);
+        bytes.set([0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        for (let channel = 0; channel < 4; channel++) {
+          const value = color[channel] * 257;
+          bytes[8 + channel * 2] = value & 255;
+          bytes[9 + channel * 2] = value >> 8;
+        }
+        return { bytes, expected: [...color.slice(0, 3), 255], tolerance: 2, format: "astc-4x4-unorm", feature: "texture-compression-astc", bytesPerBlock: 16 };
+      }
+      const nibbles = color.slice(0, 3).map(value => Math.round(value / 17));
+      const decoded = nibbles.map(value => Math.max(0, Math.min(255, value * 17 + 2)));
+      const bytes = new Uint8Array(8);
+      bytes[0] = nibbles[0] << 4 | nibbles[0];
+      bytes[1] = nibbles[1] << 4 | nibbles[1];
+      bytes[2] = nibbles[2] << 4 | nibbles[2];
+      return { bytes, expected: [...decoded, 255], tolerance: 4, format: "etc2-rgb8unorm", feature: "texture-compression-etc2", bytesPerBlock: 8 };
+    }
+
+    function selectCompression(adapter) {
+      const candidates = [
+        ["bc", "texture-compression-bc"],
+        ["astc", "texture-compression-astc"],
+        ["etc2", "texture-compression-etc2"]
+      ];
+      const advertised = Array.from(adapter.features);
+      for (const [, feature] of candidates) {
+        assert(adapter.features.has(feature) === advertised.includes(feature), feature + " has/iteration mismatch");
+      }
+      let selected;
+      for (const [family, feature] of candidates) {
+        if (adapter.features.has(feature)) { selected = compressedBlock(family); break; }
+      }
+      assert(selected, "adapter supports none of BC, ASTC, or ETC2 texture compression");
+      return selected;
+    }
+
+    async function checkCompressed(device, selected) {
+      const bytes = selected.bytes;
+      const source = device.createBuffer({
+        label: "compressed copy source", size: bytes.length,
+        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+      });
+      device.queue.writeBuffer(source, 0, bytes);
+      const cases = [
+        { label: "4x4 base", mip: 0, extent: [4, 4, 1] },
+        { label: "2x2 mip", mip: 1, extent: [2, 2, 1] },
+        { label: "1x1 mip tail", mip: 2, extent: [1, 1, 1] },
+        { label: "2x2 physical mip", mip: 1, extent: [4, 4, 1] },
+        { label: "1x1 physical mip", mip: 2, extent: [4, 4, 1] }
+      ];
+      for (const test of cases) {
+        const copied = device.createTexture({
+          label: "compressed copy " + test.label,
+          size: [4, 4], mipLevelCount: 3,
+          format: selected.format,
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        });
+        const encoder = device.createCommandEncoder({ label: "compressed copy " + test.label });
+        encoder.copyBufferToTexture(
+          { buffer: source, rowsPerImage: 1 },
+          { texture: copied, mipLevel: test.mip }, test.extent
+        );
+        device.queue.submit([encoder.finish()]);
+        const copiedPixels = await sample(device, copied, test.mip);
+        close(copiedPixels[0], selected.expected, selected.tolerance, "compressed buffer copy " + test.label);
+
+        const written = device.createTexture({
+          label: "compressed write " + test.label,
+          size: [4, 4], mipLevelCount: 3,
+          format: selected.format,
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        });
+        device.queue.writeTexture(
+          { texture: written, mipLevel: test.mip }, bytes,
+          { bytesPerRow: selected.bytesPerBlock, rowsPerImage: 1 }, test.extent
+        );
+        await device.queue.onSubmittedWorkDone();
+        const writtenPixels = await sample(device, written, test.mip);
+        close(writtenPixels[0], selected.expected, selected.tolerance, "compressed write " + test.label);
+        copied.destroy();
+        written.destroy();
+      }
+      source.destroy();
+      return selected.format;
+    }
+
+    button.onclick = async () => {
+      if (started) { return; }
+      started = true;
+      button.disabled = true;
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        assert(adapter, "no WebGPU adapter");
+        const selectedCompression = selectCompression(adapter);
+        const device = await adapter.requestDevice({ requiredFeatures: [selectedCompression.feature] });
+        assert(device.features.has(selectedCompression.feature), "requested compression feature was not enabled");
+        assert(Array.from(device.features).includes(selectedCompression.feature), "device compression feature iteration mismatch");
+        const gpuErrors = [];
+        device.addEventListener("uncapturederror", event => gpuErrors.push(event.error.message));
+        device.lost.then(info => fail(new Error("device lost: " + info.message)));
+
+        const sourcePixels = [
+          [37, 191, 59, 0], [221, 149, 13, 255],
+          [227, 31, 73, 0], [19, 83, 211, 255]
+        ];
+        const lossyPixels = [
+          [131, 136, 121, 0], [154, 159, 144, 255],
+          [94, 99, 83, 0], [78, 82, 67, 255]
+        ];
+        await checkImage(device, "images/hidden-rgb-vp8l.webp", "", sourcePixels, "lossless empty MIME");
+        await checkImage(device, "images/hidden-rgb-vp8l.webp", "image/webp", sourcePixels, "lossless image/webp");
+        await checkImage(device, "images/hidden-rgb-vp8l.webp", "image/webp", sourcePixels, "lossless default alpha", true);
+        await checkImage(device, "images/hidden-rgb-vp8-alpha.webp", "", lossyPixels, "lossy empty MIME");
+        await checkImage(device, "images/hidden-rgb-vp8-alpha.webp", "image/webp", lossyPixels, "lossy image/webp");
+        await checkImage(device, "images/hidden-rgb-vp8-decoded.png", "image/png", lossyPixels, "lossy decoded PNG parity");
+        await checkImage(device, "images/hidden-rgb.png", "image/png", sourcePixels, "source PNG parity");
+        stage.width = 64;
+        stage.height = 64;
+        const compressedFormat = await checkCompressed(device, selectedCompression);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        assert(gpuErrors.length === 0, gpuErrors.join("; "));
+        result.textContent = "READY: texture fidelity (" + compressedFormat + ")";
+        console.log(result.textContent);
+      } catch (error) {
+        fail(error);
+      }
+    };
+  </script>
+</body>
+</html>
