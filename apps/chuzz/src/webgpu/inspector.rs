@@ -9,6 +9,9 @@ use blitz_control_protocol::{
 
 use super::*;
 
+#[path = "inspector_script.rs"]
+mod script;
+
 pub(super) const PASS_LIMIT: usize = 512;
 const ERROR_LIMIT: usize = 1024;
 const FRAME_LIMIT: usize = 8;
@@ -292,9 +295,7 @@ struct InspectorHost(Bridge);
 
 impl Bridge {
     pub(crate) fn install_inspector(&self, document: &mut blitz_script::ScriptDocument) {
-        document.with_js_context(|context| {
-            context.insert_data(InspectorHost(self.clone()));
-        });
+        script::install(self, document);
     }
 
     fn inspection_session(&self) -> Arc<Session> {
@@ -444,37 +445,14 @@ impl Bridge {
 pub(super) fn inspect_document(
     document: &mut blitz_script::ScriptDocument,
 ) -> Result<WebGpuReport, DebugError> {
-    let bridge = document.with_js_context(|context| {
-        context
-            .get_data::<InspectorHost>()
-            .map(|host| host.0.clone())
-    });
-    bridge
-        .map(|bridge| bridge.inspect())
-        .ok_or_else(|| DebugError {
-            code: "unsupported".to_owned(),
-            message: "the document has no page WebGPU inspector".to_owned(),
-        })
+    script::inspect_document(document)
 }
 
 pub(super) fn capture_document(
     document: &mut blitz_script::ScriptDocument,
     target: &str,
 ) -> Result<CapturedImage, DebugError> {
-    let bridge = document.with_js_context(|context| {
-        context
-            .get_data::<InspectorHost>()
-            .map(|host| host.0.clone())
-    });
-    let Some(bridge) = bridge else {
-        return Err(DebugError {
-            code: "unsupported".to_owned(),
-            message: "the document has no page WebGPU inspector".to_owned(),
-        });
-    };
-    // Commands still sitting in `incoming` have to be ordered ahead of the copy.
-    bridge.prepare_images(document);
-    bridge.capture_and_wait(target)
+    script::capture_document(document, target)
 }
 
 pub(super) fn buffer_document(
@@ -483,21 +461,7 @@ pub(super) fn buffer_document(
     offset: u64,
     length: Option<u64>,
 ) -> Result<blitz_control_protocol::WebGpuBufferSnapshot, DebugError> {
-    let bridge = document
-        .with_js_context(|context| {
-            context
-                .get_data::<InspectorHost>()
-                .map(|host| host.0.clone())
-        })
-        .ok_or_else(|| DebugError {
-            code: "unsupported".to_owned(),
-            message: "the document has no page WebGPU inspector".to_owned(),
-        })?;
-    bridge.inspection_session().renew();
-    // Drain incoming page writes ahead of the diagnostics request. The worker
-    // fills a native slot and this document turn immediately returns pending.
-    bridge.prepare_images(document);
-    bridge.sample_buffer(target, offset, length)
+    script::buffer_document(document, target, offset, length)
 }
 
 pub(super) fn buffer_document_reply(
@@ -507,21 +471,7 @@ pub(super) fn buffer_document_reply(
     length: Option<u64>,
     reply: Arc<blitz_control_protocol::latest::Once<blitz_control_protocol::DebugResponse>>,
 ) {
-    let bridge = document.with_js_context(|context| {
-        context
-            .get_data::<InspectorHost>()
-            .map(|host| host.0.clone())
-    });
-    let Some(bridge) = bridge else {
-        reply.fill(blitz_control_protocol::DebugResponse::Error(DebugError {
-            code: "unsupported".to_owned(),
-            message: "the document has no page WebGPU inspector".to_owned(),
-        }));
-        return;
-    };
-    bridge.inspection_session().renew();
-    bridge.prepare_images(document);
-    bridge.dispatch_buffer(target, offset, length, reply);
+    script::buffer_document_reply(document, target, offset, length, reply);
 }
 
 impl DeviceConnection {

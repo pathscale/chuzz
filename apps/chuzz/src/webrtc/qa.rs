@@ -9,10 +9,6 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use blitz_script::ScriptDocument;
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-};
 use p256::ecdsa::{DerSignature, SigningKey, VerifyingKey, signature::Verifier};
 use p256::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use str0m::config::Fingerprint;
@@ -24,6 +20,8 @@ use str0m::rtp::{RawPacket, RtpWrite, Ssrc};
 use str0m::{Candidate, Event, Input, Output, Rtc, RtcError};
 use x509_cert::Certificate;
 use x509_cert::der::{Decode, Encode};
+
+pub(super) use super::qa_script::install;
 
 const PACKETS_PER_PEER: usize = 3;
 const FIRST_SEQUENCE: u64 = 65_534;
@@ -527,21 +525,7 @@ fn run_fixture() -> Result<Report, String> {
     })
 }
 
-fn probe(_this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let report = run_fixture().map_err(|error| JsNativeError::error().with_message(error))?;
-    let json = serde_json::to_string(&report)
-        .map_err(|error| JsNativeError::error().with_message(error.to_string()))?;
-    Ok(JsString::from(json).into())
-}
-
-pub(super) fn install(document: &mut ScriptDocument) {
-    document.with_js_context(|context| {
-        context
-            .register_global_builtin_callable(
-                JsString::from("__chuzzWebrtcCryptoProbe"),
-                0,
-                NativeFunction::from_fn_ptr(probe),
-            )
-            .expect("WebRTC crypto native fixture bridge");
-    });
+pub(super) fn run_fixture_json() -> Result<String, String> {
+    let report = run_fixture()?;
+    serde_json::to_string(&report).map_err(|error| error.to_string())
 }

@@ -1,10 +1,11 @@
 use blitz_dom::node::RasterImageData;
-use blitz_script::boa_engine::object::builtins::{JsArray, JsUint8ClampedArray};
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-};
 
 use std::sync::atomic::AtomicU64;
+
+#[path = "readback_script.rs"]
+mod script;
+
+pub(super) use script::image;
 
 use blitz_control_protocol::{CapturedImage, DebugError};
 
@@ -13,7 +14,7 @@ use super::external::Source;
 use super::resources::{ALLOCATION_LIMIT, checked};
 use super::*;
 
-type ImageResult = Result<Arc<RasterImageData>, GpuError>;
+pub(super) type ImageResult = Result<Arc<RasterImageData>, GpuError>;
 
 #[derive(Default)]
 pub(super) struct Completion {
@@ -49,20 +50,13 @@ impl Completion {
     }
 }
 
-#[derive(Clone)]
-struct CanvasHost(Bridge);
-
-fn argument(args: &[JsValue], index: usize) -> JsValue {
-    args.get(index).cloned().unwrap_or_default()
-}
-
 /// Resolve ordered native image work without allocating page pixel memory.
-pub(super) fn image(
+pub(super) fn read_image(
     bridge: &Bridge,
     source: Source,
     id: u64,
-    context: &mut Context,
-) -> JsResult<ImageResult> {
+    snapshot: impl Fn(u64) -> Option<Arc<RasterImageData>>,
+) -> Result<ImageResult, GpuError> {
     if !matches!(
         &source,
         // Texture: a WebGPU canvas read in the same task as its render(), before the frame is presented.
@@ -72,14 +66,12 @@ pub(super) fn image(
             | Source::Texture { .. }
             | Source::Video { .. }
     ) {
-        return Err(JsNativeError::typ()
-            .with_message("invalid synchronous canvas image source")
-            .into());
+        return Err(GpuError::validation(
+            "invalid synchronous canvas image source",
+        ));
     }
     if !(1..=9_007_199_254_740_991).contains(&id) {
-        return Err(JsNativeError::typ()
-            .with_message("invalid canvas readback handle")
-            .into());
+        return Err(GpuError::validation("invalid canvas readback handle"));
     }
     let incoming = {
         let mut state = bridge.state();
@@ -87,22 +79,14 @@ pub(super) fn image(
             || state.in_flight.contains_key(&id)
             || state.incoming.iter().any(|request| request.id() == id)
         {
-            return Err(JsNativeError::typ()
-                .with_message("canvas readback request limit reached in chuzz")
-                .into());
+            return Err(GpuError::validation(
+                "canvas readback request limit reached in chuzz",
+            ));
         }
         std::mem::take(&mut state.incoming)
     };
-    let snapshot = |marker: u64| {
-        blitz_script::raster_image_for_attribute(
-            context,
-            "data-chuzz-gpu-source",
-            &marker.to_string(),
-        )
-        .map(Arc::new)
-    };
     for request in incoming {
-        bridge.prepare_image_request(request, snapshot);
+        bridge.prepare_image_request(request, &snapshot);
     }
     let completion = Arc::new(Completion::default());
     bridge.prepare_image_request(
@@ -115,67 +99,13 @@ pub(super) fn image(
     );
 
     // All preceding GPU and image work stays on the ordered Nagoya worker.
-    // No DOM or Boa borrow crosses this wait, and no page jobs run reentrantly.
+    // No DOM borrow crosses this wait, and no page jobs run reentrantly.
     Ok(completion.wait())
-}
-
-fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let bridge = context
-        .get_data::<CanvasHost>()
-        .ok_or_else(|| JsNativeError::typ().with_message("canvas host is unavailable"))?
-        .0
-        .clone();
-    let source = argument(args, 0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    let source: Source = serde_json::from_str(&source)
-        .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-    let id = argument(args, 1).to_number(context)?;
-    if !id.is_finite() || id.fract() != 0.0 || !(1.0..=9_007_199_254_740_991.0).contains(&id) {
-        return Err(JsNativeError::typ()
-            .with_message("invalid canvas readback handle")
-            .into());
-    }
-    match image(&bridge, source, id as u64, context)? {
-        Ok(image) => {
-            // Boa's returned array is mutable page memory. Make one native
-            // typed-array allocation here, sharing the Arc everywhere else.
-            let data = JsUint8ClampedArray::from_iter(image.data.data().iter().copied(), context)?;
-            Ok(JsArray::from_iter(
-                [
-                    JsValue::from(image.width),
-                    JsValue::from(image.height),
-                    data.into(),
-                ],
-                context,
-            )
-            .into())
-        }
-        Err(error) => Ok(JsArray::from_iter(
-            [
-                JsString::from(error.kind).into(),
-                JsString::from(error.message).into(),
-            ],
-            context,
-        )
-        .into()),
-    }
 }
 
 impl Bridge {
     pub(crate) fn install_canvas_readback(&self, document: &mut blitz_script::ScriptDocument) {
-        super::canvas2d::install(document, self.clone());
-        document.with_js_context(|context| {
-            self.state().media_frames = crate::video::frame_registry(context);
-            context.insert_data(CanvasHost(self.clone()));
-            context
-                .register_global_builtin_callable(
-                    JsString::from("__chuzzCanvasReadback"),
-                    2,
-                    NativeFunction::from_fn_ptr(read),
-                )
-                .expect("canvas readback bridge");
-        });
+        script::install(self, document);
     }
 }
 
