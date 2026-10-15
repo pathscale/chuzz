@@ -381,38 +381,24 @@ impl Bridge {
         if let Some(texture) = live.into_iter().next() {
             return device.read_texture_rgba(texture, Some(alpha)).await;
         }
-        let (width, height, rgba) = {
+        // Paint deliveries are drained by the renderer. The image cache retains
+        // the last presented straight RGBA pixels after that delivery, even
+        // when the application does not submit another frame.
+        let image = {
             let state = self.state();
-            let frame = state
-                .frames
+            let image = state
+                .images
+                .canvases
                 .get(&canvas)
-                .filter(|frame| frame.generation == generation);
-            let Some(frame) = frame else {
+                .filter(|(image_generation, _)| *image_generation == generation);
+            let Some((_, image)) = image else {
                 return Err(as_debug(GpuError::validation(format!(
                     "canvas {target} has no texture to capture"
                 ))));
             };
-            let Some(rgba) = frame.rgba.as_ref() else {
-                return Err(as_debug(GpuError::validation(format!(
-                    "canvas {target} has no texture to capture"
-                ))));
-            };
-            (frame.width, frame.height, Arc::clone(rgba))
+            Arc::clone(image)
         };
-        let expected = u64::from(width)
-            .checked_mul(u64::from(height))
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or_else(|| {
-                as_debug(GpuError::validation(format!(
-                    "canvas {target} has no texture to capture"
-                )))
-            })?;
-        if rgba.len() as u64 != expected {
-            return Err(as_debug(GpuError::validation(format!(
-                "canvas {target} has no texture to capture"
-            ))));
-        }
-        CapturedImage::from_rgba(width, height, rgba.as_slice())
+        CapturedImage::from_rgba(image.width, image.height, image.data.data())
     }
 }
 
