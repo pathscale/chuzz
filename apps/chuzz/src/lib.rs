@@ -97,6 +97,8 @@ pub mod internal_pages;
 pub mod media;
 pub mod nav;
 pub mod net_bridge;
+#[cfg(feature = "javascript")]
+pub mod page_script_host;
 #[cfg(feature = "gui")]
 mod tab_native;
 #[cfg(feature = "gui")]

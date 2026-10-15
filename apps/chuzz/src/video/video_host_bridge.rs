@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::script_host::{
-    ChuzzScriptHost, HostCallbackId, HostError, HostInstallContext, HostObject, HostValue,
-    from_json, number_arg, to_json,
+    ChuzzScriptHost, HostCallbackId, HostError, HostFrame, HostFrameSource, HostInstallContext,
+    HostObject, HostValue, from_json, number_arg, to_json,
 };
 
 const MSE_STATE: &str = "chuzz.video.mse";
@@ -248,9 +248,14 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
     }
     .ok_or_else(|| type_error("expected a video callback root"))?;
     let previous = host.state("chuzz.video.callback");
+    let same_callback = previous
+        .as_ref()
+        .and_then(|object| object.downcast_ref::<HostCallbackId>())
+        .is_some_and(|previous| previous.same_callback(&callback));
     host.set_state("chuzz.video.callback", HostObject::new(callback))?;
-    if let Some(previous) =
-        previous.and_then(|object| object.downcast_ref::<HostCallbackId>().cloned())
+    if !same_callback
+        && let Some(previous) =
+            previous.and_then(|object| object.downcast_ref::<HostCallbackId>().cloned())
     {
         host.release_callback(previous)?;
     }
@@ -317,12 +322,21 @@ pub fn poll(
         }
     }
     let changed = !updates.is_empty();
-    if let Some(callback) = host
+    let callback = host
         .state("chuzz.video.callback")
-        .and_then(|object| object.downcast_ref::<HostCallbackId>().cloned())
-    {
-        for update in updates {
-            host.dispatch_callback(
+        .and_then(|object| object.downcast_ref::<HostCallbackId>().cloned());
+    let mut error = None;
+    for update in updates {
+        if let Err(cause) = host.deliver_frame(HostFrame {
+            source: HostFrameSource::Video,
+            target: update.id,
+            generation: update.generation,
+            image: update.image.clone(),
+        }) {
+            error.get_or_insert(cause);
+        }
+        if let Some(callback) = &callback
+            && let Err(cause) = host.dispatch_callback(
                 callback.clone(),
                 &[
                     HostValue::Number(update.id as f64),
@@ -332,10 +346,12 @@ pub fn poll(
                         HostValue::Object(HostObject::new(image))
                     }),
                 ],
-            )?;
+            )
+        {
+            error.get_or_insert(cause);
         }
     }
-    Ok(changed)
+    error.map_or(Ok(changed), Err)
 }
 
 pub fn install(

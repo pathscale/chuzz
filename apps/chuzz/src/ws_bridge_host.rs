@@ -148,6 +148,7 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
         }
     };
 
+    let incoming = callback.clone();
     let state = state(host)?;
     let previous = {
         let mut state = state.borrow_mut();
@@ -159,7 +160,7 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
         }
         state.callbacks.insert(id, callback)
     };
-    if let Some(previous) = previous {
+    if let Some(previous) = previous.filter(|previous| !previous.same_callback(&incoming)) {
         host.release_callback(previous)?;
     }
     Ok(HostValue::Undefined)

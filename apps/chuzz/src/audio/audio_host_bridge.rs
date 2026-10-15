@@ -108,8 +108,11 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
         .ok_or_else(|| native_error("invalid audio callback root"))?;
     let state = native_state(host)?;
     let previous = state.callbacks.borrow_mut().pop();
+    let same_callback = previous
+        .as_ref()
+        .is_some_and(|previous| previous.same_callback(&callback));
     state.callbacks.borrow_mut().push(callback);
-    if let Some(previous) = previous {
+    if !same_callback && let Some(previous) = previous {
         host.release_callback(previous)?;
     }
     Ok(HostValue::Undefined)

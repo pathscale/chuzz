@@ -1,6 +1,9 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::Arc;
+
+use blitz_dom::node::RasterImageData;
 
 pub use crate::audio::native_host as audio;
 pub use crate::media::native_host as media;
@@ -54,10 +57,12 @@ impl std::fmt::Display for HostCallbackScopeError {
 
 impl std::error::Error for HostCallbackScopeError {}
 
-/// An opaque retained callback root scoped to a realm and generation.
+/// An opaque callback identity scoped to a realm and generation.
 ///
-/// Cloning an ID retains the same root. The root is released when its final ID
-/// is dropped. IDs contain no engine pointer or numeric handle.
+/// Cloning an ID retains the same opaque root. A concrete host runtime owns
+/// the executable callback and may revoke dispatch when `release_callback`
+/// is called or when the realm is torn down. IDs contain no engine pointer or
+/// numeric handle.
 #[derive(Clone)]
 pub struct HostCallbackId {
     realm: Rc<()>,
@@ -243,6 +248,25 @@ pub struct HostError {
     pub message: String,
 }
 
+/// Native raster producer for a frame delivered to the renderer.
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub enum HostFrameSource {
+    Canvas,
+    Video,
+    WebGpu,
+}
+
+/// A completed native raster update, scoped to its producer target generation.
+#[derive(Clone)]
+pub struct HostFrame {
+    pub source: HostFrameSource,
+    pub target: u64,
+    /// Video and WebGPU preserve their native generation. Canvas2D uses zero;
+    /// its renderer must validate the target against the owning page lifetime.
+    pub generation: u64,
+    pub image: Option<Arc<RasterImageData>>,
+}
+
 impl std::fmt::Display for HostError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}: {}", self.name, self.message)
@@ -284,8 +308,14 @@ pub trait ChuzzScriptHost {
         args: &[HostValue],
     ) -> Result<HostValue, HostError>;
 
-    /// Drop this retention of a callback. Other cloned IDs retain their root.
+    /// Release a callback registration. Implementations may revoke dispatch
+    /// for every clone of this identity; realm teardown releases all callables.
     fn release_callback(&mut self, id: HostCallbackId) -> Result<(), HostError>;
+
+    /// Deliver a completed native raster update to the renderer.
+    fn deliver_frame(&mut self, _frame: HostFrame) -> Result<(), HostError> {
+        Ok(())
+    }
 }
 
 /// Native resources shared by the subsystem installers for one page realm.
@@ -326,15 +356,27 @@ pub fn poll_all_chuzz_hosts(
     host: &mut dyn ChuzzScriptHost,
     waker: Option<&std::task::Waker>,
 ) -> Result<bool, HostError> {
-    let mut changed = network::poll(host, waker)?;
-    changed |= websocket::poll(host, waker)?;
-    changed |= webapi::poll(host, waker)?;
-    changed |= audio::poll(host, waker)?;
-    changed |= media::poll(host, waker)?;
-    changed |= video::poll(host, waker)?;
-    changed |= webrtc::poll(host, waker)?;
-    changed |= webgpu::poll(host, waker)?;
-    Ok(changed)
+    let mut changed = false;
+    let mut error = None;
+    macro_rules! poll_host {
+        ($poll:expr) => {
+            match $poll {
+                Ok(did_change) => changed |= did_change,
+                Err(cause) => {
+                    error.get_or_insert(cause);
+                }
+            }
+        };
+    }
+    poll_host!(network::poll(host, waker));
+    poll_host!(websocket::poll(host, waker));
+    poll_host!(webapi::poll(host, waker));
+    poll_host!(audio::poll(host, waker));
+    poll_host!(media::poll(host, waker));
+    poll_host!(video::poll(host, waker));
+    poll_host!(webrtc::poll(host, waker));
+    poll_host!(webgpu::poll(host, waker));
+    error.map_or(Ok(changed), Err)
 }
 
 /// Convert structured native metadata without serializing or evaluating source.

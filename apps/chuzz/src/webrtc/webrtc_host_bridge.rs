@@ -85,8 +85,13 @@ fn control(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostVal
 
     match host::execute(&state.page, data, &HostResources { host }) {
         Ok(value) => {
-            if closing && let Some(peer_id) = peer_id {
-                state.callbacks.borrow_mut().remove(&peer_id);
+            let callback = if closing {
+                peer_id.and_then(|peer_id| state.callbacks.borrow_mut().remove(&peer_id))
+            } else {
+                None
+            };
+            if let Some(callback) = callback {
+                host.release_callback(callback)?;
             }
             Ok(crate::script_host::from_json(value))
         }
@@ -108,6 +113,7 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
         _ => return Err(HostError::new("TypeError", "expected a peer callback")),
     };
 
+    let incoming = callback.clone();
     let state = bridge_state(host)?;
     let state = state
         .downcast_ref::<BridgeState>()
@@ -122,7 +128,7 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
         }
         callbacks.insert(peer, callback)
     };
-    if let Some(previous) = previous {
+    if let Some(previous) = previous.filter(|previous| !previous.same_callback(&incoming)) {
         host.release_callback(previous)?;
     }
     Ok(HostValue::Undefined)
@@ -188,7 +194,13 @@ pub fn poll(host: &mut dyn ChuzzScriptHost, waker: Option<&Waker>) -> Result<boo
         }
 
         if event.get("type").and_then(Value::as_str) == Some("fatal") {
-            state.callbacks.borrow_mut().remove(&peer);
+            let callback = state.callbacks.borrow_mut().remove(&peer);
+            if let Some(callback) = callback
+                && let Err(error) = host.release_callback(callback)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
     }
 

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use blitz_dom::node::RasterImageData;
 
 use crate::script_host::{
-    ChuzzScriptHost, HostBuffer, HostCallbackId, HostError, HostInstallContext, HostIntrinsic,
-    HostObject, HostValue, from_json, number_arg, to_json,
+    ChuzzScriptHost, HostBuffer, HostCallbackId, HostError, HostFrame, HostFrameSource,
+    HostInstallContext, HostIntrinsic, HostObject, HostValue, from_json, number_arg, to_json,
 };
 
 const STATE_KEY: &str = "chuzz.webgpu";
@@ -19,9 +19,14 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
     }
     .ok_or_else(|| type_error("expected a WebGPU callback root"))?;
     let previous = host.state("chuzz.webgpu.callback");
+    let same_callback = previous
+        .as_ref()
+        .and_then(|object| object.downcast_ref::<HostCallbackId>())
+        .is_some_and(|previous| previous.same_callback(&callback));
     host.set_state("chuzz.webgpu.callback", HostObject::new(callback))?;
-    if let Some(previous) =
-        previous.and_then(|object| object.downcast_ref::<HostCallbackId>().cloned())
+    if !same_callback
+        && let Some(previous) =
+            previous.and_then(|object| object.downcast_ref::<HostCallbackId>().cloned())
     {
         host.release_callback(previous)?;
     }
@@ -98,6 +103,21 @@ pub fn poll(
         }
     }
     for frame in frames.into_values() {
+        let image = frame.rgba.as_ref().map(|rgba| {
+            Arc::new(RasterImageData::new(
+                frame.width,
+                frame.height,
+                Arc::clone(rgba),
+            ))
+        });
+        if let Err(cause) = host.deliver_frame(HostFrame {
+            source: HostFrameSource::WebGpu,
+            target: frame.canvas,
+            generation: frame.generation,
+            image,
+        }) {
+            error.get_or_insert(cause);
+        }
         if let Some(callback) = &callback {
             let mut value = BTreeMap::new();
             value.insert(
@@ -125,6 +145,14 @@ pub fn poll(
         }
     }
     for (id, image) in images {
+        if let Err(cause) = host.deliver_frame(HostFrame {
+            source: HostFrameSource::Canvas,
+            target: id,
+            generation: 0,
+            image: Some(Arc::clone(&image)),
+        }) {
+            error.get_or_insert(cause);
+        }
         if let Some(callback) = &callback
             && let Err(cause) = host.dispatch_callback(
                 callback.clone(),
