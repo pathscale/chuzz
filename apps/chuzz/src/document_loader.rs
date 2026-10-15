@@ -2690,6 +2690,15 @@ pub(crate) const WEB_API_SHIM: &str = r#"
 })();
 "#;
 
+/// Maximum execution time for a single page script operation.
+///
+/// Soft scheduling yields between jobs, but one synchronous geometry or shader
+/// initialization job must run to completion. This finite limit remains a
+/// runaway guard, stays below the 60 second control response deadline, and is
+/// not a scheduling quantum.
+#[cfg(feature = "javascript")]
+const PAGE_EXECUTION_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Install the generic API surface and make the in-page browser identity agree
 /// with the identity sent on the wire.
 ///
@@ -2702,7 +2711,7 @@ pub(crate) fn install_web_api_shim(
     net_provider: &NetProvider,
 ) {
     document.with_js_context(|context| {
-        context.set_execution_time_limit(Some(std::time::Duration::from_secs(8)));
+        context.set_execution_time_limit(Some(PAGE_EXECUTION_TIME_LIMIT));
     });
     let languages = serde_json::to_string(crate::languages::preferred_languages())
         .expect("language tags serialize as JSON");
