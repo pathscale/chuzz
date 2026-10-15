@@ -158,8 +158,9 @@
         ["default", "none"].indexOf(options.colorSpaceConversion) === -1) {
       throw new TypeError("invalid ImageBitmapOptions.colorSpaceConversion");
     }
-    // Native images remain canonical straight RGBA. Alpha conversion happens
-    // when a consumer requests premultiplied storage.
+    // Native images remain straight RGBA, including RGB under alpha zero.
+    // Keep those decoder bytes intact here; the external texture copy converts
+    // only when its premultipliedAlpha destination option requests it.
     return {
       source: source, crop: crop, flipY: orientation === "flipY",
       resizeWidth: options.resizeWidth === undefined ? null : integer(options.resizeWidth, "resizeWidth"),

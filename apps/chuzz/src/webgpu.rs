@@ -831,3 +831,34 @@ fn limits_value(limits: &wgpu::Limits) -> Result<Value, String> {
     }
     Ok(Value::Object(public))
 }
+
+#[cfg(test)]
+#[path = "webgpu/compressed_tests.rs"]
+mod compressed_tests;
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    fn compression_features_match_native_capabilities() {
+        for (name, flag) in [
+            (
+                "texture-compression-bc",
+                wgpu::Features::TEXTURE_COMPRESSION_BC,
+            ),
+            (
+                "texture-compression-etc2",
+                wgpu::Features::TEXTURE_COMPRESSION_ETC2,
+            ),
+            (
+                "texture-compression-astc",
+                wgpu::Features::TEXTURE_COMPRESSION_ASTC,
+            ),
+        ] {
+            assert_eq!(feature_names(flag), vec![name]);
+            assert!(FEATURE_NAMES.contains(&(name, flag)));
+        }
+        assert!(feature_names(wgpu::Features::empty()).is_empty());
+        assert!(feature_names(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS).is_empty());
+    }
+}

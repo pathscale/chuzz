@@ -135,16 +135,16 @@ fn unpremultiply(source: &[u8], target: &mut [u8]) {
 }
 
 fn decode_raster(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
-    let make_reader = || {
-        image::ImageReader::new(Cursor::new(data))
-            .with_guessed_format()
-            .map_err(|error| GpuError::validation(error.to_string()))
-    };
-    let (width, height) = make_reader()?
+    // Encoded sources arrive as bytes (Blob.type is optional and not a reliable
+    // decoder selector), so choose the decoder from the format signature.
+    let format =
+        image::guess_format(data).map_err(|error| GpuError::validation(error.to_string()))?;
+    let make_reader = || image::ImageReader::with_format(Cursor::new(data), format);
+    let (width, height) = make_reader()
         .into_dimensions()
         .map_err(|error| GpuError::validation(error.to_string()))?;
     byte_count(width, height)?;
-    let mut reader = make_reader()?;
+    let mut reader = make_reader();
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(ALLOCATION_LIMIT);
     reader.limits(limits);
@@ -827,5 +827,89 @@ impl DeviceConnection {
         })
         .await?;
         Ok(Value::Null)
+    }
+}
+#[cfg(test)]
+mod fidelity_tests {
+    use super::{BitmapOptions, RasterImageData, bitmap, decode_raster};
+    use std::sync::Arc;
+
+    fn decode(bytes: &[u8]) -> Arc<RasterImageData> {
+        decode_raster(bytes).unwrap_or_else(|error| panic!("image decode: {}", error.message))
+    }
+
+    fn pixels(image: &RasterImageData) -> &[u8] {
+        image.data.data()
+    }
+
+    fn flipped(image: Arc<RasterImageData>) -> Arc<RasterImageData> {
+        bitmap(
+            image,
+            &BitmapOptions {
+                source: None,
+                crop: None,
+                flip_y: true,
+                resize_width: None,
+                resize_height: None,
+                resize_quality: "low".to_owned(),
+                read_pixels: false,
+            },
+        )
+        .unwrap_or_else(|error| panic!("vertical flip: {}", error.message))
+    }
+
+    #[test]
+    fn png_keeps_straight_rgba_and_flip_rows() {
+        let expected = [
+            227, 31, 73, 0, 19, 83, 211, 255, 37, 191, 59, 0, 221, 149, 13, 255,
+        ];
+        let image = decode(include_bytes!("qa/fidelity/images/hidden-rgb.png"));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(pixels(&image), expected.as_slice());
+        let flipped_expected = [
+            37, 191, 59, 0, 221, 149, 13, 255, 227, 31, 73, 0, 19, 83, 211, 255,
+        ];
+        assert_eq!(pixels(&flipped(image)), flipped_expected.as_slice());
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn lossless_webp_keeps_straight_rgba_and_flip_rows() {
+        let expected = [
+            227, 31, 73, 0, 19, 83, 211, 255, 37, 191, 59, 0, 221, 149, 13, 255,
+        ];
+        let image = decode(include_bytes!("qa/fidelity/images/hidden-rgb-vp8l.webp"));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(pixels(&image), expected.as_slice());
+        let flipped_expected = [
+            37, 191, 59, 0, 221, 149, 13, 255, 227, 31, 73, 0, 19, 83, 211, 255,
+        ];
+        assert_eq!(pixels(&flipped(image)), flipped_expected.as_slice());
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn lossy_webp_alpha_matches_decoded_png_and_flip_y() {
+        let image = decode(include_bytes!(
+            "qa/fidelity/images/hidden-rgb-vp8-alpha.webp"
+        ));
+        let png = decode(include_bytes!(
+            "qa/fidelity/images/hidden-rgb-vp8-decoded.png"
+        ));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!((png.width, png.height), (2, 2));
+        assert_eq!(pixels(&image), pixels(&png));
+        assert_eq!(
+            [
+                pixels(&image)[3],
+                pixels(&image)[7],
+                pixels(&image)[11],
+                pixels(&image)[15]
+            ],
+            [0, 255, 0, 255]
+        );
+        assert!(pixels(&image)[0..3].iter().any(|&channel| channel != 0));
+        assert!(pixels(&image)[8..11].iter().any(|&channel| channel != 0));
+        assert_eq!(pixels(&flipped(image)), pixels(&flipped(png)));
     }
 }
