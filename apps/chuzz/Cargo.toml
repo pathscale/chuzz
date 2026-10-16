@@ -114,7 +114,7 @@ device-audio = ["dep:cpal"]
 system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
 # PDF navigation uses the synchronous Rust toolkit and the existing PNG encoder.
 # Bundled faces also paint PDF text whose font program is not embedded.
-pdf = ["dep:pdf-toolkit", "dep:png", "headless-fonts"]
+pdf = ["dep:pdf-toolkit", "dep:pdf-toolkit-render", "dep:png", "headless-fonts"]
 # The `image` crate is pulled in with default features off, so without these a
 # .webp or .avif downloads fine and then cannot be decoded: the element simply
 # never paints, which reads as a missing asset rather than a failed codec.
@@ -196,7 +196,8 @@ anyrender_svg = { workspace = true, optional = true }
 headless-fonts = { workspace = true, optional = true }
 # Required for PDF parsing, page rasterization and searchable text. MIT, pure
 # Rust and synchronous; the selected features require neither tokio nor C.
-pdf-toolkit = { version = "^0.3", default-features = false, features = ["raster", "text"], optional = true }
+pdf-toolkit = { version = "^0.3.13", default-features = false, features = ["raster", "text"], optional = true }
+pdf-toolkit-render = { version = "^0.3.13", default-features = false, optional = true }
 # These are already in Blitz's renderer and text graph. Naming their public
 # types lets the canvas use the same painter, font collection and outlines.
 peniko = { version = "^0.6", optional = true }
