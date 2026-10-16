@@ -617,7 +617,6 @@ struct CompletionRing {
 pub(crate) struct Notifications {
     ring: Mutex<CompletionRing>,
     wake: crate::net_bridge::PageWake,
-    ready: nagoya::sync::Notify,
 }
 
 impl Notifications {
@@ -630,7 +629,6 @@ impl Notifications {
                 closed: false,
             }),
             wake,
-            ready: nagoya::sync::Notify::new(),
         })
     }
 
@@ -660,12 +658,7 @@ impl Notifications {
             );
         }
         drop(ring);
-        self.ready.notify_one();
         self.wake.wake();
-    }
-
-    pub(crate) async fn changed(&self) {
-        self.ready.notified().await;
     }
 
     pub(crate) fn bind(&self, waker: Option<&std::task::Waker>) {
@@ -676,8 +669,6 @@ impl Notifications {
         let mut ring = lock(&self.ring);
         ring.closed = true;
         while ring.consumer.try_pop().is_some() {}
-        drop(ring);
-        self.ready.notify_one();
     }
 
     pub(crate) fn take(&self, owner: u64) -> Vec<(u64, Arc<Json>)> {

@@ -1,18 +1,15 @@
 //! Page-owned Web Audio host.
 //!
 //! One nagoya task drives each context's render clock. Codecs and processing
-//! functions remain synchronous. Only metadata completions reach Boa.
+//! functions remain synchronous. Native host callbacks deliver owned
+//! metadata and analysis buffers to the active script engine.
 
 mod analysis;
-mod audio_script;
 mod graph;
 #[path = "audio_host_bridge.rs"]
 pub mod native_host;
 pub mod pcm;
 mod resample;
-
-pub(crate) use audio_script::{install, registered_track};
-pub use audio_script::{media_epoch, register_track};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::{Future, poll_fn};

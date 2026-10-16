@@ -1,70 +1,81 @@
+use serde::de::DeserializeOwned;
+
+use crate::page_document::PageDocument;
+use crate::script_host::{HostValue, to_json};
+
 use super::*;
 
-fn inspector_bridge(document: &mut blitz_script::ScriptDocument) -> Option<Bridge> {
-    document.with_js_context(|context| {
-        context
-            .get_data::<InspectorHost>()
-            .map(|host| host.0.clone())
-    })
-}
-
-fn unsupported() -> DebugError {
+fn host_error(error: crate::script_host::HostError) -> DebugError {
     DebugError {
-        code: "unsupported".to_owned(),
-        message: "the document has no page WebGPU inspector".to_owned(),
+        code: error.name,
+        message: error.message,
     }
 }
 
-pub(super) fn install(bridge: &Bridge, document: &mut blitz_script::ScriptDocument) {
-    document.with_js_context(|context| {
-        context.insert_data(InspectorHost(bridge.clone()));
-    });
+fn decode<T: DeserializeOwned>(value: HostValue) -> Result<T, DebugError> {
+    let value = to_json(&value).map_err(host_error)?;
+    serde_json::from_value(value).map_err(|error| DebugError {
+        code: "internal".to_owned(),
+        message: format!("invalid native WebGPU diagnostic response: {error}"),
+    })
 }
 
-pub(super) fn inspect_document(
-    document: &mut blitz_script::ScriptDocument,
-) -> Result<WebGpuReport, DebugError> {
-    inspector_bridge(document)
-        .map(|bridge| bridge.inspect())
-        .ok_or_else(unsupported)
+fn invoke<T: DeserializeOwned>(
+    document: &mut PageDocument,
+    name: &str,
+    args: &[HostValue],
+) -> Result<T, DebugError> {
+    let value = document
+        .host_mut()
+        .invoke_intrinsic(name, args)
+        .map_err(host_error)?;
+    decode(value)
+}
+
+pub(super) fn inspect_document(document: &mut PageDocument) -> Result<WebGpuReport, DebugError> {
+    invoke(document, "__chuzzGpuInspect", &[])
 }
 
 pub(super) fn capture_document(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut PageDocument,
     target: &str,
 ) -> Result<CapturedImage, DebugError> {
-    let bridge = inspector_bridge(document).ok_or_else(unsupported)?;
-    // Commands still sitting in `incoming` have to be ordered ahead of the copy.
-    bridge.prepare_images(document);
-    bridge.capture_and_wait(target)
+    invoke(
+        document,
+        "__chuzzGpuCapture",
+        &[HostValue::String(target.to_owned().into())],
+    )
 }
 
 pub(super) fn buffer_document(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut PageDocument,
     target: &str,
     offset: u64,
     length: Option<u64>,
 ) -> Result<blitz_control_protocol::WebGpuBufferSnapshot, DebugError> {
-    let bridge = inspector_bridge(document).ok_or_else(unsupported)?;
-    bridge.inspection_session().renew();
-    // Drain incoming page writes ahead of the diagnostics request. The worker
-    // fills a native slot and this document turn immediately returns pending.
-    bridge.prepare_images(document);
-    bridge.sample_buffer(target, offset, length)
+    invoke(
+        document,
+        "__chuzzGpuCaptureBuffer",
+        &[
+            HostValue::String(target.to_owned().into()),
+            HostValue::Number(offset as f64),
+            length.map_or(HostValue::Undefined, |value| {
+                HostValue::Number(value as f64)
+            }),
+        ],
+    )
 }
 
 pub(super) fn buffer_document_reply(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut PageDocument,
     target: &str,
     offset: u64,
     length: Option<u64>,
     reply: Arc<blitz_control_protocol::latest::Once<blitz_control_protocol::DebugResponse>>,
 ) {
-    let Some(bridge) = inspector_bridge(document) else {
-        reply.fill(blitz_control_protocol::DebugResponse::Error(unsupported()));
-        return;
+    let response = match buffer_document(document, target, offset, length) {
+        Ok(snapshot) => blitz_control_protocol::DebugResponse::WebGpuBuffer(snapshot),
+        Err(error) => blitz_control_protocol::DebugResponse::Error(error),
     };
-    bridge.inspection_session().renew();
-    bridge.prepare_images(document);
-    bridge.dispatch_buffer(target, offset, length, reply);
+    reply.fill(response);
 }

@@ -83,12 +83,23 @@ pub fn poll(
     for (kind, deliveries) in [("reply", ready), ("event", events)] {
         for (id, payload) in deliveries {
             if let Some(callback) = &callback {
+                let callback_payload = if kind == "reply" {
+                    match materialize_output(&native.bridge, payload.clone()) {
+                        Ok(value) => value,
+                        Err(cause) => from_json(serde_json::json!({
+                            "ok": false,
+                            "error": cause.message,
+                        })),
+                    }
+                } else {
+                    from_json(payload.clone())
+                };
                 let result = host.dispatch_callback(
                     callback.clone(),
                     &[
                         HostValue::String(kind.into()),
                         HostValue::Number(id as f64),
-                        from_json(payload.clone()),
+                        callback_payload,
                     ],
                 );
                 if let Err(cause) = result {
@@ -237,6 +248,45 @@ fn json_result<T: serde::Serialize>(value: &T) -> Result<HostValue, HostError> {
     serde_json::to_value(value)
         .map(from_json)
         .map_err(|error| type_error(error.to_string()))
+}
+
+fn materialize_output(bridge: &Bridge, value: serde_json::Value) -> Result<HostValue, HostError> {
+    match value {
+        serde_json::Value::Object(mut fields)
+            if fields.len() == 1 && fields.contains_key("byteId") =>
+        {
+            let id = fields
+                .remove("byteId")
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| type_error("invalid WebGPU output handle"))?;
+            match bridge.byte_table().take_output(id).map_err(gpu_error)? {
+                binary::Block::Buffer(bytes) => {
+                    Ok(HostValue::Buffer(HostBuffer::new(bytes.as_ref().clone())))
+                }
+                binary::Block::Image(image) => {
+                    let mut fields = BTreeMap::new();
+                    fields.insert("width".into(), HostValue::Number(image.width.into()));
+                    fields.insert("height".into(), HostValue::Number(image.height.into()));
+                    fields.insert(
+                        "data".into(),
+                        HostValue::Buffer(HostBuffer::new(image.data.data().to_vec())),
+                    );
+                    Ok(HostValue::Record(fields))
+                }
+            }
+        }
+        serde_json::Value::Object(fields) => fields
+            .into_iter()
+            .map(|(key, value)| materialize_output(bridge, value).map(|value| (key, value)))
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map(HostValue::Record),
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(|value| materialize_output(bridge, value))
+            .collect::<Result<Vec<_>, _>>()
+            .map(HostValue::Array),
+        value => Ok(from_json(value)),
+    }
 }
 
 fn put_bytes_intrinsic(

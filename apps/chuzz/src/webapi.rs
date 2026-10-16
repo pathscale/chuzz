@@ -9,9 +9,6 @@ use blitz_traits::net::Url;
 use serde::Deserialize;
 use serde_json::Value as Json;
 
-#[path = "webapi_script.rs"]
-mod script;
-
 #[path = "webapi_host.rs"]
 pub mod native_host;
 
@@ -458,5 +455,3 @@ fn compress(format: &str, input: &[u8], decode: bool) -> Result<Vec<u8>, String>
     }
     Ok(output)
 }
-
-pub(crate) use script::{drain_notifications, install, install_context, notifications};

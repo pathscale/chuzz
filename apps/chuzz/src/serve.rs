@@ -15,14 +15,13 @@
 //! It used to be `qa-inspect-host`, a separate binary in ps-observability that
 //! built its own document out of a dist directory. That made two headless
 //! browsers: one that a person browses with and one that QA drives, and the web
-//! platform existed in only the first of them. `document_loader`'s shim is what
-//! makes `@solidjs/router` reach its first render at all, and a host without it
-//! reported every routed page in the fleet as blank. Every gap closed for the
-//! browser had to be closed a second time for the harness, by hand, or the
-//! harness kept measuring a browser nobody ships.
+//! platform existed in only the first of them. The native host and real page
+//! runtime are what let routed pages reach their first render. Every gap closed
+//! for the browser had to be closed a second time for the harness, by hand, or
+//! the harness kept measuring a browser nobody ships.
 //!
 //! So the host is a mode of the browser instead. What `ps-qa` drives is the
-//! same loader, the same shim and the same engine a tab uses; the only thing
+//! same loader, the same native hosts and the same runtime a tab uses; the only thing
 //! missing is the window.
 //!
 //! `ps-qa` still links none of this. It speaks `blitz-control-protocol` over
@@ -57,6 +56,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::page_document::PageDocument;
 use blitz_control_protocol::condense;
 use blitz_control_protocol::document::{DocumentCapture, inspect_document, snapshot_document};
 use blitz_control_protocol::in_process::DocumentControl;
@@ -68,7 +68,6 @@ use blitz_control_protocol::{
 };
 use blitz_dom::Document as _;
 use blitz_dom::NodeId;
-use blitz_script::ScriptDocument;
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
@@ -731,7 +730,7 @@ fn sensitive_surface(value: &str) -> bool {
     false
 }
 
-fn action_context(document: &ScriptDocument, node_id: u64) -> Option<ActionContext> {
+fn action_context(document: &PageDocument, node_id: u64) -> Option<ActionContext> {
     const POLICY_ATTRIBUTES: [&str; 13] = [
         "type",
         "name",
@@ -826,7 +825,7 @@ fn submit_needs_permission(policy: &HeadlessPolicy, context: &ActionContext) -> 
 
 fn validate_action_url(
     policy: &HeadlessPolicy,
-    document: &ScriptDocument,
+    document: &PageDocument,
     value: &str,
 ) -> Result<(), DebugError> {
     let destination = document
@@ -841,7 +840,7 @@ fn validate_action_url(
 
 fn authorize_action(
     policy: &HeadlessPolicy,
-    document: &ScriptDocument,
+    document: &PageDocument,
     action: &AgentAction,
 ) -> Result<(), DebugError> {
     if !policy.bot_child {
@@ -906,7 +905,7 @@ fn authorize_action(
 
 fn sanitize_inspection(
     policy: &HeadlessPolicy,
-    document: &ScriptDocument,
+    document: &PageDocument,
     response: DebugResponse,
 ) -> DebugResponse {
     if !policy.bot_child {
@@ -1047,7 +1046,7 @@ impl RequestBudget {
 /// `pageUnresponsive` made the supervisor tear the session down. Hangs are
 /// still caught by the control request and Poll deadlines.
 fn settle_immediate(
-    document: &mut ScriptDocument,
+    document: &mut PageDocument,
     clock: &std::time::Instant,
     deadline: std::time::Duration,
 ) -> bool {
@@ -1116,7 +1115,7 @@ const IDLE_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// `document` and `paint` count committed renders; `style` and `layout`
 /// count the Stylo traversals and layout passes blitz-dom actually ran.
-fn headless_revisions(rendered: u64, page: &ScriptDocument) -> RevisionSet {
+fn headless_revisions(rendered: u64, page: &PageDocument) -> RevisionSet {
     let inner = page.inner();
     RevisionSet {
         document: rendered,
@@ -1137,11 +1136,11 @@ fn headless_revisions(rendered: u64, page: &ScriptDocument) -> RevisionSet {
 /// as it was left running.
 ///
 /// Returns whether the page painted.
-fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> bool {
+fn tick_document(document: &mut PageDocument, clock: &std::time::Instant) -> bool {
     let before = document.inner().paint_damage().generation;
     // One due timer or one continuing checkpoint per poll. Return to the
-    // request receiver before another timer starts. Boa's execution limit
-    // interrupts runaway script; the supervisor remains the native hang guard.
+    // request receiver before another timer starts. The supervisor remains
+    // the native hang guard for a runaway runtime call.
     let poll_started = std::time::Instant::now();
     let progressed = {
         let _turn = supervisor::operation(supervisor::Operation::Poll);
@@ -1167,7 +1166,7 @@ fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> b
 }
 
 fn settle_response(
-    document: &mut ScriptDocument,
+    document: &mut PageDocument,
     clock: &std::time::Instant,
     deadline: std::time::Duration,
     painted: &mut bool,
@@ -1269,7 +1268,7 @@ impl blitz_traits::navigation::NavigationProvider for RequestedNavigation {
 
 /// What the page put in storage, carried from one document to the next.
 ///
-/// The shim's `localStorage` is in-memory and per document, which is right for
+/// The page's `localStorage` is in-memory and per document, which is right for
 /// a capture and wrong the moment the host follows a link: an application
 /// writes its settings on one route and reads them while booting the next, and
 /// a fresh store makes that read a miss. Every check of the shape "save, go
@@ -1286,12 +1285,11 @@ struct StoredState {
 
 /// Read both stores out of the document that is about to be replaced.
 ///
-/// Through the public interface -- `length`, `key`, `getItem` -- rather than
-/// through the shim's internals, so this keeps working the day storage stops
-/// being a closure over an object.
-fn snapshot_storage(document: &mut ScriptDocument, origin: &str) -> StoredState {
+/// Through the public interface -- `length`, `key`, `getItem` -- so this keeps
+/// working if the storage implementation changes.
+fn snapshot_storage(document: &mut PageDocument, origin: &str) -> Result<StoredState, String> {
     let _storage = supervisor::operation(supervisor::Operation::Storage);
-    fn dump(document: &mut ScriptDocument, store: &str) -> String {
+    fn dump(document: &mut PageDocument, store: &str) -> Result<String, String> {
         let script = format!(
             "(function () {{
                try {{
@@ -1304,19 +1302,19 @@ fn snapshot_storage(document: &mut ScriptDocument, origin: &str) -> StoredState 
                }} catch (error) {{ return '{{}}'; }}
              }})()"
         );
-        document.eval(&format!("globalThis.__chuzz_dump = {script};"));
+        document.eval(&format!("globalThis.__chuzz_dump = {script};"))?;
         document
-            .eval_json("globalThis.__chuzz_dump")
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "{}".to_owned())
+            .eval_json("globalThis.__chuzz_dump")?
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "page storage snapshot did not return a string".to_owned())
     }
 
-    StoredState {
+    Ok(StoredState {
         origin: origin.to_owned(),
-        local: dump(document, "localStorage"),
-        session: dump(document, "sessionStorage"),
-    }
+        local: dump(document, "localStorage")?,
+        session: dump(document, "sessionStorage")?,
+    })
 }
 
 /// The prelude that puts it back, or nothing when it does not belong here.
@@ -1406,14 +1404,14 @@ fn navigation_initiator(
 
 fn follow_navigation(
     destination: Url,
-    document: &mut ScriptDocument,
+    document: &mut PageDocument,
     origin: &mut String,
     policy: &HeadlessPolicy,
     load: &impl Fn(
         Url,
         Option<&StoredState>,
         blitz_traits::net::Initiator,
-    ) -> Result<Box<ScriptDocument>, String>,
+    ) -> Result<Box<PageDocument>, String>,
     render: (&Latest<DebugEvent>, &mut u64),
     browser_initiated: bool,
 ) -> Result<(), String> {
@@ -1422,11 +1420,11 @@ fn follow_navigation(
     document.eval(
         "globalThis.dispatchEvent(new Event('pagehide')); \
          globalThis.dispatchEvent(new Event('unload'));",
-    );
+    )?;
     let carried = if policy.bot_child {
         None
     } else {
-        Some(snapshot_storage(document, origin))
+        Some(snapshot_storage(document, origin)?)
     };
     let current = document.inner().net_provider.resource_initiator();
     let initiator = navigation_initiator(
@@ -1485,6 +1483,22 @@ pub fn serve(target: &str) -> Result<(), String> {
     crate::sandbox::ensure()?;
     let storage = read_qa_inspect_storage();
     serve_page(target, storage.as_ref())
+}
+
+fn headless_host_context(
+    url: &Url,
+    net_provider: &Arc<crate::document_loader::NetProvider>,
+    initiator: &blitz_traits::net::Initiator,
+) -> crate::script_host::HostInstallContext {
+    crate::script_host::HostInstallContext {
+        net: Arc::new(net_provider.for_document(url.clone(), initiator)),
+        base: Some(url.clone()),
+        deadline: std::time::Duration::from_secs(30),
+        wake: crate::net_bridge::PageWake::default(),
+        lifetime: blitz_dom::release::Teardown::new(),
+        signal: blitz_traits::net::AbortSignal::default(),
+        session_backing: None,
+    }
 }
 
 fn serve_page(
@@ -1587,9 +1601,9 @@ fn serve_page(
     let load = |url: Url,
                 carried: Option<&StoredState>,
                 initiator: blitz_traits::net::Initiator|
-     -> Result<Box<ScriptDocument>, String> {
+     -> Result<Box<PageDocument>, String> {
         // Includes HTML and external-script fetches, script execution, loader
-        // pumping, shim evaluation and the initial viewport settle.
+        // pumping, prelude evaluation and the initial viewport settle.
         let _load = supervisor::operation(supervisor::Operation::Load);
         policy.validate_url(&url)?;
         let initiator = if policy.bot_child {
@@ -1615,22 +1629,23 @@ fn serve_page(
         }
         let mut policy_error = None;
         let mut document = if let Some(html) = crate::internal_pages::html_for(&url) {
-            Box::new(ScriptDocument::from_html(
-                &html,
+            Box::new(PageDocument::from_html(
+                Arc::<str>::from(html),
                 blitz_dom::DocumentConfig {
                     base_url: Some(url.to_string()),
                     ..Default::default()
                 },
-            ))
+                headless_host_context(&url, &net_provider, &initiator),
+            )?)
         } else {
             let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
-                blitz_traits::net::Request::get(url.clone()).initiator(initiator),
+                blitz_traits::net::Request::get(url.clone()).initiator(initiator.clone()),
                 Arc::clone(&net_provider),
                 &prelude,
                 Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
             ));
             match loaded {
-                Ok(loaded) => loaded.into_script().ok_or(
+                Ok(loaded) => loaded.into_page_document().ok_or(
                     "this build cannot run scripts, so it cannot host a page worth inspecting",
                 )?,
                 Err(error) => {
@@ -1640,13 +1655,16 @@ fn serve_page(
                     {
                         policy_error = Some(*reason);
                         trace(&format!("TLS refused for {url}: {reason}"));
-                        Box::new(ScriptDocument::from_html(
-                            &crate::internal_pages::tls_refused_html(&url, *reason),
+                        Box::new(PageDocument::from_html(
+                            Arc::<str>::from(crate::internal_pages::tls_refused_html(
+                                &url, *reason,
+                            )),
                             blitz_dom::DocumentConfig {
                                 base_url: Some(url.to_string()),
                                 ..Default::default()
                             },
-                        ))
+                            headless_host_context(&url, &net_provider, &initiator),
+                        )?)
                     } else {
                         return Err(if policy.bot_child {
                             format!(
@@ -1712,7 +1730,7 @@ fn serve_page(
     };
     let failed_url = display_url(&url, policy.bot_child);
     let initial = navigation_initiator(&policy, url.clone(), None);
-    let mut document = match load(url, seed.as_ref(), initial) {
+    let mut document = *match load(url, seed.as_ref(), initial) {
         Ok(document) => document,
         // A page that cannot load is still a page, as in any browser: show why
         // and keep the inspection socket up, so the caller can read the reason,
@@ -1731,7 +1749,7 @@ fn serve_page(
             .map_err(|page_error| {
                 format!("{error}; the failure page did not load either: {page_error}")
             })?
-            .into_script()
+            .into_page_document()
             .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?
         }
         Err(error) => return Err(error),
@@ -1743,7 +1761,11 @@ fn serve_page(
     // report through console; nothing runs unless the variable is set.
     if let Some(path) = std::env::var_os("CHUZZ_DEBUG_EVAL") {
         match std::fs::read_to_string(&path) {
-            Ok(script) => document.eval(&script),
+            Ok(script) => {
+                if let Err(error) = document.eval(&script) {
+                    trace(&format!("CHUZZ_DEBUG_EVAL failed: {error}"));
+                }
+            }
             Err(error) => trace(&format!("CHUZZ_DEBUG_EVAL unreadable: {error}")),
         }
     }
@@ -1776,8 +1798,9 @@ fn serve_page(
             Some(std::time::Duration::ZERO)
         } else {
             document
-                .next_timer_deadline()
-                .map(|due| due.saturating_duration_since(std::time::Instant::now()))
+                .host()
+                .next_timer_deadline_ns()
+                .map(|due| std::time::Duration::from_nanos(due.saturating_sub(nagoya::now_ns())))
         };
         let received = match queued_request.take() {
             Some(pair) => Ok(pair),
@@ -1965,7 +1988,6 @@ fn serve_page(
                     }
                     AgentControlRequest::Act(action) => {
                         let _action = supervisor::operation(supervisor::Operation::Action);
-                        let _execution = document.enter_execution_time_limit();
                         match authorize_action(&policy, &document, &action) {
                             Ok(()) => match control.act(&mut document, action) {
                                 Ok(()) => settle_response(

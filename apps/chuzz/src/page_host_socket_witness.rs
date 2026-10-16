@@ -1,3 +1,7 @@
+//! Host-side WebSocket bridge witness. This drives ChuzzPageRuntimeHost
+//! intrinsics directly and does not execute JavaScript in a page guest or
+//! prove attachment to the renderer's page driver.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -214,4 +218,5 @@ pub fn run() {
     host.teardown_page_script_host();
     assert!(host.is_torn_down());
     reactor.shutdown();
+    println!("HOST-ONLY WebSocket bridge witness; page guest execution not verified");
 }

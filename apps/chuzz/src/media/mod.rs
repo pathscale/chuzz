@@ -2,7 +2,7 @@
 //!
 //! Fake devices are the default capture policy. They never open OS devices.
 //! Rust consumers lease Track, VideoFrame and Pcm directly through Arc.
-//! The JS bridge carries descriptors and measured diagnostics only.
+//! The ChuzzScriptHost bridge carries descriptors and measured diagnostics only.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,11 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-mod media_script;
 #[path = "media_host_bridge.rs"]
 pub mod native_host;
-pub use media_script::host;
-pub(crate) use media_script::install;
 
 pub mod fake;
 pub mod frame;

@@ -5,14 +5,10 @@
 //! The host presents frames before publishing media events. Blitz owns layout
 //! and painting; remote bytes use Chuzz's network provider.
 
-use std::collections::HashMap;
+use blitz_dom::NodeId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use blitz_dom::Document as _;
-use blitz_dom::NodeId;
-use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
-use blitz_script::ScriptDocument;
 use blitz_traits::net::Url;
 
 use crate::document_loader::NetProvider;
@@ -28,16 +24,12 @@ mod planar;
 mod sink;
 mod source;
 mod stream;
-#[path = "video_script.rs"]
-mod video_script;
-
-pub(crate) use stream::{Frames, frame_registry, take_frame};
+pub(crate) use stream::Frames;
 
 /// Select device output explicitly. Headless hosts always disable it.
 pub fn set_device_audio_enabled(enabled: bool) {
     output::set_device_audio_enabled(enabled);
 }
-
 const TIMEUPDATE_INTERVAL: Duration = Duration::from_millis(250);
 /// HTML fires `progress` at most about every 350ms while fetching.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(350);
@@ -148,7 +140,6 @@ fn one() -> f64 {
 }
 
 struct Entry {
-    node: NodeId,
     generation: u64,
     src: String,
     url: Url,
@@ -186,9 +177,8 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(node: NodeId, url: Url, command: &Command, now: Instant) -> Self {
+    fn new(_node: NodeId, url: Url, command: &Command, now: Instant) -> Self {
         Self {
-            node,
             generation: command.generation,
             src: url.to_string(),
             url,
@@ -497,10 +487,6 @@ impl Entry {
         Ok(frame)
     }
 
-    fn publish(&mut self, document: &mut ScriptDocument, id: u64) {
-        video_script::publish(self, document, id);
-    }
-
     fn take_update(&mut self) -> serde_json::Value {
         let network_state = if self.error.is_some() {
             3
@@ -522,64 +508,4 @@ impl Entry {
         self.dirty = false;
         value
     }
-}
-
-struct Host {
-    net: Arc<NetProvider>,
-    mse: Arc<mse::Host>,
-    frames: Arc<Frames>,
-    streams: stream::Host,
-    entries: HashMap<u64, Entry>,
-}
-
-fn set_image(
-    document: &mut ScriptDocument,
-    id: NodeId,
-    frame: Option<Frame>,
-    pixels: &mut Arc<Vec<u8>>,
-) -> Result<(), MediaError> {
-    // Release the element and node-cache leases before asking for exclusive
-    // access to the previous frame's allocation.
-    let mut doc = document.inner_mut();
-    let Some(node) = doc.get_node_mut(id) else {
-        return Ok(());
-    };
-    node.cache_mut().clear();
-    let Some(element) = node.element_data_mut() else {
-        return Ok(());
-    };
-    element.special_data = SpecialElementData::None;
-
-    if let Some(frame) = frame {
-        // A retained paint scene may still own the old allocation. Never
-        // mutate those pixels or copy them merely to overwrite them.
-        if Arc::get_mut(pixels).is_none() {
-            *pixels = Arc::new(Vec::new());
-        }
-        let buffer = Arc::get_mut(pixels)
-            .ok_or_else(|| MediaError::decode("the video pixel buffer is shared"))?;
-        planar::i420(
-            frame.width,
-            frame.height,
-            8,
-            [&frame.picture.y, &frame.picture.u, &frame.picture.v],
-            buffer,
-        )?;
-        element.special_data = SpecialElementData::Image(Box::new(ImageData::Raster(
-            RasterImageData::new(frame.width, frame.height, Arc::clone(pixels)),
-        )));
-    }
-
-    // Both intrinsic-size changes and repainting an unchanged replaced box
-    // must invalidate layout and the next captured or visible paint.
-    if let Some(damage) = node.damage() {
-        node.insert_damage(damage.union(damage.complement()));
-    }
-    node.set_dirty_descendants();
-    node.mark_ancestors_dirty();
-    Ok(())
-}
-
-pub(crate) fn install(document: &mut ScriptDocument, net: Arc<NetProvider>) {
-    video_script::install(document, net);
 }

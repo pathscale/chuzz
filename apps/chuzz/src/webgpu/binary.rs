@@ -5,9 +5,6 @@ use blitz_dom::node::RasterImageData;
 use super::resources::{ALLOCATION_LIMIT, RESOURCE_LIMIT};
 use super::*;
 
-#[path = "binary_script.rs"]
-mod script;
-
 const TABLE_BYTES_LIMIT: u64 = 512 * 1024 * 1024;
 pub(super) const MAX_ID: u64 = 9_007_199_254_740_991;
 
@@ -235,10 +232,6 @@ impl Drop for Lease {
 impl Bridge {
     pub(super) fn byte_table(&self) -> Arc<Table> {
         Arc::clone(&self.state().bytes)
-    }
-
-    pub(crate) fn install_bytes(&self, document: &mut blitz_script::ScriptDocument) {
-        script::install(self, document);
     }
 
     pub(super) fn export_bytes(&self, block: Block) -> Result<Value, GpuError> {

@@ -134,6 +134,12 @@ fn subscribe(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostV
     Ok(HostValue::Undefined)
 }
 
+fn crypto_probe(_: &mut dyn ChuzzScriptHost, _: &[HostValue]) -> Result<HostValue, HostError> {
+    super::qa::run_fixture_json()
+        .map(|json| HostValue::String(json.into()))
+        .map_err(|error| HostError::new("OperationError", error))
+}
+
 pub fn install(
     host: &mut dyn ChuzzScriptHost,
     _config: &HostInstallContext,
@@ -150,6 +156,7 @@ pub fn install(
     )?;
     host.register_intrinsic("__chuzzPeerControl", 1, control)?;
     host.register_intrinsic("__chuzzPeerSubscribe", 2, subscribe)?;
+    host.register_intrinsic("__chuzzWebrtcCryptoProbe", 0, crypto_probe)?;
     Ok(())
 }
 
