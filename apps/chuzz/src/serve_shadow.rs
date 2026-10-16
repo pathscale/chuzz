@@ -3,18 +3,17 @@
 use std::collections::HashMap;
 
 use blitz_control_protocol::{DebugResponse, SemanticNode};
-use blitz_dom::{Document as _, Node, NodeId};
-use blitz_script::ScriptDocument;
+use blitz_dom::{Document, Node, NodeId};
 
 /// The protocol owns roles, labels and geometry. Reuse its records, asking
 /// for missing shadow nodes by id, then emit only the current composition.
 /// The caller supplies the same revision to every read.
-pub(super) fn flatten(
-    document: &mut ScriptDocument,
+pub(super) fn flatten<D: Document + ?Sized>(
+    document: &mut D,
     response: DebugResponse,
     root: Option<u64>,
     max_depth: usize,
-    mut inspect_node: impl FnMut(&mut ScriptDocument, u64) -> DebugResponse,
+    mut inspect_node: impl FnMut(&mut D, u64) -> DebugResponse,
 ) -> DebugResponse {
     let DebugResponse::AgentSnapshot(mut snapshot) = response else {
         return response;
