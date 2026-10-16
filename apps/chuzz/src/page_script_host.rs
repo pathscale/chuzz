@@ -8,6 +8,7 @@
 //! The published script backend still needs to bind its guest values and calls
 //! to this boundary; this module does not attach itself to a renderer.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -126,6 +127,39 @@ impl ChuzzRealmState {
     }
 }
 
+/// One registered native intrinsic that an engine adapter can expose to a guest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostIntrinsicBinding {
+    pub name: &'static str,
+    pub arity: u8,
+}
+
+/// A lease for an engine adapter attached to one page host.
+///
+/// The lease becomes invalid when the page host is torn down or dropped. It
+/// does not retain the host or an engine guest.
+#[derive(Clone)]
+pub struct PageHostAttachment {
+    live: Rc<Cell<bool>>,
+}
+
+impl PageHostAttachment {
+    pub fn is_live(&self) -> bool {
+        self.live.get()
+    }
+
+    pub fn ensure_live(&self) -> Result<(), HostError> {
+        if self.is_live() {
+            Ok(())
+        } else {
+            Err(HostError::new(
+                "InvalidStateError",
+                "page script host attachment has been retired",
+            ))
+        }
+    }
+}
+
 /// Concrete lifecycle owner for a page's native script hosts.
 pub struct ChuzzPageRuntimeHost {
     state: ChuzzRealmState,
@@ -133,6 +167,7 @@ pub struct ChuzzPageRuntimeHost {
     torn_down: bool,
     frames: BTreeMap<(crate::script_host::HostFrameSource, u64), crate::script_host::HostFrame>,
     frame_sink: Option<FrameSink>,
+    attachment_live: Rc<Cell<bool>>,
     timers: BTreeMap<u64, TimerEntry>,
     next_timer_id: u64,
 }
@@ -145,6 +180,7 @@ impl ChuzzPageRuntimeHost {
             torn_down: false,
             frames: BTreeMap::new(),
             frame_sink: None,
+            attachment_live: Rc::new(Cell::new(true)),
             timers: BTreeMap::new(),
             next_timer_id: 1,
         };
@@ -156,6 +192,29 @@ impl ChuzzPageRuntimeHost {
             return Err(error);
         }
         Ok(host)
+    }
+
+    /// Acquire a lease that the engine adapter can check before dispatching
+    /// calls associated with this page.
+    pub fn attachment(&self) -> Result<PageHostAttachment, HostError> {
+        self.ensure_live()?;
+        Ok(PageHostAttachment {
+            live: Rc::clone(&self.attachment_live),
+        })
+    }
+
+    /// Return the registered intrinsic surface in deterministic name order.
+    /// The returned metadata can be used to install callable guest bindings;
+    /// dispatch remains fallible through `invoke_intrinsic`.
+    pub fn intrinsic_bindings(&self) -> Vec<HostIntrinsicBinding> {
+        self.state
+            .intrinsics
+            .iter()
+            .map(|(name, (arity, _))| HostIntrinsicBinding {
+                name,
+                arity: *arity,
+            })
+            .collect()
     }
 
     pub fn invoke_intrinsic(
@@ -432,6 +491,7 @@ impl ChuzzPageRuntimeHost {
             return;
         }
         self.torn_down = true;
+        self.attachment_live.set(false);
         if let Some(config) = self.config.take() {
             blitz_traits::net::AbortController {
                 signal: config.signal.clone(),

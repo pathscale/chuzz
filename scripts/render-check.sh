@@ -146,4 +146,3 @@ capture_one nofilter.io     https://nofilter.io      || status=1
 echo
 echo "output: $out_dir"
 exit "$status"
-
