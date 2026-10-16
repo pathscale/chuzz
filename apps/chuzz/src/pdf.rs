@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use pdf_toolkit::core::pages::{Page, PageWalk};
 use pdf_toolkit::core::{Document, Limits, OpenMode, PdfSource, Resolver};
-use pdf_toolkit::render::RenderOptions;
+use pdf_toolkit_render::RenderOptions;
 
 const MAX_PAGES: usize = 50;
 const PAGE_WIDTH: f32 = 1200.0;
@@ -161,6 +161,7 @@ fn append_image(
     let options = RenderOptions {
         scale: page_scale(page)?,
         fallback_font,
+        ..Default::default()
     };
     let raster = pdf_toolkit::raster::render_page(resolver, page, &options, [255, 255, 255, 255])
         .map_err(|error| error.to_string())?;
