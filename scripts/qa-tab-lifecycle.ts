@@ -140,6 +140,17 @@ async function stop(child: Bun.Subprocess, name = "GUI"): Promise<void> {
   }
 }
 
+async function residentKilobytes(pid: number): Promise<string> {
+  try {
+    const sample = Bun.spawn(["ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    const [code, output] = await Promise.all([sample.exited, new Response(sample.stdout).text()]);
+    const value = output.trim();
+    return code === 0 && /^\d+$/.test(value) ? value : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
 async function check(descriptor: string, id: string, chrome: boolean, context: string, mustFail = false): Promise<void> {
   const command = [qa, "--descriptor", descriptor, chrome ? "--chrome" : "--tab-id", ...(chrome ? [] : ["0"]),
     "--require-paint-events", "--app", join(fixtures, "ps-qa.ron"), "qa", id, "--checks", join(fixtures, "checks")];
@@ -228,10 +239,38 @@ async function run(mode: typeof cases[number], binary: string, defect?: string):
     }
     if (mode.mode === "visible" || mode.mode === "hidden") {
       if (mode.mode === "hidden") await rpc.invoke("open_tab", { url: "about:blank" });
-      await Promise.race([
-        Bun.sleep(delay + 500),
-        child.exited.then(code => { throw new Error(`${mode.id}: GUI exited ${code} during lifecycle wait`); }),
-      ]);
+      if (mode.mode === "visible") {
+        const startedAt = Date.now();
+        const memorySamples: string[] = [];
+        let sampling = false;
+        const sampleMemory = async () => {
+          if (sampling || memorySamples.length >= 12) return;
+          sampling = true;
+          try {
+            const rss = await residentKilobytes(child!.pid);
+            memorySamples.push(`${Math.floor((Date.now() - startedAt) / 1000)}s=${rss}KiB`);
+          } finally {
+            sampling = false;
+          }
+        };
+        await sampleMemory();
+        const sampler = setInterval(() => { void sampleMemory(); }, 30000);
+        try {
+          await Promise.race([
+            Bun.sleep(delay + 500),
+            child.exited.then(code => { throw new Error(`${mode.id}: GUI exited ${code} during lifecycle wait`); }),
+          ]);
+        } finally {
+          clearInterval(sampler);
+          await sampleMemory();
+          console.log(`${mode.id}: GUI resident memory samples (ps RSS KiB): ${memorySamples.join(", ")}`);
+        }
+      } else {
+        await Promise.race([
+          Bun.sleep(delay + 500),
+          child.exited.then(code => { throw new Error(`${mode.id}: GUI exited ${code} during lifecycle wait`); }),
+        ]);
+      }
       if (mode.mode === "hidden" && !defect) await rpc.tabsUntil(tabs => tabs.some(tab => tab.id === 0 && tab.lifecycle === "sleeping"), 3000);
     } else {
       await rpc.invoke("sleep_tab", { id: 0 });

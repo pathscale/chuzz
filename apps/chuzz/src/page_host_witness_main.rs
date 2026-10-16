@@ -8,8 +8,8 @@ mod page_host_socket_witness;
 
 use chuzz::page_script_host::{self, NativeValue};
 use chuzz::script_host::{
-    ChuzzScriptHost, HostBuffer, HostFrame, HostFrameSource, HostInstallContext, HostObject,
-    HostValue,
+    ChuzzScriptHost, HostBuffer, HostCallbackId, HostFrame, HostFrameSource, HostGeneration,
+    HostInstallContext, HostObject, HostRealm, HostValue,
 };
 
 fn record(fields: impl IntoIterator<Item = (&'static str, HostValue)>) -> HostValue {
@@ -469,12 +469,61 @@ fn main() {
     assert!(lifetime.complete());
     assert!(host.poll(None).is_err());
     other.teardown_page_script_host();
+    callback_generation_checks();
+    drop_teardown_checks();
     frame_and_teardown_checks();
     socket_cleanup_checks();
     timer_wake_checks();
     page_host_socket_witness::run();
     println!(
         "PASS concrete page runtime: storage, fetch, timers, socket frames, media, GPU presentation/readback, teardown"
+    );
+}
+
+fn callback_generation_checks() {
+    let realm = HostRealm::new();
+    let generation = HostGeneration::new(&realm);
+    let callback = HostCallbackId::new(&realm, &generation, Rc::new(())).expect("scope callback");
+    assert!(callback.is_scoped_to(&realm, &generation));
+
+    let next_generation = HostGeneration::new(&realm);
+    assert!(
+        !callback.is_scoped_to(&realm, &next_generation),
+        "a callback from an earlier generation must not enter a replacement generation"
+    );
+
+    let other_realm = HostRealm::new();
+    let other_generation = HostGeneration::new(&other_realm);
+    assert!(HostCallbackId::new(&realm, &other_generation, Rc::new(())).is_err());
+    assert!(!callback.is_scoped_to(&other_realm, &other_generation));
+}
+
+fn drop_teardown_checks() {
+    let (mut host, signal, lifetime) = make_host();
+    let captured = Rc::new(());
+    let weak = Rc::downgrade(&captured);
+    let callback_capture = Rc::clone(&captured);
+    let _callback = host
+        .retain_callback(move |_, _| {
+            let _root = &callback_capture;
+            Ok(HostValue::Undefined)
+        })
+        .expect("retain callback until host drop");
+    drop(captured);
+    assert!(weak.upgrade().is_some());
+
+    drop(host);
+    assert!(
+        weak.upgrade().is_none(),
+        "dropping the host must release callback roots"
+    );
+    assert!(
+        signal.aborted(),
+        "dropping the host must abort its document signal"
+    );
+    assert!(
+        lifetime.complete(),
+        "dropping the host must retire its lifetime"
     );
 }
 
@@ -734,6 +783,43 @@ fn frame_and_teardown_checks() {
     assert!(host.poll(None).expect("retry sink delivery"));
     assert!(host.drain_frames().is_empty());
 
+    // A target number can be reused by separate producers. Their pending
+    // raster updates retain independent ownership until the sink accepts them.
+    host.deliver_frame(HostFrame {
+        source: HostFrameSource::Canvas,
+        target: 95,
+        generation: 0,
+        image: None,
+    })
+    .expect("queue canvas frame");
+    host.deliver_frame(HostFrame {
+        source: HostFrameSource::WebGpu,
+        target: 95,
+        generation: 3,
+        image: None,
+    })
+    .expect("queue WebGPU frame for reused target");
+    let owners = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let delivered_owners = Rc::clone(&owners);
+    host.set_frame_sink(move |frame| {
+        if frame.target == 95 {
+            delivered_owners
+                .borrow_mut()
+                .push((frame.source, frame.generation));
+        }
+        Ok(())
+    })
+    .expect("set producer ownership sink");
+    assert!(host.poll(None).expect("deliver separate producer frames"));
+    let delivered = owners.borrow();
+    assert_eq!(
+        delivered.len(),
+        2,
+        "both frame producers must retain their update for the reused target"
+    );
+    assert!(delivered.contains(&(HostFrameSource::Canvas, 0)));
+    assert!(delivered.contains(&(HostFrameSource::WebGpu, 3)));
+
     let captured = Rc::new(());
     let weak = Rc::downgrade(&captured);
     let id = host
@@ -787,6 +873,22 @@ fn session_timer_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {
         ("count".to_owned(), "3".to_owned()),
     ];
     host.seed_session(&seed).expect("seed native session");
+    for index in [-1.0, -4294967297.0, 4294967295.0] {
+        assert!(matches!(
+            host.invoke_intrinsic("__chuzzSessionKey", &[HostValue::Number(index)])
+                .expect("convert out-of-range storage index"),
+            HostValue::Null
+        ));
+    }
+    for index in [-4294967296.0, 4294967296.0, -0.5, f64::NAN, f64::INFINITY] {
+        assert_eq!(
+            expect_text(
+                host.invoke_intrinsic("__chuzzSessionKey", &[HostValue::Number(index)])
+                    .expect("convert storage index modulo 32 bits")
+            ),
+            "seed"
+        );
+    }
     assert!(
         host.seed_session(&[("oversized".to_owned(), "x".repeat(8193))])
             .is_err()

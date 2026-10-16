@@ -62,7 +62,12 @@ fn length(host: &mut dyn ChuzzScriptHost, _args: &[HostValue]) -> Result<HostVal
 }
 
 fn key(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostValue, HostError> {
-    let index = number_arg(args, 0)? as usize;
+    let index = number_arg(args, 0)?;
+    let index = if index.is_finite() {
+        index.trunc().rem_euclid(4294967296.0) as usize
+    } else {
+        0
+    };
     let owner = session_owner(host)?;
     let reply = owner.borrow_mut().operate(SessionOperation::Key { index });
     match quota_result(reply)? {
