@@ -110,6 +110,18 @@ fn main() {
     chuzz::install_crypto_provider();
     chuzz::set_device_audio_enabled(false);
     let (mut host, signal, lifetime) = make_host();
+    let attachment = host.attachment().expect("acquire page attachment");
+    attachment.ensure_live().expect("live attachment");
+    let bindings = host.intrinsic_bindings();
+    assert!(bindings.windows(2).all(|pair| pair[0].name < pair[1].name));
+    assert!(
+        bindings
+            .iter()
+            .any(|binding| binding.name == "__chuzzSessionLength" && binding.arity == 0)
+    );
+    for binding in bindings {
+        assert_eq!(host.intrinsic_arity(binding.name), Some(binding.arity));
+    }
     webauthn_abort_checks(&mut host);
 
     // The conversion boundary retains nested structure, object identity, UTF-16
@@ -464,6 +476,13 @@ fn main() {
     );
     host.teardown_page_script_host();
     host.teardown_page_script_host();
+    assert!(
+        !attachment.is_live(),
+        "teardown must revoke page attachments"
+    );
+    assert!(attachment.ensure_live().is_err());
+    assert!(host.attachment().is_err());
+    assert!(host.intrinsic_bindings().is_empty());
     assert!(host.is_torn_down());
     assert!(signal.aborted());
     assert!(lifetime.complete());
