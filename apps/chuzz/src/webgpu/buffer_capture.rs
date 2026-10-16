@@ -1,7 +1,6 @@
 use std::time::Instant;
 
-use blitz_control_protocol::latest::Once;
-use blitz_control_protocol::{DebugError, DebugResponse, WebGpuBufferSnapshot};
+use blitz_control_protocol::{DebugError, WebGpuBufferSnapshot};
 
 use super::*;
 
@@ -19,21 +18,13 @@ pub(super) struct Slot {
     result: Mutex<Option<Result<WebGpuBufferSnapshot, DebugError>>>,
     expires: Instant,
     wake: crate::net_bridge::PageWake,
-    reply: Option<Arc<Once<DebugResponse>>>,
 }
 
 impl Slot {
     pub(super) fn finish(&self, result: Result<WebGpuBufferSnapshot, DebugError>) {
-        if let Some(reply) = &self.reply {
-            reply.fill(match result {
-                Ok(snapshot) => DebugResponse::WebGpuBuffer(snapshot),
-                Err(error) => DebugResponse::Error(error),
-            });
-        } else {
-            let mut saved = lock(&self.result);
-            if saved.is_none() {
-                *saved = Some(result);
-            }
+        let mut saved = lock(&self.result);
+        if saved.is_none() {
+            *saved = Some(result);
         }
         self.wake.wake();
     }
@@ -87,48 +78,6 @@ fn label_matches(pattern: &str, text: &str) -> bool {
 }
 
 impl Bridge {
-    pub(super) fn dispatch_buffer(
-        &self,
-        target: &str,
-        offset: u64,
-        length: Option<u64>,
-        reply: Arc<Once<DebugResponse>>,
-    ) {
-        if !self.inspection_active() {
-            reply.fill(DebugResponse::Error(error(
-                "pending",
-                "WebGPU inspection is inactive",
-            )));
-            return;
-        }
-        if let Err(error) = label_pattern(target) {
-            reply.fill(DebugResponse::Error(error));
-            return;
-        }
-        if !offset.is_multiple_of(4) || length.is_some_and(|length| !length.is_multiple_of(4)) {
-            reply.fill(DebugResponse::Error(error(
-                "invalidArgument",
-                format!("buffer {target:?} offset and length must be multiples of 4 bytes"),
-            )));
-            return;
-        }
-        let wake = self.state().wake.clone();
-        self.enqueue(Request::BufferCapture {
-            id: readback::next_capture_id(),
-            key: Key {
-                target: target.to_owned(),
-                offset,
-                length,
-            },
-            slot: Arc::new(Slot {
-                result: Mutex::new(None),
-                expires: Instant::now() + DEADLINE,
-                wake,
-                reply: Some(reply),
-            }),
-        });
-    }
-
     /// The document only admits work or consumes a finished slot. Encoding,
     /// matching and GPU work stay on the existing ordered readback worker.
     pub(super) fn sample_buffer(
@@ -177,7 +126,6 @@ impl Bridge {
                 result: Mutex::new(None),
                 expires: Instant::now() + DEADLINE,
                 wake: state.wake.clone(),
-                reply: None,
             });
             state.buffer_captures.insert(key.clone(), Arc::clone(&slot));
             slot

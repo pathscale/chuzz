@@ -4,16 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use blitz_dom::Document as _;
-use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
-use blitz_script::ScriptDocument;
+use blitz_dom::node::RasterImageData;
 use serde_json::{Value, json};
-
-#[path = "stream_script.rs"]
-mod script;
-
-pub(super) use script::install_frame_bridge;
-pub(crate) use script::{frame_registry, take_frame};
 
 use super::sink::HeadlessSink;
 use super::{Command, MediaError, TIMEUPDATE_INTERVAL};
@@ -24,13 +16,6 @@ const FRAME_BYTES_LIMIT: usize = 512 * 1024 * 1024;
 const LEASE_LIMIT: usize = 8192;
 const LEASE_TIME: Duration = Duration::from_secs(10);
 const MAX_HANDLE: u64 = 9_007_199_254_740_991;
-
-#[derive(Clone)]
-pub(crate) struct FrameLease {
-    pub image: Arc<RasterImageData>,
-    pub pixels: Arc<Vec<u8>>,
-}
-
 #[derive(Default)]
 struct Registry {
     current: HashMap<u64, (u64, FrameLease)>,
@@ -39,8 +24,14 @@ struct Registry {
     closed: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct FrameLease {
+    pub(crate) image: Arc<RasterImageData>,
+    pub(crate) pixels: Arc<Vec<u8>>,
+}
+
 #[derive(serde::Serialize)]
-pub(super) struct FrameDescriptor {
+pub(crate) struct FrameDescriptor {
     handle: u64,
     width: u32,
     height: u32,
@@ -50,57 +41,7 @@ pub(super) struct FrameDescriptor {
 pub(crate) struct Frames(Mutex<Registry>);
 
 impl Frames {
-    pub(crate) fn publish(
-        &self,
-        id: u64,
-        generation: u64,
-        width: u32,
-        height: u32,
-        pixels: Arc<Vec<u8>>,
-    ) -> Result<(), String> {
-        let length = u64::from(width) * u64::from(height) * 4;
-        if width == 0 || height == 0 || length != pixels.len() as u64 {
-            return Err("invalid native video pixels".to_owned());
-        }
-        let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
-        if registry.closed {
-            return Err("video document has closed".to_owned());
-        }
-        let now = Instant::now();
-        registry
-            .leases
-            .retain(|_, (created, _)| now.duration_since(*created) < LEASE_TIME);
-        let other_bytes = registry
-            .current
-            .iter()
-            .filter(|(other, _)| **other != id)
-            .map(|(_, (_, frame))| frame.pixels.len())
-            .chain(
-                registry
-                    .leases
-                    .values()
-                    .map(|(_, frame)| frame.pixels.len()),
-            )
-            .sum::<usize>();
-        if other_bytes.saturating_add(pixels.len()) > FRAME_BYTES_LIMIT
-            || !registry.current.contains_key(&id) && registry.current.len() >= LEASE_LIMIT
-        {
-            return Err("native video allocation limit reached".to_owned());
-        }
-        let image = Arc::new(RasterImageData::new(width, height, Arc::clone(&pixels)));
-        registry
-            .current
-            .insert(id, (generation, FrameLease { image, pixels }));
-        Ok(())
-    }
-
-    pub(crate) fn remove(&self, id: u64) {
-        if let Ok(mut registry) = self.0.lock() {
-            registry.current.remove(&id);
-        }
-    }
-
-    pub(super) fn acquire(&self, id: u64, generation: u64) -> Result<FrameDescriptor, String> {
+    pub(crate) fn acquire(&self, id: u64, generation: u64) -> Result<FrameDescriptor, String> {
         let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
         if registry.closed {
             return Err("video document has closed".to_owned());
@@ -155,6 +96,56 @@ impl Frames {
             return Err("video frame lease expired".to_owned());
         }
         Ok(frame)
+    }
+
+    pub(crate) fn publish(
+        &self,
+        id: u64,
+        generation: u64,
+        width: u32,
+        height: u32,
+        pixels: Arc<Vec<u8>>,
+    ) -> Result<(), String> {
+        let length = u64::from(width) * u64::from(height) * 4;
+        if width == 0 || height == 0 || length != pixels.len() as u64 {
+            return Err("invalid native video pixels".to_owned());
+        }
+        let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
+        if registry.closed {
+            return Err("video document has closed".to_owned());
+        }
+        let now = Instant::now();
+        registry
+            .leases
+            .retain(|_, (created, _)| now.duration_since(*created) < LEASE_TIME);
+        let other_bytes = registry
+            .current
+            .iter()
+            .filter(|(other, _)| **other != id)
+            .map(|(_, (_, frame))| frame.pixels.len())
+            .chain(
+                registry
+                    .leases
+                    .values()
+                    .map(|(_, frame)| frame.pixels.len()),
+            )
+            .sum::<usize>();
+        if other_bytes.saturating_add(pixels.len()) > FRAME_BYTES_LIMIT
+            || !registry.current.contains_key(&id) && registry.current.len() >= LEASE_LIMIT
+        {
+            return Err("native video allocation limit reached".to_owned());
+        }
+        let image = Arc::new(RasterImageData::new(width, height, Arc::clone(&pixels)));
+        registry
+            .current
+            .insert(id, (generation, FrameLease { image, pixels }));
+        Ok(())
+    }
+
+    pub(crate) fn remove(&self, id: u64) {
+        if let Ok(mut registry) = self.0.lock() {
+            registry.current.remove(&id);
+        }
     }
 
     pub(super) fn close(&self) {
@@ -294,7 +285,6 @@ impl Entry {
 
     fn tick(
         &mut self,
-        painter: &mut dyn FnMut(u64, Option<Arc<RasterImageData>>),
         capture: &crate::media::Host,
         frames: &Frames,
         id: u64,
@@ -360,12 +350,10 @@ impl Entry {
                 }
                 self.frame_key = Some(key);
                 self.total_frames += 1;
-                painter(id, Some(frames_image(frames, id)?));
                 self.dirty = true;
             }
         } else if video.is_none() && self.frame_key.take().is_some() {
             frames.remove(id);
-            painter(id, None);
             self.width = 0;
             self.height = 0;
             self.ink = false;
@@ -433,14 +421,6 @@ impl Entry {
         self.last_publish = now;
         payload
     }
-
-    fn publish(&mut self, document: &mut ScriptDocument, id: u64, now: Instant) {
-        let payload = self.update(now);
-        document.eval(&format!(
-            "globalThis.__chuzzVideoUpdate({id}, {}, {payload});",
-            self.generation
-        ));
-    }
 }
 
 fn frames_image(frames: &Frames, id: u64) -> Result<Arc<RasterImageData>, MediaError> {
@@ -480,16 +460,6 @@ impl Host {
         self.entries.insert(command.id, entry);
     }
 
-    pub(super) fn remove(&mut self, document: &mut ScriptDocument, id: u64) -> bool {
-        if self.entries.remove(&id).is_some() {
-            self.frames.remove(id);
-            paint(document, id, None);
-            true
-        } else {
-            false
-        }
-    }
-
     pub(super) fn command(&mut self, command: &Command) -> bool {
         let Some(entry) = self.entries.get_mut(&command.id) else {
             return false;
@@ -508,7 +478,7 @@ impl Host {
     pub(super) fn poll_native(&mut self, now: Instant) -> Vec<NativeUpdate> {
         let mut updates = Vec::new();
         for (&id, entry) in &mut self.entries {
-            if let Err(error) = entry.tick(&mut |_, _| {}, &self.capture, &self.frames, id, now) {
+            if let Err(error) = entry.tick(&self.capture, &self.frames, id, now) {
                 self.frames.remove(id);
                 entry.fail(error);
             }
@@ -523,27 +493,6 @@ impl Host {
         }
         updates
     }
-
-    pub(super) fn poll(&mut self, document: &mut ScriptDocument, now: Instant) -> bool {
-        let mut changed = false;
-        for (&id, entry) in &mut self.entries {
-            if let Err(error) = entry.tick(
-                &mut |id, image| paint(document, id, image),
-                &self.capture,
-                &self.frames,
-                id,
-                now,
-            ) {
-                self.frames.remove(id);
-                entry.fail(error);
-            }
-            if entry.dirty || !entry.events.is_empty() {
-                entry.publish(document, id, now);
-                changed = true;
-            }
-        }
-        changed
-    }
 }
 
 pub(super) struct NativeUpdate {
@@ -551,37 +500,6 @@ pub(super) struct NativeUpdate {
     pub(super) generation: u64,
     pub(super) value: Value,
     pub(super) image: Option<Arc<RasterImageData>>,
-}
-
-fn paint(document: &mut ScriptDocument, marker: u64, image: Option<Arc<RasterImageData>>) {
-    let marker = marker.to_string();
-    let mut document = document.inner_mut();
-    let id = document.tree().iter().find_map(|(id, node)| {
-        let element = node.element_data()?;
-        element
-            .attrs()
-            .iter()
-            .any(|attribute| {
-                attribute.name.local.as_ref() == "data-chuzz-video"
-                    && attribute.value.as_ref() == marker
-            })
-            .then_some(id)
-    });
-    let Some(node) = id.and_then(|id| document.get_node_mut(id)) else {
-        return;
-    };
-    node.cache_mut().clear();
-    let Some(element) = node.element_data_mut() else {
-        return;
-    };
-    element.special_data = image.map_or(SpecialElementData::None, |image| {
-        SpecialElementData::Image(Box::new(ImageData::Raster((*image).clone())))
-    });
-    if let Some(damage) = node.damage() {
-        node.insert_damage(damage.union(damage.complement()));
-    }
-    node.set_dirty_descendants();
-    node.mark_ancestors_dirty();
 }
 
 fn rgba(frame: &VideoFrame) -> Result<Vec<u8>, MediaError> {

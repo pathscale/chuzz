@@ -12,11 +12,6 @@ use super::{MediaError, VideoDecoder};
 #[path = "mse_playback.rs"]
 mod playback;
 
-#[path = "mse_script.rs"]
-mod script;
-
-pub(super) use script::install;
-
 const SOURCE_LIMIT: usize = 128 * 1024 * 1024;
 const DOCUMENT_LIMIT: usize = 256 * 1024 * 1024;
 const UPLOAD_LIMIT: usize = 16 * 1024 * 1024;

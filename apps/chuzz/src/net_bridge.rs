@@ -1,8 +1,5 @@
 //! Page networking, cookie access and completion wakeups shared by both hosts.
 
-#[path = "net_bridge_script.rs"]
-mod script;
-
 #[path = "net_bridge_host.rs"]
 pub mod native_host;
 
@@ -70,49 +67,20 @@ impl PageWake {
     }
 }
 
-pub(super) struct Delivery {
-    pub(super) id: u64,
-    pub(super) reply: Result<NetReply, NetworkError>,
-}
-
-#[derive(Clone)]
-pub(super) struct Mailbox {
-    entries: Arc<Mutex<Vec<Delivery>>>,
-    wake: PageWake,
-}
-
-impl Mailbox {
-    pub(super) fn post(&self, delivery: Delivery) {
-        self.entries
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .push(delivery);
-        self.wake.wake();
-    }
-
-    pub(super) fn drain(&self) -> Vec<Delivery> {
-        std::mem::take(
-            &mut *self
-                .entries
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner()),
-        )
-    }
-}
-
 #[derive(serde::Deserialize)]
-pub(crate) struct NetRequest {
+/// Owned request accepted by the page and dedicated worker network bridges.
+pub struct NetRequest {
     #[serde(default)]
-    pub(crate) id: u64,
-    pub(crate) url: String,
+    pub id: u64,
+    pub url: String,
     #[serde(default = "get_method")]
-    pub(crate) method: String,
+    pub method: String,
     #[serde(default)]
-    pub(crate) headers: Vec<(String, String)>,
+    pub headers: Vec<(String, String)>,
     #[serde(default)]
-    pub(crate) body: Option<Vec<u8>>,
+    pub body: Option<Vec<u8>>,
     #[serde(default = "default_credentials")]
-    pub(crate) credentials: String,
+    pub credentials: String,
 }
 
 fn get_method() -> String {
@@ -510,21 +478,38 @@ impl NetworkHost {
     }
 }
 
-pub(crate) async fn worker_fetch(
+/// Fetch from a worker using its creator page's network policy and lifetime.
+pub async fn worker_fetch(
     net: Arc<NetProvider>,
     base: Option<Url>,
     signal: blitz_traits::net::AbortSignal,
     lifetime: Arc<blitz_dom::release::Teardown>,
     request: NetRequest,
 ) -> Result<(serde_json::Value, Vec<u8>), String> {
-    script::worker_fetch(net, base, signal, lifetime, request).await
-}
+    let url = Url::options()
+        .base_url(base.as_ref())
+        .parse(&request.url)
+        .map_err(|error| error.to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("worker fetch requires an HTTP URL".to_owned());
+    }
 
-pub fn install(
-    document: &mut blitz_script::ScriptDocument,
-    net: Arc<NetProvider>,
-    deadline: Duration,
-    base: Option<Url>,
-) {
-    script::install(document, net, deadline, base);
+    let host = NetworkHost::new(net, base, Duration::ZERO, signal, lifetime);
+    let reply = host
+        .perform_unbounded(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !matches!(reply.url.scheme(), "http" | "https") {
+        return Err("worker response requires an HTTP URL".to_owned());
+    }
+    Ok((
+        serde_json::json!({
+            "ok": true,
+            "status": reply.status,
+            "statusText": reply.status_text,
+            "url": reply.url.as_str(),
+            "headers": reply.headers,
+        }),
+        reply.bytes,
+    ))
 }

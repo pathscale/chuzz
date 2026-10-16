@@ -190,6 +190,12 @@ fn video_command(
         streams.remove_native(command.id);
         native.frames.remove(command.id);
         native.entries.borrow_mut().remove(&command.id);
+        host.deliver_frame(HostFrame {
+            source: HostFrameSource::Video,
+            target: command.id,
+            generation: command.generation,
+            image: None,
+        })?;
         if command.op == "release" {
             return Ok(HostValue::Boolean(true));
         }

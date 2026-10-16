@@ -19,8 +19,6 @@ use serde::{Deserialize, Serialize};
 use super::{Bridge, lock};
 
 mod backing;
-#[path = "canvas2d_script.rs"]
-mod canvas2d_script;
 mod effects;
 mod paths;
 mod text;
@@ -125,7 +123,8 @@ fn default_fonts() -> parley::FontContext {
 pub(super) fn from_html(
     html: &str,
     mut config: blitz_dom::DocumentConfig,
-) -> blitz_script::ScriptDocument {
+    host_config: crate::script_host::HostInstallContext,
+) -> std::result::Result<crate::page_document::PageDocument, String> {
     crate::install_headless_fonts(&mut config);
     let mut fonts = config.font_ctx.take().unwrap_or_else(default_fonts);
     // Fontique shares registrations, aliases and generic-family changes with
@@ -133,11 +132,7 @@ pub(super) fn from_html(
     fonts.collection.make_shared();
     fonts.source_cache.make_shared();
     config.font_ctx = Some(fonts.clone());
-    let mut document = blitz_script::ScriptDocument::from_html(html, config);
-    document.with_js_context(|context| {
-        context.insert_data(Fonts(Arc::new(Mutex::new(fonts))));
-    });
-    document
+    crate::page_document::PageDocument::from_html(Arc::from(html), config, host_config)
 }
 
 #[derive(Clone)]
@@ -390,6 +385,40 @@ fn image_data(source: &Image, inputs: &[Arc<Vec<u8>>]) -> Result<ImageData> {
         width: source.width,
         height: source.height,
     })
+}
+
+fn resolve_native_image(host: &Host, source: &mut Image) -> Result<()> {
+    let handles = [source.video, source.bitmap, source.native];
+    if handles.iter().filter(|handle| handle.is_some()).count() != 1 {
+        return Err("invalid native canvas image descriptor".to_owned());
+    }
+    let image = if let Some(handle) = source.video {
+        let frame = host.bridge.state().media_frames.take(handle)?;
+        raster_image(&frame.image)
+    } else if let Some(handle) = source.bitmap {
+        let image = host
+            .bridge
+            .state()
+            .images
+            .bitmaps
+            .get(&handle)
+            .cloned()
+            .ok_or("ImageBitmap is closed or invalid")?;
+        raster_image(&image)
+    } else {
+        let handle = source
+            .native
+            .ok_or("invalid native canvas image descriptor")?;
+        lock(&host.sources)
+            .get(&handle)
+            .cloned()
+            .ok_or("native canvas image is unavailable")?
+    };
+    if image.width != source.width || image.height != source.height {
+        return Err("native canvas image dimensions changed".to_owned());
+    }
+    source.resolved = Some(image);
+    Ok(())
 }
 
 /// The pixel-aligned part of `source` covering `x0..x1` by `y0..y1`, as a
@@ -1304,7 +1333,19 @@ pub(super) fn native_execute(
         return Ok(CanvasReply::Empty);
     }
     if request.action == "source" {
-        return Err("native canvas source requires a raster image object".to_owned());
+        let source = request
+            .source
+            .take()
+            .ok_or("native canvas source requires an image source")?;
+        let image = super::readback::read_image(&host.bridge, source, request.serial, |marker| {
+            native_source(host, marker)
+        })
+        .map_err(|error| error.message)?
+        .map_err(|error| error.message)?;
+        let (width, height) = native_set_source(host, request.id, image)?;
+        return serde_json::to_string(&[width, height])
+            .map(CanvasReply::Text)
+            .map_err(|error| error.to_string());
     }
     if request.commands.len() > COMMAND_LIMIT {
         return Err("canvas command limit reached in chuzz".to_owned());
@@ -1398,17 +1439,20 @@ fn execute(host: &Host, request: &mut Request, inputs: &[Arc<Vec<u8>>]) -> Resul
             .brush
             .as_mut()
             .and_then(|brush| brush.image.as_mut())
-            && let Some(source) = image.canvas
         {
-            // Resolve at this command, not at the beginning of the batch.
-            // For self-draw this flushes the preceding commands and pins
-            // the old allocation while execute draws the new contents.
-            image.resolved = Some(
-                canvases
-                    .get_mut(&source)
-                    .ok_or("native source canvas was released")?
-                    .source_image(),
-            );
+            if let Some(source) = image.canvas {
+                // Resolve at this command, not at the beginning of the batch.
+                // For self-draw this flushes the preceding commands and pins
+                // the old allocation while execute draws the new contents.
+                image.resolved = Some(
+                    canvases
+                        .get_mut(&source)
+                        .ok_or("native source canvas was released")?
+                        .source_image(),
+                );
+            } else if image.video.is_some() || image.bitmap.is_some() || image.native.is_some() {
+                resolve_native_image(host, image)?;
+            }
             image_data(image, inputs)?;
         }
         canvases
@@ -1460,5 +1504,3 @@ pub(super) fn encode_pixels(width: u32, height: u32, pixels: &[u8]) -> Result<Ve
     }
     Ok(png)
 }
-
-pub(super) use canvas2d_script::install;

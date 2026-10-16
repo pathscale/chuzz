@@ -98,6 +98,16 @@ pub mod media;
 pub mod nav;
 pub mod net_bridge;
 #[cfg(feature = "javascript")]
+pub mod page_document;
+#[cfg(feature = "javascript")]
+mod page_native_bridge;
+#[cfg(feature = "javascript")]
+mod page_native_driver;
+#[cfg(feature = "javascript")]
+mod page_native_gpu;
+#[cfg(feature = "javascript")]
+mod page_native_media;
+#[cfg(feature = "javascript")]
 pub mod page_script_host;
 #[cfg(feature = "gui")]
 mod tab_native;

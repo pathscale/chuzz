@@ -1,27 +1,9 @@
-//! `WebSocket`, built on the same seam as `fetch`.
+//! Native WebSocket transport for the page's engine-neutral script host.
 //!
-//! The engine had a constructor that reported a refused connection without
-//! ever opening one. That was deliberate and, for its original purpose, right:
-//! a dev server's live-reload client runs at bundle top level, and a missing
-//! constructor takes the whole bundle down, so an inert socket is the shape
-//! those clients already survive.
-//!
-//! It stops being right the moment a page's own data rides on a socket. Eight
-//! of the thirteen sites in this fleet authenticate over the WebSocket
-//! handshake, passing the token in `Sec-WebSocket-Protocol`, so with an inert
-//! socket no sign-in can complete and every check stops at what the page
-//! decides for itself.
-//!
-//! The transport is the same one `net_bridge` uses, for the same reason:
-//! `blitz-script` has no way to register a host function, so JavaScript posts
-//! a command on `window.ipc.postMessage`, work happens on nagoya workers,
-//! and events come back through a mailbox that a poll hook drains and hands to
-//! the page by `eval`. `net_bridge` owns the IPC handler, because setting one
-//! replaces it rather than adding to it, so it delegates here first and keeps
-//! anything this does not claim.
-//!
-//! Unlike a fetch, a socket outlives its command: the send direction needs the
-//! connection to stay addressable, which is what `senders` is.
+//! The native host maps typed connect, send, close, and event subscription
+//! calls to this bridge. Transport work runs on nagoya workers, while events
+//! return through the page wake and callback lifecycle. Unlike a fetch, a
+//! socket outlives its command, so its sender stays addressable until close.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
@@ -35,9 +17,6 @@ use nago_wss::proto::message::{CloseFrame, Limits, Message};
 use nago_wss::stream::{ByteStream, Errno, StreamExt};
 use nagoya::net::TcpStream;
 use nagoya::reactor::Reactor;
-
-#[path = "ws_bridge_script.rs"]
-mod script;
 
 #[path = "ws_bridge_host.rs"]
 pub mod native_host;
@@ -211,22 +190,6 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub(crate) fn with_lifetime(
-        wake: crate::net_bridge::PageWake,
-        lifetime: Arc<blitz_dom::release::Teardown>,
-    ) -> Self {
-        Self {
-            wake,
-            lifetime: Some(lifetime),
-            ..Default::default()
-        }
-    }
-
-    pub(crate) fn with_initiator(mut self, initiator: blitz_traits::net::Initiator) -> Self {
-        self.initiator = initiator;
-        self
-    }
-
     pub(crate) fn retire(&self) {
         blitz_traits::net::AbortController {
             signal: self.signal.clone(),
@@ -292,11 +255,6 @@ impl Bridge {
             SocketRequest::Send { id, data } => self.send(id, data),
             SocketRequest::Close { id, code } => self.close(id, code),
         }
-    }
-
-    /// Take one IPC message if it is a socket command. Returns whether it was.
-    pub fn handle(&self, message: &str) -> bool {
-        script::handle(self, message)
     }
 
     fn connect(
@@ -491,11 +449,6 @@ impl Bridge {
         }
         Ok(())
     }
-
-    /// Hand every event from the last poll to the page.
-    pub fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        script::drain_into(self, document)
-    }
 }
 
 /// A handshake carrying the subprotocols the page asked for.
@@ -678,136 +631,3 @@ async fn open_socket(
         protocol,
     })
 }
-
-/// The JavaScript half: a `WebSocket` that talks to the bridge.
-///
-/// Installed after `WEB_API_SHIM`, so it replaces the inert constructor that
-/// shim puts in when nothing better exists.
-pub const WEBSOCKET_SHIM: &str = r#"
-(function () {
-  var sockets = Object.create(null);
-  var nextId = 1;
-
-  globalThis.__chuzzWsEvent = function (id, event) {
-    var socket = sockets[id];
-    if (!socket) { return; }
-    socket.__deliver(event);
-  };
-
-  function post(payload) {
-    try { window.ipc.postMessage(JSON.stringify(payload)); } catch (e) {}
-  }
-
-  function WebSocketShim(url, protocols) {
-    var socket = this;
-    var id = nextId++;
-    sockets[id] = this;
-
-    this.url = String(url);
-    this.protocol = "";
-    this.extensions = "";
-    this.bufferedAmount = 0;
-    this.binaryType = "blob";
-    this.readyState = 0;
-    this.onopen = null;
-    this.onmessage = null;
-    this.onerror = null;
-    this.onclose = null;
-
-    var listeners = { open: [], message: [], error: [], close: [] };
-    this.addEventListener = function (type, handler) {
-      if (listeners[type] && typeof handler === "function") { listeners[type].push(handler); }
-    };
-    this.removeEventListener = function (type, handler) {
-      if (!listeners[type]) { return; }
-      var i = listeners[type].indexOf(handler);
-      if (i >= 0) { listeners[type].splice(i, 1); }
-    };
-    this.dispatchEvent = function () { return false; };
-
-    function fire(type, event) {
-      var direct = socket["on" + type];
-      if (typeof direct === "function") { direct.call(socket, event); }
-      // A listener may remove itself while handling the event (the RPC adapter
-      // does this when sending queued requests on open). Iterating the live
-      // array skips the next request after that removal. New listeners belong
-      // to the next dispatch; explicitly removed listeners must not run.
-      var registered = listeners[type].slice();
-      for (var i = 0; i < registered.length; i++) {
-        if (listeners[type].indexOf(registered[i]) >= 0) {
-          registered[i].call(socket, event);
-        }
-      }
-    }
-
-    this.__deliver = function (event) {
-      if (event.type === "open") {
-        socket.readyState = 1;
-        socket.protocol = event.protocol || "";
-        fire("open", { type: "open", target: socket });
-      } else if (event.type === "message") {
-        var message = new MessageEvent("message", {
-          data: event.data,
-          origin: new URL(socket.url, location.href).origin
-        });
-        Object.defineProperties(message, {
-          target: { value: socket, configurable: true },
-          currentTarget: { value: socket, configurable: true },
-          eventPhase: { value: 2, configurable: true }
-        });
-        try { fire("message", message); }
-        finally {
-          Object.defineProperties(message, {
-            currentTarget: { value: null, configurable: true },
-            eventPhase: { value: 0, configurable: true }
-          });
-        }
-      } else if (event.type === "error") {
-        fire("error", { type: "error", target: socket, message: event.message });
-      } else if (event.type === "close") {
-        socket.readyState = 3;
-        delete sockets[id];
-        fire("close", {
-          type: "close",
-          code: event.code,
-          reason: event.reason || "",
-          wasClean: event.code === 1000,
-          target: socket,
-        });
-      }
-    };
-
-    this.send = function (data) {
-      if (socket.readyState === 0) {
-        throw new DOMException("WebSocket is connecting", "InvalidStateError");
-      }
-      if (socket.readyState !== 1) { return; }
-      post({ ws: "send", id: id, data: String(data) });
-    };
-
-    this.close = function (code) {
-      if (socket.readyState === 3) { return; }
-      socket.readyState = 2;
-      post({ ws: "close", id: id, code: typeof code === "number" ? code : 1000 });
-    };
-
-    var offered = [];
-    if (typeof protocols === "string") { offered = [protocols]; }
-    else if (protocols && protocols.length) {
-      for (var i = 0; i < protocols.length; i++) { offered.push(String(protocols[i])); }
-    }
-    post({ ws: "connect", id: id, url: this.url, protocols: offered, origin: (typeof location !== "undefined" && location.origin) || "null" });
-  }
-
-  WebSocketShim.CONNECTING = 0;
-  WebSocketShim.OPEN = 1;
-  WebSocketShim.CLOSING = 2;
-  WebSocketShim.CLOSED = 3;
-  WebSocketShim.prototype.CONNECTING = 0;
-  WebSocketShim.prototype.OPEN = 1;
-  WebSocketShim.prototype.CLOSING = 2;
-  WebSocketShim.prototype.CLOSED = 3;
-
-  globalThis.WebSocket = WebSocketShim;
-})();
-"#;

@@ -2,11 +2,6 @@ use blitz_dom::node::RasterImageData;
 
 use std::sync::atomic::AtomicU64;
 
-#[path = "readback_script.rs"]
-mod script;
-
-pub(super) use script::image;
-
 use blitz_control_protocol::{CapturedImage, DebugError};
 
 use super::buffer::map_read;
@@ -101,12 +96,6 @@ pub(super) fn read_image(
     // All preceding GPU and image work stays on the ordered Nagoya worker.
     // No DOM borrow crosses this wait, and no page jobs run reentrantly.
     Ok(completion.wait())
-}
-
-impl Bridge {
-    pub(crate) fn install_canvas_readback(&self, document: &mut blitz_script::ScriptDocument) {
-        script::install(self, document);
-    }
 }
 
 const CAPTURE_WAIT: Duration = Duration::from_secs(8);

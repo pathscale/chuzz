@@ -21,8 +21,6 @@ use str0m::{Candidate, Event, Input, Output, Rtc, RtcError};
 use x509_cert::Certificate;
 use x509_cert::der::{Decode, Encode};
 
-pub(super) use super::qa_script::install;
-
 const PACKETS_PER_PEER: usize = 3;
 const FIRST_SEQUENCE: u64 = 65_534;
 const VIRTUAL_LIMIT: Duration = Duration::from_secs(6);

@@ -2,9 +2,6 @@ use std::sync::Arc;
 
 use crate::tab_stash::{SessionBucket, SessionPair, SleepingBudget, Text};
 
-#[path = "tab_session_script.rs"]
-mod script;
-
 #[path = "tab_session_host.rs"]
 pub mod native_host;
 
@@ -172,15 +169,4 @@ impl SessionStore {
         )
         .ok()
     }
-}
-
-pub fn install(document: &mut blitz_script::ScriptDocument, backing: Option<Arc<SessionBucket>>) {
-    script::install(document, backing);
-}
-
-pub fn capture(
-    document: &mut blitz_script::ScriptDocument,
-    budget: &Arc<SleepingBudget>,
-) -> Option<Arc<SessionBucket>> {
-    script::capture(document, budget)
 }

@@ -291,13 +291,7 @@ pub(super) fn device_report(
     })
 }
 
-struct InspectorHost(Bridge);
-
 impl Bridge {
-    pub(crate) fn install_inspector(&self, document: &mut blitz_script::ScriptDocument) {
-        script::install(self, document);
-    }
-
     pub(super) fn inspection_session(&self) -> Arc<Session> {
         Arc::clone(&self.state().inspection)
     }
@@ -443,20 +437,20 @@ impl Bridge {
 }
 
 pub(super) fn inspect_document(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
 ) -> Result<WebGpuReport, DebugError> {
     script::inspect_document(document)
 }
 
 pub(super) fn capture_document(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
     target: &str,
 ) -> Result<CapturedImage, DebugError> {
     script::capture_document(document, target)
 }
 
 pub(super) fn buffer_document(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
     target: &str,
     offset: u64,
     length: Option<u64>,
@@ -465,7 +459,7 @@ pub(super) fn buffer_document(
 }
 
 pub(super) fn buffer_document_reply(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
     target: &str,
     offset: u64,
     length: Option<u64>,

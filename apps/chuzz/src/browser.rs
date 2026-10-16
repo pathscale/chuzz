@@ -11,7 +11,7 @@ use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::decode::decode_body;
-use crate::document_loader::{NetProvider, install_web_api_shim};
+use crate::document_loader::NetProvider;
 use crate::nav::{NEW_TAB_URL, display_title, request_from_input};
 use crate::tab_records::{DocumentGeneration, Residency, TabId, TabRegistry};
 #[path = "tab_lifecycle.rs"]
@@ -308,8 +308,6 @@ enum PageSource {
 ///
 /// The real answer is an asynchronous script-loading path in the engine, which
 /// would not need to choose.
-const WINDOW_SCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// How long one `fetch` or `XMLHttpRequest` from the page may take.
 ///
 /// Generous compared to the script deadline, and it can afford to be: this one
@@ -331,11 +329,11 @@ struct BrowserInner {
 
 /// Queue embedded-page redraws without blocking network workers on AppKit.
 ///
-/// Boa resolves a runtime-discovered module synchronously on the UI thread.
-/// A direct macOS redraw from every resource-completion worker also waits for
-/// that UI thread, so a page with many images can occupy the runtime pool with
-/// workers waiting for the same thread that is waiting for the module fetch.
-/// Coalescing redraws onto izumo's document-thread queue breaks that cycle.
+/// Runtime module and resource completion can request redraws from workers.
+/// A direct macOS redraw from each worker waits for the UI thread, so a page
+/// with many resources can occupy the runtime pool with workers waiting for
+/// the same thread. Coalescing redraws onto izumo's document-thread queue
+/// breaks that cycle.
 struct QueuedRedrawShell {
     inner: Arc<dyn ShellProvider>,
     app: ChuzzAppHandle,
@@ -505,7 +503,7 @@ impl Browser {
         self.schedule_current(0, false);
     }
 
-    pub fn install_document_lifecycle(&self, document: &mut blitz_script::ScriptDocument) {
+    pub fn install_document_lifecycle(&self, document: &mut crate::page_document::PageDocument) {
         self.install_surface_lifecycle();
         #[cfg(unix)]
         {
@@ -570,27 +568,25 @@ impl Browser {
             izumo::set_page_diagnostics_handler(|document, request| {
                 use blitz_control_protocol::{DebugResponse, DiagnosticsRequest};
                 match request {
-                    DiagnosticsRequest::Evaluate { script } => match document.eval_json(&script) {
+                    DiagnosticsRequest::Evaluate { script } => match (document
+                        as &mut dyn std::any::Any)
+                        .downcast_mut::<crate::page_document::PageDocument>()
+                        .ok_or_else(|| String::from("diagnostic target has no page runtime"))
+                        .and_then(|document| document.eval_json(&script))
+                    {
                         Ok(value) => DebugResponse::Evaluated(value),
                         Err(message) => DebugResponse::Error(
                             blitz_control_protocol::target::error("scriptError", &message),
                         ),
                     },
-                    DiagnosticsRequest::WebGpuInspect => crate::webgpu::inspect_gpu(document)
-                        .map(DebugResponse::WebGpu)
-                        .unwrap_or_else(DebugResponse::Error),
-                    DiagnosticsRequest::WebGpuCapture { target } => {
-                        crate::webgpu::capture_gpu(document, &target)
-                            .map(DebugResponse::Captured)
-                            .unwrap_or_else(DebugResponse::Error)
+                    DiagnosticsRequest::WebGpuInspect
+                    | DiagnosticsRequest::WebGpuCapture { .. }
+                    | DiagnosticsRequest::WebGpuBuffer { .. } => {
+                        DebugResponse::Error(blitz_control_protocol::target::error(
+                            "unsupportedRequest",
+                            "GPU diagnostics require an engine DocumentHost adapter",
+                        ))
                     }
-                    DiagnosticsRequest::WebGpuBuffer {
-                        target,
-                        offset,
-                        length,
-                    } => crate::webgpu::capture_gpu_buffer(document, &target, offset, length)
-                        .map(DebugResponse::WebGpuBuffer)
-                        .unwrap_or_else(DebugResponse::Error),
                     _ => DebugResponse::Error(blitz_control_protocol::target::error(
                         "unsupportedRequest",
                         "unsupported page diagnostic",
@@ -600,7 +596,15 @@ impl Browser {
         }
         let browser = self.clone();
         let mut pending = VecDeque::new();
-        document.add_poll_hook(move |document, _| browser.poll_document(document, &mut pending));
+        let host = document.application_host();
+        host.add_poll_hook(
+            document,
+            Box::new(move |document, _| {
+                (document as &mut dyn std::any::Any)
+                    .downcast_mut::<crate::page_document::PageDocument>()
+                    .is_some_and(|document| browser.poll_document(document, &mut pending))
+            }),
+        );
     }
 
     pub(crate) fn net(&self) -> Arc<NetProvider> {
@@ -913,7 +917,7 @@ impl Browser {
 
     fn poll_document(
         &self,
-        ui: &mut blitz_script::ScriptDocument,
+        ui: &mut crate::page_document::PageDocument,
         pending: &mut VecDeque<PageBundle>,
     ) -> bool {
         pending.extend(self.0.completed.lock().unwrap().drain(..));
@@ -968,47 +972,64 @@ impl Browser {
             };
             // Preserve the outcome established during loading.
             let outcome = bundle.outcome;
+            let script_document = matches!(&bundle.source, PageSource::Html { .. });
             let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
-                    PageSource::Html { html, scripts } => {
-                        let mut page = crate::webgpu::script_document(&html, make_config())
-                            .with_fetcher(crate::script_fetch::PageScripts::new(
-                                scripts,
-                                Arc::clone(&net),
-                                WINDOW_SCRIPT_DEADLINE,
-                            ));
-                        self.prepare_tab_page(
-                            &mut page,
-                            bundle.tab_id,
-                            bundle.generation,
-                            &bundle.resolved_url,
-                        );
-                        install_web_api_shim(&mut page, &net);
-                        crate::net_bridge::install(
-                            &mut page,
-                            Arc::clone(&net),
-                            WINDOW_NETWORK_DEADLINE,
-                            blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
-                        );
-                        page.execute_scripts();
-                        let title = page
-                            .inner()
-                            .find_title_node()
-                            .map(|node| node.text_content())
-                            .unwrap_or_default();
-                        (Box::new(page), title)
-                    }
-                    PageSource::Source { text } => {
-                        let page =
-                            blitz_html::HtmlDocument::from_html(&source_html(&text), make_config())
-                                .into_inner();
-                        (Box::new(page), format!("source of {}", bundle.resolved_url))
-                    }
-                };
-                (page, title)
+                (|| -> Result<(Box<dyn blitz_dom::Document>, String), String> {
+                    let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source
+                    {
+                        PageSource::Html { html, scripts } => {
+                            if !scripts.is_empty() {
+                                return Err(String::from(
+                                    "the page runtime factory does not accept prefetched script sources",
+                                ));
+                            }
+                            let base = Url::parse(&bundle.resolved_url).ok();
+                            let host_config = crate::script_host::HostInstallContext {
+                                net: Arc::clone(&net),
+                                base: base.clone(),
+                                deadline: WINDOW_NETWORK_DEADLINE,
+                                wake: crate::net_bridge::PageWake::default(),
+                                lifetime: Arc::clone(&lifetime),
+                                signal: page_signal.clone(),
+                                session_backing: None,
+                            };
+                            let mut page = crate::page_document::PageDocument::from_html(
+                                Arc::<str>::from(html),
+                                make_config(),
+                                host_config,
+                            )?;
+                            self.prepare_tab_page(
+                                &mut page,
+                                bundle.tab_id,
+                                bundle.generation,
+                                &bundle.resolved_url,
+                            )?;
+                            page.execute_scripts()?;
+                            let title = page
+                                .inner()
+                                .find_title_node()
+                                .map(|node| node.text_content())
+                                .unwrap_or_default();
+                            (Box::new(page), title)
+                        }
+                        PageSource::Source { text } => {
+                            let page = blitz_html::HtmlDocument::from_html(
+                                &source_html(&text),
+                                make_config(),
+                            )
+                            .into_inner();
+                            (Box::new(page), format!("source of {}", bundle.resolved_url))
+                        }
+                    };
+                    Ok((page, title))
+                })()
             }));
             let (page, title) = match prepared {
-                Ok(prepared) => prepared,
+                Ok(Ok(prepared)) => prepared,
+                Ok(Err(_)) => {
+                    changed |= self.document_attach_failed(bundle.tab_id, bundle.generation);
+                    continue;
+                }
                 Err(_) => {
                     changed |= self.document_attach_failed(bundle.tab_id, bundle.generation);
                     continue;
@@ -1066,7 +1087,7 @@ impl Browser {
                     .flatten()
                     .map(NodeId::as_u64),
                 document_id: page.id() as u64,
-                script: (&*page as &dyn std::any::Any).is::<blitz_script::ScriptDocument>(),
+                script: script_document,
             };
             let still_current = {
                 let state = self.0.state.lock().unwrap();
@@ -1372,14 +1393,14 @@ async fn fetch_page(
     // Discover JavaScript without constructing a DOM that would be discarded.
     // XHTML retains its XML parser and complete tree.
     let urls = if blitz_html::DocumentHtmlParser::is_xhtml_document(&html) {
-        let document = blitz_script::ScriptDocument::from_html(
+        let document = blitz_html::HtmlDocument::from_html(
             &html,
             DocumentConfig {
                 base_url: Some(resolved_url.clone()),
                 ..Default::default()
             },
         );
-        document.external_script_urls()
+        blitz_script::external_script_urls(&document.inner())
     } else {
         let tags = blitz_html::scan_script_tags(&html);
         let base_url = Url::parse(&resolved_url).ok();

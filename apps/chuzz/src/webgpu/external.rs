@@ -1,7 +1,6 @@
 use std::io::Cursor;
 
-use blitz_dom::Document as _;
-use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
+use blitz_dom::node::RasterImageData;
 
 use super::buffer::map_read;
 use super::resources::{ALLOCATION_LIMIT, checked, decode};
@@ -224,79 +223,7 @@ fn decode_svg(_bytes: &[u8]) -> Result<Option<Arc<RasterImageData>>, GpuError> {
     Ok(None)
 }
 
-fn marker_matches(element: &blitz_dom::node::ElementData, marker: &str) -> bool {
-    element.attrs().iter().any(|attribute| {
-        attribute.name.local.as_ref() == "data-chuzz-gpu-source"
-            && attribute.value.as_ref() == marker
-    })
-}
-
-fn snapshot(document: &blitz_script::ScriptDocument, marker: u64) -> Option<Arc<RasterImageData>> {
-    let marker = marker.to_string();
-    let document = document.inner();
-    document.tree().iter().find_map(|(_, node)| {
-        let element = node.element_data()?;
-        if !marker_matches(element, &marker) {
-            return None;
-        }
-        // RasterImageData::clone clones its Blob, sharing the decoded pixels.
-        element.raster_image_data().cloned().map(Arc::new)
-    })
-}
-
-fn paint(
-    document: &mut blitz_script::ScriptDocument,
-    marker: u64,
-    image: Arc<RasterImageData>,
-) -> bool {
-    let marker = marker.to_string();
-    let mut document = document.inner_mut();
-    let id = document.tree().iter().find_map(|(id, node)| {
-        node.element_data()
-            .filter(|element| marker_matches(element, &marker))
-            .map(|_| id)
-    });
-    let Some(node) = id.and_then(|id| document.get_node_mut(id)) else {
-        return false;
-    };
-    let Some(element) = node.element_data_mut() else {
-        return false;
-    };
-    element.special_data = SpecialElementData::Image(Box::new(ImageData::Raster((*image).clone())));
-    node.cache_mut().clear();
-    if let Some(damage) = node.damage() {
-        node.insert_damage(damage.union(damage.complement()));
-    }
-    node.set_dirty_descendants();
-    node.mark_ancestors_dirty();
-    true
-}
-
 impl Bridge {
-    pub(super) fn prepare_images(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        let (incoming, images) = {
-            let mut state = self.state();
-            let live = state
-                .in_flight
-                .keys()
-                .copied()
-                .collect::<std::collections::HashSet<_>>();
-            state.images.snapshots.retain(|id, _| live.contains(id));
-            (
-                std::mem::take(&mut state.incoming),
-                std::mem::take(&mut state.images.paint),
-            )
-        };
-        let mut changed = false;
-        for (marker, image) in images {
-            changed |= paint(document, marker, image);
-        }
-        for request in incoming {
-            self.prepare_image_request(request, |marker| snapshot(document, marker));
-        }
-        changed
-    }
-
     pub(super) fn prepare_image_request(
         &self,
         mut request: Request,

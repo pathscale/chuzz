@@ -203,6 +203,46 @@ impl ChuzzPageRuntimeHost {
         })
     }
 
+    /// The exact provider installed for this page. Script-visible navigation
+    /// and cookie properties must use this provider rather than the renderer's
+    /// trait-object copy on `BaseDocument`.
+    pub fn net_provider(&self) -> Result<&Arc<crate::document_loader::NetProvider>, HostError> {
+        self.config
+            .as_ref()
+            .map(|config| &config.net)
+            .ok_or_else(|| {
+                HostError::new("InvalidStateError", "page network provider is unavailable")
+            })
+    }
+
+    pub(crate) fn script_network(&self) -> Result<crate::net_bridge::NetworkHost, HostError> {
+        self.ensure_live()?;
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| HostError::new("InvalidStateError", "page host has no configuration"))?;
+        Ok(crate::net_bridge::NetworkHost::new(
+            Arc::clone(&config.net),
+            config.base.clone(),
+            config.deadline,
+            config.signal.clone(),
+            Arc::clone(&config.lifetime),
+        ))
+    }
+
+    /// The exact base URL supplied to the native hosts during installation.
+    pub fn base_url(&self) -> Result<Option<&url::Url>, HostError> {
+        self.config
+            .as_ref()
+            .map(|config| config.base.as_ref())
+            .ok_or_else(|| {
+                HostError::new(
+                    "InvalidStateError",
+                    "page host configuration is unavailable",
+                )
+            })
+    }
+
     /// Return the registered intrinsic surface in deterministic name order.
     /// The returned metadata can be used to install callable guest bindings;
     /// dispatch remains fallible through `invoke_intrinsic`.
@@ -347,6 +387,10 @@ impl ChuzzPageRuntimeHost {
         self.timers.values().map(|timer| timer.deadline_ns).min()
     }
 
+    pub fn timer_count(&self) -> usize {
+        self.timers.len()
+    }
+
     pub fn seed_session(&mut self, entries: &[(String, String)]) -> Result<(), HostError> {
         self.ensure_live()?;
         script_host::session::seed(self, entries)
@@ -361,6 +405,14 @@ impl ChuzzPageRuntimeHost {
     }
 
     pub fn poll(&mut self, waker: Option<&Waker>) -> Result<bool, HostError> {
+        self.poll_with_timers(waker, true)
+    }
+
+    pub fn poll_with_timers(
+        &mut self,
+        waker: Option<&Waker>,
+        run_timers: bool,
+    ) -> Result<bool, HostError> {
         self.ensure_live()?;
 
         let mut first_error = None;
@@ -371,7 +423,7 @@ impl ChuzzPageRuntimeHost {
         }
 
         let now = nagoya::now_ns();
-        if let Some(waker) = waker {
+        if let Some(waker) = waker.filter(|_| run_timers) {
             let mut context = Context::from_waker(waker);
             for timer in self.timers.values_mut() {
                 if timer.firing || timer.wake_ready {
@@ -387,7 +439,8 @@ impl ChuzzPageRuntimeHost {
             .timers
             .iter()
             .filter_map(|(id, timer)| {
-                (!timer.firing && (timer.wake_ready || timer.deadline_ns <= now)).then_some(*id)
+                (run_timers && !timer.firing && (timer.wake_ready || timer.deadline_ns <= now))
+                    .then_some(*id)
             })
             .collect();
 

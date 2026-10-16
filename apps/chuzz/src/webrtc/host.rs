@@ -1,4 +1,4 @@
-//! Document-thread bridge. Boa values never enter a transport task.
+//! Document-thread WebRTC state. Script values never enter a transport task.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,10 +19,6 @@ const PEERS: usize = 16;
 const COMMANDS: usize = 64;
 const EVENTS: usize = 4096;
 const MAX_ID: u64 = 9_007_199_254_740_991;
-
-#[path = "host_script.rs"]
-mod script;
-pub(super) use script::install;
 
 pub(super) fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value.lock().unwrap_or_else(|error| error.into_inner())
@@ -247,14 +243,6 @@ impl Page {
             peer.close();
         }
         state.events.clear();
-    }
-}
-
-pub(super) struct NativeHost(pub Arc<Page>);
-
-impl Drop for NativeHost {
-    fn drop(&mut self) {
-        self.0.close();
     }
 }
 
