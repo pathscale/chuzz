@@ -224,6 +224,23 @@ fn next_id(state: &mut NetRealmState) -> u64 {
     }
 }
 
+fn release_callback_if_unused(
+    host: &mut dyn ChuzzScriptHost,
+    state: &Rc<RefCell<NetRealmState>>,
+    callback: HostCallbackId,
+) -> Result<(), HostError> {
+    let still_pending = state
+        .borrow()
+        .callbacks
+        .values()
+        .any(|pending| pending.same_callback(&callback));
+    if still_pending {
+        Ok(())
+    } else {
+        host.release_callback(callback)
+    }
+}
+
 fn network_async(
     host: &mut dyn ChuzzScriptHost,
     args: &[HostValue],
@@ -290,7 +307,7 @@ fn network_forget(
     let state = state(host)?;
     let callback = state.borrow_mut().callbacks.remove(&id);
     if let Some(callback) = callback {
-        host.release_callback(callback)?;
+        release_callback_if_unused(host, &state, callback)?;
     }
     Ok(HostValue::Undefined)
 }
@@ -353,7 +370,7 @@ pub fn poll(
         };
         let result = response_value(reply);
         let dispatch = host.dispatch_callback(callback.clone(), &[result]);
-        let release = host.release_callback(callback);
+        let release = release_callback_if_unused(host, &state, callback);
         if let Err(error) = dispatch.and(release.map(|()| HostValue::Undefined)) {
             first_error.get_or_insert(error);
         }

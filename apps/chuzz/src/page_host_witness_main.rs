@@ -110,6 +110,7 @@ fn main() {
     chuzz::install_crypto_provider();
     chuzz::set_device_audio_enabled(false);
     let (mut host, signal, lifetime) = make_host();
+    webauthn_abort_checks(&mut host);
 
     // The conversion boundary retains nested structure, object identity, UTF-16
     // code units, and detached buffer state without going through JSON.
@@ -469,11 +470,52 @@ fn main() {
     assert!(host.poll(None).is_err());
     other.teardown_page_script_host();
     frame_and_teardown_checks();
+    socket_cleanup_checks();
     timer_wake_checks();
     page_host_socket_witness::run();
     println!(
         "PASS concrete page runtime: storage, fetch, timers, socket frames, media, GPU presentation/readback, teardown"
     );
+}
+
+fn socket_cleanup_checks() {
+    let (mut host, _, _) = make_host();
+    let released = host
+        .retain_callback(|_, _| panic!("released socket callback ran"))
+        .expect("retain socket callback to revoke");
+    let hits = Rc::new(Cell::new(0_u32));
+    let counter = Rc::clone(&hits);
+    let following = host
+        .retain_callback(move |_, _| {
+            counter.set(counter.get() + 1);
+            Ok(HostValue::Undefined)
+        })
+        .expect("retain following socket callback");
+    for (id, callback) in [(71, released.clone()), (72, following.clone())] {
+        host.invoke_intrinsic(
+            "__chuzzWsSubscribe",
+            &[number(id), HostValue::Object(HostObject::new(callback))],
+        )
+        .expect("subscribe socket cleanup fixture");
+        host.invoke_intrinsic(
+            "__chuzzWsConnect",
+            &[number(id), HostValue::Null, HostValue::Array(Vec::new())],
+        )
+        .expect("queue socket rejection");
+    }
+    host.release_callback(released)
+        .expect("revoke first socket callback");
+    assert!(
+        host.poll(None).is_err(),
+        "revoked callback error was hidden"
+    );
+    assert!(hits.get() > 0, "later socket events were starved");
+    assert_eq!(
+        host.callback_count(),
+        0,
+        "close cleanup stopped after an error"
+    );
+    assert!(host.invoke_callback(following, &[]).is_err());
 }
 
 fn frame_and_teardown_checks() {
@@ -518,7 +560,8 @@ fn frame_and_teardown_checks() {
         .expect("read native video frame");
     assert!(matches!(acquired, HostValue::Record(_)));
 
-    // A callback failure in an earlier subsystem cannot starve raster delivery.
+    // Queue failures and successful completions in multiple host subsystems.
+    // The poll must continue through each queue and still deliver the raster.
     let failing = host
         .retain_callback(|_, _| {
             Err(chuzz::script_host::HostError::new(
@@ -537,6 +580,61 @@ fn frame_and_teardown_checks() {
         &[number(55), HostValue::Null, HostValue::Array(Vec::new())],
     )
     .expect("queue callback failure");
+    let socket_successes = Rc::new(Cell::new(0_u32));
+    let socket_success_count = Rc::clone(&socket_successes);
+    let socket_success = host
+        .retain_callback(move |_, _| {
+            socket_success_count.set(socket_success_count.get() + 1);
+            Ok(HostValue::Undefined)
+        })
+        .expect("retain following socket callback");
+    host.invoke_intrinsic(
+        "__chuzzWsSubscribe",
+        &[
+            number(56),
+            HostValue::Object(HostObject::new(socket_success)),
+        ],
+    )
+    .expect("subscribe following socket callback");
+    host.invoke_intrinsic(
+        "__chuzzWsConnect",
+        &[number(56), HostValue::Null, HostValue::Array(Vec::new())],
+    )
+    .expect("queue following socket completion");
+
+    let fetch_failures = Rc::new(Cell::new(0_u32));
+    let fetch_failure_count = Rc::clone(&fetch_failures);
+    let fetch_failure = host
+        .retain_callback(move |_, _| {
+            fetch_failure_count.set(fetch_failure_count.get() + 1);
+            Err(chuzz::script_host::HostError::new(
+                "Error",
+                "synthetic fetch callback failure",
+            ))
+        })
+        .expect("retain failing fetch callback");
+    let fetch_successes = Rc::new(Cell::new(0_u32));
+    let fetch_success_count = Rc::clone(&fetch_successes);
+    let fetch_success = host
+        .retain_callback(move |_, args| {
+            assert!(matches!(args.first(), Some(HostValue::Record(_))));
+            fetch_success_count.set(fetch_success_count.get() + 1);
+            Ok(HostValue::Undefined)
+        })
+        .expect("retain following fetch callback");
+    for callback in [fetch_failure, fetch_success] {
+        host.invoke_intrinsic(
+            "__chuzzNetAsync",
+            &[
+                record([
+                    ("url", text("data:text/plain,queued")),
+                    ("method", text("GET")),
+                ]),
+                HostValue::Object(HostObject::new(callback)),
+            ],
+        )
+        .expect("queue fetch completion");
+    }
     host.invoke_intrinsic(
         "__chuzzCanvas2D",
         &[structured(serde_json::json!({
@@ -552,12 +650,31 @@ fn frame_and_teardown_checks() {
         Ok(())
     })
     .expect("attach renderer sink");
-    assert!(host.poll(None).is_err());
-    assert_eq!(delivered.get(), 1);
-    for _ in 0..3 {
-        host.poll(None)
-            .expect("idle host turn after callback failure");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut saw_callback_error = false;
+    while delivered.get() == 0
+        || socket_successes.get() == 0
+        || fetch_successes.get() == 0
+        || fetch_failures.get() == 0
+    {
+        assert!(Instant::now() < deadline, "queued host completions stalled");
+        saw_callback_error |= host.poll(None).is_err();
+        nagoya::block_on(nagoya::sleep(Duration::from_millis(1)));
     }
+    assert!(
+        saw_callback_error,
+        "queued callback failures were not reported"
+    );
+    assert_eq!(
+        fetch_failures.get(),
+        1,
+        "failed fetch completion is one-shot"
+    );
+    assert_eq!(fetch_successes.get(), 1, "later fetch completion must run");
+    assert!(
+        socket_successes.get() >= 1,
+        "later socket completion must run"
+    );
     assert_eq!(
         delivered.get(),
         1,
@@ -626,11 +743,36 @@ fn frame_and_teardown_checks() {
         })
         .expect("root until teardown");
     assert!(weak.upgrade().is_some());
+    let pending_capture = Rc::new(());
+    let pending_weak = Rc::downgrade(&pending_capture);
+    let pending_hits = Rc::new(Cell::new(0_u32));
+    let pending_counter = Rc::clone(&pending_hits);
+    let pending_callback = host
+        .retain_callback(move |_, _| {
+            let _root = &pending_capture;
+            pending_counter.set(pending_counter.get() + 1);
+            Ok(HostValue::Undefined)
+        })
+        .expect("retain callback for pending fetch");
+    host.invoke_intrinsic(
+        "__chuzzNetAsync",
+        &[
+            record([
+                ("url", text("data:text/plain,teardown")),
+                ("method", text("GET")),
+            ]),
+            HostValue::Object(HostObject::new(pending_callback)),
+        ],
+    )
+    .expect("queue fetch before teardown");
+    assert!(pending_weak.upgrade().is_some());
     host.teardown_page_script_host();
     assert!(
         weak.upgrade().is_none(),
         "surviving IDs must not retain callables"
     );
+    assert!(pending_weak.upgrade().is_none());
+    assert_eq!(pending_hits.get(), 0, "teardown dispatched a pending fetch");
     assert!(signal.aborted());
     assert_eq!(host.callback_count(), 0);
     assert!(host.invoke_callback(id, &[]).is_err());
@@ -656,10 +798,23 @@ fn session_timer_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {
         ),
         "native"
     );
+    let exhausted_budget = chuzz::tab_stash::SleepingBudget::new(1);
     assert!(
-        host.capture_session(&chuzz::tab_stash::SleepingBudget::new(1))
+        host.capture_session(&exhausted_budget)
             .expect("snapshot with no budget")
             .is_none()
+    );
+    assert_eq!(
+        exhausted_budget.used(),
+        0,
+        "rejected snapshot must not charge budget"
+    );
+    assert_eq!(
+        expect_text(
+            host.invoke_intrinsic("__chuzzSessionGetItem", &[text("seed")])
+                .expect("rejected snapshot preserves live storage")
+        ),
+        "native"
     );
     let budget = chuzz::tab_stash::SleepingBudget::new(64 * 1024);
     let captured = host
@@ -753,6 +908,39 @@ fn session_timer_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {
     );
 }
 
+fn webauthn_abort_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {
+    let baseline = host.callback_count();
+    for id in 10_000..10_070 {
+        let root = Rc::new(());
+        let weak = Rc::downgrade(&root);
+        let callback = host
+            .retain_callback(move |_, _| {
+                let _root = &root;
+                panic!("aborted credential callback was dispatched")
+            })
+            .expect("retain credential callback");
+        host.invoke_intrinsic(
+            "__chuzzWebauthnSubscribe",
+            &[
+                number(id),
+                HostValue::Object(HostObject::new(callback.clone())),
+            ],
+        )
+        .expect("subscribe credential request");
+        host.invoke_intrinsic(
+            "__chuzzPlatformCall",
+            &[structured(
+                serde_json::json!({"op":"webauthn-abort", "id":id}),
+            )],
+        )
+        .expect("abort credential request");
+        assert!(weak.upgrade().is_none(), "abort retained the callable root");
+        assert_eq!(host.callback_count(), baseline);
+        assert!(host.invoke_callback(callback, &[]).is_err());
+    }
+    host.poll(None).expect("poll after credential cancellation");
+}
+
 fn queued_fetch_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {
     // Async fetch completes through the queued native network path.
     let async_reply = Rc::new(Cell::new(false));
@@ -787,6 +975,77 @@ fn queued_fetch_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {
     )
     .expect("queue async data URL fetch");
     poll_until(host, || async_reply.get(), "async fetch did not complete");
+
+    let cancelled_hits = Rc::new(Cell::new(0_u32));
+    let cancelled_counter = Rc::clone(&cancelled_hits);
+    let cancelled_callback = host
+        .retain_callback(move |_, _| {
+            cancelled_counter.set(cancelled_counter.get() + 1);
+            Ok(HostValue::Undefined)
+        })
+        .expect("retain cancellable fetch callback");
+    let request_id = expect_number(
+        host.invoke_intrinsic(
+            "__chuzzNetAsync",
+            &[
+                record([
+                    ("url", text("data:text/plain,cancelled")),
+                    ("method", text("GET")),
+                ]),
+                HostValue::Object(HostObject::new(cancelled_callback.clone())),
+            ],
+        )
+        .expect("queue cancellable fetch"),
+    );
+    host.invoke_intrinsic("__chuzzNetForget", &[number(request_id)])
+        .expect("cancel fetch callback delivery");
+    assert!(host.invoke_callback(cancelled_callback, &[]).is_err());
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < deadline {
+        host.poll(None).expect("poll after fetch cancellation");
+        assert_eq!(cancelled_hits.get(), 0, "forgotten fetch callback ran");
+        nagoya::block_on(nagoya::sleep(Duration::from_millis(1)));
+    }
+
+    // Sharing one root across queued requests must keep it callable until the
+    // final completion, including when one request forgets its delivery.
+    for forget_first in [false, true] {
+        let hits = Rc::new(Cell::new(0_u32));
+        let counter = Rc::clone(&hits);
+        let callback = host
+            .retain_callback(move |_, _| {
+                counter.set(counter.get() + 1);
+                Ok(HostValue::Undefined)
+            })
+            .expect("retain shared fetch callback");
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            ids.push(expect_number(
+                host.invoke_intrinsic(
+                    "__chuzzNetAsync",
+                    &[
+                        record([
+                            ("url", text("data:text/plain,shared")),
+                            ("method", text("GET")),
+                        ]),
+                        HostValue::Object(HostObject::new(callback.clone())),
+                    ],
+                )
+                .expect("queue fetch sharing a callback"),
+            ));
+        }
+        if forget_first {
+            host.invoke_intrinsic("__chuzzNetForget", &[number(ids[0])])
+                .expect("forget one shared callback delivery");
+        }
+        let expected = if forget_first { 1 } else { 2 };
+        poll_until(
+            host,
+            || hits.get() == expected,
+            "shared fetch callback stalled",
+        );
+        assert!(host.invoke_callback(callback, &[]).is_err());
+    }
 }
 
 fn gpu_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {

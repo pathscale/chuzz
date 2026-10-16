@@ -137,17 +137,26 @@ pub fn poll(host: &mut dyn ChuzzScriptHost, waker: Option<&Waker>) -> Result<boo
     if events.is_empty() {
         return Ok(false);
     }
-    let callbacks = state.callbacks.borrow().clone();
+    let mut first_error = None;
     for (context_id, node) in events {
         let args = [
             HostValue::Number(context_id as f64),
             HostValue::Number(node as f64),
         ];
+        // A callback can replace its subscription while running. Take the
+        // current roots per event so later events do not dispatch a released
+        // callback retained only by this poll's batch snapshot.
+        let callbacks = state.callbacks.borrow().clone();
         for callback in &callbacks {
-            host.dispatch_callback(callback.clone(), &args)?;
+            if let Err(error) = host.dispatch_callback(callback.clone(), &args) {
+                first_error.get_or_insert(error);
+            }
         }
     }
-    Ok(true)
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(true),
+    }
 }
 
 pub fn install(

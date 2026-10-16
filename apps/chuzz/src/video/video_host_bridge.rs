@@ -322,9 +322,6 @@ pub fn poll(
         }
     }
     let changed = !updates.is_empty();
-    let callback = host
-        .state("chuzz.video.callback")
-        .and_then(|object| object.downcast_ref::<HostCallbackId>().cloned());
     let mut error = None;
     for update in updates {
         if let Err(cause) = host.deliver_frame(HostFrame {
@@ -335,6 +332,9 @@ pub fn poll(
         }) {
             error.get_or_insert(cause);
         }
+        let callback = host
+            .state("chuzz.video.callback")
+            .and_then(|object| object.downcast_ref::<HostCallbackId>().cloned());
         if let Some(callback) = &callback
             && let Err(cause) = host.dispatch_callback(
                 callback.clone(),
