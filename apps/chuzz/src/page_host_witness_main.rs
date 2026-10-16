@@ -495,7 +495,7 @@ fn main() {
     timer_wake_checks();
     page_host_socket_witness::run();
     println!(
-        "PASS concrete page runtime: storage, fetch, timers, socket frames, media, GPU presentation/readback, teardown"
+        "PASS native host adapters: storage, fetch, timers, socket frames, media, GPU presentation/readback, teardown; page guest execution not verified"
     );
 }
 
@@ -958,6 +958,36 @@ fn session_timer_checks(host: &mut page_script_host::ChuzzPageRuntimeHost) {
         pair.key.units() == "count".encode_utf16().collect::<Vec<_>>()
             && pair.value.units() == "3".encode_utf16().collect::<Vec<_>>()
     }));
+
+    // The literal prototype-named key remains ordinary storage data through
+    // native writes, reads, and session snapshots.
+    host.invoke_intrinsic(
+        "__chuzzSessionSetItem",
+        &[text("__proto__"), text("stored-value")],
+    )
+    .expect("store prototype-named key");
+    assert_eq!(
+        expect_text(
+            host.invoke_intrinsic("__chuzzSessionGetItem", &[text("__proto__")])
+                .expect("read prototype-named key")
+        ),
+        "stored-value"
+    );
+    let captured_with_proto = host
+        .capture_session(&budget)
+        .expect("capture prototype-named key")
+        .expect("prototype-named key snapshot");
+    assert!(captured_with_proto.pairs().iter().any(|pair| {
+        pair.key.units() == "__proto__".encode_utf16().collect::<Vec<_>>()
+            && pair.value.units() == "stored-value".encode_utf16().collect::<Vec<_>>()
+    }));
+    host.invoke_intrinsic("__chuzzSessionRemoveItem", &[text("__proto__")])
+        .expect("remove prototype-named key");
+    assert!(matches!(
+        host.invoke_intrinsic("__chuzzSessionGetItem", &[text("__proto__")])
+            .expect("read removed prototype-named key"),
+        HostValue::Null
+    ));
 
     // Session storage carries lone UTF-16 surrogates through the native store.
     let lone = HostValue::Utf16(Rc::from([0xd800_u16, b'x' as u16]));
