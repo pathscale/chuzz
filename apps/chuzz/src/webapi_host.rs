@@ -125,7 +125,20 @@ pub fn dispatch(
 ) -> Result<HostValue, HostError> {
     let realm = realm(host)?;
     let operation = operation_from_arg(args)?;
+    let aborted_request = match &operation {
+        super::Operation::WebauthnAbort { id } => Some(*id),
+        _ => None,
+    };
     let reply = super::dispatch(&realm.native, operation).map_err(type_error)?;
+    if let Some(id) = aborted_request {
+        realm
+            .pending
+            .borrow_mut()
+            .retain(|(pending_id, _)| *pending_id != id);
+        if let Some(callback) = realm.callbacks.borrow_mut().remove(&id) {
+            host.release_callback(callback)?;
+        }
+    }
     match reply {
         super::Reply::Random(bytes) => Ok(HostValue::Buffer(crate::script_host::HostBuffer::new(
             bytes.to_vec(),

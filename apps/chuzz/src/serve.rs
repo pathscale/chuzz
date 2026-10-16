@@ -1295,7 +1295,7 @@ fn snapshot_storage(document: &mut ScriptDocument, origin: &str) -> StoredState 
         let script = format!(
             "(function () {{
                try {{
-                 var out = {{}};
+                 var out = Object.create(null);
                  for (var i = 0; i < {store}.length; i++) {{
                    var key = {store}.key(i);
                    if (key !== null) {{ out[key] = {store}.getItem(key); }}

@@ -248,8 +248,11 @@ pub fn poll(host: &mut dyn ChuzzScriptHost, waker: Option<&Waker>) -> Result<boo
                     None
                 }
             };
-            if let Some(callback) = callback {
-                host.release_callback(callback)?;
+            if let Some(callback) = callback
+                && let Err(error) = host.release_callback(callback)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
         }
     }
