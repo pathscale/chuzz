@@ -523,7 +523,7 @@ impl Device {
                     let store = se_fido_store::FileStore::open(&directory, &key, SystemEntropy)
                         .map_err(|_| Error::unknown())?;
                     Ok(Self::SecureEnclave(Box::new(Authenticator::new(
-                        SeBackend::new(StorageMode::Blob, AccessPolicy::None),
+                        SeBackend::new(StorageMode::Keychain, AccessPolicy::None),
                         store,
                         EnclavePresence,
                         AuthenticatorConfig::default(),
