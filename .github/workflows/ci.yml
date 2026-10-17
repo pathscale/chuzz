@@ -40,6 +40,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Reject conflict markers
+        shell: bash
+        run: |
+          if git grep -n -a -E '^([<]{7}([[:space:]]|$)|[=]{7}[[:space:]]*$|[>]{7}([[:space:]]|$))' -- .; then
+            echo "::error::Conflict markers found in tracked files."
+            exit 1
+          else
+            status=$?
+            if [ "$status" -ne 1 ]; then
+              echo "::error::Conflict-marker scan failed."
+              exit "$status"
+            fi
+          fi
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:

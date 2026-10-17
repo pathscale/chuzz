@@ -1,7 +1,6 @@
 use std::io::Cursor;
 
-use blitz_dom::Document as _;
-use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
+use blitz_dom::node::RasterImageData;
 
 use super::buffer::map_read;
 use super::resources::{ALLOCATION_LIMIT, checked, decode};
@@ -10,7 +9,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Images {
     pub bitmaps: HashMap<u64, Arc<RasterImageData>>,
-    snapshots: HashMap<u64, Arc<RasterImageData>>,
+    pub(super) snapshots: HashMap<u64, Arc<RasterImageData>>,
     pub canvases: HashMap<u64, (u64, Arc<RasterImageData>)>,
     pub paint: HashMap<u64, Arc<RasterImageData>>,
     pub image_cache: Arc<Mutex<anyrender_vello_cpu::ImageCache>>,
@@ -135,16 +134,16 @@ fn unpremultiply(source: &[u8], target: &mut [u8]) {
 }
 
 fn decode_raster(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
-    let make_reader = || {
-        image::ImageReader::new(Cursor::new(data))
-            .with_guessed_format()
-            .map_err(|error| GpuError::validation(error.to_string()))
-    };
-    let (width, height) = make_reader()?
+    // Encoded sources arrive as bytes (Blob.type is optional and not a reliable
+    // decoder selector), so choose the decoder from the format signature.
+    let format =
+        image::guess_format(data).map_err(|error| GpuError::validation(error.to_string()))?;
+    let make_reader = || image::ImageReader::with_format(Cursor::new(data), format);
+    let (width, height) = make_reader()
         .into_dimensions()
         .map_err(|error| GpuError::validation(error.to_string()))?;
     byte_count(width, height)?;
-    let mut reader = make_reader()?;
+    let mut reader = make_reader();
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(ALLOCATION_LIMIT);
     reader.limits(limits);
@@ -187,12 +186,12 @@ fn decode_svg(bytes: &[u8]) -> Result<Option<Arc<RasterImageData>>, GpuError> {
     if !might_be_svg(bytes) {
         return Ok(None);
     }
-    let tree =
-        match anyrender_svg::usvg::Tree::from_data(bytes, &anyrender_svg::usvg::Options::default())
-        {
-            Ok(tree) => tree,
-            Err(_) => return Ok(None),
-        };
+    let mut options = anyrender_svg::usvg::Options::default();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    let tree = match anyrender_svg::usvg::Tree::from_data(bytes, &options) {
+        Ok(tree) => tree,
+        Err(_) => return Ok(None),
+    };
     let size = tree.size();
     let width = svg_pixels(size.width())?;
     let height = svg_pixels(size.height())?;
@@ -224,79 +223,7 @@ fn decode_svg(_bytes: &[u8]) -> Result<Option<Arc<RasterImageData>>, GpuError> {
     Ok(None)
 }
 
-fn marker_matches(element: &blitz_dom::node::ElementData, marker: &str) -> bool {
-    element.attrs().iter().any(|attribute| {
-        attribute.name.local.as_ref() == "data-chuzz-gpu-source"
-            && attribute.value.as_ref() == marker
-    })
-}
-
-fn snapshot(document: &blitz_script::ScriptDocument, marker: u64) -> Option<Arc<RasterImageData>> {
-    let marker = marker.to_string();
-    let document = document.inner();
-    document.tree().iter().find_map(|(_, node)| {
-        let element = node.element_data()?;
-        if !marker_matches(element, &marker) {
-            return None;
-        }
-        // RasterImageData::clone clones its Blob, sharing the decoded pixels.
-        element.raster_image_data().cloned().map(Arc::new)
-    })
-}
-
-fn paint(
-    document: &mut blitz_script::ScriptDocument,
-    marker: u64,
-    image: Arc<RasterImageData>,
-) -> bool {
-    let marker = marker.to_string();
-    let mut document = document.inner_mut();
-    let id = document.tree().iter().find_map(|(id, node)| {
-        node.element_data()
-            .filter(|element| marker_matches(element, &marker))
-            .map(|_| id)
-    });
-    let Some(node) = id.and_then(|id| document.get_node_mut(id)) else {
-        return false;
-    };
-    let Some(element) = node.element_data_mut() else {
-        return false;
-    };
-    element.special_data = SpecialElementData::Image(Box::new(ImageData::Raster((*image).clone())));
-    node.cache_mut().clear();
-    if let Some(damage) = node.damage() {
-        node.insert_damage(damage.union(damage.complement()));
-    }
-    node.set_dirty_descendants();
-    node.mark_ancestors_dirty();
-    true
-}
-
 impl Bridge {
-    pub(super) fn prepare_images(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        let (incoming, images) = {
-            let mut state = self.state();
-            let live = state
-                .in_flight
-                .keys()
-                .copied()
-                .collect::<std::collections::HashSet<_>>();
-            state.images.snapshots.retain(|id, _| live.contains(id));
-            (
-                std::mem::take(&mut state.incoming),
-                std::mem::take(&mut state.images.paint),
-            )
-        };
-        let mut changed = false;
-        for (marker, image) in images {
-            changed |= paint(document, marker, image);
-        }
-        for request in incoming {
-            self.prepare_image_request(request, |marker| snapshot(document, marker));
-        }
-        changed
-    }
-
     pub(super) fn prepare_image_request(
         &self,
         mut request: Request,
@@ -827,5 +754,89 @@ impl DeviceConnection {
         })
         .await?;
         Ok(Value::Null)
+    }
+}
+#[cfg(test)]
+mod fidelity_tests {
+    use super::{BitmapOptions, RasterImageData, bitmap, decode_raster};
+    use std::sync::Arc;
+
+    fn decode(bytes: &[u8]) -> Arc<RasterImageData> {
+        decode_raster(bytes).unwrap_or_else(|error| panic!("image decode: {}", error.message))
+    }
+
+    fn pixels(image: &RasterImageData) -> &[u8] {
+        image.data.data()
+    }
+
+    fn flipped(image: Arc<RasterImageData>) -> Arc<RasterImageData> {
+        bitmap(
+            image,
+            &BitmapOptions {
+                source: None,
+                crop: None,
+                flip_y: true,
+                resize_width: None,
+                resize_height: None,
+                resize_quality: "low".to_owned(),
+                read_pixels: false,
+            },
+        )
+        .unwrap_or_else(|error| panic!("vertical flip: {}", error.message))
+    }
+
+    #[test]
+    fn png_keeps_straight_rgba_and_flip_rows() {
+        let expected = [
+            227, 31, 73, 0, 19, 83, 211, 255, 37, 191, 59, 0, 221, 149, 13, 255,
+        ];
+        let image = decode(include_bytes!("qa/fidelity/images/hidden-rgb.png"));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(pixels(&image), expected.as_slice());
+        let flipped_expected = [
+            37, 191, 59, 0, 221, 149, 13, 255, 227, 31, 73, 0, 19, 83, 211, 255,
+        ];
+        assert_eq!(pixels(&flipped(image)), flipped_expected.as_slice());
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn lossless_webp_keeps_straight_rgba_and_flip_rows() {
+        let expected = [
+            227, 31, 73, 0, 19, 83, 211, 255, 37, 191, 59, 0, 221, 149, 13, 255,
+        ];
+        let image = decode(include_bytes!("qa/fidelity/images/hidden-rgb-vp8l.webp"));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(pixels(&image), expected.as_slice());
+        let flipped_expected = [
+            37, 191, 59, 0, 221, 149, 13, 255, 227, 31, 73, 0, 19, 83, 211, 255,
+        ];
+        assert_eq!(pixels(&flipped(image)), flipped_expected.as_slice());
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn lossy_webp_alpha_matches_decoded_png_and_flip_y() {
+        let image = decode(include_bytes!(
+            "qa/fidelity/images/hidden-rgb-vp8-alpha.webp"
+        ));
+        let png = decode(include_bytes!(
+            "qa/fidelity/images/hidden-rgb-vp8-decoded.png"
+        ));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!((png.width, png.height), (2, 2));
+        assert_eq!(pixels(&image), pixels(&png));
+        assert_eq!(
+            [
+                pixels(&image)[3],
+                pixels(&image)[7],
+                pixels(&image)[11],
+                pixels(&image)[15]
+            ],
+            [0, 255, 0, 255]
+        );
+        assert!(pixels(&image)[0..3].iter().any(|&channel| channel != 0));
+        assert!(pixels(&image)[8..11].iter().any(|&channel| channel != 0));
+        assert_eq!(pixels(&flipped(image)), pixels(&flipped(png)));
     }
 }

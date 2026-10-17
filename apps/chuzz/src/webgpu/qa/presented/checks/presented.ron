@@ -1,0 +1,18 @@
+[
+    (
+        id: "sampled-textures-presented", group: "webgpu", what: "data and external image uploads sample correct pixels without validation errors",
+        click: Some("#run"), subject: "READY: sampled textures presented", expect: PaintsNamed, outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "data-presented-capture", group: "webgpu", what: "a submitted data texture canvas remains capturable after painting stops",
+        subject: "canvas:#data", expect: GpuTextureInk, outcome_timeout_ms: 5000,
+    ),
+    (
+        id: "external-presented-capture", group: "webgpu", what: "a submitted external image canvas remains capturable after painting stops",
+        subject: "canvas:#external", expect: GpuTextureInk, outcome_timeout_ms: 5000,
+    ),
+    (
+        id: "data-presented-recapture", group: "webgpu", what: "capturing a presented canvas does not consume its pixels",
+        subject: "canvas:#data", expect: GpuTextureInk, outcome_timeout_ms: 5000,
+    ),
+]

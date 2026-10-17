@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -11,7 +11,7 @@ use blitz_traits::shell::{ClipboardError, FileDialogFilter, ShellProvider};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::decode::decode_body;
-use crate::document_loader::{NetProvider, install_web_api_shim};
+use crate::document_loader::NetProvider;
 use crate::nav::{NEW_TAB_URL, display_title, request_from_input};
 use crate::tab_records::{DocumentGeneration, Residency, TabId, TabRegistry};
 #[path = "tab_lifecycle.rs"]
@@ -47,6 +47,8 @@ pub struct FrontendTab {
     preview_available: bool,
     runtime_released: bool,
     preview_age_ms: Option<u64>,
+    consecutive_document_failures: u32,
+    recovery_degraded: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -88,11 +90,14 @@ struct MountedPage {
     script: bool,
 }
 
+const DOCUMENT_RECOVERY_FAILURE_LIMIT: u32 = 3;
+
 struct TabState {
     id: u64,
     mounted_generation: u64,
     mounted: Option<MountedPage>,
     history: Vec<Request>,
+    pending_navigation: Option<Request>,
     current: usize,
     title: String,
     loading: bool,
@@ -100,13 +105,32 @@ struct TabState {
     /// is in flight, so the previous page's outcome never shows against the
     /// new one's address.
     outcome: PageOutcome,
+    consecutive_document_failures: u32,
     generation: u64,
     life: TabLife,
 }
 
 impl TabState {
+    fn recovery_degraded(&self) -> bool {
+        self.consecutive_document_failures >= DOCUMENT_RECOVERY_FAILURE_LIMIT
+    }
+
+    fn record_document_result(&mut self, successful: bool) -> bool {
+        let was_degraded = self.recovery_degraded();
+        self.consecutive_document_failures = if successful {
+            0
+        } else {
+            self.consecutive_document_failures
+                .saturating_add(1)
+                .min(DOCUMENT_RECOVERY_FAILURE_LIMIT)
+        };
+        !was_degraded && self.recovery_degraded()
+    }
+
     fn request(&self) -> &Request {
-        &self.history[self.current]
+        self.pending_navigation
+            .as_ref()
+            .unwrap_or(&self.history[self.current])
     }
 
     fn snapshot(&self) -> FrontendTab {
@@ -132,6 +156,8 @@ impl TabState {
             },
             lifecycle: self.life.phase,
             lifecycle_reason: self.life.reason,
+            consecutive_document_failures: self.consecutive_document_failures,
+            recovery_degraded: self.recovery_degraded(),
             visible: self.life.visible,
             preview_available: self.life.preview.is_some(),
             preview_age_ms: self
@@ -224,6 +250,7 @@ struct PageBundle {
     resolved_url: String,
     source: PageSource,
     outcome: PageOutcome,
+    navigation_loaded: bool,
 }
 
 /// How a load went, in the five states the tab indicator can show.
@@ -263,10 +290,11 @@ impl PageOutcome {
 enum PageSource {
     Html {
         html: String,
-        scripts: HashMap<Url, String>,
     },
     /// The bytes a server sent, shown rather than rendered.
-    Source { text: String },
+    Source {
+        text: String,
+    },
 }
 
 /// How long the window waits for a script the page asked for while running.
@@ -281,8 +309,6 @@ enum PageSource {
 ///
 /// The real answer is an asynchronous script-loading path in the engine, which
 /// would not need to choose.
-const WINDOW_SCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// How long one `fetch` or `XMLHttpRequest` from the page may take.
 ///
 /// Generous compared to the script deadline, and it can afford to be: this one
@@ -304,11 +330,11 @@ struct BrowserInner {
 
 /// Queue embedded-page redraws without blocking network workers on AppKit.
 ///
-/// Boa resolves a runtime-discovered module synchronously on the UI thread.
-/// A direct macOS redraw from every resource-completion worker also waits for
-/// that UI thread, so a page with many images can occupy the runtime pool with
-/// workers waiting for the same thread that is waiting for the module fetch.
-/// Coalescing redraws onto izumo's document-thread queue breaks that cycle.
+/// Runtime module and resource completion can request redraws from workers.
+/// A direct macOS redraw from each worker waits for the UI thread, so a page
+/// with many resources can occupy the runtime pool with workers waiting for
+/// the same thread. Coalescing redraws onto izumo's document-thread queue
+/// breaks that cycle.
 struct QueuedRedrawShell {
     inner: Arc<dyn ShellProvider>,
     app: ChuzzAppHandle,
@@ -429,10 +455,12 @@ impl Browser {
                     mounted_generation: 0,
                     mounted: None,
                     history: vec![crate::nav::browser_request(first)],
+                    pending_navigation: None,
                     current: 0,
                     title: String::new(),
                     loading: false,
                     outcome: PageOutcome::Blank,
+                    consecutive_document_failures: 0,
                     generation: 0,
                     life: TabLife::default(),
                 }],
@@ -476,7 +504,7 @@ impl Browser {
         self.schedule_current(0, false);
     }
 
-    pub fn install_document_lifecycle(&self, document: &mut blitz_script::ScriptDocument) {
+    pub fn install_document_lifecycle(&self, document: &mut crate::page_document::PageDocument) {
         self.install_surface_lifecycle();
         #[cfg(unix)]
         {
@@ -541,21 +569,25 @@ impl Browser {
             izumo::set_page_diagnostics_handler(|document, request| {
                 use blitz_control_protocol::{DebugResponse, DiagnosticsRequest};
                 match request {
-                    DiagnosticsRequest::WebGpuInspect => crate::webgpu::inspect_gpu(document)
-                        .map(DebugResponse::WebGpu)
-                        .unwrap_or_else(DebugResponse::Error),
-                    DiagnosticsRequest::WebGpuCapture { target } => {
-                        crate::webgpu::capture_gpu(document, &target)
-                            .map(DebugResponse::Captured)
-                            .unwrap_or_else(DebugResponse::Error)
+                    DiagnosticsRequest::Evaluate { script } => match (document
+                        as &mut dyn std::any::Any)
+                        .downcast_mut::<crate::page_document::PageDocument>()
+                        .ok_or_else(|| String::from("diagnostic target has no page runtime"))
+                        .and_then(|document| document.eval_json(&script))
+                    {
+                        Ok(value) => DebugResponse::Evaluated(value),
+                        Err(message) => DebugResponse::Error(
+                            blitz_control_protocol::target::error("scriptError", &message),
+                        ),
+                    },
+                    DiagnosticsRequest::WebGpuInspect
+                    | DiagnosticsRequest::WebGpuCapture { .. }
+                    | DiagnosticsRequest::WebGpuBuffer { .. } => {
+                        DebugResponse::Error(blitz_control_protocol::target::error(
+                            "unsupportedRequest",
+                            "GPU diagnostics require an engine DocumentHost adapter",
+                        ))
                     }
-                    DiagnosticsRequest::WebGpuBuffer {
-                        target,
-                        offset,
-                        length,
-                    } => crate::webgpu::capture_gpu_buffer(document, &target, offset, length)
-                        .map(DebugResponse::WebGpuBuffer)
-                        .unwrap_or_else(DebugResponse::Error),
                     _ => DebugResponse::Error(blitz_control_protocol::target::error(
                         "unsupportedRequest",
                         "unsupported page diagnostic",
@@ -565,31 +597,65 @@ impl Browser {
         }
         let browser = self.clone();
         let mut pending = VecDeque::new();
-        document.add_poll_hook(move |document, _| browser.poll_document(document, &mut pending));
+        let host = document.application_host();
+        host.add_poll_hook(
+            document,
+            Box::new(move |document, _| {
+                (document as &mut dyn std::any::Any)
+                    .downcast_mut::<crate::page_document::PageDocument>()
+                    .is_some_and(|document| browser.poll_document(document, &mut pending))
+            }),
+        );
     }
 
     pub(crate) fn net(&self) -> Arc<NetProvider> {
         Arc::clone(&self.0.net.lock().unwrap())
     }
 
-    /// Open the process-wide profile jar before the first tab is scheduled.
+    /// Open the profile jar and optional cache before the first tab is scheduled.
     pub async fn open_cookie_profile(
         &self,
         directory: impl AsRef<std::path::Path>,
     ) -> Result<(), crate::cookie_store::CookieStoreError> {
-        let cookies = Arc::new(crate::cookie_store::BrowserCookieStore::open(directory).await?);
+        let directory = directory.as_ref().to_owned();
+        let cookies = Arc::new(crate::cookie_store::BrowserCookieStore::open(&directory).await?);
+        let cache = match nagoya::spawn(
+            async move { blitz_net::PrivateCache::open(directory).await },
+        )
+        .await
+        {
+            Some(Ok(cache)) => Some(cache),
+            Some(Err(error)) => {
+                eprintln!("chuzz: could not open HTTP cache: {error}");
+                None
+            }
+            None => {
+                eprintln!("chuzz: HTTP cache opener was cancelled");
+                None
+            }
+        };
         let user_agent_spoofing = *self.0.user_agent_spoofing.lock().unwrap();
-        *self.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_and_cookies(
+        *self.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_cookies_and_cache(
             None,
             &crate::identity::user_agent_for_spoofing(user_agent_spoofing),
             cookies,
+            cache,
         ));
         Ok(())
     }
 
-    /// Drain cookie writes during orderly application shutdown.
+    /// Drain profile writes during orderly application shutdown.
     pub async fn flush_cookie_store(&self) -> Result<(), crate::cookie_store::CookieStoreError> {
-        self.net().cookie_store().flush().await
+        let net = self.net();
+        let cookies = net.cookie_store().flush().await;
+        if let Some(cache) = net.http_cache() {
+            match nagoya::spawn(async move { cache.flush().await }).await {
+                Some(Ok(())) => {}
+                Some(Err(error)) => eprintln!("chuzz: could not flush HTTP cache: {error}"),
+                None => eprintln!("chuzz: HTTP cache flush was cancelled"),
+            }
+        }
+        cookies
     }
 
     fn app(&self) -> Option<ChuzzAppHandle> {
@@ -658,11 +724,17 @@ impl Browser {
     }
 
     fn schedule_current(&self, tab_id: u64, revalidate: bool) {
+        let net = self.net();
         let (request, generation) = {
             let mut state = self.0.state.lock().unwrap();
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
                 return;
             };
+            tab.generation = tab
+                .generation
+                .checked_add(1)
+                .expect("document generation exhausted");
+            let generation = tab.generation;
             if tab.life.phase == TabPhase::Discarding {
                 tab.life.wake_requested = true;
                 return;
@@ -677,6 +749,8 @@ impl Browser {
             {
                 tab.life.phase = TabPhase::RestoreFailed;
                 tab.life.reason = "reload-requires-resubmission";
+                tab.loading = false;
+                tab.outcome = PageOutcome::Error;
                 drop(state);
                 self.emit_state();
                 return;
@@ -686,23 +760,51 @@ impl Browser {
             if let Some(signal) = tab.life.load_signal.take() {
                 blitz_traits::net::AbortController { signal }.abort();
             }
-            let signal = blitz_traits::net::AbortSignal::default();
-            tab.life.load_signal = Some(signal);
-            tab.life.await_preview = false;
+
+            let replay = tab.pending_navigation.is_none();
+            let mut request = tab.request().clone();
+            if replay {
+                let non_browser_resubmission =
+                    !matches!(&request.initiator, blitz_traits::net::Initiator::Browser(_))
+                        && (!matches!(request.method.as_str(), "GET" | "HEAD")
+                            || !matches!(request.body, blitz_traits::net::Body::Empty));
+                let missing_document_source = matches!(
+                    &request.initiator,
+                    blitz_traits::net::Initiator::Document(_)
+                ) && request.initiator.document_url().is_none();
+                if non_browser_resubmission || missing_document_source {
+                    tab.life.phase = TabPhase::RestoreFailed;
+                    tab.life.reason = "reload-requires-resubmission";
+                    tab.loading = false;
+                    tab.outcome = PageOutcome::Error;
+                    drop(state);
+                    self.emit_state();
+                    return;
+                }
+                match &request.initiator {
+                    blitz_traits::net::Initiator::Browser(_) => {
+                        request.initiator = net.browser_initiator(request.url.clone());
+                    }
+                    blitz_traits::net::Initiator::Document(_) => {
+                        if let Some(source) = request.initiator.document_url().cloned() {
+                            request.initiator = request.initiator.child(source);
+                        }
+                    }
+                    blitz_traits::net::Initiator::Unknown => {}
+                }
+            }
+
             if tab.life.discarded && tab.mounted.is_none() {
                 tab.life.phase = TabPhase::Waking;
             } else if tab.mounted.is_some() {
                 tab.life.phase = TabPhase::Live;
             }
-            tab.generation = tab
-                .generation
-                .checked_add(1)
-                .expect("document generation exhausted");
+            tab.life.await_preview = false;
             tab.loading = true;
-
-            let mut request = tab.request().clone();
-            request.signal = tab.life.load_signal.clone();
-            (request, tab.generation)
+            let signal = blitz_traits::net::AbortSignal::default();
+            tab.life.load_signal = Some(signal.clone());
+            request.signal = Some(signal);
+            (request, generation)
         };
         self.0
             .state
@@ -723,9 +825,9 @@ impl Browser {
                 resolved_url: request.url.to_string(),
                 source: PageSource::Html {
                     html: error_html(&crate::wasm_retired::WasmUnsupported.to_string()),
-                    scripts: HashMap::new(),
                 },
                 outcome: PageOutcome::Error,
+                navigation_loaded: false,
             });
             self.wake_document();
             return;
@@ -739,20 +841,6 @@ impl Browser {
         });
     }
 
-    fn schedule_browser_navigation(&self, tab_id: u64, revalidate: bool) {
-        let net = self.net();
-        {
-            let mut state = self.0.state.lock().unwrap();
-            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
-                return;
-            };
-            let url = tab.request().url.clone();
-            let current = tab.current;
-            tab.history[current].initiator = net.browser_initiator(url);
-        }
-        self.schedule_current(tab_id, revalidate);
-    }
-
     fn navigate_request(&self, tab_id: u64, request: Request) -> bool {
         {
             let mut state = self.0.state.lock().unwrap();
@@ -760,22 +848,76 @@ impl Browser {
                 return false;
             };
             tab.life.navigate();
-            tab.history.truncate(tab.current + 1);
-            tab.history.push(request);
-            tab.current += 1;
-            if tab.history.len() > 128 {
-                tab.history.remove(0);
-                tab.current -= 1;
-            }
+            tab.pending_navigation = Some(request);
             tab.title.clear();
         }
         self.schedule_current(tab_id, false);
         true
     }
 
+    fn record_document_result(&self, tab_id: u64, generation: u64, successful: bool) {
+        let newly_degraded = {
+            let mut state = self.0.state.lock().unwrap();
+            let Some(tab) = state
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == tab_id && tab.generation == generation)
+            else {
+                return;
+            };
+            tab.record_document_result(successful)
+        };
+        if newly_degraded {
+            self.note(
+                "error",
+                "document-recovery-degraded",
+                format!(
+                    "document-recovery-degraded: tab {tab_id}, generation {generation}, \
+                     {DOCUMENT_RECOVERY_FAILURE_LIMIT} consecutive load/attach failures; \
+                     page-origin navigation is disabled; use reload or the address bar to recover"
+                ),
+            );
+        }
+    }
+
+    fn document_attach_failed(&self, tab_id: u64, generation: u64) -> bool {
+        {
+            let mut state = self.0.state.lock().unwrap();
+            let Some(tab) = state
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == tab_id && tab.generation == generation)
+            else {
+                return false;
+            };
+            tab.loading = false;
+            tab.outcome = PageOutcome::Error;
+            tab.pending_navigation = None;
+            tab.life.cancel_restore();
+            if let Some(signal) = tab.life.load_signal.take() {
+                blitz_traits::net::AbortController { signal }.abort();
+            }
+            if tab.life.phase == TabPhase::Waking {
+                tab.life.phase = TabPhase::RestoreFailed;
+                tab.life.reason = "document-attach-failed";
+                tab.life.preview_surface.take();
+            }
+        }
+        self.record_document_result(tab_id, generation, false);
+        self.note(
+            "error",
+            "page",
+            format!(
+                "document-attach-failed: tab {tab_id}, generation {generation}; \
+                 no automatic retry"
+            ),
+        );
+        true
+    }
+
     fn poll_document(
         &self,
-        ui: &mut blitz_script::ScriptDocument,
+        ui: &mut crate::page_document::PageDocument,
         pending: &mut VecDeque<PageBundle>,
     ) -> bool {
         pending.extend(self.0.completed.lock().unwrap().drain(..));
@@ -799,6 +941,58 @@ impl Browser {
                 retained.push_back(bundle);
                 continue;
             };
+
+            // Capture the departing realm before replacing its mount. Session
+            // buckets belong to the tab and origin, and survive ordinary links
+            // as well as the separate sleep/restore stash.
+            let old_mount = self
+                .0
+                .state
+                .lock()
+                .unwrap()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == bundle.tab_id)
+                .and_then(|tab| tab.mounted.as_ref().map(|mount| mount.mount_node_id));
+            if let Some(mount) = old_mount {
+                let previous = {
+                    let mut owner = ui.inner_mut();
+                    owner
+                        .subdoc_mut(NodeId::from_u64(mount))
+                        .and_then(|page| {
+                            (page as &mut dyn std::any::Any)
+                                .downcast_mut::<crate::page_document::PageDocument>()
+                        })
+                        .and_then(|page| {
+                            let origin = page.inner().url().origin();
+                            if !matches!(origin, url::Origin::Tuple(..)) {
+                                return None;
+                            }
+                            match page.capture_session(&self.0.sleeping_budget) {
+                                Ok(bucket) => Some((origin.ascii_serialization(), bucket)),
+                                Err(error) => {
+                                    self.note("warn", "session", error.to_string());
+                                    None
+                                }
+                            }
+                        })
+                };
+                if let Some((origin, bucket)) = previous
+                    && let Some(tab) =
+                        self.0.state.lock().unwrap().tabs.iter_mut().find(|tab| {
+                            tab.id == bundle.tab_id && tab.generation == bundle.generation
+                        })
+                {
+                    match bucket {
+                        Some(bucket) => {
+                            tab.life.sessions.insert(origin, bucket);
+                        }
+                        None => {
+                            tab.life.sessions.remove(&origin);
+                        }
+                    }
+                }
+            }
 
             let direct_shell = ui.inner().shell_provider.clone();
             let shell_provider: Arc<dyn ShellProvider> = match self.app() {
@@ -830,40 +1024,85 @@ impl Browser {
             };
             // Preserve the outcome established during loading.
             let outcome = bundle.outcome;
-            let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source {
-                PageSource::Html { html, scripts } => {
-                    let mut page = crate::webgpu::script_document(&html, make_config())
-                        .with_fetcher(crate::script_fetch::PageScripts::new(
-                            scripts,
-                            Arc::clone(&net),
-                            WINDOW_SCRIPT_DEADLINE,
-                        ));
-                    self.prepare_tab_page(
-                        &mut page,
-                        bundle.tab_id,
-                        bundle.generation,
-                        &bundle.resolved_url,
-                    );
-                    install_web_api_shim(&mut page, &net);
-                    crate::net_bridge::install(
-                        &mut page,
-                        Arc::clone(&net),
-                        WINDOW_NETWORK_DEADLINE,
-                        blitz_traits::net::Url::parse(&bundle.resolved_url).ok(),
-                    );
-                    page.execute_scripts();
-                    let title = page
-                        .inner()
-                        .find_title_node()
-                        .map(|node| node.text_content())
-                        .unwrap_or_default();
-                    (Box::new(page), title)
-                }
-                PageSource::Source { text } => {
-                    let page =
-                        blitz_html::HtmlDocument::from_html(&source_html(&text), make_config())
+            let script_document = matches!(&bundle.source, PageSource::Html { .. });
+            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (|| -> Result<(Box<dyn blitz_dom::Document>, String), String> {
+                    let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source
+                    {
+                        PageSource::Html { html } => {
+                            let base = Url::parse(&bundle.resolved_url).ok();
+                            let host_config = crate::script_host::HostInstallContext {
+                                net: Arc::clone(&net),
+                                base: base.clone(),
+                                deadline: WINDOW_NETWORK_DEADLINE,
+                                // Host timers and asynchronous bridge work
+                                // must wake a sleeping window even when the
+                                // document runtime has no task waker bound.
+                                wake: crate::net_bridge::PageWake::new(shell_provider.clone()),
+                                lifetime: Arc::clone(&lifetime),
+                                signal: page_signal.clone(),
+                                session_backing: base.as_ref().and_then(|base| {
+                                    self.0
+                                        .state
+                                        .lock()
+                                        .unwrap()
+                                        .tabs
+                                        .iter()
+                                        .find(|tab| {
+                                            tab.id == bundle.tab_id
+                                                && tab.generation == bundle.generation
+                                        })
+                                        .and_then(|tab| {
+                                            tab.life
+                                                .sessions
+                                                .get(&base.origin().ascii_serialization())
+                                                .cloned()
+                                        })
+                                }),
+                            };
+                            let mut page = crate::page_document::PageDocument::from_html(
+                                Arc::<str>::from(html),
+                                make_config(),
+                                host_config,
+                            )?;
+                            self.prepare_tab_page(
+                                &mut page,
+                                bundle.tab_id,
+                                bundle.generation,
+                                &bundle.resolved_url,
+                            )?;
+                            // PageDocument construction binds the native host
+                            // to this runtime; seed restore state before the
+                            // guest's first script runs in that same realm.
+                            page.execute_scripts()?;
+                            let title = page
+                                .inner()
+                                .find_title_node()
+                                .map(|node| node.text_content())
+                                .unwrap_or_default();
+                            (Box::new(page), title)
+                        }
+                        PageSource::Source { text } => {
+                            let page = blitz_html::HtmlDocument::from_html(
+                                &source_html(&text),
+                                make_config(),
+                            )
                             .into_inner();
-                    (Box::new(page), format!("source of {}", bundle.resolved_url))
+                            (Box::new(page), format!("source of {}", bundle.resolved_url))
+                        }
+                    };
+                    Ok((page, title))
+                })()
+            }));
+            let (page, title) = match prepared {
+                Ok(Ok(prepared)) => prepared,
+                Ok(Err(_)) => {
+                    changed |= self.document_attach_failed(bundle.tab_id, bundle.generation);
+                    continue;
+                }
+                Err(_) => {
+                    changed |= self.document_attach_failed(bundle.tab_id, bundle.generation);
+                    continue;
                 }
             };
             self.note(
@@ -886,6 +1125,7 @@ impl Browser {
                     .iter()
                     .any(|tab| tab.id == bundle.tab_id && tab.life.phase == TabPhase::Waking);
             if failed_wake {
+                self.record_document_result(bundle.tab_id, bundle.generation, false);
                 let receipt = page.dispose();
                 let mut state = self.0.state.lock().unwrap();
                 if let Some(tab) = state
@@ -917,8 +1157,26 @@ impl Browser {
                     .flatten()
                     .map(NodeId::as_u64),
                 document_id: page.id() as u64,
-                script: (&*page as &dyn std::any::Any).is::<blitz_script::ScriptDocument>(),
+                script: script_document,
             };
+            let still_current = {
+                let state = self.0.state.lock().unwrap();
+                state
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == bundle.tab_id && tab.generation == bundle.generation)
+            };
+            if !still_current {
+                continue;
+            }
+            // Keep the browser state mutex outside the engine unwind boundary.
+            let attached = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ui.inner_mut().set_sub_document(target, page);
+            }));
+            if attached.is_err() {
+                changed |= self.document_attach_failed(bundle.tab_id, bundle.generation);
+                continue;
+            }
             {
                 let mut state = self.0.state.lock().unwrap();
                 let Some(tab) = state
@@ -928,11 +1186,28 @@ impl Browser {
                 else {
                     continue;
                 };
-                ui.inner_mut().set_sub_document(target, page);
+                let resolved_url = Url::parse(&bundle.resolved_url).ok();
                 tab.mounted_generation += 1;
                 tab.mounted = Some(mounted);
-                if let Ok(url) = Url::parse(&bundle.resolved_url) {
-                    tab.history[tab.current].url = url;
+                if bundle.navigation_loaded {
+                    if let Some(url) = resolved_url {
+                        if let Some(mut request) = tab.pending_navigation.take() {
+                            request.url = url;
+                            tab.history.truncate(tab.current + 1);
+                            tab.history.push(request);
+                            tab.current += 1;
+                            if tab.history.len() > 128 {
+                                tab.history.remove(0);
+                                tab.current -= 1;
+                            }
+                        } else {
+                            tab.history[tab.current].url = url;
+                        }
+                    } else {
+                        tab.pending_navigation = None;
+                    }
+                } else {
+                    tab.pending_navigation = None;
                 }
                 tab.title = title;
                 tab.loading = false;
@@ -950,6 +1225,11 @@ impl Browser {
                     .records
                     .attached(TabId(bundle.tab_id), DocumentGeneration(bundle.generation));
             }
+            self.record_document_result(
+                bundle.tab_id,
+                bundle.generation,
+                bundle.navigation_loaded && outcome != PageOutcome::Error,
+            );
             self.attached_lifecycle(bundle.tab_id);
             changed = true;
         }
@@ -971,7 +1251,19 @@ struct PageNavigation {
 impl NavigationProvider for PageNavigation {
     fn navigate_to(&self, options: NavigationOptions) {
         if let Some(inner) = self.browser.upgrade() {
-            Browser(inner).navigate_request(
+            let browser = Browser(inner);
+            {
+                let state = browser.0.state.lock().unwrap();
+                if state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == self.tab_id)
+                    .is_none_or(TabState::recovery_degraded)
+                {
+                    return;
+                }
+            }
+            browser.navigate_request(
                 self.tab_id,
                 options.into_request().initiator(self.initiator.clone()),
             );
@@ -1026,11 +1318,9 @@ async fn fetch_page(
             tab_id,
             generation,
             resolved_url: request.url.to_string(),
-            source: PageSource::Html {
-                html,
-                scripts: HashMap::new(),
-            },
+            source: PageSource::Html { html },
             outcome: PageOutcome::Ready,
+            navigation_loaded: true,
         };
     }
     if request.url.scheme() == "about" {
@@ -1041,9 +1331,9 @@ async fn fetch_page(
             resolved_url: request.url.to_string(),
             source: PageSource::Html {
                 html: BLANK_HTML.to_owned(),
-                scripts: HashMap::new(),
             },
             outcome: PageOutcome::Blank,
+            navigation_loaded: true,
         };
     }
     // `view-source:` is answered by fetching what it names and showing the
@@ -1088,9 +1378,9 @@ async fn fetch_page(
                             resolved_url: request.url.to_string(),
                             source: PageSource::Html {
                                 html: crate::internal_pages::tls_refused_html(&url, *reason),
-                                scripts: HashMap::new(),
                             },
                             outcome: PageOutcome::Error,
+                            navigation_loaded: false,
                         };
                     }
                     (
@@ -1108,6 +1398,7 @@ async fn fetch_page(
             resolved_url: request.url.to_string(),
             source: PageSource::Source { text: source },
             outcome,
+            navigation_loaded: outcome != PageOutcome::Error,
         };
     }
     if force_revalidate {
@@ -1136,9 +1427,9 @@ async fn fetch_page(
                         }
                         _ => error_html(&format!("{error:?}")),
                     },
-                    scripts: HashMap::new(),
                 },
                 outcome: PageOutcome::Error,
+                navigation_loaded: false,
             };
         }
     };
@@ -1163,67 +1454,16 @@ async fn fetch_page(
     } else {
         decode_body(&bytes)
     };
-    // Discover JavaScript without constructing a DOM that would be discarded.
-    // XHTML retains its XML parser and complete tree.
-    let urls = if blitz_html::DocumentHtmlParser::is_xhtml_document(&html) {
-        let document = blitz_script::ScriptDocument::from_html(
-            &html,
-            DocumentConfig {
-                base_url: Some(resolved_url.clone()),
-                ..Default::default()
-            },
-        );
-        document.external_script_urls()
-    } else {
-        let tags = blitz_html::scan_script_tags(&html);
-        let base_url = Url::parse(&resolved_url).ok();
-        tags.iter()
-            .filter(|tag| tag.is_javascript())
-            .filter_map(|tag| tag.src.as_ref())
-            .filter_map(|src| match &base_url {
-                Some(base) => base.join(src.as_ref()).ok(),
-                None => Url::parse(src.as_ref()).ok(),
-            })
-            .collect()
-    };
-    let mut scripts = HashMap::new();
-    for url in urls {
-        if scripts.contains_key(&url) {
-            continue;
-        }
-        let mut script_request = Request::get(url.clone());
-        if force_revalidate {
-            revalidate(&mut script_request);
-        }
-        match net.fetch_async(script_request).await {
-            Ok((_, bytes)) => {
-                browser.note(
-                    "info",
-                    "script",
-                    format!("fetched {url}, {} bytes", bytes.len()),
-                );
-                scripts.insert(url, decode_body(&bytes));
-            }
-            // A script that never arrives is the single most common reason a
-            // page renders but does nothing, and it used to be swallowed here
-            // without a trace anywhere in the window.
-            Err(error) => {
-                browser.note(
-                    "error",
-                    "script",
-                    format!("could not fetch {url}: {error:?}"),
-                );
-                outcome = outcome.max(PageOutcome::Warning);
-            }
-        }
-    }
+    // The bound page runtime admits external sources through this navigation
+    // provider when it encounters each script in document order.
     PageBundle {
         net: Arc::clone(&net),
         tab_id,
         generation,
         resolved_url,
-        source: PageSource::Html { html, scripts },
+        source: PageSource::Html { html },
         outcome,
+        navigation_loaded: true,
     }
 }
 
@@ -1482,10 +1722,12 @@ fn open_tab_record(
             mounted_generation: 0,
             mounted: None,
             history: vec![request],
+            pending_navigation: None,
             current: 0,
             title: String::new(),
             loading: false,
             outcome: PageOutcome::Blank,
+            consecutive_document_failures: 0,
             generation: 0,
             life: TabLife::default(),
         });
@@ -1563,8 +1805,9 @@ pub fn go_back(browser: Arc<Browser>, id: u64) {
             .iter_mut()
             .find(|tab| tab.id == id)
             .is_some_and(|tab| {
+                let cancelled_pending = tab.pending_navigation.take().is_some();
                 if tab.current == 0 {
-                    false
+                    cancelled_pending
                 } else {
                     tab.current -= 1;
                     tab.title.clear();
@@ -1573,7 +1816,7 @@ pub fn go_back(browser: Arc<Browser>, id: u64) {
             })
     };
     if moved {
-        browser.schedule_browser_navigation(id, false);
+        browser.schedule_current(id, false);
     }
 }
 
@@ -1585,8 +1828,9 @@ pub fn go_forward(browser: Arc<Browser>, id: u64) {
             .iter_mut()
             .find(|tab| tab.id == id)
             .is_some_and(|tab| {
+                let cancelled_pending = tab.pending_navigation.take().is_some();
                 if tab.current + 1 >= tab.history.len() {
-                    false
+                    cancelled_pending
                 } else {
                     tab.current += 1;
                     tab.title.clear();
@@ -1595,7 +1839,7 @@ pub fn go_forward(browser: Arc<Browser>, id: u64) {
             })
     };
     if moved {
-        browser.schedule_browser_navigation(id, false);
+        browser.schedule_current(id, false);
     }
 }
 
@@ -1625,7 +1869,7 @@ pub fn reload(browser: Arc<Browser>, id: u64) {
     if sleeping {
         let _ = browser.request_wake(id);
     } else {
-        browser.schedule_browser_navigation(id, true);
+        browser.schedule_current(id, true);
     }
 }
 
@@ -1730,20 +1974,23 @@ pub fn user_agent(browser: Arc<Browser>) -> UserAgentState {
 
 /// Apply the compatibility identity immediately and reload the active tab.
 ///
-/// The network provider owns its cache and User-Agent, so changing identity
-/// replaces that provider while retaining the profile cookie jar. The current
-/// document keeps the provider it was created with; reloading makes the
-/// visible page and every subresource agree on the new identity.
+/// Changing identity replaces the network provider while retaining the
+/// profile cookie jar and cache. The current document keeps the provider it
+/// was created with; reloading makes the visible page and every subresource
+/// agree on the new identity.
 pub fn set_user_agent_spoofing(browser: Arc<Browser>, spoofing: bool) -> UserAgentState {
     if crate::identity::environment_override_is_set() {
         return user_agent_state(&browser);
     }
     *browser.0.user_agent_spoofing.lock().unwrap() = spoofing;
-    let cookies = browser.net().cookie_store();
-    *browser.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_and_cookies(
+    let net = browser.net();
+    let cookies = net.cookie_store();
+    let cache = net.http_cache();
+    *browser.0.net.lock().unwrap() = Arc::new(NetProvider::with_user_agent_cookies_and_cache(
         None,
         &crate::identity::user_agent_for_spoofing(spoofing),
         cookies,
+        cache,
     ));
     store_user_agent(StoredUserAgent { spoofing });
     let active = browser.snapshots().1;
@@ -1796,12 +2043,7 @@ fn diagnostics_now() -> DiagnosticsState {
 /// that silently forgets itself is worse than no switch, because the answer to
 /// "is the socket open?" would then depend on something the window cannot see.
 fn diagnostics_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        std::path::PathBuf::from(home)
-            .join("Library/Application Support/ai.chuzz.browser")
-            .join("diagnostics.json"),
-    )
+    Some(crate::cookie_store::profile_directory().join("diagnostics.json"))
 }
 
 #[derive(Clone, Copy, Default, Serialize, serde::Deserialize)]
@@ -1812,12 +2054,13 @@ pub struct StoredDiagnostics {
     pub profiling: bool,
 }
 
-/// What was chosen last time. Absent, unreadable, or malformed all mean "off",
-/// which is the safe answer for a switch that opens a socket.
+/// What was chosen last time. Absent, unreadable, malformed, or inconsistent
+/// settings all mean "off", which is the safe answer for a socket switch.
 pub fn stored_diagnostics() -> StoredDiagnostics {
     diagnostics_path()
         .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<StoredDiagnostics>(&bytes).ok())
+        .filter(|value| !value.profiling || value.inspection)
         .unwrap_or_default()
 }
 
@@ -1848,6 +2091,9 @@ pub fn set_diagnostics(inspection: bool, profiling: bool) -> Result<DiagnosticsS
         // authority this run, and the window shows it as held by the
         // environment.
         return Ok(diagnostics_now());
+    }
+    if profiling && !inspection {
+        return Err("profiling requires inspection to be enabled".to_owned());
     }
     izumo::apply_runtime_debug_options(izumo::RuntimeDebugOptions {
         inspection_and_agent_control: inspection,
@@ -1949,10 +2195,12 @@ mod tests {
             mounted_generation: 0,
             mounted: None,
             history: vec![Request::get(Url::parse("https://example.com/").unwrap())],
+            pending_navigation: None,
             current: 0,
             title: String::new(),
             loading: true,
             outcome: PageOutcome::Ready,
+            consecutive_document_failures: 0,
             generation: 0,
             life: TabLife::default(),
         };

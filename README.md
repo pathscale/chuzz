@@ -4,8 +4,8 @@ Chuzz is a pure Rust web browser built on the Pathscale Blitz engine. No C++ eng
 no OS webview: it does not embed WebKit, Chromium, or Electron.
 
 "Pure Rust" is about the implementation stack, not about what the UI is written in. The browser
-chrome is a SolidJS app interpreted by Boa, the same way page content is, and every crate under
-it is Rust.
+chrome is a SolidJS app interpreted by Blitz's bounded Rust script guest, the same way page
+content is, and every crate under it is Rust.
 
 ```sh
 cargo run -p chuzz --bin chuzz-gui                  # opens a blank tab
@@ -62,7 +62,7 @@ crates/chuzz-control  built-in diagnostics and agent-control interface (in-proce
 ## Two documents, not one
 
 The browser UI is itself a Blitz document: a Solid application, compiled to a bundle and
-embedded in the binary, running under Boa inside the window's own document. Each tab's page is
+embedded in the binary, running in its own Blitz script realm. Each tab's page is
 a separate child document mounted inside a `<web-view>` element in that UI. Page markup and
 browser markup never share a DOM, so a site's CSS cannot restyle the chrome and the chrome's
 CSS cannot leak into the site.

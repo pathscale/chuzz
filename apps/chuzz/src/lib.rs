@@ -97,13 +97,25 @@ pub mod internal_pages;
 pub mod media;
 pub mod nav;
 pub mod net_bridge;
+#[cfg(feature = "javascript")]
+pub mod page_document;
+#[cfg(feature = "javascript")]
+mod page_ekojit_bootstrap;
+#[cfg(feature = "javascript")]
+mod page_ekojit_bridge;
+#[cfg(feature = "javascript")]
+mod page_ekojit_compat;
+#[cfg(feature = "javascript")]
+mod page_native_driver;
+#[cfg(feature = "javascript")]
+pub mod page_script_host;
 #[cfg(feature = "gui")]
 mod tab_native;
 #[cfg(feature = "gui")]
 pub mod tab_records;
 #[cfg(feature = "gui")]
 mod tab_resources;
-#[cfg(feature = "gui")]
+#[cfg(feature = "javascript")]
 mod tab_session;
 #[cfg(feature = "javascript")]
 pub mod tab_stash;
@@ -116,6 +128,8 @@ pub mod pdf;
 pub mod platform_hardening;
 pub mod sandbox;
 pub mod script_fetch;
+#[cfg(feature = "javascript")]
+pub mod script_host;
 pub(crate) mod telemetry;
 mod tls;
 pub mod tls_status;

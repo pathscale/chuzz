@@ -1,27 +1,9 @@
-//! `WebSocket`, built on the same seam as `fetch`.
+//! Native WebSocket transport for the page's engine-neutral script host.
 //!
-//! The engine had a constructor that reported a refused connection without
-//! ever opening one. That was deliberate and, for its original purpose, right:
-//! a dev server's live-reload client runs at bundle top level, and a missing
-//! constructor takes the whole bundle down, so an inert socket is the shape
-//! those clients already survive.
-//!
-//! It stops being right the moment a page's own data rides on a socket. Eight
-//! of the thirteen sites in this fleet authenticate over the WebSocket
-//! handshake, passing the token in `Sec-WebSocket-Protocol`, so with an inert
-//! socket no sign-in can complete and every check stops at what the page
-//! decides for itself.
-//!
-//! The transport is the same one `net_bridge` uses, for the same reason:
-//! `blitz-script` has no way to register a host function, so JavaScript posts
-//! a command on `window.ipc.postMessage`, work happens on nagoya workers,
-//! and events come back through a mailbox that a poll hook drains and hands to
-//! the page by `eval`. `net_bridge` owns the IPC handler, because setting one
-//! replaces it rather than adding to it, so it delegates here first and keeps
-//! anything this does not claim.
-//!
-//! Unlike a fetch, a socket outlives its command: the send direction needs the
-//! connection to stay addressable, which is what `senders` is.
+//! The native host maps typed connect, send, close, and event subscription
+//! calls to this bridge. Transport work runs on nagoya workers, while events
+//! return through the page wake and callback lifecycle. Unlike a fetch, a
+//! socket outlives its command, so its sender stays addressable until close.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
@@ -36,11 +18,15 @@ use nago_wss::stream::{ByteStream, Errno, StreamExt};
 use nagoya::net::TcpStream;
 use nagoya::reactor::Reactor;
 
+#[path = "ws_bridge_host.rs"]
+pub mod native_host;
+
 // The default 16 MiB frame cap disconnects pages that send a self-contained
 // image-rich JSON result in one frame. Keep a bounded cap, with room for the
 // 38 MiB OpenCaptchaWorld image-matching response and similarly sized pages.
 const MAX_MESSAGE_BYTES: usize = 128 << 20;
 const MAX_FRAME_BYTES: usize = 64 << 20;
+const MAX_ACTIVE_SOCKETS: usize = 64;
 
 // Every document bridge shares this driver. The static owns the reactor,
 // because dropping it while connections still hold handles stops their I/O.
@@ -140,31 +126,56 @@ impl ByteStream for Transport {
 
 impl StreamExt for Transport {}
 
-/// One thing that happened to one socket, waiting for the document thread.
+#[derive(Debug)]
 struct Event {
     id: u64,
-    payload: serde_json::Value,
+    reply: SocketReply,
 }
 
-/// What JavaScript asked for.
-#[derive(serde::Deserialize)]
-struct Command {
-    /// Present only on this bridge's messages. The IPC channel is shared, so
-    /// this is what distinguishes a socket command from a fetch.
-    ws: String,
-    id: u64,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    protocols: Vec<String>,
-    /// The page origin, sent as the handshake `Origin` header as a browser
-    /// must (RFC 6455 4.1). Servers that check it refuse a handshake without it.
-    #[serde(default)]
-    origin: Option<String>,
-    #[serde(default)]
-    data: Option<String>,
-    #[serde(default)]
-    code: Option<u16>,
+/// Native operations accepted by the socket subsystem.
+pub enum SocketRequest {
+    Connect {
+        id: u64,
+        url: Option<String>,
+        protocols: Vec<String>,
+    },
+    Send {
+        id: u64,
+        data: Option<String>,
+    },
+    Close {
+        id: u64,
+        code: Option<u16>,
+    },
+}
+
+/// Native replies produced by the socket subsystem.
+#[derive(Debug)]
+pub enum SocketReply {
+    Open { protocol: String },
+    Message { data: String },
+    Error { message: String },
+    Close { code: u16, reason: String },
+}
+
+/// Errors returned by native socket operations.
+#[derive(Debug)]
+pub enum SocketError {
+    MissingUrl,
+    RegistryPoisoned,
+    ActiveLimitReached,
+    BadCloseCode,
+}
+
+impl std::fmt::Display for SocketError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingUrl => formatter.write_str("no url"),
+            Self::RegistryPoisoned => formatter.write_str("socket registry poisoned"),
+            Self::ActiveLimitReached => formatter.write_str("active socket limit reached"),
+            Self::BadCloseCode => formatter.write_str("bad close code"),
+        }
+    }
 }
 
 /// Open sockets and the events they have produced.
@@ -175,20 +186,10 @@ pub struct Bridge {
     wake: crate::net_bridge::PageWake,
     lifetime: Option<Arc<blitz_dom::release::Teardown>>,
     signal: blitz_traits::net::AbortSignal,
+    initiator: blitz_traits::net::Initiator,
 }
 
 impl Bridge {
-    pub(crate) fn with_lifetime(
-        wake: crate::net_bridge::PageWake,
-        lifetime: Arc<blitz_dom::release::Teardown>,
-    ) -> Self {
-        Self {
-            wake,
-            lifetime: Some(lifetime),
-            ..Default::default()
-        }
-    }
-
     pub(crate) fn retire(&self) {
         blitz_traits::net::AbortController {
             signal: self.signal.clone(),
@@ -198,16 +199,16 @@ impl Bridge {
         self.events.lock().unwrap().clear();
     }
 
-    fn post(&self, id: u64, payload: serde_json::Value) {
+    fn post(&self, id: u64, reply: SocketReply) {
         if self.signal.aborted() {
             return;
         }
-        crate::serve::verbose(&format!("socket {id} produced {payload}"));
+        crate::serve::verbose(&format!("socket {id} produced {reply:?}"));
         // A poisoned lock means a panic on the document thread while holding
         // it. The page is already lost; dropping the event beats panicking on
         // top of the first one.
         if let Ok(mut queue) = self.events.lock() {
-            queue.push(Event { id, payload });
+            queue.push(Event { id, reply });
         }
         self.wake.wake();
     }
@@ -218,46 +219,67 @@ impl Bridge {
         }
     }
 
-    fn failed(&self, id: u64, reason: &str, error: impl std::fmt::Display) {
+    fn failed(&self, id: u64, _reason: &str, _error: impl std::fmt::Display) {
         self.post(
             id,
-            serde_json::json!({"type": "error", "message": format!("{error}")}),
+            SocketReply::Error {
+                message: "WebSocket connection failed".to_owned(),
+            },
         );
-        self.post(id, closed(1006, reason));
+        self.post(
+            id,
+            SocketReply::Close {
+                code: 1006,
+                reason: String::new(),
+            },
+        );
     }
 
-    /// Take one IPC message if it is a socket command. Returns whether it was.
-    pub fn handle(&self, message: &str) -> bool {
-        let Ok(command) = serde_json::from_str::<Command>(message) else {
-            return false;
-        };
-        match command.ws.as_str() {
-            "connect" => self.connect(command),
-            "send" => self.send(command),
-            "close" => self.close(command),
-            // A command shape we know, naming an operation we do not. Claimed
-            // rather than passed on: it is addressed to this bridge.
-            _ => {}
+    fn reject(&self, id: u64, error: SocketError) {
+        if matches!(error, SocketError::BadCloseCode) {
+            self.post(
+                id,
+                SocketReply::Error {
+                    message: "bad close code".to_owned(),
+                },
+            );
+        } else {
+            self.failed(id, "connect", error);
         }
-        true
     }
 
-    fn connect(&self, command: Command) {
-        let id = command.id;
-        let Some(url) = command.url else {
-            self.failed(id, "handshake", "no url");
-            return;
-        };
+    /// Apply one native socket operation.
+    pub fn operate(&self, request: SocketRequest) -> Result<(), SocketError> {
+        match request {
+            SocketRequest::Connect { id, url, protocols } => self.connect(id, url, protocols),
+            SocketRequest::Send { id, data } => self.send(id, data),
+            SocketRequest::Close { id, code } => self.close(id, code),
+        }
+    }
 
+    fn connect(
+        &self,
+        id: u64,
+        url: Option<String>,
+        protocols: Vec<String>,
+    ) -> Result<(), SocketError> {
+        if self.signal.aborted() {
+            return Ok(());
+        }
+
+        let url = url.ok_or(SocketError::MissingUrl)?;
         let outbox = Arc::new(Outbox::default());
         match self.senders.lock() {
             Ok(mut open) => {
+                if self.signal.aborted() || open.contains_key(&id) {
+                    return Ok(());
+                }
+                if open.len() >= MAX_ACTIVE_SOCKETS {
+                    return Err(SocketError::ActiveLimitReached);
+                }
                 open.insert(id, Arc::clone(&outbox));
             }
-            Err(_) => {
-                self.failed(id, "connect", "socket registry poisoned");
-                return;
-            }
+            Err(_) => return Err(SocketError::RegistryPoisoned),
         }
 
         let bridge = self.clone();
@@ -265,41 +287,30 @@ impl Bridge {
             let _lease = bridge.lifetime.as_ref().map(|receipt| receipt.lease());
             let mut cancelled = Box::pin(bridge.signal.cancelled());
             let mut work = Box::pin(async {
-                let connected = match open_socket(
-                    &url,
-                    &command.protocols,
-                    command.origin.as_deref(),
-                    Arc::clone(&outbox),
-                )
-                .await
-                {
-                    Ok(connected) => connected,
-                    Err(error) => {
-                        // The page is told the same thing a browser tells it: the
-                        // connection failed. The detail goes in the error event
-                        // rather than being swallowed, because "it did not
-                        // connect" is the least useful sentence in networking.
-                        bridge.failed(id, "connect", error);
-                        bridge.forget(id);
-                        return;
-                    }
-                };
+                let connected =
+                    match open_socket(&url, &protocols, &bridge.initiator, Arc::clone(&outbox))
+                        .await
+                    {
+                        Ok(connected) => connected,
+                        Err(error) => {
+                            bridge.failed(id, "connect", error);
+                            return;
+                        }
+                    };
 
                 // The subprotocol the server actually chose, which is not always
                 // the first one offered and is what the page reads back off
                 // `socket.protocol`.
                 bridge.post(
                     id,
-                    serde_json::json!({
-                        "type": "open",
-                        "protocol": connected.protocol.unwrap_or_default(),
-                    }),
+                    SocketReply::Open {
+                        protocol: connected.protocol.unwrap_or_default(),
+                    },
                 );
                 outbox.interruptible.store(true, Ordering::Release);
                 bridge
                     .run_connection(id, connected.connection, &outbox)
                     .await;
-                bridge.forget(id);
             });
             std::future::poll_fn(|cx| {
                 use std::future::Future;
@@ -309,7 +320,9 @@ impl Bridge {
                 work.as_mut().poll(cx)
             })
             .await;
+            bridge.forget(id);
         });
+        Ok(())
     }
 
     async fn run_connection(
@@ -330,7 +343,13 @@ impl Bridge {
                     break;
                 }
                 if let Some(code) = closing {
-                    self.post(id, closed(code, ""));
+                    self.post(
+                        id,
+                        SocketReply::Close {
+                            code,
+                            reason: String::new(),
+                        },
+                    );
                     break;
                 }
                 continue;
@@ -339,10 +358,9 @@ impl Bridge {
             match connection.read().await {
                 Ok(Some(Message::Text(bytes))) => self.post(
                     id,
-                    serde_json::json!({
-                        "type": "message",
-                        "data": String::from_utf8_lossy(&bytes),
-                    }),
+                    SocketReply::Message {
+                        data: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
                 ),
                 // Binary arrives as text here on purpose. The pages
                 // this exists for speak JSON; handing them a string
@@ -350,10 +368,9 @@ impl Bridge {
                 // promise this does not yet keep.
                 Ok(Some(Message::Binary(bytes))) => self.post(
                     id,
-                    serde_json::json!({
-                        "type": "message",
-                        "data": String::from_utf8_lossy(&bytes),
-                    }),
+                    SocketReply::Message {
+                        data: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
                 ),
                 Ok(Some(Message::Close(frame))) => {
                     let (code, reason) = match &frame {
@@ -365,7 +382,7 @@ impl Bridge {
                     };
                     // nago-wss exposes control frames to its caller.
                     let _ = connection.close(frame).await;
-                    self.post(id, closed(code, &reason));
+                    self.post(id, SocketReply::Close { code, reason });
                     break;
                 }
                 Ok(Some(Message::Ping(payload))) => {
@@ -383,74 +400,55 @@ impl Bridge {
                     break;
                 }
                 Ok(None) => {
-                    self.post(id, closed(1006, "eof"));
+                    self.post(
+                        id,
+                        SocketReply::Close {
+                            code: 1006,
+                            reason: String::new(),
+                        },
+                    );
                     break;
                 }
             }
         }
     }
 
-    fn send(&self, command: Command) {
-        let Some(data) = command.data else { return };
+    fn send(&self, id: u64, data: Option<String>) -> Result<(), SocketError> {
+        let Some(data) = data else {
+            return Ok(());
+        };
         let sender = self
             .senders
             .lock()
             .ok()
-            .and_then(|open| open.get(&command.id).cloned());
+            .and_then(|open| open.get(&id).cloned());
         // A send on a socket that has closed is dropped rather than reported.
         // That is what a browser does: `send` after close is a no-op, and the
         // close event has already told the page.
         if let Some(sender) = sender {
             sender.push(Message::Text(data.into_bytes().into()));
         }
+        Ok(())
     }
 
-    fn close(&self, command: Command) {
+    fn close(&self, id: u64, code: Option<u16>) -> Result<(), SocketError> {
         let sender = self
             .senders
             .lock()
             .ok()
-            .and_then(|open| open.get(&command.id).cloned());
+            .and_then(|open| open.get(&id).cloned());
         if let Some(sender) = sender {
             let frame = CloseFrame {
-                code: command.code.unwrap_or(1000).into(),
+                code: code.unwrap_or(1000).into(),
                 reason: Default::default(),
             };
             if !frame.code.is_sendable() {
-                self.post(
-                    command.id,
-                    serde_json::json!({"type": "error", "message": "bad close code"}),
-                );
-                return;
+                return Err(SocketError::BadCloseCode);
             }
             sender.push(Message::Close(Some(frame)));
         }
+        Ok(())
     }
-
-    /// Hand every event  the last poll to the page.
-    pub fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        let ready = match self.events.lock() {
-            Ok(mut queue) => std::mem::take(&mut *queue),
-            Err(_) => Vec::new(),
-        };
-        if ready.is_empty() {
-            return false;
-        }
-        for event in ready {
-            crate::serve::verbose(&format!("socket {} delivering {}", event.id, event.payload));
-            // `serde_json` renders a JavaScript-safe literal, so a message
-            // carrying quotes cannot become a syntax error in the receiver.
-            document.eval(&format!(
-                "globalThis.__chuzzWsEvent({}, {});",
-                event.id, event.payload
-            ));
-        }
-        true
-    }
-}
-
-fn closed(code: u16, reason: &str) -> serde_json::Value {
-    serde_json::json!({"type": "close", "code": code, "reason": reason})
 }
 
 /// A handshake carrying the subprotocols the page asked for.
@@ -458,28 +456,66 @@ fn closed(code: u16, reason: &str) -> serde_json::Value {
 /// This is the whole reason the fleet needs a real socket rather than a
 /// reachable one: honey.id's auth rides here, as `["0login", "1<token>"]`, so
 /// a client that drops the header authenticates as nobody.
-async fn open_socket(
-    url: &str,
-    protocols: &[String],
-    origin: Option<&str>,
-    outbox: Arc<Outbox>,
-) -> Result<Connected<Transport>, String> {
-    let url = url::Url::parse(url).map_err(|error| error.to_string())?;
-    let secure = match url.scheme() {
+fn invalid_handshake_bytes(value: &str) -> bool {
+    value
+        .bytes()
+        .any(|byte| matches!(byte, b'\r' | b'\n' | b'\0'))
+}
+
+/// Parse the WebSocket URL and produce the corresponding HTTP URL used by the
+/// initiator's fetch policy. The original ws/wss URL remains the source of the
+/// handshake target and transport security decision.
+fn websocket_urls(value: &str) -> Result<(url::Url, url::Url, bool), String> {
+    if invalid_handshake_bytes(value) {
+        return Err("invalid WebSocket URL".to_owned());
+    }
+    let socket = url::Url::parse(value).map_err(|error| error.to_string())?;
+    let secure = match socket.scheme() {
         "ws" => false,
         "wss" => true,
         _ => return Err("scheme is not ws or wss".to_owned()),
     };
-    if url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
+    if socket.fragment().is_some() || !socket.username().is_empty() || socket.password().is_some() {
         return Err("WebSocket URL cannot contain credentials or a fragment".to_owned());
     }
+    if socket.host().is_none() {
+        return Err("missing host".to_owned());
+    }
+
+    let mut policy = socket.clone();
+    policy
+        .set_scheme(if secure { "https" } else { "http" })
+        .map_err(|_| "invalid WebSocket policy URL".to_owned())?;
+    Ok((socket, policy, secure))
+}
+
+async fn open_socket(
+    url: &str,
+    protocols: &[String],
+    initiator: &blitz_traits::net::Initiator,
+    outbox: Arc<Outbox>,
+) -> Result<Connected<Transport>, String> {
+    let (url, policy_url, secure) = websocket_urls(url)?;
     let host = match url.host() {
         Some(url::Host::Domain(host)) => host.to_owned(),
         Some(url::Host::Ipv4(host)) => host.to_string(),
         Some(url::Host::Ipv6(host)) => host.to_string(),
         None => return Err("missing host".to_owned()),
     };
+    let document_url = initiator
+        .document_url()
+        .ok_or_else(|| "document URL is unavailable".to_owned())?;
+    let origin = match document_url.scheme() {
+        "http" | "https" => document_url.origin().ascii_serialization(),
+        _ => "null".to_owned(),
+    };
+    if invalid_handshake_bytes(&origin) {
+        return Err("invalid document origin".to_owned());
+    }
     for (index, protocol) in protocols.iter().enumerate() {
+        if invalid_handshake_bytes(protocol) {
+            return Err("bad subprotocol".to_owned());
+        }
         let token = !protocol.is_empty()
             && protocol.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric()
@@ -507,6 +543,9 @@ async fn open_socket(
     }
     let offered: Vec<&str> = protocols.iter().map(String::as_str).collect();
 
+    initiator.begin(&policy_url)?;
+    initiator.check_url(&policy_url)?;
+
     let mut entropy = [0u8; 16];
     crate::tls::crypto_provider()
         .secure_random
@@ -517,10 +556,7 @@ async fn open_socket(
     } else {
         None
     };
-    let headers: Vec<(&str, &str)> = origin
-        .map(|origin| ("Origin", origin))
-        .into_iter()
-        .collect();
+    let headers = [("Origin", origin.as_str())];
     let options = ClientOptions {
         protocols: &offered,
         headers: &headers,
@@ -541,6 +577,21 @@ async fn open_socket(
     // This function runs on a nagoya worker. getaddrinfo must never run
     // on the reactor thread or the document thread.
     let addresses = nagoya::resolve::resolve(&host, port).map_err(|error| format!("{error:?}"))?;
+    for address in &addresses {
+        let ip = match address {
+            nagoya::reactor::Addr::V4(octets, _) => {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(*octets))
+            }
+            nagoya::reactor::Addr::V6(octets, _)
+            | nagoya::reactor::Addr::V6Scoped(octets, _, _) => {
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(*octets))
+            }
+            nagoya::reactor::Addr::Path(_) => {
+                return Err("WebSocket resolved to Unix path".to_owned());
+            }
+        };
+        initiator.check_address(ip)?;
+    }
     let stream = nagoya::resolve::connect_any(&addresses, &handle)
         .await
         .map_err(|error| error.to_string())?;
@@ -568,6 +619,9 @@ async fn open_socket(
     };
     let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
     let host_header = &url[url::Position::BeforeHost..url::Position::AfterPort];
+    if invalid_handshake_bytes(path) || invalid_handshake_bytes(host_header) {
+        return Err("invalid WebSocket handshake target".to_owned());
+    }
     let (connection, protocol) = nago_wss::upgrade::connect(
         stream,
         path,
@@ -590,135 +644,36 @@ async fn open_socket(
     })
 }
 
-/// The JavaScript half: a `WebSocket` that talks to the bridge.
-///
-/// Installed after `WEB_API_SHIM`, so it replaces the inert constructor that
-/// shim puts in when nothing better exists.
-pub const WEBSOCKET_SHIM: &str = r#"
-(function () {
-  var sockets = Object.create(null);
-  var nextId = 1;
+#[cfg(test)]
+mod tests {
+    use super::websocket_urls;
 
-  globalThis.__chuzzWsEvent = function (id, event) {
-    var socket = sockets[id];
-    if (!socket) { return; }
-    socket.__deliver(event);
-  };
+    #[test]
+    fn websocket_policy_url_preserves_target_and_maps_security_scheme() {
+        for (socket_scheme, policy_scheme, secure, port) in
+            [("ws", "http", false, 8080), ("wss", "https", true, 8443)]
+        {
+            let input = format!("{socket_scheme}://example.test:{port}/echo?q=one");
+            let (socket, policy, actual_secure) = websocket_urls(&input).unwrap();
 
-  function post(payload) {
-    try { window.ipc.postMessage(JSON.stringify(payload)); } catch (e) {}
-  }
-
-  function WebSocketShim(url, protocols) {
-    var socket = this;
-    var id = nextId++;
-    sockets[id] = this;
-
-    this.url = String(url);
-    this.protocol = "";
-    this.extensions = "";
-    this.bufferedAmount = 0;
-    this.binaryType = "blob";
-    this.readyState = 0;
-    this.onopen = null;
-    this.onmessage = null;
-    this.onerror = null;
-    this.onclose = null;
-
-    var listeners = { open: [], message: [], error: [], close: [] };
-    this.addEventListener = function (type, handler) {
-      if (listeners[type] && typeof handler === "function") { listeners[type].push(handler); }
-    };
-    this.removeEventListener = function (type, handler) {
-      if (!listeners[type]) { return; }
-      var i = listeners[type].indexOf(handler);
-      if (i >= 0) { listeners[type].splice(i, 1); }
-    };
-    this.dispatchEvent = function () { return false; };
-
-    function fire(type, event) {
-      var direct = socket["on" + type];
-      if (typeof direct === "function") { direct.call(socket, event); }
-      // A listener may remove itself while handling the event (the RPC adapter
-      // does this when sending queued requests on open). Iterating the live
-      // array skips the next request after that removal. New listeners belong
-      // to the next dispatch; explicitly removed listeners must not run.
-      var registered = listeners[type].slice();
-      for (var i = 0; i < registered.length; i++) {
-        if (listeners[type].indexOf(registered[i]) >= 0) {
-          registered[i].call(socket, event);
+            assert_eq!(socket.scheme(), socket_scheme);
+            assert_eq!(socket.path(), "/echo");
+            assert_eq!(socket.query(), Some("q=one"));
+            assert_eq!(socket.port(), Some(port));
+            assert_eq!(policy.scheme(), policy_scheme);
+            assert_eq!(policy.host_str(), Some("example.test"));
+            assert_eq!(policy.path(), socket.path());
+            assert_eq!(policy.query(), socket.query());
+            assert_eq!(policy.port(), Some(port));
+            assert_eq!(actual_secure, secure);
         }
-      }
     }
 
-    this.__deliver = function (event) {
-      if (event.type === "open") {
-        socket.readyState = 1;
-        socket.protocol = event.protocol || "";
-        fire("open", { type: "open", target: socket });
-      } else if (event.type === "message") {
-        var message = new MessageEvent("message", {
-          data: event.data,
-          origin: new URL(socket.url, location.href).origin
-        });
-        Object.defineProperties(message, {
-          target: { value: socket, configurable: true },
-          currentTarget: { value: socket, configurable: true },
-          eventPhase: { value: 2, configurable: true }
-        });
-        try { fire("message", message); }
-        finally {
-          Object.defineProperties(message, {
-            currentTarget: { value: null, configurable: true },
-            eventPhase: { value: 0, configurable: true }
-          });
-        }
-      } else if (event.type === "error") {
-        fire("error", { type: "error", target: socket, message: event.message });
-      } else if (event.type === "close") {
-        socket.readyState = 3;
-        delete sockets[id];
-        fire("close", {
-          type: "close",
-          code: event.code,
-          reason: event.reason || "",
-          wasClean: event.code === 1000,
-          target: socket,
-        });
-      }
-    };
-
-    this.send = function (data) {
-      if (socket.readyState === 0) {
-        throw new DOMException("WebSocket is connecting", "InvalidStateError");
-      }
-      if (socket.readyState !== 1) { return; }
-      post({ ws: "send", id: id, data: String(data) });
-    };
-
-    this.close = function (code) {
-      if (socket.readyState === 3) { return; }
-      socket.readyState = 2;
-      post({ ws: "close", id: id, code: typeof code === "number" ? code : 1000 });
-    };
-
-    var offered = [];
-    if (typeof protocols === "string") { offered = [protocols]; }
-    else if (protocols && protocols.length) {
-      for (var i = 0; i < protocols.length; i++) { offered.push(String(protocols[i])); }
+    #[test]
+    fn websocket_urls_reject_other_schemes_credentials_and_fragments() {
+        assert!(websocket_urls("http://example.test/socket").is_err());
+        assert!(websocket_urls("ws://user@example.test/socket").is_err());
+        assert!(websocket_urls("wss://example.test/socket#fragment").is_err());
+        assert!(websocket_urls("ws://example.test/socket\r\nX-Test: bad").is_err());
     }
-    post({ ws: "connect", id: id, url: this.url, protocols: offered, origin: (typeof location !== "undefined" && location.origin) || "null" });
-  }
-
-  WebSocketShim.CONNECTING = 0;
-  WebSocketShim.OPEN = 1;
-  WebSocketShim.CLOSING = 2;
-  WebSocketShim.CLOSED = 3;
-  WebSocketShim.prototype.CONNECTING = 0;
-  WebSocketShim.prototype.OPEN = 1;
-  WebSocketShim.prototype.CLOSING = 2;
-  WebSocketShim.prototype.CLOSED = 3;
-
-  globalThis.WebSocket = WebSocketShim;
-})();
-"#;
+}

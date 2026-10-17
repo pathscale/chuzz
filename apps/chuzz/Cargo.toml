@@ -38,10 +38,16 @@ name = "chuzz-reactor-witness"
 path = "src/reactor_witness_main.rs"
 required-features = ["capture", "javascript", "reactor-witness"]
 
+[[test]]
+name = "page-host-runtime"
+path = "src/page_host_witness_main.rs"
+harness = false
+required-features = ["capture", "javascript"]
+
 [features]
 # Compile-time gated defects and local trust anchors for functional witnesses.
 sandbox2-witness = ["blitz-net/sandbox2-witness"]
-reactor-witness = []
+reactor-witness = ["blitz-control-protocol/client"]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
 default = [
@@ -108,7 +114,7 @@ device-audio = ["dep:cpal"]
 system-fonts = ["blitz-dom/system-fonts", "blitz-script?/system-fonts"]
 # PDF navigation uses the synchronous Rust toolkit and the existing PNG encoder.
 # Bundled faces also paint PDF text whose font program is not embedded.
-pdf = ["dep:pdf-toolkit", "dep:png", "headless-fonts"]
+pdf = ["dep:pdf-toolkit", "dep:pdf-toolkit-render", "dep:png", "headless-fonts"]
 # The `image` crate is pulled in with default features off, so without these a
 # .webp or .avif downloads fine and then cannot be decoded: the element simply
 # never paints, which reads as a missing asset rather than a failed codec.
@@ -160,6 +166,8 @@ vello = ["izumo?/runtime"]
 scrollbars = ["blitz-dom/scrollbars"]
 
 [dependencies]
+icu_decimal = { version = "^2.1.1", features = ["alloc"] }
+icu_locale = "^2.1.1"
 # Default features are the engine's own baseline: svg (inline SVG cannot be
 # measured or painted without it, so a logo silently collapses),
 # accessibility, file-input and custom-widget. Stripping them and re-adding one
@@ -190,7 +198,8 @@ anyrender_svg = { workspace = true, optional = true }
 headless-fonts = { workspace = true, optional = true }
 # Required for PDF parsing, page rasterization and searchable text. MIT, pure
 # Rust and synchronous; the selected features require neither tokio nor C.
-pdf-toolkit = { version = "^0.3", default-features = false, features = ["raster", "text"], optional = true }
+pdf-toolkit = { version = "^0.3.13", default-features = false, features = ["raster", "text"], optional = true }
+pdf-toolkit-render = { version = "^0.3.13", default-features = false, optional = true }
 # These are already in Blitz's renderer and text graph. Naming their public
 # types lets the canvas use the same painter, font collection and outlines.
 peniko = { version = "^0.6", optional = true }

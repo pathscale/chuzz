@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Presented texture capture</title>
+<style>body { background: #182335; color: white; } canvas { width: 128px; height: 128px; }</style>
+<button id="run">Render sampled textures</button>
+<p id="result" role="status">Waiting</p>
+<canvas id="data" width="32" height="32"></canvas>
+<canvas id="external" width="32" height="32"></canvas>
+<script type="module">
+  const result = document.getElementById('result');
+  document.getElementById('run').onclick = async () => {
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const errors = [];
+      device.addEventListener('uncapturederror', event => errors.push(event.error.message));
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      const module = device.createShaderModule({ code: `
+        @group(0) @binding(0) var image: texture_2d<f32>;
+        @group(0) @binding(1) var imageSampler: sampler;
+        @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+          var positions = array<vec2f, 3>(vec2f(-0.8, -0.8), vec2f(0.8, -0.8), vec2f(0, 0.8));
+          return vec4f(positions[i], 0, 1);
+        }
+        @fragment fn fs() -> @location(0) vec4f {
+          return textureSample(image, imageSampler, vec2f(0.5));
+        }
+      ` });
+      const pipeline = device.createRenderPipeline({
+        layout: 'auto', vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format }] }
+      });
+      for (const name of ['data', 'external']) {
+        device.pushErrorScope('validation');
+        const texture = device.createTexture({ size: [2, 2], format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        if (name === 'data') {
+          device.queue.writeTexture({ texture }, new Uint8Array([
+            255, 32, 16, 255, 255, 32, 16, 255, 255, 32, 16, 255, 255, 32, 16, 255
+          ]), { bytesPerRow: 8 }, [2, 2]);
+        } else {
+          const source = document.createElement('canvas');
+          source.width = 2; source.height = 2;
+          const paint = source.getContext('2d');
+          paint.fillStyle = '#ff2010'; paint.fillRect(0, 0, 2, 2);
+          device.queue.copyExternalImageToTexture({ source }, { texture }, [2, 2]);
+        }
+        const context = document.getElementById(name).getContext('webgpu');
+        context.configure({ device, format, alphaMode: 'opaque' });
+        const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: texture.createView() },
+          { binding: 1, resource: device.createSampler() }
+        ] });
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({ colorAttachments: [{
+          view: context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 }
+        }] });
+        pass.setPipeline(pipeline); pass.setBindGroup(0, group); pass.draw(3); pass.end();
+        device.queue.submit([encoder.finish()]);
+        const error = await device.popErrorScope();
+        if (error) throw error;
+        await device.queue.onSubmittedWorkDone();
+      }
+      // Stop drawing and allow presentation deliveries to leave the host queue.
+      // Copying to 2D also verifies actual sampled pixels before inspector capture.
+      const probe = document.createElement('canvas');
+      probe.width = 32; probe.height = 32;
+      const paint = probe.getContext('2d');
+      for (const name of ['data', 'external']) {
+        let valid = false;
+        for (let attempt = 0; attempt < 80; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+          paint.drawImage(document.getElementById(name), 0, 0);
+          const pixel = paint.getImageData(16, 16, 1, 1).data;
+          if (pixel[0] > 240 && pixel[1] >= 24 && pixel[1] <= 40 && pixel[2] <= 24 && pixel[3] === 255) {
+            valid = true; break;
+          }
+        }
+        if (!valid) throw new Error(name + ' sampled pixels missing');
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (errors.length) throw new Error(errors.join('; '));
+      result.textContent = 'READY: sampled textures presented';
+    } catch (error) { result.textContent = 'FAIL: ' + error.message; }
+  };
+</script>
+</html>
