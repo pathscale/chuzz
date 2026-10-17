@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -290,10 +290,11 @@ impl PageOutcome {
 enum PageSource {
     Html {
         html: String,
-        scripts: HashMap<Url, String>,
     },
     /// The bytes a server sent, shown rather than rendered.
-    Source { text: String },
+    Source {
+        text: String,
+    },
 }
 
 /// How long the window waits for a script the page asked for while running.
@@ -824,7 +825,6 @@ impl Browser {
                 resolved_url: request.url.to_string(),
                 source: PageSource::Html {
                     html: error_html(&crate::wasm_retired::WasmUnsupported.to_string()),
-                    scripts: HashMap::new(),
                 },
                 outcome: PageOutcome::Error,
                 navigation_loaded: false,
@@ -942,6 +942,58 @@ impl Browser {
                 continue;
             };
 
+            // Capture the departing realm before replacing its mount. Session
+            // buckets belong to the tab and origin, and survive ordinary links
+            // as well as the separate sleep/restore stash.
+            let old_mount = self
+                .0
+                .state
+                .lock()
+                .unwrap()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == bundle.tab_id)
+                .and_then(|tab| tab.mounted.as_ref().map(|mount| mount.mount_node_id));
+            if let Some(mount) = old_mount {
+                let previous = {
+                    let mut owner = ui.inner_mut();
+                    owner
+                        .subdoc_mut(NodeId::from_u64(mount))
+                        .and_then(|page| {
+                            (page as &mut dyn std::any::Any)
+                                .downcast_mut::<crate::page_document::PageDocument>()
+                        })
+                        .and_then(|page| {
+                            let origin = page.inner().url().origin();
+                            if !matches!(origin, url::Origin::Tuple(..)) {
+                                return None;
+                            }
+                            match page.capture_session(&self.0.sleeping_budget) {
+                                Ok(bucket) => Some((origin.ascii_serialization(), bucket)),
+                                Err(error) => {
+                                    self.note("warn", "session", error.to_string());
+                                    None
+                                }
+                            }
+                        })
+                };
+                if let Some((origin, bucket)) = previous
+                    && let Some(tab) =
+                        self.0.state.lock().unwrap().tabs.iter_mut().find(|tab| {
+                            tab.id == bundle.tab_id && tab.generation == bundle.generation
+                        })
+                {
+                    match bucket {
+                        Some(bucket) => {
+                            tab.life.sessions.insert(origin, bucket);
+                        }
+                        None => {
+                            tab.life.sessions.remove(&origin);
+                        }
+                    }
+                }
+            }
+
             let direct_shell = ui.inner().shell_provider.clone();
             let shell_provider: Arc<dyn ShellProvider> = match self.app() {
                 Some(app) => Arc::new(QueuedRedrawShell::new(direct_shell, app)),
@@ -977,21 +1029,36 @@ impl Browser {
                 (|| -> Result<(Box<dyn blitz_dom::Document>, String), String> {
                     let (page, title): (Box<dyn blitz_dom::Document>, String) = match bundle.source
                     {
-                        PageSource::Html { html, scripts } => {
-                            if !scripts.is_empty() {
-                                return Err(String::from(
-                                    "the page runtime factory does not accept prefetched script sources",
-                                ));
-                            }
+                        PageSource::Html { html } => {
                             let base = Url::parse(&bundle.resolved_url).ok();
                             let host_config = crate::script_host::HostInstallContext {
                                 net: Arc::clone(&net),
                                 base: base.clone(),
                                 deadline: WINDOW_NETWORK_DEADLINE,
-                                wake: crate::net_bridge::PageWake::default(),
+                                // Host timers and asynchronous bridge work
+                                // must wake a sleeping window even when the
+                                // document runtime has no task waker bound.
+                                wake: crate::net_bridge::PageWake::new(shell_provider.clone()),
                                 lifetime: Arc::clone(&lifetime),
                                 signal: page_signal.clone(),
-                                session_backing: None,
+                                session_backing: base.as_ref().and_then(|base| {
+                                    self.0
+                                        .state
+                                        .lock()
+                                        .unwrap()
+                                        .tabs
+                                        .iter()
+                                        .find(|tab| {
+                                            tab.id == bundle.tab_id
+                                                && tab.generation == bundle.generation
+                                        })
+                                        .and_then(|tab| {
+                                            tab.life
+                                                .sessions
+                                                .get(&base.origin().ascii_serialization())
+                                                .cloned()
+                                        })
+                                }),
                             };
                             let mut page = crate::page_document::PageDocument::from_html(
                                 Arc::<str>::from(html),
@@ -1004,6 +1071,9 @@ impl Browser {
                                 bundle.generation,
                                 &bundle.resolved_url,
                             )?;
+                            // PageDocument construction binds the native host
+                            // to this runtime; seed restore state before the
+                            // guest's first script runs in that same realm.
                             page.execute_scripts()?;
                             let title = page
                                 .inner()
@@ -1248,10 +1318,7 @@ async fn fetch_page(
             tab_id,
             generation,
             resolved_url: request.url.to_string(),
-            source: PageSource::Html {
-                html,
-                scripts: HashMap::new(),
-            },
+            source: PageSource::Html { html },
             outcome: PageOutcome::Ready,
             navigation_loaded: true,
         };
@@ -1264,7 +1331,6 @@ async fn fetch_page(
             resolved_url: request.url.to_string(),
             source: PageSource::Html {
                 html: BLANK_HTML.to_owned(),
-                scripts: HashMap::new(),
             },
             outcome: PageOutcome::Blank,
             navigation_loaded: true,
@@ -1312,7 +1378,6 @@ async fn fetch_page(
                             resolved_url: request.url.to_string(),
                             source: PageSource::Html {
                                 html: crate::internal_pages::tls_refused_html(&url, *reason),
-                                scripts: HashMap::new(),
                             },
                             outcome: PageOutcome::Error,
                             navigation_loaded: false,
@@ -1362,7 +1427,6 @@ async fn fetch_page(
                         }
                         _ => error_html(&format!("{error:?}")),
                     },
-                    scripts: HashMap::new(),
                 },
                 outcome: PageOutcome::Error,
                 navigation_loaded: false,
@@ -1390,66 +1454,14 @@ async fn fetch_page(
     } else {
         decode_body(&bytes)
     };
-    // Discover JavaScript without constructing a DOM that would be discarded.
-    // XHTML retains its XML parser and complete tree.
-    let urls = if blitz_html::DocumentHtmlParser::is_xhtml_document(&html) {
-        let document = blitz_html::HtmlDocument::from_html(
-            &html,
-            DocumentConfig {
-                base_url: Some(resolved_url.clone()),
-                ..Default::default()
-            },
-        );
-        blitz_script::external_script_urls(&document.inner())
-    } else {
-        let tags = blitz_html::scan_script_tags(&html);
-        let base_url = Url::parse(&resolved_url).ok();
-        tags.iter()
-            .filter(|tag| tag.is_javascript())
-            .filter_map(|tag| tag.src.as_ref())
-            .filter_map(|src| match &base_url {
-                Some(base) => base.join(src.as_ref()).ok(),
-                None => Url::parse(src.as_ref()).ok(),
-            })
-            .collect()
-    };
-    let mut scripts = HashMap::new();
-    for url in urls {
-        if scripts.contains_key(&url) {
-            continue;
-        }
-        let mut script_request = Request::get(url.clone());
-        if force_revalidate {
-            revalidate(&mut script_request);
-        }
-        match net.fetch_async(script_request).await {
-            Ok((_, bytes)) => {
-                browser.note(
-                    "info",
-                    "script",
-                    format!("fetched {url}, {} bytes", bytes.len()),
-                );
-                scripts.insert(url, decode_body(&bytes));
-            }
-            // A script that never arrives is the single most common reason a
-            // page renders but does nothing, and it used to be swallowed here
-            // without a trace anywhere in the window.
-            Err(error) => {
-                browser.note(
-                    "error",
-                    "script",
-                    format!("could not fetch {url}: {error:?}"),
-                );
-                outcome = outcome.max(PageOutcome::Warning);
-            }
-        }
-    }
+    // The bound page runtime admits external sources through this navigation
+    // provider when it encounters each script in document order.
     PageBundle {
         net: Arc::clone(&net),
         tab_id,
         generation,
         resolved_url,
-        source: PageSource::Html { html, scripts },
+        source: PageSource::Html { html },
         outcome,
         navigation_loaded: true,
     }

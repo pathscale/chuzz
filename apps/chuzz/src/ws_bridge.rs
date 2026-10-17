@@ -462,24 +462,40 @@ fn invalid_handshake_bytes(value: &str) -> bool {
         .any(|byte| matches!(byte, b'\r' | b'\n' | b'\0'))
 }
 
+/// Parse the WebSocket URL and produce the corresponding HTTP URL used by the
+/// initiator's fetch policy. The original ws/wss URL remains the source of the
+/// handshake target and transport security decision.
+fn websocket_urls(value: &str) -> Result<(url::Url, url::Url, bool), String> {
+    if invalid_handshake_bytes(value) {
+        return Err("invalid WebSocket URL".to_owned());
+    }
+    let socket = url::Url::parse(value).map_err(|error| error.to_string())?;
+    let secure = match socket.scheme() {
+        "ws" => false,
+        "wss" => true,
+        _ => return Err("scheme is not ws or wss".to_owned()),
+    };
+    if socket.fragment().is_some() || !socket.username().is_empty() || socket.password().is_some() {
+        return Err("WebSocket URL cannot contain credentials or a fragment".to_owned());
+    }
+    if socket.host().is_none() {
+        return Err("missing host".to_owned());
+    }
+
+    let mut policy = socket.clone();
+    policy
+        .set_scheme(if secure { "https" } else { "http" })
+        .map_err(|_| "invalid WebSocket policy URL".to_owned())?;
+    Ok((socket, policy, secure))
+}
+
 async fn open_socket(
     url: &str,
     protocols: &[String],
     initiator: &blitz_traits::net::Initiator,
     outbox: Arc<Outbox>,
 ) -> Result<Connected<Transport>, String> {
-    if invalid_handshake_bytes(url) {
-        return Err("invalid WebSocket URL".to_owned());
-    }
-    let url = url::Url::parse(url).map_err(|error| error.to_string())?;
-    let secure = match url.scheme() {
-        "ws" => false,
-        "wss" => true,
-        _ => return Err("scheme is not ws or wss".to_owned()),
-    };
-    if url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
-        return Err("WebSocket URL cannot contain credentials or a fragment".to_owned());
-    }
+    let (url, policy_url, secure) = websocket_urls(url)?;
     let host = match url.host() {
         Some(url::Host::Domain(host)) => host.to_owned(),
         Some(url::Host::Ipv4(host)) => host.to_string(),
@@ -527,10 +543,6 @@ async fn open_socket(
     }
     let offered: Vec<&str> = protocols.iter().map(String::as_str).collect();
 
-    let mut policy_url = url.clone();
-    policy_url
-        .set_scheme(if secure { "https" } else { "http" })
-        .map_err(|_| "invalid WebSocket policy URL".to_owned())?;
     initiator.begin(&policy_url)?;
     initiator.check_url(&policy_url)?;
 
@@ -630,4 +642,38 @@ async fn open_socket(
         connection,
         protocol,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::websocket_urls;
+
+    #[test]
+    fn websocket_policy_url_preserves_target_and_maps_security_scheme() {
+        for (socket_scheme, policy_scheme, secure, port) in
+            [("ws", "http", false, 8080), ("wss", "https", true, 8443)]
+        {
+            let input = format!("{socket_scheme}://example.test:{port}/echo?q=one");
+            let (socket, policy, actual_secure) = websocket_urls(&input).unwrap();
+
+            assert_eq!(socket.scheme(), socket_scheme);
+            assert_eq!(socket.path(), "/echo");
+            assert_eq!(socket.query(), Some("q=one"));
+            assert_eq!(socket.port(), Some(port));
+            assert_eq!(policy.scheme(), policy_scheme);
+            assert_eq!(policy.host_str(), Some("example.test"));
+            assert_eq!(policy.path(), socket.path());
+            assert_eq!(policy.query(), socket.query());
+            assert_eq!(policy.port(), Some(port));
+            assert_eq!(actual_secure, secure);
+        }
+    }
+
+    #[test]
+    fn websocket_urls_reject_other_schemes_credentials_and_fragments() {
+        assert!(websocket_urls("http://example.test/socket").is_err());
+        assert!(websocket_urls("ws://user@example.test/socket").is_err());
+        assert!(websocket_urls("wss://example.test/socket#fragment").is_err());
+        assert!(websocket_urls("ws://example.test/socket\r\nX-Test: bad").is_err());
+    }
 }

@@ -21,6 +21,8 @@ use crate::script_host::{
     self as script_host, ChuzzScriptHost, HostCallbackId, HostError, HostGeneration,
     HostInstallContext, HostIntrinsic, HostObject, HostRealm, HostValue,
 };
+use crate::tab_session::{LocalStorageError, LocalStorageStore};
+use crate::tab_stash::Text;
 
 /// An owned, engine-neutral script value. Conversions preserve UTF-16 code
 /// units, object identity, detached buffers, and nested structure.
@@ -170,10 +172,16 @@ pub struct ChuzzPageRuntimeHost {
     attachment_live: Rc<Cell<bool>>,
     timers: BTreeMap<u64, TimerEntry>,
     next_timer_id: u64,
+    local_storage: Rc<std::cell::RefCell<LocalStorageStore>>,
 }
 
 impl ChuzzPageRuntimeHost {
     pub fn new_page_script_host(config: HostInstallContext) -> Result<Self, HostError> {
+        let local_storage_origin = config
+            .base
+            .as_ref()
+            .map(url::Url::origin)
+            .unwrap_or_else(url::Origin::new_opaque);
         let mut host = Self {
             state: ChuzzRealmState::new(),
             config: Some(config),
@@ -183,11 +191,16 @@ impl ChuzzPageRuntimeHost {
             attachment_live: Rc::new(Cell::new(true)),
             timers: BTreeMap::new(),
             next_timer_id: 1,
+            local_storage: Rc::new(std::cell::RefCell::new(LocalStorageStore::new(
+                local_storage_origin,
+            ))),
         };
+        let local_storage = Rc::clone(&host.local_storage);
+        host.set_state("chuzz.localStorage", HostObject::new(local_storage))?;
         let install_config = host.config.take().expect("config installed");
         let result = script_host::install_all_chuzz_hosts(&mut host, &install_config);
         host.config = Some(install_config);
-        if let Err(error) = result {
+        if let Err(error) = result.and_then(|()| install_local_storage_intrinsics(&mut host)) {
             host.teardown();
             return Err(error);
         }
@@ -404,6 +417,71 @@ impl ChuzzPageRuntimeHost {
         script_host::session::snapshot(self, budget)
     }
 
+    /// Read the current origin's browser-owned localStorage data. The native
+    /// document adapter should expose these calls directly to Ekojit; guest
+    /// keys are never used as properties of a guest object.
+    pub fn local_storage_length(&mut self) -> Result<usize, HostError> {
+        self.ensure_live()?;
+        self.local_storage
+            .borrow_mut()
+            .length()
+            .map_err(local_storage_error)
+    }
+
+    pub fn local_storage_key(&mut self, index: usize) -> Result<Option<Rc<[u16]>>, HostError> {
+        self.ensure_live()?;
+        Ok(self
+            .local_storage
+            .borrow_mut()
+            .key(index)
+            .map_err(local_storage_error)?
+            .map(|value| Rc::from(value.to_vec())))
+    }
+
+    pub fn local_storage_get(&mut self, key: &[u16]) -> Result<Option<Rc<[u16]>>, HostError> {
+        self.ensure_live()?;
+        Ok(self
+            .local_storage
+            .borrow_mut()
+            .get(key)
+            .map_err(local_storage_error)?
+            .map(|value| Rc::from(value.to_vec())))
+    }
+
+    pub fn local_storage_set(&mut self, key: &[u16], value: &[u16]) -> Result<(), HostError> {
+        self.ensure_live()?;
+        let key = Text::capture(key.iter().copied(), 2048).ok_or_else(local_quota_error)?;
+        let value = Text::capture(value.iter().copied(), 8192).ok_or_else(local_quota_error)?;
+        self.local_storage
+            .borrow_mut()
+            .set(key, value)
+            .map_err(local_storage_error)
+    }
+
+    pub fn local_storage_remove(&mut self, key: &[u16]) -> Result<(), HostError> {
+        self.ensure_live()?;
+        self.local_storage
+            .borrow_mut()
+            .remove(key)
+            .map_err(local_storage_error)
+    }
+
+    pub fn local_storage_clear(&mut self) -> Result<(), HostError> {
+        self.ensure_live()?;
+        self.local_storage
+            .borrow_mut()
+            .clear()
+            .map_err(local_storage_error)
+    }
+
+    pub fn seed_local_storage(&mut self, entries: &[(String, String)]) -> Result<(), HostError> {
+        self.ensure_live()?;
+        self.local_storage
+            .borrow_mut()
+            .seed(entries)
+            .map_err(local_storage_error)
+    }
+
     pub fn poll(&mut self, waker: Option<&Waker>) -> Result<bool, HostError> {
         self.poll_with_timers(waker, true)
     }
@@ -520,6 +598,13 @@ impl ChuzzPageRuntimeHost {
     pub fn callback_count(&self) -> usize {
         self.state.callbacks.len()
     }
+
+    pub(crate) fn callback_is_live(&self, callback: &HostCallbackId) -> bool {
+        self.state
+            .callbacks
+            .iter()
+            .any(|entry| entry.id.same_callback(callback))
+    }
     pub fn intrinsic_arity(&self, name: &str) -> Option<u8> {
         self.state.intrinsics.get(name).map(|entry| entry.0)
     }
@@ -561,6 +646,176 @@ impl ChuzzPageRuntimeHost {
         self.frames.clear();
         self.frame_sink.take();
     }
+}
+
+fn local_quota_error() -> HostError {
+    HostError::new("QuotaExceededError", "localStorage quota exceeded")
+}
+
+fn local_storage_error(error: LocalStorageError) -> HostError {
+    match error {
+        LocalStorageError::QuotaExceeded => local_quota_error(),
+        LocalStorageError::Persistence => {
+            HostError::new("UnknownError", "localStorage persistence failed")
+        }
+    }
+}
+
+fn install_local_storage_intrinsics(host: &mut ChuzzPageRuntimeHost) -> Result<(), HostError> {
+    host.register_intrinsic("__chuzzLocal", 3, local_dispatch)?;
+    host.register_intrinsic("__chuzzLocalLength", 0, local_length)?;
+    host.register_intrinsic("__chuzzLocalKey", 1, local_key)?;
+    host.register_intrinsic("__chuzzLocalGetItem", 1, local_get_item)?;
+    host.register_intrinsic("__chuzzLocalSetItem", 2, local_set_item)?;
+    host.register_intrinsic("__chuzzLocalRemoveItem", 1, local_remove_item)?;
+    host.register_intrinsic("__chuzzLocalClear", 0, local_clear)?;
+    Ok(())
+}
+
+fn local_storage_owner(
+    host: &dyn ChuzzScriptHost,
+) -> Result<Rc<std::cell::RefCell<LocalStorageStore>>, HostError> {
+    host.state("chuzz.localStorage")
+        .and_then(|state| {
+            state
+                .downcast_ref::<Rc<std::cell::RefCell<LocalStorageStore>>>()
+                .cloned()
+        })
+        .ok_or_else(|| HostError::new("TypeError", "localStorage owner unavailable"))
+}
+
+fn local_dispatch(
+    host: &mut dyn ChuzzScriptHost,
+    args: &[HostValue],
+) -> Result<HostValue, HostError> {
+    let operation = match args.first() {
+        Some(HostValue::Number(value))
+            if value.is_finite() && value.fract() == 0.0 && (0.0..=5.0).contains(value) =>
+        {
+            *value as u8
+        }
+        _ => {
+            return Err(HostError::new(
+                "TypeError",
+                "invalid localStorage operation",
+            ));
+        }
+    };
+    local_operation(host, operation, &args[1..])
+}
+
+fn local_operation(
+    host: &dyn ChuzzScriptHost,
+    operation: u8,
+    args: &[HostValue],
+) -> Result<HostValue, HostError> {
+    let owner = local_storage_owner(host)?;
+    let mut store = owner.borrow_mut();
+    match operation {
+        0 => Ok(HostValue::Number(
+            store.length().map_err(local_storage_error)? as f64,
+        )),
+        1 => {
+            let index = match args.first() {
+                Some(HostValue::Number(value)) if value.is_finite() => {
+                    value.trunc().rem_euclid(4_294_967_296.0) as usize
+                }
+                _ => {
+                    return Err(HostError::new(
+                        "TypeError",
+                        "localStorage index must be a number",
+                    ));
+                }
+            };
+            Ok(store
+                .key(index)
+                .map_err(local_storage_error)?
+                .map_or(HostValue::Null, |value| {
+                    HostValue::Utf16(Rc::from(value.to_vec()))
+                }))
+        }
+        2 => {
+            let key = local_text_arg(args, 0, 2048)?;
+            Ok(store
+                .get(key.units())
+                .map_err(local_storage_error)?
+                .map_or(HostValue::Null, |value| {
+                    HostValue::Utf16(Rc::from(value.to_vec()))
+                }))
+        }
+        3 => {
+            let key = local_text_arg(args, 0, 2048)?;
+            let value = local_text_arg(args, 1, 8192)?;
+            store.set(key, value).map_err(local_storage_error)?;
+            Ok(HostValue::Undefined)
+        }
+        4 => {
+            let key = local_text_arg(args, 0, 2048)?;
+            store.remove(key.units()).map_err(local_storage_error)?;
+            Ok(HostValue::Undefined)
+        }
+        5 => {
+            store.clear().map_err(local_storage_error)?;
+            Ok(HostValue::Undefined)
+        }
+        _ => Err(HostError::new(
+            "TypeError",
+            "unknown localStorage operation",
+        )),
+    }
+}
+
+fn local_length(
+    host: &mut dyn ChuzzScriptHost,
+    args: &[HostValue],
+) -> Result<HostValue, HostError> {
+    local_operation(host, 0, args)
+}
+
+fn local_key(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostValue, HostError> {
+    local_operation(host, 1, args)
+}
+
+fn local_get_item(
+    host: &mut dyn ChuzzScriptHost,
+    args: &[HostValue],
+) -> Result<HostValue, HostError> {
+    local_operation(host, 2, args)
+}
+
+fn local_set_item(
+    host: &mut dyn ChuzzScriptHost,
+    args: &[HostValue],
+) -> Result<HostValue, HostError> {
+    local_operation(host, 3, args)
+}
+
+fn local_remove_item(
+    host: &mut dyn ChuzzScriptHost,
+    args: &[HostValue],
+) -> Result<HostValue, HostError> {
+    local_operation(host, 4, args)
+}
+
+fn local_clear(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostValue, HostError> {
+    local_operation(host, 5, args)
+}
+
+fn local_text_arg(args: &[HostValue], index: usize, limit: usize) -> Result<Text, HostError> {
+    let value = args
+        .get(index)
+        .ok_or_else(|| HostError::new("TypeError", "localStorage key or value must be a string"))?;
+    let text = match value {
+        HostValue::Utf16(value) => Text::capture(value.iter().copied(), limit),
+        HostValue::String(value) => Text::capture(value.encode_utf16(), limit),
+        _ => {
+            return Err(HostError::new(
+                "TypeError",
+                "localStorage key or value must be a string",
+            ));
+        }
+    };
+    text.ok_or_else(local_quota_error)
 }
 
 impl Drop for ChuzzPageRuntimeHost {

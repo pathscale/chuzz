@@ -463,6 +463,11 @@ pub async fn load_for_capture(
         )));
     }
 
+    // The navigation signal also owns subresource work started by the page.
+    // In particular, the page runtime's ScriptFetcher must stop when the
+    // capture request is cancelled, rather than receiving a fresh signal that
+    // can outlive the navigation which created it.
+    let page_signal = request.signal.clone().unwrap_or_default();
     let (resolved_url, bytes) = net_provider.fetch_document_async(request).await?;
     let html = decode_body(&bytes);
 
@@ -472,6 +477,7 @@ pub async fn load_for_capture(
         base_url: Some(resolved_url.to_string()),
         net_provider: Some(Arc::clone(&net_provider) as _),
         html_parser_provider: Some(Arc::new(HtmlProvider)),
+        abort_signal: Some(page_signal.clone()),
         // The host's viewport, before any script runs: a page that reads
         // innerWidth or matchMedia during load must see the size it renders at.
         viewport,
@@ -487,7 +493,7 @@ pub async fn load_for_capture(
             deadline: CAPTURE_NETWORK_DEADLINE,
             wake: crate::net_bridge::PageWake::default(),
             lifetime: blitz_dom::release::Teardown::new(),
-            signal: blitz_traits::net::AbortSignal::default(),
+            signal: page_signal,
             session_backing: None,
         };
         let mut document = crate::page_document::PageDocument::from_html(

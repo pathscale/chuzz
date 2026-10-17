@@ -1,32 +1,38 @@
-//! Concrete page runtime adapter for the bounded native guest.
+//! Concrete page runtime adapter for the native Ekojit document.
 //!
-//! The adapter owns one RuntimeDriver and obtains the page host through that
-//! driver's live guest. The application host is stateless: every operation
-//! resolves the driver from the live document passed by izumo, on its owner
-//! thread, so script calls and IPC stay in the same realm.
+//! The document owns the guest realm. The native host is shared with the
+//! owner-local bridge so every intrinsic callback reaches this page's host.
+
+use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::task::Context;
 
 #[cfg(feature = "gui")]
 use std::any::Any;
-use std::sync::Arc;
 #[cfg(feature = "gui")]
 use std::sync::OnceLock;
-use std::task::Context;
 
 use blitz_dom::{DocGuard, DocGuardMut, Document, DocumentConfig, NodeId};
+use blitz_script::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
+use blitz_script_ekojit::{EkojitDocument, NativePageDefect, PageSource, TypedNativeGuest};
 use blitz_traits::events::{BlitzPointerEvent, DomEvent, UiEvent};
 #[cfg(feature = "gui")]
 use url::Url;
 
-use crate::page_document::{PageDiagnosticBatch, PageRuntimeDriver};
+use crate::page_document::{
+    PageDiagnosticBatch, PageNativeMetrics, PageNativeReceipt, PageRuntimeDriver,
+};
 use crate::page_script_host::ChuzzPageRuntimeHost;
-use blitz_script::RuntimeDriver;
-use blitz_script::native::{Error as GuestError, Guest, GuestHost};
 
-use crate::page_native_bridge::ChuzzBridge;
-
-/// The engine-neutral page driver backed by the Rust AST guest.
+/// The engine-neutral page driver backed by one persistent native realm.
 pub(super) struct PageNativeDriver {
-    runtime: RuntimeDriver<Guest<ChuzzBridge>, GuestHost<ChuzzBridge>>,
+    document: EkojitDocument,
+    host: Rc<RefCell<ChuzzPageRuntimeHost>>,
+    #[cfg(feature = "gui")]
+    poll_hooks: Vec<izumo::DocumentPollHook>,
+    #[cfg(feature = "gui")]
+    deferred_scripts: Vec<(Arc<str>, Arc<str>)>,
 }
 
 struct PageScriptFetcher(crate::net_bridge::NetworkHost);
@@ -74,55 +80,98 @@ impl blitz_script::ScriptFetcher for PageScriptFetcher {
 /// override and is selected by PageDocument before calling this function.
 pub(super) fn default_page_runtime_factory(
     html: Arc<str>,
-    config: DocumentConfig,
+    mut config: DocumentConfig,
     host: ChuzzPageRuntimeHost,
 ) -> Result<Box<dyn PageRuntimeDriver>, String> {
+    if config.net_provider.is_none() {
+        config.net_provider =
+            Some(Arc::clone(host.net_provider().map_err(|error| error.to_string())?) as _);
+    }
     let fetcher = PageScriptFetcher(host.script_network().map_err(|error| error.to_string())?);
-    let bridge = ChuzzBridge::new(host)?;
-    let guest = Guest::new(bridge);
-    let document = blitz_script::BoundScriptDocument::new_bound_with_fetcher(
-        html,
-        config,
-        GuestHost(guest),
-        fetcher,
-    )?;
-    let runtime = RuntimeDriver::from_document(document)?;
-    Ok(Box::new(PageNativeDriver { runtime }))
+    let host = Rc::new(RefCell::new(host));
+    let mut document = EkojitDocument::from_html(html, config, NativePageDefect::None)
+        .map_err(|error| error.to_string())?;
+    crate::page_ekojit_bridge::install(&mut document, Rc::clone(&host))?;
+    crate::page_ekojit_bootstrap::install(&mut document)?;
+    crate::page_ekojit_compat::install(&mut document)?;
+    document.set_script_fetcher(fetcher);
+    Ok(Box::new(PageNativeDriver {
+        document,
+        host,
+        #[cfg(feature = "gui")]
+        poll_hooks: Vec::new(),
+        #[cfg(feature = "gui")]
+        deferred_scripts: Vec::new(),
+    }))
 }
 
 impl PageNativeDriver {
-    fn page_host(&self) -> &ChuzzPageRuntimeHost {
-        &self
-            .runtime
-            .guest()
-            .expect("a live RuntimeDriver retains its bound guest")
-            .bridge
-            .host
+    fn source(source: &str, name: &str) -> Arc<PageSource> {
+        Arc::new(PageSource {
+            text: Arc::from(source),
+            url: Arc::from(name),
+        })
     }
 
-    fn page_host_mut(&mut self) -> &mut ChuzzPageRuntimeHost {
-        &mut self
-            .runtime
-            .guest_mut()
-            .expect("a live RuntimeDriver retains its bound guest")
-            .bridge
-            .host
+    fn evaluate(&mut self, source: &str, name: &str) -> Result<(), String> {
+        TypedNativeGuest::evaluate(&mut self.document, Self::source(source, name))
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
-    fn runtime_error(&mut self, message: String) {
-        let error = GuestError::new("Error", message);
-        let _ = self
-            .runtime
-            .with_guest_mut(|guest, _document| guest.report_error(error));
+    fn diagnostics(
+        entries: Vec<DiagnosticEntry>,
+        after: u64,
+        limit: usize,
+    ) -> DiagnosticStreamBatch {
+        let first = entries
+            .first()
+            .map_or(after.saturating_add(1), |entry| entry.sequence);
+        let lost = first.saturating_sub(after.saturating_add(1));
+        let entries: Vec<_> = entries
+            .into_iter()
+            .filter(|entry| entry.sequence > after)
+            .take(limit.clamp(1, 1000))
+            .collect();
+        let next_sequence = entries.last().map_or(after, |entry| entry.sequence);
+        DiagnosticStreamBatch {
+            entries,
+            lost,
+            next_sequence,
+        }
+    }
+
+    fn page_host(&self) -> Ref<'_, ChuzzPageRuntimeHost> {
+        self.host.borrow()
+    }
+
+    fn page_host_mut(&self) -> RefMut<'_, ChuzzPageRuntimeHost> {
+        self.host.borrow_mut()
+    }
+
+    #[cfg(feature = "gui")]
+    fn run_poll_hooks(&mut self, context: Option<&Context<'_>>) -> bool {
+        let mut hooks = std::mem::take(&mut self.poll_hooks);
+        let mut work = false;
+        for hook in &mut hooks {
+            work |= hook(self, context);
+        }
+        hooks.append(&mut self.poll_hooks);
+        self.poll_hooks = hooks;
+        work
     }
 }
 
 impl PageRuntimeDriver for PageNativeDriver {
-    fn host(&self) -> &ChuzzPageRuntimeHost {
+    #[cfg(feature = "gui")]
+    fn defer_named_script(&mut self, source: Arc<str>, name: Arc<str>) {
+        self.deferred_scripts.push((source, name));
+    }
+    fn host(&self) -> Ref<'_, ChuzzPageRuntimeHost> {
         self.page_host()
     }
 
-    fn host_mut(&mut self) -> &mut ChuzzPageRuntimeHost {
+    fn host_mut(&mut self) -> RefMut<'_, ChuzzPageRuntimeHost> {
         self.page_host_mut()
     }
 
@@ -132,36 +181,76 @@ impl PageRuntimeDriver for PageNativeDriver {
         HOST.get_or_init(|| Arc::new(PageDocumentHost)).clone()
     }
 
+    fn set_was_discarded(&mut self, discarded: bool) {
+        self.document.set_was_discarded(discarded);
+    }
+
+    fn begin_restore(&mut self, budget: std::time::Duration) {
+        self.document.begin_restore(budget);
+    }
+
     fn execute_scripts(&mut self) -> Result<(), String> {
-        self.runtime.execute_scripts()
+        TypedNativeGuest::execute_scripts(&mut self.document).map_err(|error| error.to_string())
     }
 
     fn eval(&mut self, source: &str) -> Result<(), String> {
-        self.runtime.eval(source)
+        self.evaluate(source, "<eval>")
     }
 
     fn eval_named(&mut self, source: &str, name: &str) -> Result<(), String> {
-        self.runtime.eval_named(source, name)
+        self.evaluate(source, name)
     }
 
     fn eval_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
-        self.runtime.eval_json(source)
+        crate::page_ekojit_bridge::refresh_diagnostics(&mut self.document)?;
+        self.document
+            .with_embedder_host(|host| host.eval_page_json(source))
     }
 
     fn has_pending_jobs(&self) -> bool {
-        self.runtime.has_pending_jobs()
+        self.document.has_pending_jobs()
+            || self
+                .page_host()
+                .next_timer_deadline_ns()
+                .is_some_and(|deadline| deadline <= nagoya::now_ns())
     }
 
     fn pending_task_count(&self) -> u64 {
-        self.runtime.pending_task_count()
+        self.document.pending_task_count() + self.page_host().timer_count() as u64
     }
 
     fn report_runtime_error(&mut self, error: String) {
-        self.runtime_error(error);
+        self.document.report_runtime_error(error);
+    }
+
+    fn native_metrics(&self) -> Option<PageNativeMetrics> {
+        let (compilations, native_entries) = self.document.native_counts();
+        let receipts = self
+            .document
+            .native_receipts()
+            .iter()
+            .map(|receipt| PageNativeReceipt {
+                source_url: receipt.source_url.to_string(),
+                backend: receipt.backend.to_owned(),
+                entry_abi: receipt.entry_abi.to_owned(),
+                native_entries: receipt.native_entries,
+                host_calls: receipt.host_calls,
+                code_bytes: receipt.code_bytes,
+            })
+            .collect();
+        Some(PageNativeMetrics {
+            compilations,
+            native_entries,
+            receipts,
+        })
     }
 
     fn dispatch_node_event(&mut self, node: NodeId, name: &str) -> Result<bool, String> {
-        self.runtime.dispatch_node_event(node, name)
+        Ok(TypedNativeGuest::dispatch_node_event(
+            &mut self.document,
+            node,
+            name,
+        ))
     }
 
     fn diagnostic_batch(
@@ -170,16 +259,31 @@ impl PageRuntimeDriver for PageNativeDriver {
         errors_after: u64,
         limit: usize,
     ) -> Result<PageDiagnosticBatch, String> {
-        self.runtime
-            .diagnostic_batch(console_after, errors_after, limit)
+        Ok(DiagnosticBatch {
+            console: Self::diagnostics(self.document.console_entries(), console_after, limit),
+            errors: Self::diagnostics(self.document.runtime_errors(), errors_after, limit),
+        })
     }
 
     fn poll_runtime(&mut self, context: Option<Context>) -> Result<bool, String> {
-        let work = Document::poll(&mut self.runtime, context);
-        match self.runtime.document_mut().take_last_error() {
-            Some(error) => Err(error),
-            None => Ok(work),
+        #[cfg(feature = "gui")]
+        for (source, name) in std::mem::take(&mut self.deferred_scripts) {
+            self.evaluate(&source, &name)?;
         }
+        #[cfg(feature = "gui")]
+        let mut work = {
+            let poll_context = context
+                .as_ref()
+                .map(|context| Context::from_waker(context.waker()));
+            TypedNativeGuest::poll_runtime(&mut self.document, poll_context)
+        };
+        #[cfg(not(feature = "gui"))]
+        let mut work = TypedNativeGuest::poll_runtime(&mut self.document, context);
+        #[cfg(feature = "gui")]
+        {
+            work |= self.run_poll_hooks(context.as_ref());
+        }
+        Ok(work)
     }
 
     fn poll_runtime_for_settle(
@@ -187,81 +291,104 @@ impl PageRuntimeDriver for PageNativeDriver {
         context: Option<Context>,
         run_timers: bool,
     ) -> Result<bool, String> {
-        let work = Document::poll_for_settle(&mut self.runtime, context, run_timers);
-        match self.runtime.document_mut().take_last_error() {
-            Some(error) => Err(error),
-            None => Ok(work),
+        #[cfg(feature = "gui")]
+        for (source, name) in std::mem::take(&mut self.deferred_scripts) {
+            self.evaluate(&source, &name)?;
+        }
+        #[cfg(feature = "gui")]
+        let mut work = {
+            let poll_context = context
+                .as_ref()
+                .map(|context| Context::from_waker(context.waker()));
+            TypedNativeGuest::poll_runtime_for_settle(&mut self.document, poll_context, run_timers)
+        };
+        #[cfg(not(feature = "gui"))]
+        let mut work =
+            TypedNativeGuest::poll_runtime_for_settle(&mut self.document, context, run_timers);
+        #[cfg(feature = "gui")]
+        {
+            work |= self.run_poll_hooks(context.as_ref());
+        }
+        Ok(work)
+    }
+
+    fn next_timer_deadline_ns(&self) -> Option<u64> {
+        let host_deadline = self.page_host().next_timer_deadline_ns();
+        let native_deadline = self.document.next_timer_delay().map(|delay| {
+            let delay_ns = u64::try_from(delay.as_nanos()).unwrap_or(u64::MAX);
+            nagoya::now_ns().saturating_add(delay_ns)
+        });
+        match (host_deadline, native_deadline) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
         }
     }
 }
 
 impl Document for PageNativeDriver {
     fn inner(&self) -> DocGuard<'_> {
-        self.runtime.inner()
+        self.document.inner()
     }
 
     fn inner_mut(&mut self) -> DocGuardMut<'_> {
-        self.runtime.inner_mut()
+        self.document.inner_mut()
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
-        self.runtime.handle_ui_event(event);
+        self.document.handle_ui_event(event);
     }
 
     fn poll(&mut self, context: Option<Context>) -> bool {
-        Document::poll(&mut self.runtime, context)
+        PageRuntimeDriver::poll_runtime(self, context).unwrap_or(false)
     }
 
     fn poll_for_settle(&mut self, context: Option<Context>, run_timers: bool) -> bool {
-        Document::poll_for_settle(&mut self.runtime, context, run_timers)
+        PageRuntimeDriver::poll_runtime_for_settle(self, context, run_timers).unwrap_or(false)
     }
 
     fn prepare_teardown(&mut self) {
-        self.runtime.prepare_teardown();
+        self.document.prepare_teardown();
     }
 
     fn dispose(self: Box<Self>) -> Arc<blitz_dom::release::Teardown> {
-        let Self { runtime } = *self;
-        Box::new(runtime).dispose()
+        let Self { document, .. } = *self;
+        Box::new(document).dispose()
     }
 
     fn set_page_visible(&mut self, visible: bool) {
-        self.runtime.set_page_visible(visible);
+        self.document.set_page_visible(visible);
     }
 
     fn freeze(&mut self) {
-        self.runtime.freeze();
+        self.document.freeze();
     }
 
     fn finish_restore(&mut self) {
-        self.runtime.finish_restore();
+        self.document.finish_restore();
     }
 
     fn resume(&mut self) {
-        self.runtime.resume();
+        self.document.resume();
     }
 }
 
 impl blitz_control_protocol::ControlScriptBackend for PageNativeDriver {
     fn dispatch_dom_event(&mut self, event: DomEvent) {
-        if let Err(error) = self.runtime.dispatch_dom_event(event) {
-            self.runtime_error(error);
-        }
+        self.document.handle_dom_event(event);
     }
 
     fn handle_pointer_move_to_node(&mut self, event: BlitzPointerEvent, node: NodeId) {
-        if let Err(error) = self.runtime.handle_pointer_move_to_node(event, node) {
-            self.runtime_error(error);
-        }
+        self.document.handle_pointer_move_to_node(event, node);
     }
 
     fn handle_ui_event_to_node(&mut self, event: UiEvent, node: NodeId) {
-        if let Err(error) = self.runtime.handle_ui_event_to_node(event, node) {
-            self.runtime_error(error);
-        }
+        self.document.handle_ui_event_to_node(event, node);
     }
 
     fn script_metrics(&self) -> Option<blitz_control_protocol::ScriptMetrics> {
+        // Native receipts have entry and host-call counts but no elapsed-time
+        // samples, so they cannot truthfully populate ScriptMetrics' timing fields.
         None
     }
 }
@@ -325,17 +452,15 @@ impl izumo::DocumentHost for PageDocumentHost {
 
     fn set_ipc_handler(&self, document: &mut dyn Document, handler: Box<dyn Fn(String)>) {
         if let Some(page) = page_mut(document)
-            && let Err(error) = page.runtime.set_ipc_handler(handler)
+            && let Err(error) = crate::page_ekojit_bridge::install_ipc(&mut page.document, handler)
         {
             page.report_runtime_error(error);
         }
     }
 
     fn add_poll_hook(&self, document: &mut dyn Document, hook: izumo::DocumentPollHook) {
-        if let Some(page) = page_mut(document)
-            && let Err(error) = page.runtime.add_poll_hook(hook)
-        {
-            page.report_runtime_error(error);
+        if let Some(page) = page_mut(document) {
+            page.poll_hooks.push(hook);
         }
     }
 
@@ -374,7 +499,7 @@ impl izumo::DocumentHost for PageDocumentHost {
     ) -> blitz_control_protocol::DebugResponse {
         host_error(
             "unsupportedRequest",
-            "the bounded page runtime does not implement this diagnostics operation",
+            "the native page backend does not implement this diagnostics operation",
         )
     }
 
@@ -392,10 +517,17 @@ impl izumo::DocumentHost for PageDocumentHost {
             next_sequence,
         };
         page_ref(document)
-            .and_then(|page| {
-                page.runtime
-                    .diagnostic_batch(console_after, errors_after, limit)
-                    .ok()
+            .map(|page| blitz_script::DiagnosticBatch {
+                console: PageNativeDriver::diagnostics(
+                    page.document.console_entries(),
+                    console_after,
+                    limit,
+                ),
+                errors: PageNativeDriver::diagnostics(
+                    page.document.runtime_errors(),
+                    errors_after,
+                    limit,
+                ),
             })
             .unwrap_or_else(|| blitz_script::DiagnosticBatch {
                 console: empty(console_after),
