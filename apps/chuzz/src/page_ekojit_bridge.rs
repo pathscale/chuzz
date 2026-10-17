@@ -109,12 +109,7 @@ const IZUMO_IPC_SHIM: &str = r#"
       __chuzzIpcPostMessage(String(message));
     }
   };
-  Object.defineProperty(global, "__IZUMO__", {
-    value: Object.freeze({ invoke: invoke, listen: listen, _reply: reply, _emit: emit }),
-    writable: false,
-    configurable: false,
-    enumerable: false
-  });
+  global.__IZUMO__ = Object.freeze({ invoke: invoke, listen: listen, _reply: reply, _emit: emit });
 })(globalThis);
 "#;
 
