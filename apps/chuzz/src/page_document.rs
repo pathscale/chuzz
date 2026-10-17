@@ -1,9 +1,10 @@
 //! Engine-neutral owner for one parsed page and its native runtime host.
 //!
-//! The built-in bounded Rust guest is the default. An embedder may register a
+//! The native Ekojit document is the default. An embedder may register a
 //! replacement before the first page is constructed; that explicit factory
 //! takes precedence over the default.
 
+use std::cell::{Ref, RefMut};
 use std::sync::{Arc, OnceLock};
 use std::task::Context;
 
@@ -16,6 +17,25 @@ use crate::script_host::{HostError, HostInstallContext};
 
 pub use blitz_script::{DiagnosticBatch as PageDiagnosticBatch, DiagnosticEntry as PageDiagnostic};
 
+/// Native Ekojit counters and the receipts emitted by this page realm.
+#[derive(Clone, Debug)]
+pub struct PageNativeMetrics {
+    pub compilations: u64,
+    pub native_entries: u64,
+    pub receipts: Vec<PageNativeReceipt>,
+}
+
+/// A guest-independent summary of one native source activation.
+#[derive(Clone, Debug)]
+pub struct PageNativeReceipt {
+    pub source_url: String,
+    pub backend: String,
+    pub entry_abi: String,
+    pub native_entries: u64,
+    pub host_calls: u64,
+    pub code_bytes: usize,
+}
+
 /// Engine-neutral operations required from a real page runtime.
 ///
 /// The implementation owns the parsed document and the exact host supplied
@@ -25,12 +45,17 @@ pub use blitz_script::{DiagnosticBatch as PageDiagnosticBatch, DiagnosticEntry a
 pub trait PageRuntimeDriver:
     blitz_dom::Document + blitz_control_protocol::ControlScriptBackend
 {
-    fn host(&self) -> &ChuzzPageRuntimeHost;
-    fn host_mut(&mut self) -> &mut ChuzzPageRuntimeHost;
+    fn host(&self) -> Ref<'_, ChuzzPageRuntimeHost>;
+    fn host_mut(&mut self) -> RefMut<'_, ChuzzPageRuntimeHost>;
 
     #[cfg(feature = "gui")]
     fn application_host(&self) -> Arc<dyn izumo::DocumentHost>;
 
+    #[cfg(feature = "gui")]
+    fn defer_named_script(&mut self, source: Arc<str>, name: Arc<str>);
+
+    fn set_was_discarded(&mut self, discarded: bool);
+    fn begin_restore(&mut self, budget: std::time::Duration);
     fn execute_scripts(&mut self) -> Result<(), String>;
     fn eval(&mut self, source: &str) -> Result<(), String>;
     fn eval_named(&mut self, source: &str, name: &str) -> Result<(), String>;
@@ -38,6 +63,10 @@ pub trait PageRuntimeDriver:
     fn has_pending_jobs(&self) -> bool;
     fn pending_task_count(&self) -> u64;
     fn report_runtime_error(&mut self, error: String);
+
+    fn native_metrics(&self) -> Option<PageNativeMetrics> {
+        None
+    }
 
     /// Dispatch a named event through the backend's event implementation.
     fn dispatch_node_event(&mut self, node: NodeId, name: &str) -> Result<bool, String>;
@@ -118,7 +147,7 @@ impl PageDocument {
         self.driver.as_mut()
     }
     /// Construct a page using an explicitly registered backend, or the
-    /// built-in bounded runtime when no override has been registered.
+    /// native Ekojit runtime when no override has been registered.
     pub fn from_html(
         html: Arc<str>,
         mut document_config: DocumentConfig,
@@ -166,17 +195,30 @@ impl PageDocument {
         Ok(page)
     }
 
-    pub fn host(&self) -> &ChuzzPageRuntimeHost {
+    pub fn host(&self) -> Ref<'_, ChuzzPageRuntimeHost> {
         self.driver.host()
     }
 
-    pub fn host_mut(&mut self) -> &mut ChuzzPageRuntimeHost {
+    pub fn host_mut(&mut self) -> RefMut<'_, ChuzzPageRuntimeHost> {
         self.driver.host_mut()
     }
 
     #[cfg(feature = "gui")]
     pub fn application_host(&self) -> Arc<dyn izumo::DocumentHost> {
         self.driver.application_host()
+    }
+
+    #[cfg(feature = "gui")]
+    pub(crate) fn defer_named_script(&mut self, source: Arc<str>, name: Arc<str>) {
+        self.driver.defer_named_script(source, name);
+    }
+
+    pub fn set_was_discarded(&mut self, discarded: bool) {
+        self.driver.set_was_discarded(discarded);
+    }
+
+    pub fn begin_restore(&mut self, budget: std::time::Duration) {
+        self.driver.begin_restore(budget);
     }
 
     pub fn execute_scripts(&mut self) -> Result<(), String> {
@@ -201,6 +243,10 @@ impl PageDocument {
 
     pub fn pending_task_count(&self) -> u64 {
         self.driver.pending_task_count()
+    }
+
+    pub fn native_metrics(&self) -> Option<PageNativeMetrics> {
+        self.driver.native_metrics()
     }
 
     pub fn dispatch_node_event(&mut self, node: NodeId, name: &str) -> Result<bool, String> {

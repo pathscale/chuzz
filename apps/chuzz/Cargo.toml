@@ -166,6 +166,8 @@ vello = ["izumo?/runtime"]
 scrollbars = ["blitz-dom/scrollbars"]
 
 [dependencies]
+icu_decimal = { version = "^2.1.1", features = ["alloc"] }
+icu_locale = "^2.1.1"
 # Default features are the engine's own baseline: svg (inline SVG cannot be
 # measured or painted without it, so a logo silently collapses),
 # accessibility, file-input and custom-widget. Stripping them and re-adding one

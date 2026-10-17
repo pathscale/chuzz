@@ -59,6 +59,7 @@ pub struct TabLife {
     pub load_signal: Option<blitz_traits::net::AbortSignal>,
     pub ever_live: bool,
     pub stash: Option<Arc<PageStash>>,
+    pub sessions: std::collections::BTreeMap<String, Arc<crate::tab_stash::SessionBucket>>,
     pub preview: Option<Arc<PaintSnapshot>>,
     pub preview_surface: Option<izumo::PageSurface>,
     pub record_charge: Option<Charge>,
@@ -81,6 +82,7 @@ impl Default for TabLife {
             load_signal: None,
             ever_live: false,
             stash: None,
+            sessions: Default::default(),
             preview: None,
             preview_surface: None,
             record_charge: None,
@@ -411,19 +413,23 @@ impl Browser {
                 None => (false, None),
             }
         };
-        if discarded {
-            return Err(String::from(
-                "the page runtime does not expose the browser discarded-state hook",
-            ));
-        }
+        page.set_was_discarded(discarded);
         let waking = self.0.state.lock().unwrap().tabs.iter().any(|tab| {
             tab.id == id && tab.generation == generation && tab.life.phase == TabPhase::Waking
         });
         page.inner_mut().page_input_blocked = waking;
         if waking {
-            return Err(String::from(
-                "the page runtime does not expose a bounded restore execution context",
-            ));
+            let remaining = self
+                .0
+                .state
+                .lock()
+                .unwrap()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == id && tab.generation == generation)
+                .and_then(|tab| tab.life.restore_deadline.as_ref())
+                .map_or(0, |deadline| deadline.due.saturating_sub(nagoya::now_ns()));
+            page.begin_restore(std::time::Duration::from_nanos(remaining));
         }
         if let Some(restore) = restore {
             if let Some(session) = restore.session() {
@@ -437,9 +443,12 @@ impl Browser {
                         )
                     })
                     .collect::<Vec<_>>();
-                page.host_mut().seed_session(&entries).map_err(|error| {
-                    format!("could not restore page session state: {}", error.message)
-                })?;
+                {
+                    let mut host = page.host_mut();
+                    host.seed_session(&entries).map_err(|error| {
+                        format!("could not restore page session state: {}", error.message)
+                    })?;
+                }
             }
             if destination
                 .as_ref()
@@ -573,7 +582,8 @@ impl Browser {
                 (document as &mut dyn std::any::Any)
                     .downcast_mut::<crate::page_document::PageDocument>()
                     .and_then(|page| {
-                        match page.host_mut().capture_session(&self.0.sleeping_budget) {
+                        let host = page.host();
+                        match host.capture_session(&self.0.sleeping_budget) {
                             Ok(session) => session,
                             Err(error) => {
                                 self.note(

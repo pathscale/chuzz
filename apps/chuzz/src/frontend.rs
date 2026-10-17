@@ -30,10 +30,11 @@ fn document_with_prelude(
     let base = blitz_traits::net::Url::parse(url).map_err(|error| error.to_string())?;
     let net = browser.net();
     let navigation = net.browser_initiator(base.clone());
+    let document_net = std::sync::Arc::new(net.for_document(base.clone(), &navigation));
     let lifetime = blitz_dom::release::Teardown::new();
     let signal = blitz_traits::net::AbortSignal::default();
     let page_net = std::sync::Arc::new(crate::tab_resources::PageNet {
-        net: std::sync::Arc::clone(&net),
+        net: std::sync::Arc::clone(&document_net),
         lifetime: std::sync::Arc::clone(&lifetime),
     });
     let config = blitz_dom::DocumentConfig {
@@ -45,7 +46,7 @@ fn document_with_prelude(
         ..Default::default()
     };
     let host_config = crate::script_host::HostInstallContext {
-        net: std::sync::Arc::new(net.for_document(base.clone(), &navigation)),
+        net: document_net,
         base: Some(base),
         deadline: std::time::Duration::from_secs(15),
         wake: crate::net_bridge::PageWake::default(),
@@ -58,12 +59,25 @@ fn document_with_prelude(
         config,
         host_config,
     )?;
+    // Install the browser hooks before evaluating any chrome code so every
+    // script runs after its document runtime and native host are in place.
     browser.install_document_lifecycle(&mut document);
     document.eval("globalThis.__CHUZZ_BLITZ__ = true")?;
     if let Some(prelude) = prelude {
         document.eval(prelude)?;
     }
-    document.eval_named(&javascript, CHUZZ_JS_URL)?;
+    if prelude.is_some() {
+        // A supplied fixture bridge is already installed above.
+        document.eval_named(&javascript, CHUZZ_JS_URL)?;
+    } else {
+        // Izumo installs IPC after the document factory returns and before its
+        // first poll. Start the chrome after that installation so its client
+        // selects the native bridge when it first imports the API module.
+        let startup = format!(
+            "if (!globalThis.__IZUMO__) {{ throw new Error('native IPC bridge is unavailable'); }}\n{javascript}"
+        );
+        document.defer_named_script(startup.into(), CHUZZ_JS_URL.into());
+    }
     document.execute_scripts()?;
     Ok(document)
 }

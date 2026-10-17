@@ -100,13 +100,13 @@ pub mod net_bridge;
 #[cfg(feature = "javascript")]
 pub mod page_document;
 #[cfg(feature = "javascript")]
-mod page_native_bridge;
+mod page_ekojit_bootstrap;
+#[cfg(feature = "javascript")]
+mod page_ekojit_bridge;
+#[cfg(feature = "javascript")]
+mod page_ekojit_compat;
 #[cfg(feature = "javascript")]
 mod page_native_driver;
-#[cfg(feature = "javascript")]
-mod page_native_gpu;
-#[cfg(feature = "javascript")]
-mod page_native_media;
 #[cfg(feature = "javascript")]
 pub mod page_script_host;
 #[cfg(feature = "gui")]

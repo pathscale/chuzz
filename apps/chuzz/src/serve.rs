@@ -1268,15 +1268,9 @@ impl blitz_traits::navigation::NavigationProvider for RequestedNavigation {
 
 /// What the page put in storage, carried from one document to the next.
 ///
-/// The page's `localStorage` is in-memory and per document, which is right for
-/// a capture and wrong the moment the host follows a link: an application
-/// writes its settings on one route and reads them while booting the next, and
-/// a fresh store makes that read a miss. Every check of the shape "save, go
-/// somewhere, come back" is undecidable without this.
-///
-/// It is a copy, not real storage. Nothing here is on disk, no quota is
-/// enforced, and no `storage` event is delivered; what it buys is that the same
-/// origin sees what it wrote.
+/// Storage carried by this headless tab across same-origin link navigation.
+/// Entries are encoded as pairs so every key, including `__proto__`, stays data.
+/// The native localStorage owner also persists its origin bucket to the profile.
 struct StoredState {
     origin: String,
     local: String,
@@ -1293,13 +1287,13 @@ fn snapshot_storage(document: &mut PageDocument, origin: &str) -> Result<StoredS
         let script = format!(
             "(function () {{
                try {{
-                 var out = Object.create(null);
+                 var out = [];
                  for (var i = 0; i < {store}.length; i++) {{
                    var key = {store}.key(i);
-                   if (key !== null) {{ out[key] = {store}.getItem(key); }}
+                   if (key !== null) {{ out.push([key, {store}.getItem(key)]); }}
                  }}
                  return JSON.stringify(out);
-               }} catch (error) {{ return '{{}}'; }}
+               }} catch (error) {{ return '[]'; }}
              }})()"
         );
         document.eval(&format!("globalThis.__chuzz_dump = {script};"))?;
@@ -1332,16 +1326,16 @@ fn restore_script(stored: Option<&StoredState>, destination: &Url) -> String {
         "(function () {{
            try {{
              var local = JSON.parse({local});
-             for (var key in local) {{ localStorage.setItem(key, local[key]); }}
+             for (var i = 0; i < local.length; i++) {{ localStorage.setItem(local[i][0], local[i][1]); }}
              var session = JSON.parse({session});
-             for (var key in session) {{ sessionStorage.setItem(key, session[key]); }}
+             for (var i = 0; i < session.length; i++) {{ sessionStorage.setItem(session[i][0], session[i][1]); }}
            }} catch (error) {{}}
          }})();",
         // Serialized twice on purpose: the inner JSON is the data, and the
         // outer encoding makes it a JavaScript string literal that cannot end
         // the statement early. A page's own key is untrusted input here.
-        local = serde_json::to_string(&stored.local).unwrap_or_else(|_| "\"{}\"".to_owned()),
-        session = serde_json::to_string(&stored.session).unwrap_or_else(|_| "\"{}\"".to_owned()),
+        local = serde_json::to_string(&stored.local).unwrap_or_else(|_| "\"[]\"".to_owned()),
+        session = serde_json::to_string(&stored.session).unwrap_or_else(|_| "\"[]\"".to_owned()),
     )
 }
 
@@ -1717,14 +1711,15 @@ fn serve_page(
     let seed = match seeded {
         None => None,
         Some(entries) => {
-            let local = match serde_json::to_string(entries) {
+            let pairs: Vec<_> = entries.iter().collect();
+            let local = match serde_json::to_string(&pairs) {
                 Ok(local) => local,
                 Err(error) => fail_qa_inspect_storage(&error.to_string()),
             };
             Some(StoredState {
                 origin: url.origin().ascii_serialization(),
                 local,
-                session: "{}".to_owned(),
+                session: "[]".to_owned(),
             })
         }
     };
@@ -1798,7 +1793,6 @@ fn serve_page(
             Some(std::time::Duration::ZERO)
         } else {
             document
-                .host()
                 .next_timer_deadline_ns()
                 .map(|due| std::time::Duration::from_nanos(due.saturating_sub(nagoya::now_ns())))
         };
@@ -2135,6 +2129,9 @@ fn serve_page(
                     DebugResponse::Metrics(RendererMetrics {
                         revisions: headless_revisions(render_revision, &document),
                         queue_depth: Some(document.pending_task_count()),
+                        script: blitz_control_protocol::ControlScriptBackend::script_metrics(
+                            &document,
+                        ),
                         ..RendererMetrics::default()
                     })
                 }

@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.46"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 authors = ["PathScale Pte Ltd"]
 repository = "https://github.com/pathscale/chuzz"
@@ -46,7 +46,7 @@ blitz-traits = { package = "ps-blitz-traits", version = "^0.6.5" }
 blitz-control-protocol = { version = "^0.7.3", default-features = false }
 
 endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"] }
-brotli = { version = "8", default-features = false, features = ["std"] }
+brotli = { version = "^8", default-features = false, features = ["std"] }
 image = { version = "^0.25.6", default-features = false }
 # Headless capture: renders a page to a buffer with the CPU rasteriser, so the
 # result can be inspected without a window.
@@ -85,11 +85,11 @@ anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15", default-featu
 # Compiled-in open fonts for headless renders that must not depend on the machine.
 headless-fonts = "^0.1"
 blitz-paint = { package = "ps-blitz-paint", version = "^0.6.5" }
-png = "=0.18.1"
+png = "^0.18.1"
 
-flate2 = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+flate2 = "^1"
+serde = { version = "^1", features = ["derive"] }
+serde_json = "^1"
 # WebAuthn CTAP2, encrypted credential storage and the macOS SE backend.
 # MIT, synchronous Rust libraries with no tokio or C dependency crates.
 # backend-se calls the macOS Security and CoreFoundation frameworks through FFI.
@@ -118,7 +118,7 @@ psl = "^2"
 nagoya = { version = "^0.1.18", features = ["reactor"] }
 # Pure-Rust global allocator for every chuzz binary (owner decision: no C allocator).
 rusty_alloc = { package = "ps-rusty_alloc", version = "^2.3.3" }
-url = "2.5"
+url = "^2.5"
 worktable = "^1.11.0"
 # `diagnostics`, always, rather than behind a cargo feature.
 #
