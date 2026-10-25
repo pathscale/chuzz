@@ -51,6 +51,103 @@ const COMPAT: &str = r#"(function (g) {
     return error;
   }
 
+  if (typeof g.AggregateError === 'undefined') {
+    function AggregateError(errors, message) {
+      var error = new g.Error(message === undefined ? '' : String(message));
+      error.name = 'AggregateError';
+      error.errors = Array.isArray(errors) ? errors.slice() : Array.from(errors || []);
+      return error;
+    }
+    AggregateError.prototype = Object.create(g.Error.prototype);
+    AggregateError.prototype.name = 'AggregateError';
+    AggregateError.prototype.constructor = AggregateError;
+    g.AggregateError = AggregateError;
+  }
+
+  if (typeof g.Promise === 'function') {
+    if (typeof g.Promise.all !== 'function') {
+      g.Promise.all = function (iterable) {
+        return new g.Promise(function (resolve, reject) {
+          var items = Array.isArray(iterable) ? iterable : Array.from(iterable);
+          var total = items.length;
+          if (total === 0) { resolve([]); return; }
+          var results = new Array(total);
+          var remaining = total;
+          for (var i = 0; i < total; i++) {
+            (function (index, item) {
+              g.Promise.resolve(item).then(function (value) {
+                results[index] = value;
+                remaining -= 1;
+                if (remaining === 0) { resolve(results); }
+              }, reject);
+            })(i, items[i]);
+          }
+        });
+      };
+    }
+    if (typeof g.Promise.allSettled !== 'function') {
+      g.Promise.allSettled = function (iterable) {
+        return new g.Promise(function (resolve) {
+          var items = Array.isArray(iterable) ? iterable : Array.from(iterable);
+          var total = items.length;
+          if (total === 0) { resolve([]); return; }
+          var results = new Array(total);
+          var remaining = total;
+          for (var i = 0; i < total; i++) {
+            (function (index, item) {
+              g.Promise.resolve(item).then(function (value) {
+                results[index] = { status: 'fulfilled', value: value };
+                remaining -= 1;
+                if (remaining === 0) { resolve(results); }
+              }, function (reason) {
+                results[index] = { status: 'rejected', reason: reason };
+                remaining -= 1;
+                if (remaining === 0) { resolve(results); }
+              });
+            })(i, items[i]);
+          }
+        });
+      };
+    }
+    if (typeof g.Promise.race !== 'function') {
+      g.Promise.race = function (iterable) {
+        return new g.Promise(function (resolve, reject) {
+          var items = Array.isArray(iterable) ? iterable : Array.from(iterable);
+          for (var i = 0; i < items.length; i++) {
+            g.Promise.resolve(items[i]).then(resolve, reject);
+          }
+        });
+      };
+    }
+    if (typeof g.Promise.any !== 'function') {
+      g.Promise.any = function (iterable) {
+        return new g.Promise(function (resolve, reject) {
+          var items = Array.isArray(iterable) ? iterable : Array.from(iterable);
+          var total = items.length;
+          if (total === 0) { reject(new g.AggregateError([], 'All promises were rejected')); return; }
+          var errors = new Array(total);
+          var remaining = total;
+          for (var i = 0; i < total; i++) {
+            (function (index, item) {
+              g.Promise.resolve(item).then(resolve, function (reason) {
+                errors[index] = reason;
+                remaining -= 1;
+                if (remaining === 0) { reject(new g.AggregateError(errors, 'All promises were rejected')); }
+              });
+            })(i, items[i]);
+          }
+        });
+      };
+    }
+    if (typeof g.Promise.withResolvers !== 'function') {
+      g.Promise.withResolvers = function () {
+        var resolve, reject;
+        var promise = new g.Promise(function (res, rej) { resolve = res; reject = rej; });
+        return { promise: promise, resolve: resolve, reject: reject };
+      };
+    }
+  }
+
   if (typeof g.DOMException === 'undefined') {
     function DOMException(message, name) {
       this.name = name || 'Error';

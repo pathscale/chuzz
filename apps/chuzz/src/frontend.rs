@@ -123,20 +123,9 @@ mod tests {
                     Some(TEST_BRIDGE),
                 )
                 .expect("construct the UI with the registered page runtime");
-                for _ in 0..64 {
+                for _ in 0..8 {
                     document.poll(None);
                 }
-                eprintln!(
-                    "UI root={:?} shell={:?} mount={:?}",
-                    document.eval_json("document.getElementById('root') !== null"),
-                    document.eval_json("document.querySelectorAll('.app-shell').length"),
-                    document.eval_json("document.querySelectorAll('[id$=\"page-0\"]').length")
-                );
-                eprintln!(
-                    "UI diagnostics={:?} native={:?}",
-                    document.diagnostic_batch(0, 0, 64),
-                    document.native_metrics()
-                );
                 assert_eq!(
                     document
                         .eval_json("document.querySelectorAll('.app-shell').length")

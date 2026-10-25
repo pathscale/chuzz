@@ -135,7 +135,6 @@ fn install_native_canvas_handles(document: &mut EkojitDocument) -> Result<(), St
   if (!doc || doc.__chuzzCanvasHandlesInstalled) { return; }
   var next = 1;
   function installDimension(canvas, name, defaultValue) {
-    if (typeof canvas[name] === 'number') { return; }
     var assigned;
     var hasAssigned = false;
     function current() {
@@ -157,11 +156,13 @@ fn install_native_canvas_handles(document: &mut EkojitDocument) -> Result<(), St
         try {
           canvas.setAttribute(name, String(numeric));
           hasAssigned = false;
+          if (typeof g.__chuzzCanvasResize === 'function') { g.__chuzzCanvasResize(canvas); }
           return;
         } catch (_) {}
       }
       assigned = numeric;
       hasAssigned = true;
+      if (typeof g.__chuzzCanvasResize === 'function') { g.__chuzzCanvasResize(canvas); }
     }
     try {
       Object.defineProperty(canvas, name, {
@@ -184,6 +185,17 @@ fn install_native_canvas_handles(document: &mut EkojitDocument) -> Result<(), St
     }
     installDimension(canvas, 'width', 300);
     installDimension(canvas, 'height', 150);
+    try {
+      Object.defineProperty(canvas, 'toDataURL', {
+        configurable: true,
+        writable: true,
+        enumerable: true,
+        value: function (type) {
+          if (typeof g.__chuzzCanvasDataURL !== 'function') { throw new TypeError('native canvas export is unavailable'); }
+          return g.__chuzzCanvasDataURL(canvas, type);
+        }
+      });
+    } catch (_) {}
     var nativeCloneNode = typeof canvas.cloneNode === 'function' ? canvas.cloneNode : null;
     if (nativeCloneNode) {
       canvas.cloneNode = function () {
@@ -222,13 +234,19 @@ fn install_native_canvas_handles(document: &mut EkojitDocument) -> Result<(), St
       return context;
     }
     var getContext = function (kind, options) {
-      var context = nativeGetContext ? nativeGetContext.apply(this, arguments) : null;
-      if (context == null) {
-        context = typeof g.__chuzzCreateCanvasContext === 'function'
-          ? g.__chuzzCreateCanvasContext(this, kind, options)
-          : null;
+      kind = String(kind).toLowerCase();
+      if (this.__chuzzContextKind && this.__chuzzContextKind !== kind) { return null; }
+      var context = null;
+      if (kind === '2d' && typeof g.__chuzzCreateCanvasContext === 'function') {
+        context = g.__chuzzCreateCanvasContext(this, kind, options);
+      } else {
+        context = nativeGetContext ? nativeGetContext.apply(this, arguments) : null;
+        if (context == null && typeof g.__chuzzCreateCanvasContext === 'function') {
+          context = g.__chuzzCreateCanvasContext(this, kind, options);
+        }
       }
-      return String(kind).toLowerCase() === 'webgpu' ? trackWebGpuContext(context) : context;
+      if (context != null) { this.__chuzzContextKind = kind; }
+      return kind === 'webgpu' ? trackWebGpuContext(context) : context;
     };
     try {
       Object.defineProperty(canvas, 'getContext', {
@@ -656,11 +674,23 @@ impl Document for PageNativeDriver {
     }
 
     fn poll(&mut self, context: Option<Context>) -> bool {
-        PageRuntimeDriver::poll_runtime(self, context).unwrap_or(false)
+        match PageRuntimeDriver::poll_runtime(self, context) {
+            Ok(work) => work,
+            Err(error) => {
+                self.document.report_runtime_error(error);
+                false
+            }
+        }
     }
 
     fn poll_for_settle(&mut self, context: Option<Context>, run_timers: bool) -> bool {
-        PageRuntimeDriver::poll_runtime_for_settle(self, context, run_timers).unwrap_or(false)
+        match PageRuntimeDriver::poll_runtime_for_settle(self, context, run_timers) {
+            Ok(work) => work,
+            Err(error) => {
+                self.document.report_runtime_error(error);
+                false
+            }
+        }
     }
 
     fn prepare_teardown(&mut self) {
