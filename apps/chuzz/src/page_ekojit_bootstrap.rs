@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use blitz_script_ekojit::{EkojitDocument, PageSource};
 
+#[path = "page_ekojit_canvas2d.rs"]
+mod canvas2d;
+
 const BOOTSTRAPS: &[(&str, &str)] = &[
     (
         "environment",
@@ -645,7 +648,7 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
           return { data: data, width: width, height: height, colorSpace: 'srgb' };
         }
       };
-      canvas.__chuzz2dContext = context;
+      canvas.__chuzzLegacyDrawContext = context;
       native2dContexts.set(handle, context);
       return context;
     }
@@ -662,6 +665,24 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
       }
       if (kind === '2d') { return canvas.__chuzz2dContext || native2dContext(canvas); }
       return null;
+    };
+    var nativeCanvasContextFactory = g.__chuzzCreateCanvasContext;
+    g.__chuzzCanvas2DBridge = {
+      request: canvasRequest,
+      copyBytes: function (value) { return new Uint8Array(__chuzzCopyBytes(value)); },
+      copyBytesForInput: function (value) { return new Uint8Array(__chuzzCopyBytes(value)); },
+      drawImage: function (context, source, args) {
+        var legacy = context.canvas.__chuzzLegacyDrawContext;
+        if (!legacy) {
+          legacy = native2dContext(context.canvas);
+          context.canvas.__chuzzLegacyDrawContext = legacy;
+        }
+        legacy.imageSmoothingEnabled = context.imageSmoothingEnabled;
+        legacy.drawImage.apply(legacy, [source].concat(Array.prototype.slice.call(args, 1)));
+        var size = canvasBufferSize(context.canvas), id = Number(context.canvas.__chuzzCanvasHandle);
+        canvasRequest({action:'paint', id:id, width:size[0], height:size[1]}, []);
+      },
+      createOther: function (canvas, kind, options) { return nativeCanvasContextFactory(canvas, kind, options); }
     };
     var gpu = {
       getPreferredCanvasFormat: function () { return 'rgba8unorm'; },
@@ -739,6 +760,7 @@ pub fn install(document: &mut EkojitDocument) -> Result<(), String> {
             }))
             .map_err(|error| format!("could not install Ekojit {name} bootstrap: {error}"))?;
     }
+    canvas2d::install(document)?;
     crate::page_ekojit_network::install(document)?;
     Ok(())
 }
