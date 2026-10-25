@@ -16,6 +16,8 @@ use ekojit::native::NativeFailure;
 use crate::page_script_host::ChuzzPageRuntimeHost;
 use crate::script_host::{HostBuffer, HostCallbackId, HostError, HostObject, HostValue};
 
+use crate::page_ekojit_channels as channels;
+
 const STATE_KEY: &str = "chuzz.page.runtime.bridge";
 
 // Keep this protocol in lockstep with Izumo's local IPC shim. The native
@@ -134,6 +136,7 @@ struct BridgeState {
     callback_queue: RefCell<VecDeque<QueuedInvocation>>,
     callbacks: RefCell<HashMap<String, RetainedGuestCallback>>,
     objects: RefCell<HashMap<String, HostObject>>,
+    channels_pump: RefCell<Option<EkojitHandle>>,
 }
 
 impl BridgeState {
@@ -147,6 +150,7 @@ impl BridgeState {
             callback_queue: RefCell::new(VecDeque::new()),
             callbacks: RefCell::new(HashMap::new()),
             objects: RefCell::new(HashMap::new()),
+            channels_pump: RefCell::new(None),
         }
     }
 }
@@ -178,9 +182,11 @@ pub fn install(
             for binding in bindings {
                 realm.register_intrinsic(binding.name, binding.arity, intrinsic_trampoline)?;
             }
+            realm.register_intrinsic("__chuzzChannelsRegisterPump", 1, channels_register_pump)?;
             Ok(())
         })
-        .map_err(native_error)
+        .map_err(native_error)?;
+    channels::install(document)
 }
 
 fn intrinsic_trampoline(
@@ -201,6 +207,12 @@ fn intrinsic_trampoline(
         .borrow_mut()
         .invoke_intrinsic(&name, &args)
         .map_err(host_error)?;
+    if name == "__chuzzPlatformCall" {
+        let value = crate::script_host::to_json(&result).map_err(host_error)?;
+        let wire = serde_json::to_string(&value)
+            .map_err(|error| refused(&format!("platform result encoding failed: {error}")))?;
+        return Ok(EkojitValue::Utf16(wire.encode_utf16().collect()));
+    }
     to_ekojit(&state, &result)
 }
 
@@ -211,6 +223,11 @@ fn poll_hook(
     let state = bridge_state(realm)?;
     let mut changed = state.host.borrow_mut().poll(waker).map_err(host_error)?;
 
+    // Native host polling has returned and released its borrow. The retained
+    // guest pump drains bounded native queues through the same platform host.
+    if changed && let Some(callback) = state.channels_pump.borrow().clone() {
+        realm.dispatch_callback(&callback, &[])?;
+    }
     for _ in 0..256 {
         let invocation = state.callback_queue.borrow_mut().pop_front();
         let Some(invocation) = invocation else { break };
@@ -234,6 +251,22 @@ fn poll_hook(
         waker.wake_by_ref();
     }
     Ok(changed)
+}
+
+fn channels_register_pump(
+    realm: &mut RealmHost<'_>,
+    args: &[EkojitValue],
+) -> Result<EkojitValue, NativeFailure> {
+    let Some(callback) = args.first() else {
+        return Err(refused("guest channel pump callback is required"));
+    };
+    let EkojitValue::Handle(_) = callback else {
+        return Err(refused("guest channel pump must be callable"));
+    };
+    let retained = realm.retain_callback(callback)?;
+    let state = bridge_state(realm)?;
+    *state.channels_pump.borrow_mut() = Some(retained);
+    Ok(EkojitValue::Undefined)
 }
 
 fn bridge_state(realm: &RealmHost<'_>) -> Result<Rc<BridgeState>, NativeFailure> {

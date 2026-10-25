@@ -15,7 +15,9 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
     (
         "environment",
         r#"(function (g) {
+        var locks = g.navigator && g.navigator.locks;
         g.navigator = __chuzzBrowserEnvironment();
+        if (locks) g.navigator.locks = locks;
         g.top = g; g.parent = g;
     })(globalThis);"#,
     ),

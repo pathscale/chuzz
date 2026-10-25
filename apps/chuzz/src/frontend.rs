@@ -59,6 +59,10 @@ fn document_with_prelude(
         config,
         host_config,
     )?;
+    // Give chrome startup its finite native activation allowance.
+    document.set_initial_script_budget(std::time::Duration::from_secs(
+        if cfg!(debug_assertions) { 60 } else { 30 },
+    ))?;
     // Install the browser hooks before evaluating any chrome code so every
     // script runs after its document runtime and native host are in place.
     browser.install_document_lifecycle(&mut document);

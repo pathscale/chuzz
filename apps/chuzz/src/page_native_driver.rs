@@ -103,6 +103,9 @@ pub(super) fn default_page_runtime_factory(
     let host = Rc::new(RefCell::new(host));
     let mut document = EkojitDocument::from_html(html, config, NativePageDefect::None)
         .map_err(|error| error.to_string())?;
+    document
+        .set_initial_script_budget(std::time::Duration::from_secs(30))
+        .map_err(|error| format!("could not set native page initial script budget: {error}"))?;
     crate::page_ekojit_bridge::install(&mut document, Rc::clone(&host))?;
     crate::page_ekojit_bootstrap::install(&mut document)?;
     crate::page_ekojit_compat::install(&mut document)?;
@@ -511,6 +514,12 @@ impl PageRuntimeDriver for PageNativeDriver {
     fn application_host(&self) -> Arc<dyn izumo::DocumentHost> {
         static HOST: OnceLock<Arc<PageDocumentHost>> = OnceLock::new();
         HOST.get_or_init(|| Arc::new(PageDocumentHost)).clone()
+    }
+
+    fn set_initial_script_budget(&mut self, budget: std::time::Duration) -> Result<(), String> {
+        self.document
+            .set_initial_script_budget(budget)
+            .map_err(|error| error.to_string())
     }
 
     fn set_was_discarded(&mut self, discarded: bool) {

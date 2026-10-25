@@ -104,6 +104,8 @@ mod page_ekojit_bootstrap;
 #[cfg(feature = "javascript")]
 mod page_ekojit_bridge;
 #[cfg(feature = "javascript")]
+mod page_ekojit_channels;
+#[cfg(feature = "javascript")]
 mod page_ekojit_compat;
 #[cfg(feature = "javascript")]
 mod page_ekojit_network;
