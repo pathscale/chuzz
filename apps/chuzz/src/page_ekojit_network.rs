@@ -49,11 +49,163 @@ const SOURCE: &str = r#"(function (g) {
   Headers.prototype.values = function () { var values = []; this.forEach(function (v) { values.push(v); }); return values[Symbol.iterator](); };
   Headers.prototype.getSetCookie = function () { var value = this.get('set-cookie'); return value == null ? [] : [value]; };
   if (typeof Symbol === 'function' && Symbol.iterator) Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
+  var blobBytes = new WeakMap(), blobMeta = new WeakMap();
+  function copyPart(part) {
+    if (typeof part === 'string') return __chuzzEncodeUtf8(part);
+    if (part && blobBytes.has(part)) return __chuzzCopyBytes(blobBytes.get(part));
+    if (part instanceof ArrayBuffer) return __chuzzCopyBytes(new Uint8Array(part));
+    if (ArrayBuffer.isView(part)) return __chuzzCopyBytes(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+    return __chuzzEncodeUtf8(String(part));
+  }
+  function Blob(parts, options) {
+    if (!(this instanceof Blob)) throw new TypeError("Failed to construct 'Blob': use new");
+    var pieces = [], total = 0;
+    if (parts !== undefined) {
+      for (var part of parts) { var piece = copyPart(part); pieces.push(piece); total += piece.length; }
+    }
+    var bytes = new Uint8Array(total), offset = 0;
+    for (var p = 0; p < pieces.length; p++) { bytes.set(pieces[p], offset); offset += pieces[p].length; }
+    blobBytes.set(this, bytes);
+    var type = options && options.type != null ? String(options.type) : '';
+    blobMeta.set(this, { size: total, type: type.split('').every(function (ch) { var code = ch.charCodeAt(0); return code >= 32 && code <= 126; }) ? type.toLowerCase() : '' });
+  }
+  Object.defineProperties(Blob.prototype, {
+    size: { get: function () { var meta = blobMeta.get(this); if (!meta) throw new TypeError('incompatible Blob receiver'); return meta.size; }, enumerable: true },
+    type: { get: function () { var meta = blobMeta.get(this); if (!meta) throw new TypeError('incompatible Blob receiver'); return meta.type; }, enumerable: true },
+    _bytes: { get: function () {
+    var bytes = blobBytes.get(this); if (!bytes) throw new TypeError('incompatible Blob receiver');
+    return __chuzzCopyBytes(bytes);
+  } }
+  });
+  Blob.prototype.slice = function (start, end, type) {
+    var bytes = blobBytes.get(this); if (!bytes) throw new TypeError('incompatible Blob receiver');
+    function index(value, fallback) { if (value === undefined) return fallback; var n = Number(value); if (Number.isNaN(n)) return 0; if (!Number.isFinite(n)) return n < 0 ? 0 : bytes.length; n = Math.trunc(n); return n < 0 ? Math.max(bytes.length + n, 0) : Math.min(n, bytes.length); }
+    var first = index(start, 0), last = index(end, bytes.length), finish = Math.max(last, first);
+    return new Blob([bytes.subarray(first, finish)], { type: type == null ? '' : type });
+  };
+  Blob.prototype.arrayBuffer = function () { var bytes = blobBytes.get(this); if (!bytes) return Promise.reject(new TypeError('incompatible Blob receiver')); var copy = __chuzzCopyBytes(bytes); return Promise.resolve(copy.buffer); };
+  Blob.prototype.text = function () { var bytes = blobBytes.get(this); if (!bytes) return Promise.reject(new TypeError('incompatible Blob receiver')); return Promise.resolve(__chuzzDecodeUtf8(__chuzzCopyBytes(bytes))); };
+  g.Blob = Blob;
+  function File(parts, name, options) {
+    if (!(this instanceof File)) throw new TypeError("Failed to construct 'File': use new");
+    Blob.call(this, parts, options);
+    var normalized = String(name).replace(/\//g, ':');
+    Object.defineProperties(this, {
+      name: { value: normalized, enumerable: true },
+      lastModified: { value: options && options.lastModified != null ? Number(options.lastModified) : Math.trunc(__chuzzTimeOrigin() + __chuzzMonotonicNow()), enumerable: true }
+    });
+  }
+  File.prototype = Object.create(Blob.prototype);
+  Object.defineProperty(File.prototype, 'constructor', { value: File, writable: true, configurable: true });
+  g.File = File;
+  var formEntries = new WeakMap();
+  function formSnapshot(form) { var entries = formEntries.get(form); if (!entries) throw new TypeError('incompatible FormData receiver'); return entries.slice(); }
+  function formValue(value, filename) {
+    if (value && blobBytes.has(value)) return filename === undefined && value instanceof File ? value : new File([value], filename === undefined ? 'blob' : filename, { type: value.type, lastModified: value.lastModified });
+    return String(value);
+  }
+  function FormData(form) { if (!(this instanceof FormData)) throw new TypeError("Failed to construct 'FormData': use new"); if (form !== undefined) throw new TypeError('HTML form extraction is unsupported'); formEntries.set(this, []); }
+  FormData.prototype.append = function (name, value, filename) { var rows = formSnapshot(this); rows.push([String(name), formValue(value, filename)]); formEntries.set(this, rows); };
+  FormData.prototype.set = function (name, value, filename) {
+    name = String(name); var rows = formSnapshot(this), next = [], inserted = false, item = formValue(value, filename);
+    for (var i = 0; i < rows.length; i++) { if (rows[i][0] !== name) next.push(rows[i]); else if (!inserted) { next.push([name, item]); inserted = true; } }
+    if (!inserted) next.push([name, item]); formEntries.set(this, next);
+  };
+  FormData.prototype.delete = function (name) { name = String(name); formEntries.set(this, formSnapshot(this).filter(function (row) { return row[0] !== name; })); };
+  FormData.prototype.get = function (name) { var rows = formSnapshot(this), key = String(name); for (var i = 0; i < rows.length; i++) if (rows[i][0] === key) return rows[i][1]; return null; };
+  FormData.prototype.getAll = function (name) { var key = String(name); return formSnapshot(this).filter(function (row) { return row[0] === key; }).map(function (row) { return row[1]; }); };
+  FormData.prototype.has = function (name) { return this.get(name) !== null; };
+  FormData.prototype.forEach = function (callback, receiver) { formSnapshot(this).forEach(function (row) { callback.call(receiver, row[1], row[0], this); }, this); };
+  FormData.prototype.entries = function () { return formSnapshot(this)[Symbol.iterator](); };
+  FormData.prototype.keys = function () { return formSnapshot(this).map(function (row) { return row[0]; })[Symbol.iterator](); };
+  FormData.prototype.values = function () { return formSnapshot(this).map(function (row) { return row[1]; })[Symbol.iterator](); };
+  if (typeof Symbol === 'function' && Symbol.iterator) FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
+  g.FormData = FormData;
+  function ascii(text) { return __chuzzEncodeUtf8(text); }
+  function joinBytes(chunks) { var size = chunks.reduce(function (sum, chunk) { return sum + chunk.length; }, 0), output = new Uint8Array(size), at = 0; chunks.forEach(function (chunk) { output.set(chunk, at); at += chunk.length; }); return output; }
+  function quoteHeader(value) { return String(value).replace(/%/g, '%25').replace(/[\r\n]/g, function (ch) { return ch === '\r' ? '%0D' : '%0A'; }).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+  function encodeFormData(form, boundary) {
+    var chunks = [], rows = formSnapshot(form);
+    rows.forEach(function (row) {
+      var name = quoteHeader(row[0]), value = row[1], file = value && blobBytes.has(value), head = '--' + boundary + '\r\nContent-Disposition: form-data; name="' + name + '"';
+      if (file) { head += '; filename="' + quoteHeader(value.name) + '"\r\nContent-Type: ' + (value.type || 'application/octet-stream'); }
+      chunks.push(ascii(head + '\r\n\r\n'), file ? __chuzzCopyBytes(blobBytes.get(value)) : ascii(value), ascii('\r\n'));
+    });
+    chunks.push(ascii('--' + boundary + '--\r\n')); return joinBytes(chunks);
+  }
   function bytesOf(body) {
     if (body == null) return new Uint8Array(0);
     if (typeof body === 'string') return __chuzzEncodeUtf8(body);
-    if (body && body._bytes) return __chuzzCopyBytes(body._bytes);
-    return __chuzzCopyBytes(body);
+    if (Array.isArray(body)) return __chuzzCopyBytes(body);
+    if (body && blobBytes.has(body)) return __chuzzCopyBytes(blobBytes.get(body));
+    return copyPart(body);
+  }
+  function byteIndex(source, needle, from) {
+    outer: for (var i = from || 0; i <= source.length - needle.length; i++) { for (var j = 0; j < needle.length; j++) if (source[i + j] !== needle[j]) continue outer; return i; }
+    return -1;
+  }
+  function multipartDelimiter(source, delimiter, from) {
+    var at = from || 0;
+    while ((at = byteIndex(source, delimiter, at)) >= 0) {
+      var after = at + delimiter.length;
+      if ((source[after] === 45 && source[after + 1] === 45) || (source[after] === 13 && source[after + 1] === 10)) return at;
+      at += 1;
+    }
+    return -1;
+  }
+  function decodeFormHeader(value) {
+    return value.replace(/\\(["\\])/g, '$1').replace(/%(25|0D|0A)/gi, function (escape) {
+      var code = escape.toUpperCase(); return code === '%25' ? '%' : code === '%0D' ? '\r' : '\n';
+    });
+  }
+  function responseFormData(contentType, source) {
+    var form = new FormData();
+    if (/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(contentType)) {
+      for (var row of new URLSearchParams(__chuzzDecodeUtf8(source)).entries()) form.append(row[0], row[1]);
+      return form;
+    }
+    var match = /^multipart\/form-data\s*;\s*boundary=(?:"([^"]+)"|([^;\s]+))(?:\s*;|$)/i.exec(contentType);
+    if (!match) throw new TypeError('unsupported FormData response content type');
+    var boundary = match[1] || match[2], marker = ascii('--' + boundary), delimiter = ascii('\r\n--' + boundary), headerEnd = ascii('\r\n\r\n'), cursor = marker.length;
+    if (byteIndex(source, marker, 0) !== 0) throw new TypeError('invalid multipart opening boundary');
+    if (source[cursor] === 45 && source[cursor + 1] === 45) {
+      cursor += 2;
+      if (cursor === source.length || (source[cursor] === 13 && source[cursor + 1] === 10 && cursor + 2 === source.length)) return form;
+      throw new TypeError('invalid empty multipart body');
+    }
+    if (source[cursor] !== 13 || source[cursor + 1] !== 10) throw new TypeError('invalid multipart opening boundary');
+    cursor += 2;
+    while (true) {
+      var headersAt = byteIndex(source, headerEnd, cursor);
+      if (headersAt < 0) throw new TypeError('invalid multipart headers');
+      var lines = __chuzzDecodeUtf8(source.subarray(cursor, headersAt)).split('\r\n'), disposition = null, fileType = '';
+      for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        var line = lines[lineIndex], colon = line.indexOf(':');
+        if (colon < 1) throw new TypeError('invalid multipart header');
+        var headerName = line.slice(0, colon).trim().toLowerCase(), headerValue = line.slice(colon + 1).trim();
+        if (headerName === 'content-disposition') {
+          if (disposition) throw new TypeError('duplicate multipart disposition');
+          disposition = /form-data;\s*name="((?:\\.|[^"])*)"(?:;\s*filename="((?:\\.|[^"])*)")?/i.exec(headerValue);
+          if (!disposition || disposition[0] !== headerValue) throw new TypeError('invalid multipart disposition');
+        } else if (headerName === 'content-type') fileType = headerValue;
+      }
+      if (!disposition) throw new TypeError('invalid multipart disposition');
+      var bodyAt = headersAt + headerEnd.length, boundaryAt = multipartDelimiter(source, delimiter, bodyAt);
+      if (boundaryAt < 0) throw new TypeError('invalid multipart closing boundary');
+      var payload = source.subarray(bodyAt, boundaryAt), name = decodeFormHeader(disposition[1]);
+      if (disposition[2] !== undefined) {
+        var filename = decodeFormHeader(disposition[2]);
+        form.append(name, new File([payload], filename, { type: fileType }));
+      } else form.append(name, __chuzzDecodeUtf8(payload));
+      cursor = boundaryAt + delimiter.length;
+      if (source[cursor] === 45 && source[cursor + 1] === 45) {
+        cursor += 2; if (cursor === source.length) return form;
+        if (source[cursor] === 13 && source[cursor + 1] === 10 && cursor + 2 === source.length) return form;
+        throw new TypeError('invalid multipart epilogue');
+      }
+      if (source[cursor] !== 13 || source[cursor + 1] !== 10) throw new TypeError('invalid multipart boundary terminator');
+      cursor += 2;
+    }
   }
   function makeResponse(reply) {
     if (!reply || !reply.ok) throw new TypeError(reply && reply.error || 'Network request failed');
@@ -66,13 +218,14 @@ const SOURCE: &str = r#"(function (g) {
     function consume(converter) {
       if (consumed) return Promise.reject(new TypeError('body already used'));
       consumed = true; response.bodyUsed = true;
-      return Promise.resolve(converter(data));
+      return Promise.resolve().then(function () { return converter(data); });
     }
     response.arrayBuffer = function () { return consume(function (source) { var copy = new Uint8Array(source.length); copy.set(source); return copy.buffer; }); };
     response.bytes = function () { return consume(function (source) { var copy = new Uint8Array(source.length); copy.set(source); return copy; }); };
     response.text = function () { return consume(function (source) { return __chuzzDecodeUtf8(source); }); };
     response.json = function () { return response.text().then(function (text) { return JSON.parse(text); }); };
-    response.blob = function () { return response.arrayBuffer().then(function (buffer) { return new Blob([buffer], { type: response.headers.get('content-type') || '' }); }); };
+    response.blob = function () { return consume(function (source) { return new Blob([source], { type: response.headers.get('content-type') || '' }); }); };
+    response.formData = function () { return consume(function (source) { return responseFormData(response.headers.get('content-type') || '', source); }); };
     response.clone = function () {
       if (consumed) throw new TypeError('body already used');
       var copy = new Uint8Array(data.length); copy.set(data);
@@ -85,9 +238,17 @@ const SOURCE: &str = r#"(function (g) {
     var url = input && typeof input === 'object' && input.url !== undefined ? input.url : String(input);
     url = new URL(url, g.location && g.location.href || undefined).href;
     var headers = new Headers(init.headers || (input && input.headers));
+    var body = init.body === undefined ? input && input._body : init.body, bodyBytes = null;
+    if (body != null) {
+      if (formEntries.has(body)) {
+        var nonce = __chuzzRandomBytes(18), boundary = '----chuzz-';
+        for (var index = 0; index < nonce.length; index++) boundary += ('0' + nonce[index].toString(16)).slice(-2);
+        bodyBytes = encodeFormData(body, boundary);
+        if (!headers.has('content-type')) headers.set('content-type', 'multipart/form-data; boundary=' + boundary);
+      } else bodyBytes = bytesOf(body);
+    }
     var entries = []; headers.forEach(function (value, name) { entries.push([name, value]); });
-    var body = init.body === undefined ? input && input._body : init.body;
-    return { url: url, method: String(init.method || (input && input.method) || 'GET').toUpperCase(), headers: entries, body: body == null ? null : bytesOf(body), credentials: init.credentials || (input && input.credentials) || 'same-origin' };
+    return { url: url, method: String(init.method || (input && input.method) || 'GET').toUpperCase(), headers: entries, body: bodyBytes, credentials: init.credentials || (input && input.credentials) || 'same-origin' };
   }
   function Request(input, init) { var record = requestRecord(input, init); this.url = record.url; this.method = record.method; this.headers = new Headers(record.headers); this.credentials = record.credentials; this._body = record.body; }
   function Response(body, init) {
@@ -194,6 +355,99 @@ mod tests {
             },
         )
         .expect("construct page with live network and crypto intrinsics")
+    }
+
+    #[test]
+    fn page_ekojit_blob_and_form_data_preserve_owned_bytes() {
+        let mut page = page();
+        page.eval(r#"
+var results = [], failures = [], formStage = 'waiting';
+function check(value, message) { if (!value) throw new Error(message); }
+function failed(error) { failures.push(String(error.stack || error)); }
+var source = new Uint8Array([9, 0, 255, 65, 8]);
+var blob = new Blob([new Uint8Array(source.buffer, 1, 3)], { type: 'APPLICATION/OCTET-STREAM' });
+source[1] = 99;
+var exposed = blob._bytes; exposed[0] = 77;
+check(blob.size === 3 && blob.type === 'application/octet-stream', 'Blob metadata');
+check(blob.slice(Infinity).size === 0 && blob.slice(-2).size === 2 && blob.slice(0, NaN).size === 0, 'slice limits');
+blob.arrayBuffer().then(function (buffer) {
+  var bytes = new Uint8Array(buffer);
+  check(bytes.length === 3 && bytes[0] === 0 && bytes[1] === 255 && bytes[2] === 65, 'owned offset bytes');
+  results.push('blob');
+}).catch(failed);
+var file = new File([blob], 'folder/name.bin', { lastModified: 123 });
+check(file instanceof Blob && file.name === 'folder:name.bin' && file.lastModified === 123, 'File metadata');
+var form = new FormData();
+form.append('field', 'old'); form.append('other', 'kept'); form.append('field', 'duplicate');
+form.set('field', 'new');
+var keys = form.keys();
+check(form.getAll('field').join(',') === 'new' && keys.next().value === 'field' && keys.next().value === 'other' && keys.next().done, 'set ordering');
+form.append('100%0D', file, 'x%0A.bin');
+var request = new Request('/upload', { method: 'POST', body: form });
+form.set('field', 'mutated');
+var response = new Response(request._body, { headers: request.headers });
+var cloned = response.clone();
+response.formData().then(function (parsed) {
+  formStage = 'parsed';
+  check(parsed.get('field') === 'new' && parsed.get('other') === 'kept', 'request snapshot');
+  var upload = parsed.get('100%0D');
+  check(upload instanceof File && upload.name === 'x%0A.bin', 'multipart metadata');
+  formStage = 'reading'; return upload.arrayBuffer();
+}).then(function (buffer) {
+  formStage = 'read';
+  var bytes = new Uint8Array(buffer);
+  check(bytes[0] === 0 && bytes[1] === 255 && bytes[2] === 65, 'binary multipart');
+  results.push('form');
+}).catch(failed);
+check(response.bodyUsed, 'shared body consumption');
+response.text().then(function () { failed('second read succeeded'); }, function () { results.push('used'); });
+cloned.blob().then(function (copy) { check(copy.size > 3, 'clone bytes'); results.push('clone'); }).catch(failed);
+new Response('a=one+two&a=%FF&empty=&bad=%&', { headers: { 'content-type': 'application/x-www-form-urlencoded' } }).formData().then(function (parsed) {
+  check(parsed.getAll('a').length === 2 && parsed.get('a') === 'one two' && parsed.get('bad') === '%' && !parsed.has(''), 'URL encoded fields');
+  results.push('urlencoded');
+}).catch(failed);
+new Response('broken', { headers: { 'content-type': 'multipart/form-data; boundary=x' } }).formData().then(function () { failed('parse succeeded'); }, function () { results.push('rejected'); });
+fetch('data:application/octet-stream,%00%FF%41').then(function (reply) { return reply.bytes(); }).then(function (bytes) {
+  check(bytes.length === 3 && bytes[0] === 0 && bytes[1] === 255 && bytes[2] === 65, 'native reply bytes');
+  results.push('network');
+}).catch(failed);
+"#).expect("evaluate Blob and FormData on the live page");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            page.poll(None);
+            if page
+                .eval_json("results.length + failures.length")
+                .unwrap()
+                .as_u64()
+                .unwrap()
+                >= 7
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let diagnostics = page.diagnostic_batch(0, 0, 100).unwrap();
+        assert!(diagnostics.errors.entries.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            page.eval_json("failures").unwrap(),
+            json!([]),
+            "completed tasks: {}",
+            page.eval_json("results").unwrap()
+        );
+        assert_eq!(
+            page.eval_json("results.sort()").unwrap(),
+            json!([
+                "blob",
+                "clone",
+                "form",
+                "network",
+                "rejected",
+                "urlencoded",
+                "used"
+            ]),
+            "multipart stage: {}",
+            page.eval_json("formStage").unwrap()
+        );
     }
 
     #[test]
