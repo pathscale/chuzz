@@ -836,8 +836,68 @@ const SCHEDULING: &str = r#"(function (g) {
   }
 })(globalThis);"#;
 
+const CRYPTO: &str = r#"(function (g) {
+  'use strict';
+  if (typeof g.crypto === 'undefined') { g.crypto = {}; }
+  if (typeof g.crypto.getRandomValues === 'undefined' && typeof __chuzzRandomBytes === 'function') {
+    g.crypto.getRandomValues = function (view) {
+      if (!ArrayBuffer.isView(view) || view instanceof DataView ||
+          (typeof Float32Array === 'function' && view instanceof Float32Array) ||
+          (typeof Float64Array === 'function' && view instanceof Float64Array)) {
+        throw new DOMException('The argument must be an integer typed array', 'TypeMismatchError');
+      }
+      if (view.byteLength > 65536) {
+        throw new DOMException('The requested byte length exceeds 65,536', 'QuotaExceededError');
+      }
+      new Uint8Array(view.buffer, view.byteOffset, view.byteLength).set(__chuzzCopyBytes(__chuzzRandomBytes(view.byteLength)));
+      return view;
+    };
+  }
+  if (typeof g.crypto.randomUUID === 'undefined' && typeof __chuzzRandomBytes === 'function') {
+    g.crypto.randomUUID = function () {
+      var bytes = __chuzzCopyBytes(__chuzzRandomBytes(16));
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      var hex = [], digits = '0123456789abcdef';
+      for (var i = 0; i < bytes.length; i++) {
+        hex.push(digits.charAt(bytes[i] >> 4) + digits.charAt(bytes[i] & 15));
+      }
+      return hex.slice(0, 4).join('') + '-' + hex.slice(4, 6).join('') + '-' +
+        hex.slice(6, 8).join('') + '-' + hex.slice(8, 10).join('') + '-' + hex.slice(10).join('');
+    };
+  }
+  if (typeof g.crypto.subtle === 'undefined') { g.crypto.subtle = {}; }
+  if (typeof g.crypto.subtle.digest === 'undefined' && typeof __chuzzDigest === 'function') {
+    g.crypto.subtle.digest = function (algorithm, data) {
+      var name = typeof algorithm === 'string' ? algorithm : algorithm && algorithm.name;
+      var bytes = data instanceof ArrayBuffer ? new Uint8Array(data) :
+        ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
+      if (!bytes) { return Promise.reject(new TypeError('digest input must be a BufferSource')); }
+      try { var result = __chuzzCopyBytes(__chuzzDigest(String(name), bytes)); return Promise.resolve(result.buffer); }
+      catch (error) { return Promise.reject(error); }
+    };
+  }
+  var subtleMethods = ['encrypt', 'decrypt', 'sign', 'verify', 'deriveKey', 'deriveBits',
+    'importKey', 'exportKey', 'wrapKey', 'unwrapKey', 'generateKey'];
+  if (typeof g.crypto.subtle !== 'undefined') {
+    for (var i = 0; i < subtleMethods.length; i++) {
+      if (typeof g.crypto.subtle[subtleMethods[i]] === 'undefined') {
+        g.crypto.subtle[subtleMethods[i]] = function () {
+          return Promise.reject(new DOMException('This SubtleCrypto method is unsupported', 'NotSupportedError'));
+        };
+      }
+    }
+  }
+})(globalThis);"#;
+
 /// Install browser compatibility APIs in the document's own JavaScript realm.
 pub fn install(document: &mut EkojitDocument) -> Result<(), String> {
+    document
+        .eval_source(Arc::new(PageSource {
+            text: Arc::from(CRYPTO),
+            url: Arc::from("chuzz:page-compat/crypto-session"),
+        }))
+        .map_err(|error| format!("could not install Ekojit crypto and session APIs: {error}"))?;
     document
         .eval_source(Arc::new(PageSource {
             text: Arc::from(COMPAT),

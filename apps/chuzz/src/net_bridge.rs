@@ -95,6 +95,7 @@ pub(crate) struct NetReply {
     pub(crate) status: u16,
     pub(crate) status_text: String,
     pub(crate) url: Url,
+    pub(crate) redirected: bool,
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: String,
     pub(crate) bytes: Vec<u8>,
@@ -464,10 +465,12 @@ impl NetworkHost {
             .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str(), value)))
             .collect::<Vec<_>>();
         let bytes = response.body.to_vec();
+        let redirected = response.url != url;
         Ok(NetReply {
             status: response.status.as_u16(),
             status_text: response.status.canonical_reason().unwrap_or("").to_owned(),
             url: response.url,
+            redirected,
             headers: headers
                 .into_iter()
                 .map(|(name, value)| (name.to_owned(), value.to_owned()))
