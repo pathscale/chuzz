@@ -312,9 +312,23 @@ impl PageNativeDriver {
     }
 
     fn evaluate(&mut self, source: &str, name: &str) -> Result<(), String> {
-        TypedNativeGuest::evaluate(&mut self.document, Self::source(source, name))
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        let console_before = self.document.console_entries().len();
+        let result = TypedNativeGuest::evaluate(&mut self.document, Self::source(source, name));
+        result.map(|_| ()).map_err(|error| {
+            let entries = self.document.console_entries();
+            let context = entries
+                .iter()
+                .skip(console_before)
+                .rev()
+                .take(3)
+                .map(|entry| entry.message.chars().take(8192).collect::<String>())
+                .collect::<Vec<_>>();
+            if context.is_empty() {
+                error.to_string()
+            } else {
+                format!("{error}; console: {context:?}")
+            }
+        })
     }
 
     fn diagnostics(
