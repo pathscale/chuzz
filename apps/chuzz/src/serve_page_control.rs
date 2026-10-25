@@ -2,10 +2,13 @@
 
 use super::{ControlBridgeRequest, DebugResponse};
 use blitz_control_protocol::latest::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Wake, Waker};
 use std::time::Duration;
+
+/// Page turns served back to back before a queued control request goes first.
+const MAX_CONSECUTIVE_PAGE_TURNS: usize = 4;
 
 pub(super) struct Reply(Arc<Once<Arc<DebugResponse>>>);
 impl Reply {
@@ -32,6 +35,7 @@ struct Ready {
     state: Mutex<State>,
     notification: nagoya::sync::Notify,
     page: AtomicBool,
+    consecutive_page_turns: AtomicUsize,
 }
 impl Wake for Ready {
     fn wake(self: Arc<Self>) {
@@ -73,6 +77,7 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
         }),
         notification: nagoya::sync::Notify::new(),
         page: AtomicBool::new(false),
+        consecutive_page_turns: AtomicUsize::new(0),
     });
     (
         Sender {
@@ -150,7 +155,35 @@ impl Receiver {
                 let notification = self.ready.notification.notified();
                 futures::pin_mut!(notification);
                 notification.as_mut().enable();
+                // A page wake represents JavaScript or host work that has
+                // already been scheduled. Give it a turn before accepting a
+                // later control request: otherwise a burst of inspect/capture
+                // requests can overtake the promise continuations produced by
+                // an action (including WebGPU submission and canvas present).
+                // After MAX_CONSECUTIVE_PAGE_TURNS page turns in a row, a
+                // queued control request is served first. The page wake stays
+                // set, so the page gets the very next turn.
+                if self.ready.page.load(Ordering::Acquire) {
+                    let turns = self.ready.consecutive_page_turns.load(Ordering::Acquire);
+                    if turns >= MAX_CONSECUTIVE_PAGE_TURNS
+                        && let Some(request) = self.queue.try_pop()
+                    {
+                        self.ready
+                            .consecutive_page_turns
+                            .store(0, Ordering::Release);
+                        return Ok(take(request));
+                    }
+                    if self.ready.page.swap(false, Ordering::AcqRel) {
+                        self.ready
+                            .consecutive_page_turns
+                            .store(turns.saturating_add(1), Ordering::Release);
+                        return Err(RecvTimeoutError::Timeout);
+                    }
+                }
                 if let Some(request) = self.queue.try_pop() {
+                    self.ready
+                        .consecutive_page_turns
+                        .store(0, Ordering::Release);
                     return Ok(take(request));
                 }
                 if !self
@@ -161,9 +194,6 @@ impl Receiver {
                     .producer_open
                 {
                     return Err(RecvTimeoutError::Disconnected);
-                }
-                if self.ready.page.swap(false, Ordering::AcqRel) {
-                    return Err(RecvTimeoutError::Timeout);
                 }
                 // Await even when enable reserved a permit. Polling consumes
                 // it; dropping an unpolled reservation returns the permit and

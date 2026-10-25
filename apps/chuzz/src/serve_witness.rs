@@ -182,7 +182,7 @@ async fn cli(handle: &nagoya::reactor::Handle, root: &Path) -> Result<(), String
         .agent(&inspect)
         .await
         .map_err(|error| error.to_string())?;
-    // SIGSTOP is a real native stall, independent of Boa's JS time limit.
+    // SIGSTOP is a real process stall, independent of the JavaScript engine's time limit.
     let parent = child
         .id()
         .ok_or("supervisor-deadline: host already exited")?;
