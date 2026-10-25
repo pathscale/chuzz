@@ -1927,7 +1927,12 @@ fn serve_page(
             ControlBridgeRequest::Agent(AgentControlRequest::Act(_)) => "request act",
             _ => "request other",
         });
-        let request_turn = supervisor::operation(supervisor::Operation::Request);
+        let request_turn = match &request {
+            ControlBridgeRequest::Agent(
+                AgentControlRequest::Navigate { .. } | AgentControlRequest::Act(_),
+            ) => None,
+            _ => Some(supervisor::operation(supervisor::Operation::Request)),
+        };
         let mut painted = false;
         let deferred_buffer =
             if let ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuBuffer {

@@ -104,7 +104,7 @@ pub(super) fn default_page_runtime_factory(
     let mut document = EkojitDocument::from_html(html, config, NativePageDefect::None)
         .map_err(|error| error.to_string())?;
     document
-        .set_initial_script_budget(std::time::Duration::from_secs(30))
+        .set_initial_script_budget(std::time::Duration::from_secs(60))
         .map_err(|error| format!("could not set native page initial script budget: {error}"))?;
     crate::page_ekojit_bridge::install(&mut document, Rc::clone(&host))?;
     crate::page_ekojit_bootstrap::install(&mut document)?;
