@@ -109,6 +109,7 @@ fn make_host() -> (
 fn main() {
     chuzz::install_crypto_provider();
     chuzz::set_device_audio_enabled(false);
+    guest_page_bridge_checks();
     let (mut host, signal, lifetime) = make_host();
     let attachment = host.attachment().expect("acquire page attachment");
     attachment.ensure_live().expect("live attachment");
@@ -1519,6 +1520,100 @@ fn composite_turns(host: &mut page_script_host::ChuzzPageRuntimeHost) {
                 .expect("session survives composite workflow")
         ),
         "native"
+    );
+}
+
+fn guest_page(origin: &str) -> chuzz::page_document::PageDocument {
+    let base = url::Url::parse(origin).expect("fixture page origin");
+    let provider = chuzz::document_loader::NetProvider::new(None);
+    let initiator = provider.browser_initiator(base.clone());
+    let net = Arc::new(provider.for_document(base.clone(), &initiator));
+    chuzz::page_document::PageDocument::from_html(
+        Arc::from("<!doctype html><html><body></body></html>"),
+        blitz_dom::DocumentConfig {
+            base_url: Some(origin.into()),
+            ..Default::default()
+        },
+        HostInstallContext {
+            net,
+            base: Some(base),
+            deadline: Duration::from_secs(2),
+            wake: chuzz::net_bridge::PageWake::default(),
+            lifetime: blitz_dom::release::Teardown::new(),
+            signal: blitz_traits::net::AbortSignal::default(),
+            session_backing: None,
+        },
+    )
+    .expect("construct actual guest page runtime")
+}
+
+fn guest_page_bridge_checks() {
+    let mut sender = guest_page("https://w38-guest.invalid/");
+    let mut receiver = guest_page("https://w38-guest.invalid/");
+    let mut other_origin = guest_page("https://w38-other.invalid/");
+    assert_eq!(sender.eval_json(r#"(() => {
+        const target={};Object.setPrototypeOf(target,{answer:7});history.scrollRestoration='manual';
+        return typeof BigInt==='function'&&BigInt('18446744073709551615').toString(16)==='ffffffffffffffff'&&
+            decodeURIComponent(encodeURIComponent('a é'))==='a é'&&typeof encodeURI==='function'&&typeof decodeURI==='function'&&
+            [1,2].pop()===2&&[1,2].reverse().at(-1)===1&&[1,2,1].lastIndexOf(1)===2&&
+            [1,2,3].reduceRight((a,b)=>a-b)===0&&target.answer===7&&history.scrollRestoration==='manual';
+    })()"#).unwrap(),serde_json::json!(true),"guest compatibility globals and mutation APIs");
+    for page in [&mut sender, &mut receiver, &mut other_origin] {
+        page.eval("globalThis.got=[];globalThis.bc=new BroadcastChannel('guest-check');bc.onmessage=e=>got.push(e.data);")
+            .expect("install guest broadcast listener");
+    }
+    sender.eval("const buffer=new ArrayBuffer(8);const left=new Uint8Array(buffer,1,3);const right=new DataView(buffer,2,3);left[1]=77;const sparse=[];sparse.length=4;sparse[2]='present';const graph={left,right,sparse};graph.self=graph;bc.postMessage(graph);")
+        .expect("post guest structured graph");
+    for _ in 0..8 {
+        blitz_dom::Document::poll(&mut sender, None);
+        blitz_dom::Document::poll(&mut receiver, None);
+        blitz_dom::Document::poll(&mut other_origin, None);
+    }
+    assert_eq!(
+        sender.eval_json("got.length").unwrap(),
+        serde_json::json!(0),
+        "broadcast sender exclusion"
+    );
+    assert_eq!(
+        other_origin.eval_json("got.length").unwrap(),
+        serde_json::json!(0),
+        "broadcast origin isolation"
+    );
+    assert_eq!(receiver.eval_json("got.length===1 && got[0].self===got[0] && got[0].sparse.length===4 && !(0 in got[0].sparse) && got[0].sparse[2]==='present' && got[0].left.buffer===got[0].right.buffer && got[0].left.buffer.byteLength===8 && got[0].left[1]===77")
+        .unwrap(), serde_json::json!(true), "clone must preserve cycles, holes and shared typed-view backing buffers: {:?}",receiver.eval_json("got.length ? [got.length,got[0].self===got[0],got[0].sparse.length,0 in got[0].sparse,got[0].sparse[2],got[0].left.buffer===got[0].right.buffer,got[0].left.buffer.byteLength,got[0].left[1]] : [got.length]"));
+    receiver.eval("globalThis.portHits=0;const channel=new MessageChannel();globalThis.testPort=channel;channel.port2.addEventListener('message',()=>portHits++);channel.port1.postMessage('queued');")
+        .expect("queue message for explicitly started port");
+    for _ in 0..3 {
+        blitz_dom::Document::poll(&mut receiver, None);
+    }
+    assert_eq!(
+        receiver.eval_json("portHits").unwrap(),
+        serde_json::json!(0),
+        "addEventListener must wait for explicit port.start()"
+    );
+    receiver
+        .eval("testPort.port2.start();")
+        .expect("explicit port start");
+    for _ in 0..4 {
+        blitz_dom::Document::poll(&mut receiver, None);
+    }
+    assert_eq!(
+        receiver.eval_json("portHits").unwrap(),
+        serde_json::json!(1),
+        "started port delivers queued message"
+    );
+    receiver.eval("globalThis.lockOrder=[];navigator.locks.request('guest-lock',()=>{lockOrder.push('held');return 7}).then(value=>lockOrder.push(value));")
+        .expect("invoke lock callback through guest runtime");
+    for _ in 0..12 {
+        blitz_dom::Document::poll(&mut receiver, None);
+    }
+    assert_eq!(
+        receiver.eval_json("lockOrder.join(',')").unwrap(),
+        serde_json::json!("held,7"),
+        "guest lock callback settlement and release"
+    );
+    println!(
+        "PASS guest bridge: compatibility globals, origin isolation, cyclic sparse graphs, shared view buffers, explicit port start, lock settlement"
     );
 }
 
