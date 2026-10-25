@@ -66,6 +66,9 @@ fn document_with_prelude(
     if let Some(prelude) = prelude {
         document.eval(prelude)?;
     }
+    // Finish parser-inserted shell scripts before the embedded bundle reads
+    // the document or mounts Solid into its root.
+    document.execute_scripts()?;
     if prelude.is_some() {
         // A supplied fixture bridge is already installed above.
         document.eval_named(&javascript, CHUZZ_JS_URL)?;
@@ -78,7 +81,6 @@ fn document_with_prelude(
         );
         document.defer_named_script(startup.into(), CHUZZ_JS_URL.into());
     }
-    document.execute_scripts()?;
     Ok(document)
 }
 
@@ -111,49 +113,68 @@ mod tests {
 
     #[test]
     fn embedded_ui_bundle_builds_the_shell_and_page_mount() {
-        let mut document = document_with_prelude(
-            Browser::new(None),
-            "https://fixture.invalid/",
-            Some(TEST_BRIDGE),
-        )
-        .expect("construct the UI with the registered page runtime");
-        for _ in 0..64 {
-            document.poll(None);
-        }
-        assert_eq!(
-            document
-                .eval_json("document.querySelectorAll('.app-shell').length")
-                .expect("query the rendered shell"),
-            json!(1)
-        );
-        assert_eq!(
-            document
-                .eval_json("document.querySelectorAll('[id$=\"page-0\"]').length")
-                .expect("query the page mount"),
-            json!(1)
-        );
-        assert!(
-            crate::browser::page_node(&document.inner(), 0).is_some(),
-            "the shell could not find its page mount"
-        );
-        let mut inner = document.inner_mut();
-        inner.set_viewport(blitz_traits::shell::Viewport::new(
-            1440,
-            960,
-            1.0,
-            blitz_traits::shell::ColorScheme::Dark,
-        ));
-        inner.resolve(0.0);
-        let shell = inner.query_selector(".app-shell").unwrap().unwrap();
-        let layout = inner.get_node(shell).unwrap().final_layout();
-        assert!(layout.size.width > 1000.0);
-        assert!(layout.size.height > 700.0);
-        let mount = crate::browser::page_node(&inner, 0).expect("page mount");
-        let mount_layout = inner.get_node(mount).unwrap().final_layout();
-        assert!(
-            mount_layout.size.width > 1000.0 && mount_layout.size.height > 700.0,
-            "the page mount collapsed: {:?}",
-            mount_layout.size
-        );
+        std::thread::Builder::new()
+            .name("chuzz-embedded-ui-test".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut document = document_with_prelude(
+                    Browser::new(None),
+                    "https://fixture.invalid/",
+                    Some(TEST_BRIDGE),
+                )
+                .expect("construct the UI with the registered page runtime");
+                for _ in 0..64 {
+                    document.poll(None);
+                }
+                eprintln!(
+                    "UI root={:?} shell={:?} mount={:?}",
+                    document.eval_json("document.getElementById('root') !== null"),
+                    document.eval_json("document.querySelectorAll('.app-shell').length"),
+                    document.eval_json("document.querySelectorAll('[id$=\"page-0\"]').length")
+                );
+                eprintln!(
+                    "UI diagnostics={:?} native={:?}",
+                    document.diagnostic_batch(0, 0, 64),
+                    document.native_metrics()
+                );
+                assert_eq!(
+                    document
+                        .eval_json("document.querySelectorAll('.app-shell').length")
+                        .expect("query the rendered shell"),
+                    json!(1)
+                );
+                assert_eq!(
+                    document
+                        .eval_json("document.querySelectorAll('[id$=\"page-0\"]').length")
+                        .expect("query the page mount"),
+                    json!(1)
+                );
+                assert!(
+                    crate::browser::page_node(&document.inner(), 0).is_some(),
+                    "the shell could not find its page mount"
+                );
+                let mut inner = document.inner_mut();
+                inner.set_viewport(blitz_traits::shell::Viewport::new(
+                    1440,
+                    960,
+                    1.0,
+                    blitz_traits::shell::ColorScheme::Dark,
+                ));
+                inner.resolve(0.0);
+                let shell = inner.query_selector(".app-shell").unwrap().unwrap();
+                let layout = inner.get_node(shell).unwrap().final_layout();
+                assert!(layout.size.width > 1000.0);
+                assert!(layout.size.height > 700.0);
+                let mount = crate::browser::page_node(&inner, 0).expect("page mount");
+                let mount_layout = inner.get_node(mount).unwrap().final_layout();
+                assert!(
+                    mount_layout.size.width > 1000.0 && mount_layout.size.height > 700.0,
+                    "the page mount collapsed: {:?}",
+                    mount_layout.size
+                );
+            })
+            .expect("spawn embedded UI test on a 16 MiB stack")
+            .join()
+            .expect("embedded UI test thread panicked");
     }
 }
