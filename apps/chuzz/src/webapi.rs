@@ -90,6 +90,16 @@ impl Drop for Realm {
         unbind_platform(self.id);
         process.leases.retain(|lease| lease.owner != self.id);
         process.grant();
+        let ready = process
+            .leases
+            .iter()
+            .filter(|lease| lease.held)
+            .map(|lease| lease.owner)
+            .collect::<std::collections::HashSet<_>>();
+        drop(process);
+        for owner in ready {
+            storage::mark_platform_ready(owner);
+        }
     }
 }
 
@@ -136,6 +146,9 @@ enum Operation {
         id: u64,
     },
     LockRelease {
+        id: u64,
+    },
+    LockCancel {
         id: u64,
     },
     LockQuery,
@@ -346,13 +359,24 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
             let mut deliveries = Vec::new();
             for (id, channel) in &mut process.channels {
                 if channel.owner == realm.id {
-                    for _ in 0..64 {
+                    while deliveries.len() < 64 {
                         let Some(wire) = channel.incoming.pop_front() else {
                             break;
                         };
                         deliveries.push(BroadcastDelivery { id: *id, wire });
                     }
+                    if deliveries.len() == 64 {
+                        break;
+                    }
                 }
+            }
+            let ready = process
+                .channels
+                .values()
+                .any(|channel| channel.owner == realm.id && !channel.incoming.is_empty());
+            drop(process);
+            if ready {
+                storage::mark_platform_ready(realm.id);
             }
             Ok(Reply::BroadcastDeliveries(deliveries))
         }
@@ -459,7 +483,7 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
             let mut deliveries = Vec::new();
             for (id, port) in &mut process.ports.ports {
                 if port.owner == realm.id && port.started {
-                    for _ in 0..64 {
+                    while deliveries.len() < 64 {
                         let Some(wire) = port.incoming.pop_front() else {
                             break;
                         };
@@ -468,7 +492,18 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
                             wire: Arc::from(wire),
                         });
                     }
+                    if deliveries.len() == 64 {
+                        break;
+                    }
                 }
+            }
+            let ready =
+                process.ports.ports.values().any(|port| {
+                    port.owner == realm.id && port.started && !port.incoming.is_empty()
+                });
+            drop(process);
+            if ready {
+                storage::mark_platform_ready(realm.id);
             }
             Ok(Reply::BroadcastDeliveries(deliveries))
         }
@@ -523,6 +558,16 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
                 process.leases.push(lease);
             }
             process.grant();
+            let ready = process
+                .leases
+                .iter()
+                .filter(|lease| lease.held || lease.stolen)
+                .map(|lease| lease.owner)
+                .collect::<std::collections::HashSet<_>>();
+            drop(process);
+            for owner in ready {
+                storage::mark_platform_ready(owner);
+            }
             Ok(Reply::Id(id))
         }
         Operation::LockState { id } => {
@@ -562,6 +607,38 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
             }
             process.leases.retain(|lease| !lease.released);
             process.grant();
+            let ready = process
+                .leases
+                .iter()
+                .filter(|lease| lease.held)
+                .map(|lease| lease.owner)
+                .collect::<std::collections::HashSet<_>>();
+            drop(process);
+            for owner in ready {
+                storage::mark_platform_ready(owner);
+            }
+            Ok(Reply::Null)
+        }
+        Operation::LockCancel { id } => {
+            let mut process = lock(&PROCESS);
+            if let Some(index) = process
+                .leases
+                .iter()
+                .position(|lease| lease.id == id && lease.owner == realm.id && !lease.held)
+            {
+                process.leases.remove(index);
+                process.grant();
+            }
+            let ready = process
+                .leases
+                .iter()
+                .filter(|lease| lease.held)
+                .map(|lease| lease.owner)
+                .collect::<std::collections::HashSet<_>>();
+            drop(process);
+            for owner in ready {
+                storage::mark_platform_ready(owner);
+            }
             Ok(Reply::Null)
         }
         Operation::LockQuery => {

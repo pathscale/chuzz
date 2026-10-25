@@ -54,6 +54,13 @@ pub trait PageRuntimeDriver:
     #[cfg(feature = "gui")]
     fn defer_named_script(&mut self, source: Arc<str>, name: Arc<str>);
 
+    /// Set the engine's initial author-script allowance before startup code runs.
+    /// Backends without an equivalent native policy must reject this explicitly.
+    fn set_initial_script_budget(&mut self, _budget: std::time::Duration) -> Result<(), String> {
+        Err(String::from(
+            "page runtime does not support an initial script budget",
+        ))
+    }
     fn set_was_discarded(&mut self, discarded: bool);
     fn begin_restore(&mut self, budget: std::time::Duration);
     fn execute_scripts(&mut self) -> Result<(), String>;
@@ -211,6 +218,10 @@ impl PageDocument {
     #[cfg(feature = "gui")]
     pub(crate) fn defer_named_script(&mut self, source: Arc<str>, name: Arc<str>) {
         self.driver.defer_named_script(source, name);
+    }
+
+    pub fn set_initial_script_budget(&mut self, budget: std::time::Duration) -> Result<(), String> {
+        self.driver.set_initial_script_budget(budget)
     }
 
     pub fn set_was_discarded(&mut self, discarded: bool) {
