@@ -9,6 +9,80 @@ use blitz_script_ekojit::{EkojitDocument, PageSource};
 const COMPAT: &str = r#"(function (g) {
   'use strict';
 
+  if (typeof g.BigInt !== 'function') {
+    g.BigInt = (function () {
+  'use strict';
+  // Compatibility value for constructor-based integer formatting and width
+  // conversion. Integer literals and operators remain compiler-controlled.
+  function digits(value) {
+    if (value && typeof value === 'object' && value._integerDigits) return [value._integerNegative, value._integerDigits.slice()];
+    if (typeof value === 'number' && (!isFinite(value) || Math.floor(value) !== value)) throw new RangeError('Invalid integer');
+    if (value === true) value = '1';
+    if (value === false) value = '0';
+    var text = String(value).trim(), negative = false, radix = 10, start = 0;
+    if (text[0] === '-' || text[0] === '+') { negative = text[0] === '-'; start = 1; }
+    var prefix = text.slice(start, start + 2).toLowerCase();
+    if (prefix === '0x' || prefix === '0o' || prefix === '0b') {
+      if (start !== 0) throw new SyntaxError('Invalid integer');
+      radix = prefix === '0x' ? 16 : prefix === '0o' ? 8 : 2; start += 2;
+    }
+    if (text.length > 20000) throw new RangeError('Integer size limit');
+    if (start === text.length && text.length !== 0) throw new SyntaxError('Invalid integer');
+    var result = [0], alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+    for (var i = start; i < text.length; i++) {
+      var digit = alphabet.indexOf(text[i].toLowerCase());
+      if (digit < 0 || digit >= radix) throw new SyntaxError('Invalid integer');
+      var carry = digit;
+      for (var j = 0; j < result.length; j++) { var n = result[j] * radix + carry; result[j] = n % 10; carry = Math.floor(n / 10); }
+      while (carry) { result.push(carry % 10); carry = Math.floor(carry / 10); }
+    }
+    return [negative && !(result.length === 1 && result[0] === 0), result];
+  }
+  function box(negative, value) {
+    var result = Object.create(BigInt.prototype);
+    result._integerNegative = negative; result._integerDigits = value; return result;
+  }
+  function BigInt(value) { var parsed = digits(value); return box(parsed[0], parsed[1]); }
+  BigInt.prototype.toString = function (radix) {
+    radix = radix === undefined ? 10 : Number(radix);
+    if (radix < 2 || radix > 36 || Math.floor(radix) !== radix) throw new RangeError('Invalid radix');
+    var value = this._integerDigits.slice(), out = '', alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+    do {
+      var carry = 0;
+      for (var i = value.length - 1; i >= 0; i--) { var n = carry * 10 + value[i]; value[i] = Math.floor(n / radix); carry = n % radix; }
+      out = alphabet[carry] + out;
+      while (value.length > 1 && value[value.length - 1] === 0) value.pop();
+    } while (value.length > 1 || value[0] !== 0);
+    return (this._integerNegative ? '-' : '') + out;
+  };
+  BigInt.prototype.valueOf = function () { return Number(this.toString()); };
+  function width(bits, value, signed) {
+    bits = Number(bits);
+    if (!isFinite(bits) || bits < 0 || Math.floor(bits) !== bits || bits > 65536) throw new RangeError('Invalid integer width');
+    var parsed = BigInt(value), binary = parsed.toString(2), negative = binary[0] === '-';
+    if (negative) binary = binary.slice(1);
+    var low = binary.slice(Math.max(0, binary.length - bits));
+    while (low.length < bits) low = '0' + low;
+    if (bits === 0) return BigInt(0);
+    if (negative) {
+      var out = '', carry = 1;
+      for (var i = low.length - 1; i >= 0; i--) { var digit = (low[i] === '0' ? 1 : 0) + carry; out = String(digit % 2) + out; carry = Math.floor(digit / 2); }
+      low = out;
+    }
+    var result = BigInt('0b' + low);
+    if (signed && low[0] === '1') {
+      var complement = '', carry = 1;
+      for (var i = low.length - 1; i >= 0; i--) { var digit = (low[i] === '0' ? 1 : 0) + carry; complement = String(digit % 2) + complement; carry = Math.floor(digit / 2); }
+      result = BigInt('0b' + complement); result._integerNegative = true;
+    }
+    return result;
+  }
+  BigInt.asUintN = function (bits, value) { return width(bits, value, false); };
+  BigInt.asIntN = function (bits, value) { return width(bits, value, true); };
+  return BigInt;
+})();
+  }
+
   if (typeof g.Error === 'undefined') {
     function Error(message) {
       var error = Object.create(Error.prototype);
@@ -49,6 +123,59 @@ const COMPAT: &str = r#"(function (g) {
     var error = new Error(message || name);
     error.name = name;
     return error;
+  }
+
+  function uriEncode(value, component) {
+    var input = String(value), result = '', hex = '0123456789ABCDEF';
+    var safe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()" + (component ? '' : ';/?:@&=+$,#');
+    function byte(n) { result += '%' + hex[(n >> 4) & 15] + hex[n & 15]; }
+    for (var i = 0; i < input.length; i++) {
+      var c = input.charCodeAt(i);
+      if (c < 128 && safe.indexOf(input[i]) >= 0) { result += input[i]; continue; }
+      if (c >= 0xD800 && c <= 0xDBFF) {
+        var low = input.charCodeAt(++i);
+        if (!(low >= 0xDC00 && low <= 0xDFFF)) throw namedError('URIError', 'Malformed URI');
+        c = 0x10000 + (c - 0xD800) * 1024 + low - 0xDC00;
+      } else if (c >= 0xDC00 && c <= 0xDFFF) throw namedError('URIError', 'Malformed URI');
+      if (c < 128) byte(c);
+      else if (c < 2048) { byte(192 | (c >> 6)); byte(128 | (c & 63)); }
+      else if (c < 65536) { byte(224 | (c >> 12)); byte(128 | ((c >> 6) & 63)); byte(128 | (c & 63)); }
+      else { byte(240 | (c >> 18)); byte(128 | ((c >> 12) & 63)); byte(128 | ((c >> 6) & 63)); byte(128 | (c & 63)); }
+    }
+    return result;
+  }
+  function uriDecode(value, component) {
+    var input = String(value), result = '', reserved = ';/?:@&=+$,#';
+    function byte(index) {
+      if (input[index] !== '%' || index + 2 >= input.length) throw namedError('URIError', 'Malformed URI');
+      var a = '0123456789abcdef'.indexOf(input[index + 1].toLowerCase());
+      var b = '0123456789abcdef'.indexOf(input[index + 2].toLowerCase());
+      if (a < 0 || b < 0) throw namedError('URIError', 'Malformed URI');
+      return a * 16 + b;
+    }
+    for (var i = 0; i < input.length; i++) {
+      if (input[i] !== '%') { result += input[i]; continue; }
+      var start = i, first = byte(i), count = first < 128 ? 1 : first >= 194 && first <= 223 ? 2 : first >= 224 && first <= 239 ? 3 : first >= 240 && first <= 244 ? 4 : 0;
+      if (!count) throw namedError('URIError', 'Malformed URI');
+      var point = first & (count === 1 ? 127 : count === 2 ? 31 : count === 3 ? 15 : 7);
+      for (var j = 1; j < count; j++) { i += 3; var next = byte(i); if (next < 128 || next > 191) throw namedError('URIError', 'Malformed URI'); point = point * 64 + next - 128; }
+      i += 2;
+      if ((count === 2 && point < 128) || (count === 3 && point < 2048) || (count === 4 && point < 65536) || point > 0x10FFFF || (point >= 0xD800 && point <= 0xDFFF)) throw namedError('URIError', 'Malformed URI');
+      if (!component && point < 128 && reserved.indexOf(String.fromCharCode(point)) >= 0) result += input.slice(start, i + 1);
+      else if (point < 65536) result += String.fromCharCode(point);
+      else { point -= 65536; result += String.fromCharCode(0xD800 + (point >> 10), 0xDC00 + (point & 1023)); }
+    }
+    return result;
+  }
+  if (typeof g.encodeURIComponent !== 'function') g.encodeURIComponent = function (v) { return uriEncode(v, true); };
+  if (typeof g.encodeURI !== 'function') g.encodeURI = function (v) { return uriEncode(v, false); };
+  if (typeof g.decodeURIComponent !== 'function') g.decodeURIComponent = function (v) { return uriDecode(v, true); };
+  if (typeof g.decodeURI !== 'function') g.decodeURI = function (v) { return uriDecode(v, false); };
+
+  if (typeof Number.isSafeInteger !== 'function') {
+    Number.isSafeInteger = function (value) {
+      return Number.isInteger(value) && Math.abs(value) <= 9007199254740991;
+    };
   }
 
   if (typeof g.AggregateError === 'undefined') {

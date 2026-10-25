@@ -14,6 +14,8 @@ const SOURCE: &str = r#"(function (g) {
   function encode(root) {
     var refs = [], nodes = [], budget = 0;
     function visit(value) {
+      budget += 1;
+      if (budget > 16 * 1024 * 1024) fail('DataCloneError', 'Structured clone limit exceeded');
       if (value === null) return ['null'];
       var type = typeof value;
       if (type === 'undefined') return ['undefined'];
@@ -27,8 +29,10 @@ const SOURCE: &str = r#"(function (g) {
       index = refs.length; refs.push(value); nodes.push(null);
       var node;
       if (Array.isArray(value)) {
-        node = ['array', []];
-        for (var i = 0; i < value.length; i++) node[1].push(visit(value[i]));
+        node = ['array', value.length, []];
+        for (var i = 0; i < value.length; i++) {
+          if (Object.prototype.hasOwnProperty.call(value, i)) node[2].push([i, visit(value[i])]);
+        }
       } else if (value instanceof Map) {
         node = ['map', []]; value.forEach(function (v, k) { node[1].push([visit(k), visit(v)]); });
       } else if (value instanceof Set) {
@@ -36,7 +40,13 @@ const SOURCE: &str = r#"(function (g) {
       } else if (value instanceof ArrayBuffer) {
         node = ['buffer', Array.from(new Uint8Array(value))];
       } else if (ArrayBuffer.isView(value)) {
-        node = ['view', value.constructor.name, Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))];
+        var viewTypes = [[Uint8Array,'Uint8Array'],[Uint8ClampedArray,'Uint8ClampedArray'],[Int8Array,'Int8Array'],[Uint16Array,'Uint16Array'],[Int16Array,'Int16Array'],[Uint32Array,'Uint32Array'],[Int32Array,'Int32Array'],[Float32Array,'Float32Array'],[Float64Array,'Float64Array'],[DataView,'DataView']];
+        var viewName = null;
+        for (var brand = 0; brand < viewTypes.length; brand++) {
+          if (value instanceof viewTypes[brand][0]) { viewName = viewTypes[brand][1]; break; }
+        }
+        if (viewName === null) fail('DataCloneError', 'Unsupported typed view');
+        node = ['view', viewName, visit(value.buffer), value.byteOffset, value.byteLength];
       } else {
         var proto = Object.getPrototypeOf(value);
         if (proto !== Object.prototype && proto !== null) fail('DataCloneError', 'Unsupported structured clone object');
@@ -49,7 +59,9 @@ const SOURCE: &str = r#"(function (g) {
       }
       nodes[index] = node; return ['ref', index];
     }
-    var top = visit(root); return JSON.stringify({ v: 1, top: top, nodes: nodes });
+    var top = visit(root), wire = JSON.stringify({ v: 1, top: top, nodes: nodes });
+    if (wire.length > 16 * 1024 * 1024) fail('DataCloneError', 'Structured clone limit exceeded');
+    return wire;
   }
   function decode(wire) {
     var graph = JSON.parse(wire);
@@ -57,17 +69,26 @@ const SOURCE: &str = r#"(function (g) {
     var values = new Array(graph.nodes.length);
     graph.nodes.forEach(function (node, i) {
       if (!Array.isArray(node)) fail('DataCloneError', 'Invalid structured clone node');
-      if (node[0] === 'array') values[i] = [];
-      else if (node[0] === 'object') values[i] = {};
+      if (node[0] === 'array') {
+        if (!Number.isSafeInteger(node[1]) || node[1] < 0 || node[1] > 10000000 || !Array.isArray(node[2])) fail('DataCloneError', 'Invalid sparse array node');
+        values[i] = new Array(node[1]);
+      } else if (node[0] === 'object') values[i] = {};
       else if (node[0] === 'map') values[i] = new Map();
       else if (node[0] === 'set') values[i] = new Set();
-      else if (node[0] === 'buffer') values[i] = new Uint8Array(node[1]).buffer;
-      else if (node[0] === 'view') {
-        var bytes = new Uint8Array(node[2]);
-        var constructors = { Uint8Array: Uint8Array, Uint8ClampedArray: Uint8ClampedArray, Int8Array: Int8Array, Uint16Array: Uint16Array, Int16Array: Int16Array, Uint32Array: Uint32Array, Int32Array: Int32Array, Float32Array: Float32Array, Float64Array: Float64Array, DataView: DataView };
-        var C = constructors[node[1]]; if (!C) fail('DataCloneError', 'Unsupported typed array');
-        var copy = bytes.buffer.slice(0); values[i] = C === DataView ? new DataView(copy) : new C(copy);
-      } else fail('DataCloneError', 'Unknown structured clone node');
+      else if (node[0] === 'buffer') {
+        if (!Array.isArray(node[1]) || node[1].length > 16777216) fail('DataCloneError', 'Invalid buffer node');
+        values[i] = new Uint8Array(node[1]).buffer;
+      } else if (node[0] !== 'view') fail('DataCloneError', 'Unknown structured clone node');
+    });
+    var constructors = { Uint8Array: Uint8Array, Uint8ClampedArray: Uint8ClampedArray, Int8Array: Int8Array, Uint16Array: Uint16Array, Int16Array: Int16Array, Uint32Array: Uint32Array, Int32Array: Int32Array, Float32Array: Float32Array, Float64Array: Float64Array, DataView: DataView };
+    graph.nodes.forEach(function (node, i) {
+      if (node[0] !== 'view') return;
+      var C = constructors[node[1]], ref = node[2];
+      if (!C || !Array.isArray(ref) || ref[0] !== 'ref' || !Number.isInteger(ref[1]) || ref[1] < 0 || ref[1] >= values.length || !(values[ref[1]] instanceof ArrayBuffer)) fail('DataCloneError', 'Invalid typed view buffer');
+      var buffer = values[ref[1]], offset = node[3], length = node[4];
+      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > buffer.byteLength) fail('DataCloneError', 'Invalid typed view bounds');
+      try { values[i] = C === DataView ? new DataView(buffer, offset, length) : new C(buffer, offset, length / C.BYTES_PER_ELEMENT); }
+      catch (_) { fail('DataCloneError', 'Invalid typed view alignment'); }
     });
     function read(ref) {
       if (!Array.isArray(ref)) fail('DataCloneError', 'Invalid structured clone reference');
@@ -80,7 +101,14 @@ const SOURCE: &str = r#"(function (g) {
     }
     graph.nodes.forEach(function (node, i) {
       var target = values[i];
-      if (node[0] === 'array') node[1].forEach(function (v) { target.push(read(v)); });
+      if (node[0] === 'array') {
+        var seen = Object.create(null);
+        node[2].forEach(function (pair) {
+          if (!Array.isArray(pair) || !Number.isSafeInteger(pair[0]) || pair[0] < 0 || pair[0] >= node[1] || seen[pair[0]]) fail('DataCloneError', 'Invalid sparse array entry');
+          seen[pair[0]] = true;
+          Object.defineProperty(target, pair[0], { value: read(pair[1]), enumerable: true, writable: true, configurable: true });
+        });
+      }
       else if (node[0] === 'object') node[1].forEach(function (pair) { Object.defineProperty(target, pair[0], { value: read(pair[1]), enumerable: true, writable: true, configurable: true }); });
       else if (node[0] === 'map') node[1].forEach(function (pair) { target.set(read(pair[0]), read(pair[1])); });
       else if (node[0] === 'set') node[1].forEach(function (v) { target.add(read(v)); });
@@ -89,9 +117,14 @@ const SOURCE: &str = r#"(function (g) {
   }
   function eventFor(target, data) { return { type: 'message', data: data, target: target, currentTarget: target, origin: g.location && g.location.origin || 'null', ports: [] }; }
   function dispatch(target, event) {
-    var list = (target._listeners.message || []).slice();
-    list.forEach(function (fn) { if (typeof fn === 'function') fn.call(target, event); else if (fn && typeof fn.handleEvent === 'function') fn.handleEvent(event); });
-    if (typeof target.onmessage === 'function') target.onmessage.call(target, event);
+    var list = (target._listeners.message || []).slice(), firstError = null;
+    list.forEach(function (fn) {
+      try { if (typeof fn === 'function') fn.call(target, event); else if (fn && typeof fn.handleEvent === 'function') fn.handleEvent(event); }
+      catch (error) { if (!firstError) firstError = error; }
+    });
+    try { if (typeof target.onmessage === 'function') target.onmessage.call(target, event); }
+    catch (error) { if (!firstError) firstError = error; }
+    if (firstError) Promise.resolve().then(function () { throw firstError; });
   }
   function add(target, type, callback) { if (typeof callback !== 'function' && !(callback && typeof callback.handleEvent === 'function')) return; (target._listeners[type] || (target._listeners[type] = [])).push(callback); }
   function remove(target, type, callback) { var list = target._listeners[type] || []; target._listeners[type] = list.filter(function (item) { return item !== callback; }); }

@@ -29,6 +29,23 @@ struct Process {
     leases: Vec<Lease>,
 }
 
+impl Process {
+    fn queued_bytes(&self) -> usize {
+        self.channels
+            .values()
+            .flat_map(|channel| channel.incoming.iter())
+            .map(|wire| wire.len())
+            .chain(
+                self.ports
+                    .ports
+                    .values()
+                    .flat_map(|port| port.incoming.iter())
+                    .map(String::len),
+            )
+            .fold(0usize, usize::saturating_add)
+    }
+}
+
 struct Channel {
     owner: u64,
     origin: Arc<str>,
@@ -323,6 +340,20 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
                     .filter(|channel| channel.owner == realm.id)
                     .map(|channel| channel.name.clone())
                     .ok_or_else(|| "broadcast channel is closed".to_owned())?;
+                let recipients = process
+                    .channels
+                    .iter()
+                    .filter(|(other_id, channel)| {
+                        **other_id != id && channel.origin == realm.origin && channel.name == name
+                    })
+                    .count();
+                if process
+                    .queued_bytes()
+                    .saturating_add(wire.len().saturating_mul(recipients))
+                    > LIMIT
+                {
+                    return Err("aggregate channel queue limit reached".to_owned());
+                }
                 for (other_id, channel) in &process.channels {
                     if *other_id != id
                         && channel.origin == realm.origin
@@ -424,6 +455,9 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
                     .filter(|port| port.owner == owner)
                     .ok_or_else(|| "message port is closed".to_owned())?;
                 let peer_id = port.peer;
+                if process.queued_bytes().saturating_add(wire.len()) > LIMIT {
+                    return Err("aggregate channel queue limit reached".to_owned());
+                }
                 let peer = process
                     .ports
                     .ports
