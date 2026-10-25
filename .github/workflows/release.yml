@@ -28,9 +28,6 @@ name: Release
 # of its own, so the collateral is nil.
 
 on:
-  push:
-    branches:
-      - master
   workflow_dispatch:
     inputs:
       force:
