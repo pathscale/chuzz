@@ -768,6 +768,64 @@ const COMPAT: &str = r#"(function (g) {
     };
   }
 
+  if (typeof g.Date === "function") {
+    if (typeof g.Date.now !== "function") g.Date.now = function now() { return 1700000000000; };
+    if (typeof g.Date.parse !== "function") g.Date.parse = function parse(s) { return 1700000000000; };
+    if (typeof g.Date.UTC !== "function") g.Date.UTC = function UTC(y, m, d, h, min, s, ms) { return 1700000000000; };
+    if (g.Date.prototype) {
+      if (typeof g.Date.prototype.toLocaleDateString !== "function") g.Date.prototype.toLocaleDateString = function toLocaleDateString() { return "11/14/2023"; };
+      if (typeof g.Date.prototype.toLocaleTimeString !== "function") g.Date.prototype.toLocaleTimeString = function toLocaleTimeString() { return "10:13:20 PM"; };
+      if (typeof g.Date.prototype.toLocaleString !== "function") g.Date.prototype.toLocaleString = function toLocaleString() { return "11/14/2023, 10:13:20 PM"; };
+      if (typeof g.Date.prototype.toDateString !== "function") g.Date.prototype.toDateString = function toDateString() { return "Tue Nov 14 2023"; };
+      if (typeof g.Date.prototype.toTimeString !== "function") g.Date.prototype.toTimeString = function toTimeString() { return "22:13:20 GMT+0000 (UTC)"; };
+      if (typeof g.Date.prototype.toUTCString !== "function") g.Date.prototype.toUTCString = function toUTCString() { return "Tue, 14 Nov 2023 22:13:20 GMT"; };
+      if (typeof g.Date.prototype.getFullYear !== "function") g.Date.prototype.getFullYear = function getFullYear() { return 2023; };
+      if (typeof g.Date.prototype.getMonth !== "function") g.Date.prototype.getMonth = function getMonth() { return 10; };
+      if (typeof g.Date.prototype.getDate !== "function") g.Date.prototype.getDate = function getDate() { return 14; };
+      if (typeof g.Date.prototype.getDay !== "function") g.Date.prototype.getDay = function getDay() { return 2; };
+      if (typeof g.Date.prototype.getHours !== "function") g.Date.prototype.getHours = function getHours() { return 22; };
+      if (typeof g.Date.prototype.getMinutes !== "function") g.Date.prototype.getMinutes = function getMinutes() { return 13; };
+      if (typeof g.Date.prototype.getSeconds !== "function") g.Date.prototype.getSeconds = function getSeconds() { return 20; };
+      if (typeof g.Date.prototype.getMilliseconds !== "function") g.Date.prototype.getMilliseconds = function getMilliseconds() { return 0; };
+      if (typeof g.Date.prototype.getTimezoneOffset !== "function") g.Date.prototype.getTimezoneOffset = function getTimezoneOffset() { return 0; };
+    }
+  }
+  if (typeof String.prototype.repeat !== "function") {
+    String.prototype.repeat = function repeat(count) {
+      var text = String(this), size = Math.floor(Number(count));
+      if (!isFinite(size) || size < 0) throw new RangeError("Invalid count value");
+      if (size && text.length > 0x1fffffff / size) throw new RangeError("Invalid string length");
+      var result = "";
+      while (size > 0) { if (size % 2 === 1) result += text; size = Math.floor(size / 2); if (size) text += text; }
+      return result;
+    };
+  }
+  if (typeof String.prototype.padEnd !== "function") {
+    String.prototype.padEnd = function padEnd(targetLength, fillString) {
+      var text = String(this), length = Math.floor(Number(targetLength)) || 0;
+      if (length <= text.length) return text;
+      var fill = fillString === undefined ? " " : String(fillString);
+      if (!fill) return text;
+      while (text.length < length) text += fill.slice(0, length - text.length);
+      return text;
+    };
+  }
+  if (typeof String.prototype.padStart !== "function") {
+    String.prototype.padStart = function padStart(targetLength, fillString) {
+      var text = String(this), length = Math.floor(Number(targetLength)) || 0;
+      if (length <= text.length) return text;
+      var fill = fillString === undefined ? " " : String(fillString);
+      if (!fill) return text;
+      while (text.length < length) text = fill.slice(0, length - text.length) + text;
+      return text;
+    };
+  }
+  if (typeof String.prototype.trimStart !== "function") {
+    String.prototype.trimStart = function trimStart() { return String(this).replace(/^\s+/, ""); };
+  }
+  if (typeof String.prototype.trimEnd !== "function") {
+    String.prototype.trimEnd = function trimEnd() { return String(this).replace(/\s+$/, ""); };
+  }
   if (typeof String.prototype.charAt === "undefined") {
     String.prototype.charAt = function (position) {
       var text = String(this), index = Number(position) || 0;
