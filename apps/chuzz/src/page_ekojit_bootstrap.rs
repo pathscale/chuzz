@@ -234,6 +234,9 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
         if (value.type === 'lost') {
           device._lostResolve({ reason: value.reason || 'unknown', message: value.message || '' });
           device._listeners.deviceLost.slice().forEach(function (callback) { callback.call(device, { type: 'deviceLost', target: device, reason: value.reason || 'unknown', message: value.message || '' }); });
+        } else if (value.type === 'error') {
+          var detail = value.error || {};
+          device.dispatchEvent({ type: 'uncapturederror', error: { name: detail.name || 'GPUValidationError', message: detail.message || String(detail) } });
         }
         return;
       }
@@ -246,13 +249,152 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
     function gpuCommand(device, op, handle, args, fire, uploads) {
       return gpuSend({ webgpu: 'command', device: device, command: { op: op, handle: handle || 0, args: gpuSerialize(args || {}) } }, fire, uploads);
     }
+    function gpuUpload(bytes, offset, length) {
+      if (typeof __chuzzGpuPutBytes !== 'function') { throw new TypeError('WebGPU byte upload bridge is unavailable'); }
+      return __chuzzGpuPutBytes(bytes.buffer, bytes.byteOffset + offset, length);
+    }
+    function gpuExtent(value) {
+      if (Array.isArray(value)) { return [Number(value[0]), Number(value[1]), value.length > 2 ? Number(value[2]) : 1]; }
+      if (value && typeof value === 'object') { return [Number(value.width), Number(value.height == null ? 1 : value.height), Number(value.depthOrArrayLayers == null ? 1 : value.depthOrArrayLayers)]; }
+      throw new TypeError('invalid GPU extent');
+    }
+    function normalizeTextureDescriptor(descriptor) {
+      if (!descriptor || typeof descriptor !== 'object' || descriptor.size == null) { return descriptor; }
+      var extent = descriptor.size, size;
+      if (Array.isArray(extent)) {
+        if (extent.length < 1 || extent.length > 3) { return descriptor; }
+        size = extent.slice();
+        while (size.length < 3) { size.push(1); }
+      } else if (typeof extent === 'object') {
+        size = [extent.width, extent.height == null ? 1 : extent.height, extent.depthOrArrayLayers == null ? 1 : extent.depthOrArrayLayers];
+      } else { return descriptor; }
+      var copy = {};
+      Object.keys(descriptor).forEach(function (key) { copy[key] = descriptor[key]; });
+      copy.size = size;
+      if (copy.label === undefined) { copy.label = ''; }
+      if (copy.dimension == null) { copy.dimension = '2d'; }
+      if (copy.mipLevelCount == null) { copy.mipLevelCount = 1; }
+      if (copy.sampleCount == null) { copy.sampleCount = 1; }
+      if (copy.viewFormats == null) { copy.viewFormats = []; }
+      return copy;
+    }
+    function descriptorCopy(descriptor) {
+      var copy = {};
+      if (descriptor && typeof descriptor === 'object') {
+        Object.keys(descriptor).forEach(function (key) { copy[key] = descriptor[key]; });
+      }
+      return copy;
+    }
+    function normalizeBufferDescriptor(descriptor) {
+      var copy = descriptorCopy(descriptor);
+      if (copy.label === undefined) { copy.label = ''; }
+      if (copy.mappedAtCreation === undefined) { copy.mappedAtCreation = false; }
+      return copy;
+    }
+    function normalizeLabelDescriptor(descriptor) {
+      var copy = descriptorCopy(descriptor);
+      if (copy.label === undefined) { copy.label = ''; }
+      return copy;
+    }
+    function normalizeEncoderDescriptor(descriptor) {
+      var copy = descriptorCopy(descriptor);
+      if (copy.label === undefined) { copy.label = ''; }
+      return copy;
+    }
+    function gpuOrigin(value, dimensions) {
+      if (value === undefined) { return dimensions === 2 ? [0, 0] : [0, 0, 0]; }
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return dimensions === 2
+          ? [value.x === undefined ? 0 : value.x, value.y === undefined ? 0 : value.y]
+          : [value.x === undefined ? 0 : value.x, value.y === undefined ? 0 : value.y, value.z === undefined ? 0 : value.z];
+      }
+      return value;
+    }
+    function normalizeTextureCopy(copy) {
+      var normalized = descriptorCopy(copy);
+      if (normalized.mipLevel === undefined) { normalized.mipLevel = 0; }
+      normalized.origin = gpuOrigin(normalized.origin, 3);
+      if (normalized.aspect === undefined) { normalized.aspect = 'all'; }
+      return normalized;
+    }
+    function normalizeBufferCopy(copy) {
+      var normalized = descriptorCopy(copy);
+      if (normalized.offset === undefined) { normalized.offset = 0; }
+      return normalized;
+    }
+    function normalizePipelineStage(stage, vertex) {
+      if (stage == null) { return stage; }
+      var copy = descriptorCopy(stage);
+      if (copy.constants == null) { copy.constants = {}; }
+      if (vertex && copy.buffers == null) { copy.buffers = []; }
+      if (!vertex && copy.targets == null) { copy.targets = []; }
+      if (!vertex) {
+        copy.targets = copy.targets.map(function (target) {
+          if (target == null) { return null; }
+          var normalized = descriptorCopy(target);
+          if (normalized.writeMask == null) { normalized.writeMask = GPUColorWrite.ALL; }
+          return normalized;
+        });
+      }
+      return copy;
+    }
+    function normalizeRenderPipelineDescriptor(descriptor) {
+      var copy = descriptorCopy(descriptor);
+      if (copy.label === undefined) { copy.label = ''; }
+      if (copy.layout === 'auto') { copy.layout = null; }
+      copy.vertex = normalizePipelineStage(copy.vertex, true);
+      copy.fragment = normalizePipelineStage(copy.fragment, false);
+      var primitive = descriptorCopy(copy.primitive);
+      if (primitive.frontFace == null) { primitive.frontFace = 'ccw'; }
+      if (primitive.cullMode == null) { primitive.cullMode = null; }
+      if (primitive.stripIndexFormat == null) { primitive.stripIndexFormat = null; }
+      if (primitive.unclippedDepth == null) { primitive.unclippedDepth = false; }
+      copy.primitive = primitive;
+      var multisample = descriptorCopy(copy.multisample);
+      if (multisample.count == null) { multisample.count = 1; }
+      if (multisample.mask == null) { multisample.mask = 4294967295; }
+      if (multisample.alphaToCoverageEnabled == null) { multisample.alphaToCoverageEnabled = false; }
+      copy.multisample = multisample;
+      return copy;
+    }
+    function normalizeBindGroupDescriptor(descriptor) {
+      var copy = descriptorCopy(descriptor);
+      if (copy.label == null) { copy.label = ''; }
+      copy.entries = (copy.entries || []).map(function (entry) {
+        var normalized = descriptorCopy(entry), resource = entry && entry.resource;
+        if (resource && resource.buffer && resource.buffer.__gpuHandle != null) {
+          var bufferBinding = { kind: 'buffer', handle: resource.buffer.__gpuHandle, offset: resource.offset || 0 };
+          if (resource.size != null) { bufferBinding.size = resource.size; }
+          normalized.resource = bufferBinding;
+        } else if (resource && resource.__gpuHandle != null) {
+          var kind = resource.__gpuKind === 'GPUTextureView' ? 'view' : resource.__gpuKind === 'GPUSampler' ? 'sampler' : 'buffer';
+          normalized.resource = { kind: kind, handle: resource.__gpuHandle };
+          if (kind === 'buffer') { normalized.resource.offset = 0; }
+        }
+        return normalized;
+      });
+      return copy;
+    }
+    function normalizeRenderPassDescriptor(descriptor) {
+      var copy = descriptorCopy(descriptor);
+      if (copy.label == null) { copy.label = ''; }
+      copy.colorAttachments = (copy.colorAttachments || []).map(function (attachment) {
+        if (attachment == null) { return null; }
+        var normalized = descriptorCopy(attachment), clear = normalized.clearValue;
+        if (clear && typeof clear === 'object' && !Array.isArray(clear)) {
+          normalized.clearValue = [clear.r, clear.g, clear.b, clear.a];
+        }
+        return normalized;
+      });
+      return copy;
+    }
     function gpuSerialize(value) {
       if (value == null || typeof value !== 'object') { return value; }
       if (value.__gpuHandle != null) { return value.__gpuHandle; }
       if (Array.isArray(value)) { return value.map(gpuSerialize); }
       if (__chuzzIsByteBuffer(value)) { return __chuzzBytesArray(value); }
       var result = {};
-      Object.keys(value).forEach(function (key) { if (key.indexOf('__gpu') !== 0) { result[key] = gpuSerialize(value[key]); } });
+      Object.keys(value).forEach(function (key) { if (key.indexOf('__gpu') !== 0 && value[key] !== undefined) { result[key] = gpuSerialize(value[key]); } });
       return result;
     }
     function gpuObject(kind, device, id, methods) {
@@ -276,14 +418,14 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
         device.addEventListener = function (type, callback) { if (device._listeners[type]) { device._listeners[type].push(callback); } };
         device.removeEventListener = function (type, callback) { if (device._listeners[type]) { device._listeners[type] = device._listeners[type].filter(function (item) { return item !== callback; }); } };
         device.dispatchEvent = function (event) { var callbacks = (device._listeners[event.type] || []).slice(); event.target = device; callbacks.forEach(function (callback) { callback.call(device, event); }); var handler = device['on' + event.type]; if (typeof handler === 'function') { handler.call(device, event); } return !event.defaultPrevented; };
-        device.createBuffer = function (desc) { return makeResource(device, 'GPUBuffer', 'createBuffer', desc); };
-        device.createTexture = function (desc) { return makeResource(device, 'GPUTexture', 'createTexture', desc); };
-        device.createShaderModule = function (desc) { return makeResource(device, 'GPUShaderModule', 'createShaderModule', desc); };
+        device.createBuffer = function (desc) { return makeResource(device, 'GPUBuffer', 'createBuffer', normalizeBufferDescriptor(desc)); };
+        device.createTexture = function (desc) { return makeResource(device, 'GPUTexture', 'createTexture', normalizeTextureDescriptor(desc)); };
+        device.createShaderModule = function (desc) { return makeResource(device, 'GPUShaderModule', 'createShaderModule', normalizeLabelDescriptor(desc)); };
         device.createSampler = function (desc) { return makeResource(device, 'GPUSampler', 'createSampler', desc); };
-        device.createBindGroupLayout = function (desc) { return makeResource(device, 'GPUBindGroupLayout', 'createBindGroupLayout', desc); };
-        device.createPipelineLayout = function (desc) { return makeResource(device, 'GPUPipelineLayout', 'createPipelineLayout', desc); };
-        device.createBindGroup = function (desc) { return makeResource(device, 'GPUBindGroup', 'createBindGroup', desc); };
-        device.createRenderPipeline = function (desc) { return makeResource(device, 'GPURenderPipeline', 'createRenderPipeline', desc); };
+        device.createBindGroupLayout = function (desc) { return makeResource(device, 'GPUBindGroupLayout', 'createBindGroupLayout', normalizeLabelDescriptor(desc)); };
+        device.createPipelineLayout = function (desc) { return makeResource(device, 'GPUPipelineLayout', 'createPipelineLayout', normalizeLabelDescriptor(desc)); };
+        device.createBindGroup = function (desc) { return makeResource(device, 'GPUBindGroup', 'createBindGroup', normalizeBindGroupDescriptor(desc)); };
+        device.createRenderPipeline = function (desc) { return makeResource(device, 'GPURenderPipeline', 'createRenderPipeline', normalizeRenderPipelineDescriptor(desc)); };
         device.createCommandEncoder = function (desc) { return makeEncoder(device, desc || {}); };
         device.pushErrorScope = function (filter) { gpuCommand(id, 'pushErrorScope', 0, { filter: filter }, true); };
         device.popErrorScope = function () { return gpuCommand(id, 'popErrorScope', 0, {}, false); };
@@ -304,6 +446,7 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
           if (resource.mapState !== 'unmapped') { return Promise.reject(new TypeError('GPUBuffer is already mapped')); }
           resource.mapState = 'pending';
           return gpuCommand(device.__gpuHandle, 'mapRead', id, { mode: mode, offset: offset || 0, size: size == null ? descriptor.size : size }, false).then(function (bytes) {
+            if (typeof bytes === 'number' && typeof __chuzzGpuTakeBytes === 'function') { bytes = __chuzzGpuTakeBytes(bytes); }
             resource._mappedRange = bytes; resource.mapState = 'mapped'; return undefined;
           }, function (error) { resource.mapState = 'unmapped'; throw error; });
         };
@@ -329,15 +472,35 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
         var start = (dataOffset || 0) * elementSize, length = size == null ? bytes.length - start : size * elementSize;
         if (start < 0 || length < 0 || start + length > bytes.length || start % 4 || length % 4) { throw new RangeError('GPUQueue.writeBuffer data range must be in bounds and 4-byte aligned'); }
         var copy = new Uint8Array(bytes.length); copy.set(bytes);
-        var upload = __chuzzGpuPutBytes(copy.buffer, start, length);
+        var upload = gpuUpload(copy, start, length);
         gpuSend({ webgpu: 'command', device: device.__gpuHandle, command: { op: 'writeBuffer', handle: buffer.__gpuHandle, args: { offset: offset, data: upload } } }, true, [upload]);
       };
       queue.writeTexture = function (destination, data, layout, size) {
         var bytes = __chuzzCopyBytes(data);
         var copy = new Uint8Array(bytes.length); copy.set(bytes);
-        var upload = __chuzzGpuPutBytes(copy.buffer, 0, copy.length);
-        var options = { texture: destination.texture.__gpuHandle, mipLevel: destination.mipLevel || 0, origin: destination.origin || [0, 0, 0], aspect: destination.aspect || 'all', data: upload, offset: layout && layout.offset || 0, bytesPerRow: layout && layout.bytesPerRow, rowsPerImage: layout && layout.rowsPerImage, size: size };
+        var upload = gpuUpload(copy, 0, copy.length);
+        var target = normalizeTextureCopy(destination);
+        var options = { texture: target.texture.__gpuHandle, mipLevel: target.mipLevel, origin: target.origin, aspect: target.aspect, data: upload, offset: layout && layout.offset != null ? layout.offset : 0, bytesPerRow: layout && layout.bytesPerRow, rowsPerImage: layout && layout.rowsPerImage, size: gpuExtent(size) };
         gpuSend({ webgpu: 'command', device: device.__gpuHandle, command: { op: 'writeTexture', handle: 0, args: gpuSerialize(options) } }, true, [upload]);
+      };
+      queue.copyExternalImageToTexture = function (source, destination, size) {
+        if (!source || !destination || !destination.texture || !size) { throw new TypeError('invalid external image copy arguments'); }
+        var image = source.source || source;
+        if (!image.__gpuImageSource) { throw new TypeError('external image source is not a native ImageBitmap'); }
+        var target = normalizeTextureCopy(destination);
+        var args = {
+          source: image.__gpuImageSource,
+          sourceOrigin: gpuOrigin(source.origin, 2),
+          flipY: !!source.flipY,
+          texture: target.texture.__gpuHandle,
+          mipLevel: target.mipLevel,
+          origin: target.origin,
+          aspect: target.aspect,
+          premultipliedAlpha: !!destination.premultipliedAlpha,
+          colorSpace: destination.colorSpace || 'srgb',
+          size: gpuExtent(size)
+        };
+        gpuCommand(device.__gpuHandle, 'copyExternalImageToTexture', 0, args, true);
       };
       queue.submit = function (commands) {
         gpuCommand(device.__gpuHandle, 'submit', 0, commands.map(function (command) { return command.__gpuHandle; }), true);
@@ -353,43 +516,67 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
     }
     function makeEncoder(device, descriptor) {
       var id = gpuHandles++, encoder = gpuObject('GPUCommandEncoder', device.__gpuHandle, id, {}), finished = false, operations = [];
-      gpuCommand(device.__gpuHandle, 'createCommandEncoder', id, descriptor, true);
+      gpuCommand(device.__gpuHandle, 'createCommandEncoder', id, normalizeEncoderDescriptor(descriptor), true);
       function encode(op, args) { if (finished) { throw new TypeError('command encoder is finished'); } operations.push({ op: op, args: gpuSerialize(args || {}) }); }
       encoder.beginRenderPass = function (desc) {
-        var render = gpuSerialize(desc || {}); render.commands = []; var ended = false;
+        var render = gpuSerialize(normalizeRenderPassDescriptor(desc || {})); render.commands = []; var ended = false;
         operations.push({ op: 'render', args: render });
         var pass = gpuObject('GPURenderPassEncoder', device.__gpuHandle, gpuHandles++, {});
         function passCommand(op, values) { if (ended) { throw new TypeError("render pass has ended"); } render.commands.push({ op: op, args: gpuSerialize(values) }); }
-        pass.setPipeline = function (pipeline) { passCommand('pipeline', [pipeline]); };
-        pass.setBindGroup = function (index, group, offsets) { passCommand('bindGroup', [index, group, offsets || []]); };
-        pass.setVertexBuffer = function (slot, buffer, offset, size) { passCommand('vertexBuffer', [slot, buffer, offset || 0, size]); };
-        pass.setIndexBuffer = function (buffer, format, offset, size) { passCommand('indexBuffer', [buffer, format, offset || 0, size]); };
-        pass.draw = function (vertexCount, instanceCount, firstVertex, firstInstance) { passCommand('draw', [vertexCount, instanceCount || 1, firstVertex || 0, firstInstance || 0]); };
-        pass.drawIndexed = function (indexCount, instanceCount, firstIndex, baseVertex, firstInstance) { passCommand('drawIndexed', [indexCount, instanceCount || 1, firstIndex || 0, baseVertex || 0, firstInstance || 0]); };
+        pass.setPipeline = function (pipeline) { passCommand('pipeline', pipeline); };
+        pass.setBindGroup = function (index, group, offsets) { passCommand('bindGroup', { index: index, group: group, offsets: offsets || [] }); };
+        pass.setVertexBuffer = function (slot, buffer, offset, size) { passCommand('vertexBuffer', { slot: slot, buffer: buffer, offset: offset || 0, size: size }); };
+        pass.setIndexBuffer = function (buffer, format, offset, size) { passCommand('indexBuffer', { buffer: buffer, format: format, offset: offset || 0, size: size }); };
+        pass.draw = function (vertexCount, instanceCount, firstVertex, firstInstance) { passCommand('draw', { count: vertexCount, instances: instanceCount == null ? 1 : instanceCount, first: firstVertex || 0, firstInstance: firstInstance || 0 }); };
+        pass.drawIndexed = function (indexCount, instanceCount, firstIndex, baseVertex, firstInstance) { passCommand('drawIndexed', { count: indexCount, instances: instanceCount == null ? 1 : instanceCount, first: firstIndex || 0, baseVertex: baseVertex || 0, firstInstance: firstInstance || 0 }); };
         pass.end = function () { if (ended) { throw new TypeError("render pass has ended"); } ended = true; };
         return pass;
       };
-      encoder.copyBufferToTexture = function (source, destination, size) { encode('copyBufferToTexture', { source: source, destination: destination, size: size }); };
-      encoder.copyTextureToBuffer = function (source, destination, size) { encode('copyTextureToBuffer', { source: source, destination: destination, size: size }); };
+      encoder.copyBufferToTexture = function (source, destination, size) { encode('copyBufferToTexture', { source: normalizeBufferCopy(source), destination: normalizeTextureCopy(destination), size: gpuExtent(size) }); };
+      encoder.copyTextureToBuffer = function (source, destination, size) { encode('copyTextureToBuffer', { source: normalizeTextureCopy(source), destination: normalizeBufferCopy(destination), size: gpuExtent(size) }); };
+      encoder.copyTextureToTexture = function (source, destination, size) { encode('copyTextureToTexture', { source: normalizeTextureCopy(source), destination: normalizeTextureCopy(destination), size: gpuExtent(size) }); };
       encoder.clearBuffer = function (buffer, offset, size) { encode('clearBuffer', { buffer: buffer, offset: offset || 0, size: size }); };
       encoder.finish = function () { finished = true; var commandId = gpuHandles++; gpuCommand(device.__gpuHandle, 'finish', commandId, { encoder: id, label: descriptor.label || '', operations: operations }, true); return gpuObject('GPUCommandBuffer', device.__gpuHandle, commandId, {}); };
       return encoder;
     }
     var gpuCanvasContexts = [];
+    function canvasDimension(canvas, name, defaultValue) {
+      var property = canvas && canvas[name];
+      if (typeof property === 'number' && Number.isFinite(property) && property >= 0) { return Math.min(4294967295, Math.floor(property)); }
+      if (canvas && typeof canvas.getAttribute === 'function') {
+        var raw = canvas.getAttribute(name);
+        if (raw != null) {
+          raw = String(raw).replace(/^\s+|\s+$/g, '');
+          if (raw === '') { return defaultValue; }
+          var reflected = Number(raw);
+          if (Number.isFinite(reflected) && reflected >= 0) { return Math.min(4294967295, Math.floor(reflected)); }
+          return defaultValue;
+        }
+      }
+      return defaultValue;
+    }
+    function canvasBufferSize(canvas, context) {
+      var width = context && context.__chuzzCanvasWidth != null
+        ? Number(context.__chuzzCanvasWidth) : canvasDimension(canvas, 'width', 300);
+      var height = context && context.__chuzzCanvasHeight != null
+        ? Number(context.__chuzzCanvasHeight) : canvasDimension(canvas, 'height', 150);
+      return [width, height];
+    }
     function installCanvasContext(context) {
       if (!context || context.__chuzzGpuWrapped) { return context; }
       var canvas = context.canvas;
       var handle = context.__chuzzCanvasHandle != null ? context.__chuzzCanvasHandle : canvas && canvas.__chuzzCanvasHandle;
       if (handle == null) { return context; }
       context.__chuzzGpuWrapped = true; context.__chuzzCanvasHandle = Number(handle);
+      if (canvas) { canvas.__chuzzWebGpuContext = context; }
+      if (typeof gpuContextsByCanvas !== 'undefined') { gpuContextsByCanvas.set(Number(handle), context); }
       context.configure = function (configuration) {
         configuration = configuration || {};
         var device = configuration.device;
         if (!device || !device.__gpuHandle) { throw new TypeError('GPUCanvasConfiguration.device is required'); }
-        context.__chuzzDevice = device; context.__chuzzGeneration = (context.__chuzzGeneration || 0) + 1;
-        var width = Number(context.__chuzzCanvasWidth != null ? context.__chuzzCanvasWidth : canvas.width);
-        var height = Number(context.__chuzzCanvasHeight != null ? context.__chuzzCanvasHeight : canvas.height);
+        var dimensions = canvasBufferSize(canvas, context), width = dimensions[0], height = dimensions[1];
         if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) { throw new TypeError('invalid canvas drawing buffer size'); }
+        context.__chuzzDevice = device; context.__chuzzGeneration = (context.__chuzzGeneration || 0) + 1;
         context.__chuzzConfiguration = { device: device, format: configuration.format || gpu.getPreferredCanvasFormat(), usage: configuration.usage == null ? GPUTextureUsage.RENDER_ATTACHMENT : configuration.usage, alphaMode: configuration.alphaMode || 'premultiplied', viewFormats: configuration.viewFormats || [] };
         gpuCommand(device.__gpuHandle, 'configure', context.__chuzzCanvasHandle, { generation: context.__chuzzGeneration, format: context.__chuzzConfiguration.format, usage: context.__chuzzConfiguration.usage, alphaMode: context.__chuzzConfiguration.alphaMode, viewFormats: context.__chuzzConfiguration.viewFormats, width: width, height: height }, true);
         gpuCommand(device.__gpuHandle, 'setCanvasId', context.__chuzzCanvasHandle, 'canvas:#' + String(canvas.id || context.__chuzzCanvasHandle), true);
@@ -404,7 +591,8 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
       context.getCurrentTexture = function () {
         var device = context.__chuzzDevice, config = context.__chuzzConfiguration;
         if (!device || !config) { throw new TypeError('GPUCanvasContext is not configured'); }
-        var textureId = gpuHandles++, width = Number(context.__chuzzCanvasWidth != null ? context.__chuzzCanvasWidth : canvas.width), height = Number(context.__chuzzCanvasHeight != null ? context.__chuzzCanvasHeight : canvas.height);
+        var dimensions = canvasBufferSize(canvas, context), textureId = gpuHandles++, width = dimensions[0], height = dimensions[1];
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) { throw new TypeError('invalid canvas drawing buffer size'); }
         var texture = gpuObject('GPUTexture', device.__gpuHandle, textureId, {}); texture.width = width; texture.height = height; texture.format = config.format; texture.usage = config.usage;
         texture.createView = function (descriptor) { var viewId = gpuHandles++; gpuCommand(device.__gpuHandle, 'createView', viewId, { texture: textureId, descriptor: descriptor || {} }, true); return gpuObject('GPUTextureView', device.__gpuHandle, viewId, {}); };
         texture.destroy = function () {};
@@ -423,6 +611,132 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
       prototype.getContext = function (kind) { var context = original.apply(this, arguments); return String(kind).toLowerCase() === 'webgpu' ? installCanvasContext(context) : context; };
       prototype.__chuzzGpuPatched = true;
     }
+    function safeCanvasInteger(value) {
+      return Number.isFinite(value) && Math.floor(value) === value && Math.abs(value) <= 9007199254740991;
+    }
+    var native2dContexts = new Map(), gpuContextsByCanvas = new Map(), nextCanvasSource = 1;
+    function canvasRequest(request, inputs) {
+      if (typeof __chuzzCanvas2D !== 'function') { throw new TypeError('native 2D canvas bridge is unavailable'); }
+      return __chuzzCanvas2D(request, inputs || []);
+    }
+    function canvasDimensions(canvas) {
+      var dimensions = canvasBufferSize(canvas), width = dimensions[0], height = dimensions[1];
+      if (!safeCanvasInteger(width) || !safeCanvasInteger(height) || width <= 0 || height <= 0) { throw new TypeError('invalid canvas dimensions'); }
+      return [width, height];
+    }
+    function canvasDrawState(context) {
+      return {
+        matrix: [1, 0, 0, 1, 0, 0], alpha: 1, composite: 'source-over', width: 1,
+        cap: 'butt', join: 'miter', miter: 10, dash: [], dashOffset: 0,
+        font: '10px sans-serif', kerning: 'auto', fontStretch: 'normal', fontVariantCaps: 'normal',
+        letterSpacing: 0, wordSpacing: 0, textRendering: 'auto', align: 'start', baseline: 'alphabetic',
+        direction: 'inherit', smoothing: context.imageSmoothingEnabled !== false, shadowBlur: 0,
+        shadowColor: 'rgba(0, 0, 0, 0)', shadowOffsetX: 0, shadowOffsetY: 0, filter: []
+      };
+    }
+    function sourceImageFor2d(source) {
+      if (!source) { throw new TypeError('drawImage source is required'); }
+      var imageSource = source.__gpuImageSource;
+      if (imageSource && imageSource.kind === 'bitmap') {
+        return { width: Number(source.width), height: Number(source.height), image: { bitmap: imageSource.handle }, inputs: [] };
+      }
+      var textureSource = source.__gpuKind === 'GPUTexture' ? {
+        kind: 'texture', device: source.__gpuDevice, texture: source.__gpuHandle, premultipliedAlpha: false
+      } : null;
+      var canvas = source.canvas || source;
+      var canvasHandle = canvas && canvas.__chuzzCanvasHandle;
+      var gpuContext = canvas && canvas.__chuzzWebGpuContext || gpuContextsByCanvas.get(Number(canvasHandle));
+      if (!textureSource && gpuContext && gpuContext.__chuzzConfiguration) {
+        var dimensions = canvasDimensions(canvas);
+        textureSource = {
+          kind: 'canvas', canvas: Number(canvasHandle), generation: gpuContext.__chuzzGeneration,
+          width: dimensions[0], height: dimensions[1]
+        };
+      }
+      if (textureSource) {
+        var marker = Math.pow(2, 51) + nextCanvasSource++;
+        var resolved = canvasRequest({ action: 'source', id: marker, serial: marker, source: textureSource }, []);
+        if (!Array.isArray(resolved) || resolved.length !== 2) { throw new TypeError('native canvas source returned invalid dimensions'); }
+        var width = Number(resolved[0]), height = Number(resolved[1]);
+        return { width: width, height: height, marker: marker, image: { native: marker }, inputs: [] };
+      }
+      var twoD = canvas && (canvas.__chuzz2dContext || native2dContexts.get(Number(canvasHandle)));
+      if (twoD) {
+        var size = canvasDimensions(canvas);
+        var pixels = __chuzzCopyBytes(canvasRequest({ action: 'snapshot', id: Number(canvasHandle), width: size[0], height: size[1] }, []));
+        return { width: size[0], height: size[1], image: { index: 0 }, inputs: [pixels] };
+      }
+      if (source.__chuzzNativeImageHandle != null) {
+        var imageWidth = Number(source.width), imageHeight = Number(source.height);
+        return { width: imageWidth, height: imageHeight, image: { native: Number(source.__chuzzNativeImageHandle) }, inputs: [] };
+      }
+      throw new TypeError('drawImage source cannot be resolved by the native canvas bridge');
+    }
+    function native2dContext(canvas) {
+      var handle = Number(canvas.__chuzzCanvasHandle);
+      if (!safeCanvasInteger(handle) || handle <= 0) { throw new TypeError('canvas has no native handle'); }
+      var context = {
+        canvas: canvas,
+        imageSmoothingEnabled: true,
+        drawImage: function (source) {
+          if (arguments.length !== 3 && arguments.length !== 5 && arguments.length !== 9) { throw new TypeError('drawImage expects 3, 5, or 9 arguments'); }
+          var image = sourceImageFor2d(source);
+          var dimensions = canvasDimensions(canvas), width = image.width, height = image.height;
+          if (!safeCanvasInteger(width) || !safeCanvasInteger(height) || width <= 0 || height <= 0 || !safeCanvasInteger(width * height * 4)) { throw new TypeError('invalid drawImage source dimensions'); }
+          var values;
+          if (arguments.length === 3) {
+            values = [0, 0, width, height, Number(arguments[1]), Number(arguments[2]), width, height];
+          } else if (arguments.length === 5) {
+            values = [0, 0, width, height, Number(arguments[1]), Number(arguments[2]), Number(arguments[3]), Number(arguments[4])];
+          } else if (arguments.length === 9) {
+            values = Array.prototype.slice.call(arguments, 1).map(Number);
+          }
+          var descriptor = {
+            index: 0, width: width, height: height, offset: 0, length: width * height * 4
+          };
+          if (image.image.index != null) { descriptor.index = image.image.index; }
+          if (image.image.bitmap != null) { descriptor.bitmap = image.image.bitmap; }
+          if (image.image.native != null) { descriptor.native = image.image.native; }
+          var command = {
+            op: 'drawImage', n: values, state: canvasDrawState(context),
+            brush: { kind: 'pattern', matrix: [1, 0, 0, 1, 0, 0], repetition: 'no-repeat', image: descriptor }
+          };
+          try {
+            canvasRequest({ action: 'submit', id: handle, width: dimensions[0], height: dimensions[1], commands: [command] }, image.inputs);
+          } finally {
+            if (image.marker != null) { canvasRequest({ action: 'release', id: image.marker }, []); }
+          }
+        },
+        getImageData: function (x, y, width, height) {
+          var dimensions = canvasDimensions(canvas);
+          x = Number(x); y = Number(y); width = Number(width); height = Number(height);
+          if (![x, y, width, height].every(Number.isFinite) || width === 0 || height === 0) { throw new TypeError('invalid getImageData rectangle'); }
+          if (width < 0) { x += width; width = -width; }
+          if (height < 0) { y += height; height = -height; }
+          x = Math.trunc(x); y = Math.trunc(y); width = Math.trunc(width); height = Math.trunc(height);
+          if (!safeCanvasInteger(width) || !safeCanvasInteger(height) || width <= 0 || height <= 0 || width > 4294967295 || height > 4294967295 || !safeCanvasInteger(width * height * 4)) { throw new TypeError('invalid getImageData dimensions'); }
+          var data = __chuzzCopyBytes(canvasRequest({ action: 'read', id: handle, width: dimensions[0], height: dimensions[1], n: [x, y, width, height] }, []));
+          return { data: data, width: width, height: height, colorSpace: 'srgb' };
+        }
+      };
+      canvas.__chuzz2dContext = context;
+      native2dContexts.set(handle, context);
+      return context;
+    }
+    g.__chuzzCreateCanvasContext = function (canvas, kind, options) {
+      kind = String(kind).toLowerCase();
+      var handle = Number(canvas && canvas.__chuzzCanvasHandle);
+      if (!canvas || !safeCanvasInteger(handle) || handle <= 0) { return null; }
+      if (kind === 'webgpu') {
+        if (!canvas.__chuzzWebGpuContext) {
+          canvas.__chuzzWebGpuContext = installCanvasContext({ canvas: canvas, __chuzzCanvasHandle: handle });
+          gpuContextsByCanvas.set(handle, canvas.__chuzzWebGpuContext);
+        }
+        return canvas.__chuzzWebGpuContext;
+      }
+      if (kind === '2d') { return canvas.__chuzz2dContext || native2dContext(canvas); }
+      return null;
+    };
     var gpu = {
       getPreferredCanvasFormat: function () { return 'rgba8unorm'; },
       requestAdapter: function (options) { return gpuSend({ webgpu: 'requestAdapter', options: options || {} }).then(function (reply) {
@@ -430,6 +744,51 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
         var adapter = gpuObject('GPUAdapter', 0, reply.handle, {}); adapter.features = features(reply.features || []); adapter.limits = reply.limits || {}; adapter.info = reply.info || {};
         adapter.requestDevice = function (deviceOptions) { return createDevice(adapter, deviceOptions); }; return adapter;
       }); }
+    };
+    var gpuImageHandles = 1;
+    g.createImageBitmap = function (source, sx, sy, sw, sh, bitmapOptions) {
+      var crop = null, options = bitmapOptions || {};
+      if (arguments.length >= 5 && typeof sx === 'number') {
+        crop = [sx, sy, sw, sh];
+      } else if (sx && typeof sx === 'object') {
+        options = sx;
+      }
+      var descriptor = {
+        source: null,
+        crop: crop,
+        flipY: options.imageOrientation === 'flipY',
+        resizeWidth: options.resizeWidth == null ? null : Number(options.resizeWidth),
+        resizeHeight: options.resizeHeight == null ? null : Number(options.resizeHeight),
+        resizeQuality: options.resizeQuality || 'low',
+        readPixels: false
+      };
+      var bytes, upload;
+      if (source && source._bytes != null) {
+        bytes = __chuzzCopyBytes(source._bytes);
+        upload = gpuUpload(bytes, 0, bytes.length);
+        descriptor.source = { kind: 'encoded', data: upload };
+      } else if (source && source.data != null && source.width != null && source.height != null) {
+        bytes = __chuzzCopyBytes(source.data);
+        upload = gpuUpload(bytes, 0, bytes.length);
+        descriptor.source = { kind: 'pixels', width: Number(source.width), height: Number(source.height), data: upload };
+      } else {
+        return Promise.reject(new TypeError('createImageBitmap source is not supported by the native image bridge'));
+      }
+      var id = gpuImageHandles++;
+      return gpuSend({ webgpu: 'command', device: 0, command: { op: 'createImageBitmap', handle: id, args: descriptor } }, false, [upload]).then(function (reply) {
+        if (!reply || reply.handle !== id || !Number.isFinite(reply.width) || !Number.isFinite(reply.height)) { throw new TypeError('invalid native ImageBitmap reply'); }
+        var bitmap = {
+          width: reply.width,
+          height: reply.height,
+          __gpuImageSource: { kind: 'bitmap', handle: id },
+          close: function () {
+            if (!bitmap.__gpuImageSource) { return; }
+            gpuSend({ webgpu: 'command', device: 0, command: { op: 'closeImage', handle: id, args: {} } }, true);
+            bitmap.__gpuImageSource = null;
+          }
+        };
+        return bitmap;
+      });
     };
     g.navigator.gpu = gpu;
     patchCanvasGetContext();
