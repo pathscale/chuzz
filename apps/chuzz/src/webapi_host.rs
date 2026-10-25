@@ -264,6 +264,7 @@ pub fn install(
     config: &HostInstallContext,
 ) -> Result<(), HostError> {
     let native = super::new_realm(config.base.as_ref(), config.wake.clone());
+    super::bind_platform(native.id, None).map_err(type_error)?;
     host.set_state(
         STATE_KEY,
         HostObject::new(Rc::new(Realm {
@@ -289,6 +290,7 @@ pub fn poll(
 ) -> Result<bool, HostError> {
     let realm = realm(host)?;
     realm.native.notifications.bind(waker);
+    super::bind_platform(realm.native.id, waker).map_err(type_error)?;
 
     let deliveries = realm.native.notifications.take(realm.native.id);
     {
@@ -301,7 +303,7 @@ pub fn poll(
         }
     }
 
-    let mut changed = false;
+    let mut changed = super::take_platform_ready(realm.native.id).map_err(type_error)?;
     loop {
         let delivery = {
             let mut pending = realm.pending.borrow_mut();
