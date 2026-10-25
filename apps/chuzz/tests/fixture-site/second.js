@@ -5,6 +5,8 @@ const out = document.createElement("input");
 out.setAttribute("aria-label", "carried");
 out.value = [
   "local=" + String(localStorage.getItem("endpoint")),
-  "session=" + String(sessionStorage.getItem("visit"))
+  "session=" + String(sessionStorage.getItem("visit")),
+  "local-prototype=" + String(localStorage.getItem("__proto__")),
+  "session-prototype=" + String(sessionStorage.getItem("__proto__"))
 ].join(" ");
 document.getElementById("root").appendChild(out);

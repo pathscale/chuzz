@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::BTreeSet;
 use std::future::{Future, poll_fn};
 use std::task::{Poll, Waker};
 
@@ -60,6 +59,7 @@ pub struct TabLife {
     pub load_signal: Option<blitz_traits::net::AbortSignal>,
     pub ever_live: bool,
     pub stash: Option<Arc<PageStash>>,
+    pub sessions: std::collections::BTreeMap<String, Arc<crate::tab_stash::SessionBucket>>,
     pub preview: Option<Arc<PaintSnapshot>>,
     pub preview_surface: Option<izumo::PageSurface>,
     pub record_charge: Option<Charge>,
@@ -82,6 +82,7 @@ impl Default for TabLife {
             load_signal: None,
             ever_live: false,
             stash: None,
+            sessions: Default::default(),
             preview: None,
             preview_surface: None,
             record_charge: None,
@@ -287,7 +288,7 @@ impl Browser {
 
     fn restore_timeout(
         &self,
-        ui: &mut blitz_script::ScriptDocument,
+        ui: &mut crate::page_document::PageDocument,
         id: u64,
         generation: u64,
     ) -> bool {
@@ -388,11 +389,11 @@ impl Browser {
 
     pub(super) fn prepare_tab_page(
         &self,
-        page: &mut blitz_script::ScriptDocument,
+        page: &mut crate::page_document::PageDocument,
         id: u64,
         generation: u64,
         url: &str,
-    ) {
+    ) -> Result<(), String> {
         let destination = Url::parse(url).ok();
         let (discarded, restore) = {
             let state = self.0.state.lock().unwrap();
@@ -418,12 +419,37 @@ impl Browser {
         });
         page.inner_mut().page_input_blocked = waking;
         if waking {
-            page.with_js_context(|context| {
-                context.set_execution_time_limit(Some(WINDOW_NETWORK_DEADLINE))
-            });
+            let remaining = self
+                .0
+                .state
+                .lock()
+                .unwrap()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == id && tab.generation == generation)
+                .and_then(|tab| tab.life.restore_deadline.as_ref())
+                .map_or(0, |deadline| deadline.due.saturating_sub(nagoya::now_ns()));
+            page.begin_restore(std::time::Duration::from_nanos(remaining));
         }
-        crate::tab_session::install(page, restore.as_ref().and_then(|restore| restore.session()));
         if let Some(restore) = restore {
+            if let Some(session) = restore.session() {
+                let entries = session
+                    .pairs()
+                    .iter()
+                    .map(|pair| {
+                        (
+                            String::from_utf16_lossy(pair.key.units()),
+                            String::from_utf16_lossy(pair.value.units()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                {
+                    let mut host = page.host_mut();
+                    host.seed_session(&entries).map_err(|error| {
+                        format!("could not restore page session state: {}", error.message)
+                    })?;
+                }
+            }
             if destination
                 .as_ref()
                 .is_some_and(|url| url.fragment().is_none())
@@ -433,16 +459,18 @@ impl Browser {
                     y: restore.scroll().y,
                 });
             }
-            let mut applied = BTreeSet::new();
-            page.set_before_script_hook(move |document| {
-                crate::tab_native::restore_forms(document, &restore, &mut applied)
-            });
+            crate::tab_native::restore_forms(
+                &mut page.inner_mut(),
+                &restore,
+                &mut Default::default(),
+            );
         }
+        Ok(())
     }
 
     fn commit_sleep(
         &self,
-        ui: &mut blitz_script::ScriptDocument,
+        ui: &mut crate::page_document::PageDocument,
         id: u64,
         generation: u64,
         epoch: u64,
@@ -552,8 +580,21 @@ impl Browser {
                 None
             } else {
                 (document as &mut dyn std::any::Any)
-                    .downcast_mut::<blitz_script::ScriptDocument>()
-                    .and_then(|page| crate::tab_session::capture(page, &self.0.sleeping_budget))
+                    .downcast_mut::<crate::page_document::PageDocument>()
+                    .and_then(|page| {
+                        let host = page.host();
+                        match host.capture_session(&self.0.sleeping_budget) {
+                            Ok(session) => session,
+                            Err(error) => {
+                                self.note(
+                                    "error",
+                                    "lifecycle",
+                                    format!("could not snapshot page session: {}", error.message),
+                                );
+                                None
+                            }
+                        }
+                    })
             };
             let stash = if disabled {
                 None
@@ -619,6 +660,7 @@ impl Browser {
                 let mut record = Request::get(request.url.clone());
                 record.method = request.method.clone();
                 record.destination = request.destination;
+                record.initiator = request.initiator.clone();
                 *request = record;
             }
             let next = tab.generation;
@@ -655,7 +697,7 @@ impl Browser {
         });
     }
 
-    pub(super) fn poll_lifecycle(&self, ui: &mut blitz_script::ScriptDocument) -> bool {
+    pub(super) fn poll_lifecycle(&self, ui: &mut crate::page_document::PageDocument) -> bool {
         let mut messages: Vec<_> = self.0.lifecycle.lock().unwrap().drain(..).collect();
         messages.sort_by_key(|message| {
             if matches!(message, LifecycleMessage::Surface(_)) {

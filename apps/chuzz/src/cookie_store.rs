@@ -32,9 +32,8 @@ type CookieKey = (String, String, String);
 
 #[cfg(feature = "reactor-witness")]
 pub fn reactor_receipt() -> Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>> {
-    static RECEIPT: std::sync::OnceLock<
-        Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>,
-    > = std::sync::OnceLock::new();
+    type Receipt = Arc<blitz_control_protocol::latest::Once<Arc<Result<(), String>>>>;
+    static RECEIPT: std::sync::OnceLock<Receipt> = std::sync::OnceLock::new();
     Arc::clone(RECEIPT.get_or_init(blitz_control_protocol::latest::Once::new))
 }
 
@@ -531,6 +530,10 @@ impl BrowserCookieStore {
                     report.rejected += 1;
                     continue;
                 }
+                if insecure_secure_cookie_conflict(&store, &cookie, url) {
+                    report.rejected += 1;
+                    continue;
+                }
                 let key = cookie_key(&cookie);
 
                 match store.insert(cookie, url) {
@@ -632,6 +635,9 @@ impl BrowserCookieStore {
                 .get_any(&key.0, &key.1, &key.2)
                 .is_some_and(|existing| existing.http_only().unwrap_or(false))
             {
+                return Ok(false);
+            }
+            if insecure_secure_cookie_conflict(&store, &cookie, url) {
                 return Ok(false);
             }
             match store.insert(cookie, url) {
@@ -804,6 +810,23 @@ async fn record_durable_snapshot(
             .map_err(|error| error.to_string());
         reactor_receipt().fill(Arc::new(first_error.clone().map_or(durable, Err)));
     }
+}
+
+fn insecure_secure_cookie_conflict(
+    store: &RfcCookieStore,
+    cookie: &StoredCookie<'_>,
+    url: &Url,
+) -> bool {
+    if is_secure_url(url) {
+        return false;
+    }
+    store.iter_any().any(|existing| {
+        !existing.is_expired()
+            && existing.secure() == Some(true)
+            && existing.name() == cookie.name()
+            && (existing.domain.matches(url)
+                || String::from(&existing.domain) == String::from(&cookie.domain))
+    })
 }
 
 fn cookie_key(cookie: &StoredCookie<'_>) -> CookieKey {

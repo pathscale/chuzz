@@ -8,12 +8,7 @@ use anyrender::{Paint, PaintScene};
 use anyrender_vello_cpu::{ImageCache, VelloCpuScenePainter};
 use blitz_dom::kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use blitz_dom::node::RasterImageData;
-use blitz_script::boa_engine::object::builtins::{
-    JsArray, JsArrayBuffer, JsUint8Array, JsUint8ClampedArray,
-};
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-};
+
 use parley::fontique::{Collection, CollectionOptions, SourceCache};
 use peniko::{
     BlendMode, Blob, Color, Compose, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData,
@@ -128,7 +123,8 @@ fn default_fonts() -> parley::FontContext {
 pub(super) fn from_html(
     html: &str,
     mut config: blitz_dom::DocumentConfig,
-) -> blitz_script::ScriptDocument {
+    host_config: crate::script_host::HostInstallContext,
+) -> std::result::Result<crate::page_document::PageDocument, String> {
     crate::install_headless_fonts(&mut config);
     let mut fonts = config.font_ctx.take().unwrap_or_else(default_fonts);
     // Fontique shares registrations, aliases and generic-family changes with
@@ -136,15 +132,11 @@ pub(super) fn from_html(
     fonts.collection.make_shared();
     fonts.source_cache.make_shared();
     config.font_ctx = Some(fonts.clone());
-    let mut document = blitz_script::ScriptDocument::from_html(html, config);
-    document.with_js_context(|context| {
-        context.insert_data(Fonts(Arc::new(Mutex::new(fonts))));
-    });
-    document
+    crate::page_document::PageDocument::from_html(Arc::from(html), config, host_config)
 }
 
 #[derive(Clone)]
-struct Host {
+pub(super) struct Host {
     canvases: Arc<Mutex<HashMap<u64, Canvas>>>,
     sources: Arc<Mutex<HashMap<u64, ImageData>>>,
     image_cache: Arc<Mutex<ImageCache>>,
@@ -393,6 +385,40 @@ fn image_data(source: &Image, inputs: &[Arc<Vec<u8>>]) -> Result<ImageData> {
         width: source.width,
         height: source.height,
     })
+}
+
+fn resolve_native_image(host: &Host, source: &mut Image) -> Result<()> {
+    let handles = [source.video, source.bitmap, source.native];
+    if handles.iter().filter(|handle| handle.is_some()).count() != 1 {
+        return Err("invalid native canvas image descriptor".to_owned());
+    }
+    let image = if let Some(handle) = source.video {
+        let frame = host.bridge.state().media_frames.take(handle)?;
+        raster_image(&frame.image)
+    } else if let Some(handle) = source.bitmap {
+        let image = host
+            .bridge
+            .state()
+            .images
+            .bitmaps
+            .get(&handle)
+            .cloned()
+            .ok_or("ImageBitmap is closed or invalid")?;
+        raster_image(&image)
+    } else {
+        let handle = source
+            .native
+            .ok_or("invalid native canvas image descriptor")?;
+        lock(&host.sources)
+            .get(&handle)
+            .cloned()
+            .ok_or("native canvas image is unavailable")?
+    };
+    if image.width != source.width || image.height != source.height {
+        return Err("native canvas image dimensions changed".to_owned());
+    }
+    source.resolved = Some(image);
+    Ok(())
 }
 
 /// The pixel-aligned part of `source` covering `x0..x1` by `y0..y1`, as a
@@ -1244,86 +1270,59 @@ impl Canvas {
     }
 }
 
-/// `__chuzzEncodePng(width, height, rgba)`: the PNG bytes behind
-/// `HTMLCanvasElement.toBlob` and `toDataURL`, from straight RGBA pixels.
-fn encode_png(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let failure = |message: &str| JsNativeError::typ().with_message(message.to_owned());
-    let width = args.first().cloned().unwrap_or_default().to_u32(context)?;
-    let height = args.get(1).cloned().unwrap_or_default().to_u32(context)?;
-    let object = args
-        .get(2)
-        .and_then(JsValue::as_object)
-        .ok_or_else(|| failure("expected canvas pixels"))?;
-    let buffer = JsArrayBuffer::from_object(object.clone())?;
-    let pixels = buffer
-        .data()
-        .ok_or_else(|| failure("detached canvas pixels"))?;
-    if width == 0
-        || height == 0
-        || pixels.len() != byte_count(width, height).map_err(|e| failure(&e))?
-    {
-        return Err(failure("canvas pixels do not match the canvas size").into());
-    }
-    let mut png = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut png, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder
-            .write_header()
-            .map_err(|e| failure(&e.to_string()))?;
-        writer
-            .write_image_data(&pixels)
-            .map_err(|e| failure(&e.to_string()))?;
-        writer.finish().map_err(|e| failure(&e.to_string()))?;
-    }
-    Ok(JsUint8Array::from_iter(png, context)?.into())
+pub(super) enum CanvasReply {
+    Empty,
+    Bytes(Arc<Vec<u8>>),
+    Text(String),
+    Bool(bool),
 }
 
-fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let host = context
-        .get_data::<Host>()
-        .cloned()
-        .ok_or_else(|| JsNativeError::typ().with_message("canvas host is unavailable"))?;
-    let json = args
-        .first()
-        .cloned()
-        .unwrap_or_default()
-        .to_string(context)?
-        .to_std_string_escaped();
-    if json.len() > 8 * 1024 * 1024 {
-        return Err(JsNativeError::typ()
-            .with_message("canvas descriptor limit reached in chuzz")
-            .into());
+pub(super) fn native_host(bridge: Bridge) -> Host {
+    let image_cache = Arc::clone(&bridge.state().images.image_cache);
+    Host {
+        canvases: Arc::new(Mutex::new(HashMap::new())),
+        sources: Arc::new(Mutex::new(HashMap::new())),
+        image_cache,
+        transferred: Arc::new(Mutex::new(0)),
+        fonts: Fonts(Arc::new(Mutex::new(default_fonts()))),
+        bridge,
     }
-    let mut request: Request = serde_json::from_str(&json)
-        .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
+}
+
+pub(super) fn native_execute(
+    host: &Host,
+    value: serde_json::Value,
+    inputs: Vec<Arc<Vec<u8>>>,
+) -> std::result::Result<CanvasReply, String> {
+    if value.to_string().len() > 8 * 1024 * 1024 {
+        return Err("canvas descriptor limit reached in chuzz".to_owned());
+    }
+    let mut request: Request = serde_json::from_value(value).map_err(|error| error.to_string())?;
     if request.action == "path" {
-        let commands = paths::svg_commands(&request.value)
-            .map_err(|error| JsNativeError::typ().with_message(error))?;
-        let json = serde_json::to_string(&commands)
-            .map_err(|error| JsNativeError::typ().with_message(error.to_string()))?;
-        return Ok(JsString::from(json).into());
+        let commands = paths::svg_commands(&request.value)?;
+        return serde_json::to_string(&commands)
+            .map(CanvasReply::Text)
+            .map_err(|error| error.to_string());
     }
     if request.action == "color" {
-        return Ok(JsValue::from(color(&request.value).is_ok()));
+        return Ok(CanvasReply::Bool(color(&request.value).is_ok()));
     }
     if request.action == "font" {
-        let font = text::parse_font(&request.value, request.font_base, request.root_base)
-            .map_err(|error| JsNativeError::typ().with_message(error))?;
-        return Ok(JsString::from(font).into());
+        let font = text::parse_font(&request.value, request.font_base, request.root_base)?;
+        return Ok(CanvasReply::Text(font));
     }
     if request.action == "stats" {
         let cache = lock(&host.image_cache);
-        let value = serde_json::json!({
+        return serde_json::to_string(&serde_json::json!({
             "transferredBytes": *lock(&host.transferred),
             "cacheBytes": cache.retained_bytes(),
             "cacheLimit": cache.byte_limit(),
             "cacheEntries": cache.len(),
             "cacheHits": cache.hits(),
             "cacheMisses": cache.misses(),
-        });
-        return Ok(JsString::from(value.to_string()).into());
+        }))
+        .map(CanvasReply::Text)
+        .map_err(|error| error.to_string());
     }
     if request.action == "release" {
         lock(&host.canvases).remove(&request.id);
@@ -1331,174 +1330,117 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
             lock(&host.image_cache).remove(image.data.id());
         }
         host.bridge.state().images.paint.remove(&request.id);
-        return Ok(JsValue::undefined());
+        return Ok(CanvasReply::Empty);
     }
     if request.action == "source" {
-        if request.id == 0 || request.id > 9_007_199_254_740_991 {
-            return Err(JsNativeError::typ()
-                .with_message("invalid native canvas source handle")
-                .into());
-        }
         let source = request
             .source
             .take()
-            .ok_or_else(|| JsNativeError::typ().with_message("missing native canvas source"))?;
-        let image = match source {
-            super::external::Source::Element { handle } => {
-                blitz_script::raster_image_for_attribute(
-                    context,
-                    "data-chuzz-gpu-source",
-                    &handle.to_string(),
-                )
-                .map(Arc::new)
-                .ok_or_else(|| JsNativeError::typ().with_message("image is not decoded"))?
-            }
-            source => super::readback::image(&host.bridge, source, request.serial, context)?
-                .map_err(|error| JsNativeError::typ().with_message(error.message))?,
-        };
-        let size = byte_count(image.width, image.height)
-            .map_err(|error| JsNativeError::typ().with_message(error))?;
-        if size != image.data.len() {
-            return Err(JsNativeError::typ()
-                .with_message("invalid native canvas source pixels")
-                .into());
-        }
-        {
-            let mut sources = lock(&host.sources);
-            let previous = sources.get(&request.id).map_or(0, |image| image.data.len());
-            let allocated = sources
-                .values()
-                .map(|image| image.data.len())
-                .sum::<usize>();
-            if (!sources.contains_key(&request.id) && sources.len() >= 8192)
-                || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
-            {
-                return Err(JsNativeError::typ()
-                    .with_message("native canvas source allocation limit reached")
-                    .into());
-            }
-            if let Some(previous) = sources.insert(request.id, raster_image(&image))
-                && previous.data.id() != image.data.id()
-            {
-                lock(&host.image_cache).remove(previous.data.id());
-            }
-        }
-        return Ok(JsArray::from_iter(
-            [JsValue::from(image.width), JsValue::from(image.height)],
-            context,
-        )
-        .into());
+            .ok_or("native canvas source requires an image source")?;
+        let image = super::readback::read_image(&host.bridge, source, request.serial, |marker| {
+            native_source(host, marker)
+        })
+        .map_err(|error| error.message)?
+        .map_err(|error| error.message)?;
+        let (width, height) = native_set_source(host, request.id, image)?;
+        return serde_json::to_string(&[width, height])
+            .map(CanvasReply::Text)
+            .map_err(|error| error.to_string());
     }
-    let array = args
-        .get(1)
-        .and_then(JsValue::as_object)
-        .ok_or_else(|| JsNativeError::typ().with_message("expected canvas byte buffers"))?;
-    let array = JsArray::from_object(array)?;
-    let count = array.length(context)?;
-    if count > 1024 || request.commands.len() > COMMAND_LIMIT {
-        return Err(JsNativeError::typ()
-            .with_message("canvas command limit reached in chuzz")
-            .into());
+    if request.commands.len() > COMMAND_LIMIT {
+        return Err("canvas command limit reached in chuzz".to_owned());
     }
-    let mut inputs = Vec::with_capacity(count as usize);
-    let mut input_size = 0usize;
-    for index in 0..count {
-        let value = array.get(index, context)?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("expected canvas ArrayBuffer"))?;
-        let buffer = JsArrayBuffer::from_object(object)?;
-        let bytes = buffer
-            .data()
-            .ok_or_else(|| JsNativeError::typ().with_message("detached canvas image"))?;
-        input_size = input_size.saturating_add(bytes.len());
-        if input_size > IMAGE_LIMIT {
-            return Err(JsNativeError::typ()
-                .with_message("canvas transfer limit reached in chuzz")
-                .into());
-        }
-        inputs.push(Arc::new(bytes.to_vec()));
+    let input_size = inputs
+        .iter()
+        .fold(0usize, |size, input| size.saturating_add(input.len()));
+    if inputs.len() > 1024 {
+        return Err("canvas command limit reached in chuzz".to_owned());
+    }
+    if input_size > IMAGE_LIMIT {
+        return Err("canvas transfer limit reached in chuzz".to_owned());
     }
     {
         let mut transferred = lock(&host.transferred);
         *transferred = transferred.saturating_add(input_size as u64);
     }
+    execute(host, &mut request, &inputs)
+}
+
+pub(super) fn native_set_source(
+    host: &Host,
+    id: u64,
+    image: Arc<RasterImageData>,
+) -> std::result::Result<(u32, u32), String> {
+    if id == 0 || id > 9_007_199_254_740_991 {
+        return Err("invalid native canvas source handle".to_owned());
+    }
+    let size = byte_count(image.width, image.height)?;
+    if size != image.data.len() {
+        return Err("invalid native canvas source pixels".to_owned());
+    }
+    let mut sources = lock(&host.sources);
+    let previous = sources.get(&id).map_or(0, |image| image.data.len());
+    let allocated = sources
+        .values()
+        .map(|image| image.data.len())
+        .sum::<usize>();
+    if (!sources.contains_key(&id) && sources.len() >= 8192)
+        || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
+    {
+        return Err("native canvas source allocation limit reached".to_owned());
+    }
+    if let Some(previous) = sources.insert(id, raster_image(&image))
+        && previous.data.id() != image.data.id()
+    {
+        lock(&host.image_cache).remove(previous.data.id());
+    }
+    Ok((image.width, image.height))
+}
+
+pub(super) fn native_source(host: &Host, id: u64) -> Option<Arc<RasterImageData>> {
+    lock(&host.sources).get(&id).map(|image| {
+        Arc::new(RasterImageData::new(
+            image.width,
+            image.height,
+            Arc::new(image.data.data().to_vec()),
+        ))
+    })
+}
+
+fn execute(host: &Host, request: &mut Request, inputs: &[Arc<Vec<u8>>]) -> Result<CanvasReply> {
+    let size = byte_count(request.width, request.height)?;
+    let mut canvases = lock(&host.canvases);
+    let previous = canvases
+        .get(&request.id)
+        .map_or(0, |canvas| canvas.backing.byte_len());
+    let allocated = canvases
+        .values()
+        .map(|canvas| canvas.backing.byte_len())
+        .sum::<usize>();
+    if request.id == 0
+        || request.id > 9_007_199_254_740_991
+        || (!canvases.contains_key(&request.id) && canvases.len() >= 8192)
+        || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
+    {
+        return Err("canvas document allocation limit reached in chuzz".to_owned());
+    }
+    if request.action == "reset"
+        || canvases
+            .get(&request.id)
+            .is_none_or(|canvas| canvas.width != request.width || canvas.height != request.height)
+    {
+        canvases.insert(
+            request.id,
+            Canvas::new(request.width, request.height, Arc::clone(&host.image_cache))?,
+        );
+    }
     for command in &mut request.commands {
-        let Some(image) = command
+        if let Some(image) = command
             .brush
             .as_mut()
             .and_then(|brush| brush.image.as_mut())
-        else {
-            continue;
-        };
-        let references = [image.video, image.canvas, image.bitmap, image.native]
-            .iter()
-            .filter(|handle| handle.is_some())
-            .count();
-        if references > 1 {
-            return Err(JsNativeError::typ()
-                .with_message("ambiguous native canvas image source")
-                .into());
-        }
-        if let Some(handle) = image.video.take() {
-            let frame = crate::video::take_frame(context, handle)
-                .map_err(|error| JsNativeError::typ().with_message(error))?;
-            image.resolved = Some(raster_image(&frame.image));
-        } else if let Some(handle) = image.bitmap {
-            let bitmap = host
-                .bridge
-                .state()
-                .images
-                .bitmaps
-                .get(&handle)
-                .cloned()
-                .ok_or_else(|| {
-                    JsNativeError::typ().with_message("ImageBitmap is closed or invalid")
-                })?;
-            image.resolved = Some(raster_image(&bitmap));
-        } else if let Some(handle) = image.native {
-            image.resolved = Some(lock(&host.sources).get(&handle).cloned().ok_or_else(|| {
-                JsNativeError::typ().with_message("native canvas source was released")
-            })?);
-        }
-        if image.resolved.is_some() {
-            image_data(image, &inputs).map_err(|error| JsNativeError::typ().with_message(error))?;
-        }
-    }
-    let result = (|| -> Result<JsValue> {
-        let size = byte_count(request.width, request.height)?;
-        let mut canvases = lock(&host.canvases);
-        let previous = canvases
-            .get(&request.id)
-            .map_or(0, |canvas| canvas.backing.byte_len());
-        let allocated = canvases
-            .values()
-            .map(|canvas| canvas.backing.byte_len())
-            .sum::<usize>();
-        if request.id == 0
-            || request.id > 9_007_199_254_740_991
-            || (!canvases.contains_key(&request.id) && canvases.len() >= 8192)
-            || allocated.saturating_sub(previous).saturating_add(size) > DOCUMENT_LIMIT / 3
         {
-            return Err("canvas document allocation limit reached in chuzz".to_owned());
-        }
-        if request.action == "reset"
-            || canvases.get(&request.id).is_none_or(|canvas| {
-                canvas.width != request.width || canvas.height != request.height
-            })
-        {
-            canvases.insert(
-                request.id,
-                Canvas::new(request.width, request.height, Arc::clone(&host.image_cache))?,
-            );
-        }
-        for command in &mut request.commands {
-            if let Some(image) = command
-                .brush
-                .as_mut()
-                .and_then(|brush| brush.image.as_mut())
-                && let Some(source) = image.canvas
-            {
+            if let Some(source) = image.canvas {
                 // Resolve at this command, not at the beginning of the batch.
                 // For self-draw this flushes the preceding commands and pins
                 // the old allocation while execute draws the new contents.
@@ -1508,80 +1450,57 @@ fn native(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
                         .ok_or("native source canvas was released")?
                         .source_image(),
                 );
-                image_data(image, &inputs)?;
+            } else if image.video.is_some() || image.bitmap.is_some() || image.native.is_some() {
+                resolve_native_image(host, image)?;
             }
-            canvases
-                .get_mut(&request.id)
-                .ok_or("invalid canvas")?
-                .execute(command, &inputs, &host.fonts)?;
+            image_data(image, inputs)?;
         }
-        let canvas = canvases.get_mut(&request.id).ok_or("invalid canvas")?;
-        match request.action.as_str() {
-            "reset" | "submit" => Ok(JsValue::undefined()),
-            "snapshot" => {
-                let pixels = canvas.backing.snapshot();
-                JsUint8ClampedArray::from_iter(pixels.iter().copied(), context)
-                    .map(Into::into)
-                    .map_err(|error| error.to_string())
-            }
-            "read" => {
-                let bytes = canvas.read(&request.n)?;
-                JsUint8ClampedArray::from_iter(bytes, context)
-                    .map(Into::into)
-                    .map_err(|error| error.to_string())
-            }
-            "paint" => {
-                let pixels = canvas.backing.snapshot();
-                let image = Arc::new(RasterImageData::new(canvas.width, canvas.height, pixels));
-                host.bridge.state().images.paint.insert(request.id, image);
-                Ok(JsValue::undefined())
-            }
-            "measure" => {
-                let state = request.state.as_ref().ok_or("measureText requires state")?;
-                let shaped = text::shape(&request.text, state, &host.fonts.0)?;
-                let metrics = shaped.metrics(state)?;
-                serde_json::to_string(&metrics)
-                    .map(|value| JsString::from(value).into())
-                    .map_err(|error| error.to_string())
-            }
-            "hit" => {
-                let query = request.query.as_ref().ok_or("hit test requires query")?;
-                Ok(JsValue::from(canvas.hit_test(query)?))
-            }
-            member => Err(missing(member)),
+        canvases
+            .get_mut(&request.id)
+            .ok_or("invalid canvas")?
+            .execute(command, inputs, &host.fonts)?;
+    }
+    let canvas = canvases.get_mut(&request.id).ok_or("invalid canvas")?;
+    match request.action.as_str() {
+        "reset" | "submit" => Ok(CanvasReply::Empty),
+        "snapshot" => Ok(CanvasReply::Bytes(canvas.backing.snapshot())),
+        "read" => Ok(CanvasReply::Bytes(Arc::new(canvas.read(&request.n)?))),
+        "paint" => {
+            let pixels = canvas.backing.snapshot();
+            let image = Arc::new(RasterImageData::new(canvas.width, canvas.height, pixels));
+            host.bridge.state().images.paint.insert(request.id, image);
+            Ok(CanvasReply::Empty)
         }
-    })();
-    result.map_err(|error| JsNativeError::typ().with_message(error).into())
+        "measure" => {
+            let state = request.state.as_ref().ok_or("measureText requires state")?;
+            let shaped = text::shape(&request.text, state, &host.fonts.0)?;
+            let metrics = shaped.metrics(state)?;
+            serde_json::to_string(&metrics)
+                .map(CanvasReply::Text)
+                .map_err(|error| error.to_string())
+        }
+        "hit" => {
+            let query = request.query.as_ref().ok_or("hit test requires query")?;
+            Ok(CanvasReply::Bool(canvas.hit_test(query)?))
+        }
+        member => Err(missing(member)),
+    }
 }
 
-pub(super) fn install(document: &mut blitz_script::ScriptDocument, bridge: Bridge) {
-    document.with_js_context(|context| {
-        let fonts = context
-            .get_data::<Fonts>()
-            .cloned()
-            .unwrap_or_else(|| Fonts(Arc::new(Mutex::new(default_fonts()))));
-        let image_cache = Arc::clone(&bridge.state().images.image_cache);
-        context.insert_data(Host {
-            canvases: Arc::new(Mutex::new(HashMap::new())),
-            sources: Arc::new(Mutex::new(HashMap::new())),
-            image_cache,
-            transferred: Arc::new(Mutex::new(0)),
-            fonts,
-            bridge,
-        });
-        context
-            .register_global_builtin_callable(
-                JsString::from("__chuzzCanvas2D"),
-                2,
-                NativeFunction::from_fn_ptr(native),
-            )
-            .expect("canvas command bridge");
-        context
-            .register_global_builtin_callable(
-                JsString::from("__chuzzEncodePng"),
-                3,
-                NativeFunction::from_fn_ptr(encode_png),
-            )
-            .expect("canvas PNG encoder");
-    });
+pub(super) fn encode_pixels(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 || pixels.len() != byte_count(width, height)? {
+        return Err("canvas pixels do not match the canvas size".to_owned());
+    }
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+        writer
+            .write_image_data(pixels)
+            .map_err(|error| error.to_string())?;
+        writer.finish().map_err(|error| error.to_string())?;
+    }
+    Ok(png)
 }

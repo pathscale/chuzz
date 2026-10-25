@@ -5,11 +5,14 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
-use blitz_script::boa_engine::object::builtins::{AlignedVec, JsArrayBuffer};
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
-};
 use blitz_traits::net::Url;
+use serde::Deserialize;
+use serde_json::Value as Json;
+
+#[path = "webapi_host.rs"]
+pub mod native_host;
+#[path = "storage.rs"]
+mod storage;
 
 const LIMIT: usize = 64 * 1024 * 1024;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -22,7 +25,25 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Default)]
 struct Process {
     channels: HashMap<u64, Channel>,
+    ports: storage::PortState,
     leases: Vec<Lease>,
+}
+
+impl Process {
+    fn queued_bytes(&self) -> usize {
+        self.channels
+            .values()
+            .flat_map(|channel| channel.incoming.iter())
+            .map(|wire| wire.len())
+            .chain(
+                self.ports
+                    .ports
+                    .values()
+                    .flat_map(|port| port.incoming.iter())
+                    .map(String::len),
+            )
+            .fold(0usize, usize::saturating_add)
+    }
 }
 
 struct Channel {
@@ -39,12 +60,14 @@ struct Lease {
     name: String,
     shared: bool,
     held: bool,
+    stolen: bool,
+    released: bool,
 }
 
 impl Process {
     fn grant(&mut self) {
         for index in 0..self.leases.len() {
-            if self.leases[index].held {
+            if self.leases[index].held || self.leases[index].stolen || self.leases[index].released {
                 continue;
             }
             let candidate = &self.leases[index];
@@ -52,6 +75,8 @@ impl Process {
                 other_index != index
                     && other.origin == candidate.origin
                     && other.name == candidate.name
+                    && !other.stolen
+                    && !other.released
                     && ((!other.held && other_index < index)
                         || (other.held && (!other.shared || !candidate.shared)))
             });
@@ -78,15 +103,24 @@ impl Drop for Realm {
         process
             .channels
             .retain(|_, channel| channel.owner != self.id);
+        process.ports.close_realm(self.id);
+        unbind_platform(self.id);
         process.leases.retain(|lease| lease.owner != self.id);
         process.grant();
+        let ready = process
+            .leases
+            .iter()
+            .filter(|lease| lease.held)
+            .map(|lease| lease.owner)
+            .collect::<std::collections::HashSet<_>>();
+        drop(process);
+        for owner in ready {
+            storage::mark_platform_ready(owner);
+        }
     }
 }
 
-#[derive(Clone)]
-struct Host(Arc<Realm>);
-
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 enum Operation {
     Info,
@@ -102,15 +136,36 @@ enum Operation {
         wire: String,
     },
     BroadcastRead,
+    PlatformBind,
+    PortPair,
+    PortPost {
+        id: u64,
+        wire: String,
+    },
+    PortStart {
+        id: u64,
+    },
+    PortClose {
+        id: u64,
+    },
+    PortRead,
     LockRequest {
         name: String,
         shared: bool,
         available: bool,
+        #[serde(default)]
+        steal: bool,
+    },
+    LockState {
+        id: u64,
     },
     LockStatus {
         id: u64,
     },
     LockRelease {
+        id: u64,
+    },
+    LockCancel {
         id: u64,
     },
     LockQuery,
@@ -129,57 +184,125 @@ enum Operation {
     },
 }
 
-fn text(args: &[JsValue], index: usize, context: &mut Context) -> JsResult<String> {
-    Ok(args
-        .get(index)
-        .cloned()
-        .unwrap_or_default()
-        .to_string(context)?
-        .to_std_string_escaped())
+struct InfoReply {
+    origin: String,
+    secure: bool,
+    platform: &'static str,
+    ua_platform: &'static str,
+    architecture: String,
+    bitness: String,
+    concurrency: usize,
+    version: &'static str,
+    languages: Vec<String>,
 }
 
-fn native_error(message: impl std::fmt::Display) -> blitz_script::boa_engine::JsError {
-    JsNativeError::typ()
-        .with_message(message.to_string())
-        .into()
+struct BroadcastDelivery {
+    id: u64,
+    wire: Arc<str>,
 }
 
-fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let host = context
-        .get_data::<Host>()
-        .cloned()
-        .ok_or_else(|| native_error("web API realm is unavailable"))?;
-    let description = text(args, 0, context)?;
-    if description.len() > LIMIT {
-        return Err(native_error("web API message exceeds the allocation limit"));
-    }
-    let operation: Operation = serde_json::from_str(&description).map_err(native_error)?;
-    let realm = &host.0;
-    let result = match operation {
-        Operation::Info => serde_json::json!({
-            "origin": realm.public_origin,
-            "secure": realm.secure,
-            "platform": if cfg!(target_os = "macos") { "MacIntel" }
-                else if cfg!(target_os = "windows") { "Win32" } else { "Linux" },
-            "uaPlatform": if cfg!(target_os = "macos") { "macOS" }
-                else if cfg!(target_os = "windows") { "Windows" } else { "Linux" },
-            "architecture": if cfg!(target_arch = "aarch64") { "arm" }
-                else if cfg!(any(target_arch = "x86", target_arch = "x86_64")) { "x86" }
-                else { std::env::consts::ARCH },
-            "bitness": usize::BITS.to_string(),
-            "concurrency": std::thread::available_parallelism().map_or(1, usize::from),
-            "version": env!("CARGO_PKG_VERSION"),
-            "languages": crate::languages::preferred_languages(),
-        }),
+struct LockEntry {
+    name: String,
+    mode: &'static str,
+    client_id: String,
+}
+
+enum Reply {
+    Info(InfoReply),
+    Random([u8; 16]),
+    Id(u64),
+    Null,
+    BroadcastDeliveries(Vec<BroadcastDelivery>),
+    LockQuery {
+        held: Vec<LockEntry>,
+        pending: Vec<LockEntry>,
+    },
+    Boolean(bool),
+    Webauthn(Json),
+}
+
+fn new_realm(url: Option<&Url>, wake: crate::net_bridge::PageWake) -> Arc<Realm> {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let public_origin = url
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "null".to_owned());
+    let origin = if public_origin == "null" {
+        format!("opaque:{id}")
+    } else {
+        public_origin.clone()
+    };
+    let secure = url.is_some_and(|url| {
+        matches!(url.scheme(), "https" | "file")
+            || url.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host.ends_with(".localhost")
+                    || host
+                        .trim_matches(['[', ']'])
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|address| address.is_loopback())
+            })
+    });
+    Arc::new(Realm {
+        id,
+        origin: Arc::from(origin),
+        public_origin,
+        secure,
+        notifications: crate::webauthn::Notifications::new(wake),
+    })
+}
+
+pub(super) fn bind_platform(token: u64, waker: Option<&std::task::Waker>) -> Result<(), String> {
+    storage::bind_platform(token, waker)
+}
+
+pub(super) fn take_platform_ready(token: u64) -> Result<bool, String> {
+    storage::take_platform_ready(token)
+}
+
+pub(super) fn unbind_platform(token: u64) {
+    storage::unbind_platform(token);
+}
+
+fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
+    match operation {
+        Operation::Info => Ok(Reply::Info(InfoReply {
+            origin: realm.public_origin.clone(),
+            secure: realm.secure,
+            platform: if cfg!(target_os = "macos") {
+                "MacIntel"
+            } else if cfg!(target_os = "windows") {
+                "Win32"
+            } else {
+                "Linux"
+            },
+            ua_platform: if cfg!(target_os = "macos") {
+                "macOS"
+            } else if cfg!(target_os = "windows") {
+                "Windows"
+            } else {
+                "Linux"
+            },
+            architecture: if cfg!(target_arch = "aarch64") {
+                "arm".to_owned()
+            } else if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+                "x86".to_owned()
+            } else {
+                std::env::consts::ARCH.to_owned()
+            },
+            bitness: usize::BITS.to_string(),
+            concurrency: std::thread::available_parallelism().map_or(1, usize::from),
+            version: env!("CARGO_PKG_VERSION"),
+            languages: crate::languages::preferred_languages().to_vec(),
+        })),
         Operation::Random => {
             let provider = rustls::crypto::CryptoProvider::get_default()
-                .ok_or_else(|| native_error("secure random provider is unavailable"))?;
+                .ok_or_else(|| "secure random provider is unavailable".to_owned())?;
             let mut bytes = [0_u8; 16];
             provider
                 .secure_random
                 .fill(&mut bytes)
-                .map_err(|_| native_error("secure random generation failed"))?;
-            serde_json::json!(bytes)
+                .map_err(|_| "secure random generation failed".to_owned())?;
+            Ok(Reply::Random(bytes))
         }
         Operation::BroadcastOpen { name } => {
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -192,7 +315,7 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                     incoming: VecDeque::new(),
                 },
             );
-            serde_json::json!(id)
+            Ok(Reply::Id(id))
         }
         Operation::BroadcastClose { id } => {
             let mut process = lock(&PROCESS);
@@ -203,85 +326,354 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
             {
                 process.channels.remove(&id);
             }
-            serde_json::Value::Null
+            Ok(Reply::Null)
         }
         Operation::BroadcastPost { id, wire } => {
-            let mut process = lock(&PROCESS);
-            let name = process
-                .channels
-                .get(&id)
-                .filter(|channel| channel.owner == realm.id)
-                .map(|channel| channel.name.clone())
-                .ok_or_else(|| native_error("broadcast channel is closed"))?;
-            let wire: Arc<str> = Arc::from(wire);
-            for (other_id, channel) in &mut process.channels {
-                if *other_id != id && channel.origin == realm.origin && channel.name == name {
-                    channel.incoming.push_back(Arc::clone(&wire));
-                }
+            if wire.len() > LIMIT {
+                return Err("structured clone exceeds the allocation limit".to_owned());
             }
-            serde_json::Value::Null
+            let (result, ready) = {
+                let mut process = lock(&PROCESS);
+                let name = process
+                    .channels
+                    .get(&id)
+                    .filter(|channel| channel.owner == realm.id)
+                    .map(|channel| channel.name.clone())
+                    .ok_or_else(|| "broadcast channel is closed".to_owned())?;
+                let recipients = process
+                    .channels
+                    .iter()
+                    .filter(|(other_id, channel)| {
+                        **other_id != id && channel.origin == realm.origin && channel.name == name
+                    })
+                    .count();
+                if process
+                    .queued_bytes()
+                    .saturating_add(wire.len().saturating_mul(recipients))
+                    > LIMIT
+                {
+                    return Err("aggregate channel queue limit reached".to_owned());
+                }
+                for (other_id, channel) in &process.channels {
+                    if *other_id != id
+                        && channel.origin == realm.origin
+                        && channel.name == name
+                        && (channel.incoming.len() >= 4096
+                            || channel
+                                .incoming
+                                .iter()
+                                .map(|wire| wire.len())
+                                .sum::<usize>()
+                                .saturating_add(wire.len())
+                                > LIMIT)
+                    {
+                        return Err("broadcast queue limit reached".to_owned());
+                    }
+                }
+                let wire: Arc<str> = Arc::from(wire);
+                let mut ready = Vec::new();
+                for (other_id, channel) in &mut process.channels {
+                    if *other_id != id && channel.origin == realm.origin && channel.name == name {
+                        channel.incoming.push_back(Arc::clone(&wire));
+                        ready.push(channel.owner);
+                    }
+                }
+                (Reply::Null, ready)
+            };
+            for token in ready {
+                storage::mark_platform_ready(token);
+            }
+            Ok(result)
         }
         Operation::BroadcastRead => {
             let mut process = lock(&PROCESS);
             let mut deliveries = Vec::new();
             for (id, channel) in &mut process.channels {
                 if channel.owner == realm.id {
-                    for _ in 0..64 {
+                    while deliveries.len() < 64 {
                         let Some(wire) = channel.incoming.pop_front() else {
                             break;
                         };
-                        deliveries.push(serde_json::json!({
-                            "id": id,
-                            "wire": wire.as_ref(),
-                        }));
+                        deliveries.push(BroadcastDelivery { id: *id, wire });
+                    }
+                    if deliveries.len() == 64 {
+                        break;
                     }
                 }
             }
-            serde_json::json!(deliveries)
+            let ready = process
+                .channels
+                .values()
+                .any(|channel| channel.owner == realm.id && !channel.incoming.is_empty());
+            drop(process);
+            if ready {
+                storage::mark_platform_ready(realm.id);
+            }
+            Ok(Reply::BroadcastDeliveries(deliveries))
+        }
+        Operation::PlatformBind => {
+            storage::bind_platform(realm.id, None)?;
+            Ok(Reply::Id(realm.id))
+        }
+        Operation::PortPair => {
+            if lock(&PROCESS).ports.ports.len() >= 4096 {
+                return Err("message port limit reached".to_owned());
+            }
+            let id = NEXT_ID.fetch_add(2, Ordering::Relaxed);
+            let mut process = lock(&PROCESS);
+            process.ports.ports.insert(
+                id,
+                storage::Port {
+                    owner: realm.id,
+                    peer: id + 1,
+                    started: false,
+                    incoming: VecDeque::new(),
+                },
+            );
+            process.ports.ports.insert(
+                id + 1,
+                storage::Port {
+                    owner: realm.id,
+                    peer: id,
+                    started: false,
+                    incoming: VecDeque::new(),
+                },
+            );
+            Ok(Reply::Id(id))
+        }
+        Operation::PortPost { id, wire } => {
+            if wire.len() > LIMIT {
+                return Err("structured clone exceeds the allocation limit".to_owned());
+            }
+            let owner = realm.id;
+            let token = {
+                let mut process = lock(&PROCESS);
+                let port = process
+                    .ports
+                    .ports
+                    .get(&id)
+                    .filter(|port| port.owner == owner)
+                    .ok_or_else(|| "message port is closed".to_owned())?;
+                let peer_id = port.peer;
+                if process.queued_bytes().saturating_add(wire.len()) > LIMIT {
+                    return Err("aggregate channel queue limit reached".to_owned());
+                }
+                let peer = process
+                    .ports
+                    .ports
+                    .get_mut(&peer_id)
+                    .filter(|peer| peer.peer == id)
+                    .ok_or_else(|| "message port is disentangled".to_owned())?;
+                if peer.incoming.len() >= 4096
+                    || peer
+                        .incoming
+                        .iter()
+                        .map(String::len)
+                        .sum::<usize>()
+                        .saturating_add(wire.len())
+                        > LIMIT
+                {
+                    return Err("message port queue limit reached".to_owned());
+                }
+                peer.incoming.push_back(wire);
+                peer.owner
+            };
+            storage::mark_platform_ready(token);
+            Ok(Reply::Null)
+        }
+        Operation::PortStart { id } => {
+            let ready = {
+                let mut process = lock(&PROCESS);
+                let port = process
+                    .ports
+                    .ports
+                    .get_mut(&id)
+                    .filter(|port| port.owner == realm.id)
+                    .ok_or_else(|| "message port is closed".to_owned())?;
+                port.started = true;
+                !port.incoming.is_empty()
+            };
+            if ready {
+                storage::mark_platform_ready(realm.id);
+            }
+            Ok(Reply::Null)
+        }
+        Operation::PortClose { id } => {
+            let mut process = lock(&PROCESS);
+            if process
+                .ports
+                .ports
+                .get(&id)
+                .is_some_and(|port| port.owner == realm.id)
+                && let Some(port) = process.ports.ports.remove(&id)
+                && let Some(peer) = process.ports.ports.get_mut(&port.peer)
+            {
+                peer.peer = 0;
+            }
+            Ok(Reply::Null)
+        }
+        Operation::PortRead => {
+            let mut process = lock(&PROCESS);
+            let mut deliveries = Vec::new();
+            for (id, port) in &mut process.ports.ports {
+                if port.owner == realm.id && port.started {
+                    while deliveries.len() < 64 {
+                        let Some(wire) = port.incoming.pop_front() else {
+                            break;
+                        };
+                        deliveries.push(BroadcastDelivery {
+                            id: *id,
+                            wire: Arc::from(wire),
+                        });
+                    }
+                    if deliveries.len() == 64 {
+                        break;
+                    }
+                }
+            }
+            let ready =
+                process.ports.ports.values().any(|port| {
+                    port.owner == realm.id && port.started && !port.incoming.is_empty()
+                });
+            drop(process);
+            if ready {
+                storage::mark_platform_ready(realm.id);
+            }
+            Ok(Reply::BroadcastDeliveries(deliveries))
         }
         Operation::LockRequest {
             name,
             shared,
             available,
+            steal,
         } => {
+            if steal && (shared || available) {
+                return Err(
+                    "steal requires an exclusive lock and cannot be combined with ifAvailable"
+                        .to_owned(),
+                );
+            }
             let mut process = lock(&PROCESS);
             let blocked = process.leases.iter().any(|lease| {
-                lease.origin == realm.origin
+                !lease.stolen
+                    && !lease.released
+                    && lease.origin == realm.origin
                     && lease.name == name
-                    && (!lease.held || !shared || !lease.shared)
+                    && ((!lease.held) || (!shared || !lease.shared))
             });
             if available && blocked {
-                serde_json::Value::Null
-            } else {
-                let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-                process.leases.push(Lease {
-                    id,
-                    owner: realm.id,
-                    origin: Arc::clone(&realm.origin),
-                    name,
-                    shared,
-                    held: false,
-                });
-                process.grant();
-                serde_json::json!(id)
+                return Ok(Reply::Null);
             }
+            if steal {
+                for lease in &mut process.leases {
+                    if lease.origin == realm.origin && lease.name == name && lease.held {
+                        lease.held = false;
+                        lease.stolen = true;
+                    }
+                }
+            }
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            if process.leases.len() >= 4096 {
+                return Err("lock request limit reached".to_owned());
+            }
+            let lease = Lease {
+                id,
+                owner: realm.id,
+                origin: Arc::clone(&realm.origin),
+                name,
+                shared,
+                held: false,
+                stolen: false,
+                released: false,
+            };
+            if steal {
+                process.leases.insert(0, lease);
+            } else {
+                process.leases.push(lease);
+            }
+            process.grant();
+            let ready = process
+                .leases
+                .iter()
+                .filter(|lease| lease.held || lease.stolen)
+                .map(|lease| lease.owner)
+                .collect::<std::collections::HashSet<_>>();
+            drop(process);
+            for owner in ready {
+                storage::mark_platform_ready(owner);
+            }
+            Ok(Reply::Id(id))
+        }
+        Operation::LockState { id } => {
+            let process = lock(&PROCESS);
+            let state = process
+                .leases
+                .iter()
+                .find(|lease| lease.id == id && lease.owner == realm.id)
+                .map_or(3, |lease| {
+                    if lease.stolen {
+                        2
+                    } else if lease.released {
+                        3
+                    } else if lease.held {
+                        1
+                    } else {
+                        0
+                    }
+                });
+            Ok(Reply::Id(state))
         }
         Operation::LockStatus { id } => {
             let process = lock(&PROCESS);
-            serde_json::json!(
-                process
-                    .leases
-                    .iter()
-                    .any(|lease| { lease.id == id && lease.owner == realm.id && lease.held })
-            )
+            Ok(Reply::Boolean(process.leases.iter().any(|lease| {
+                lease.id == id && lease.owner == realm.id && lease.held
+            })))
         }
         Operation::LockRelease { id } => {
             let mut process = lock(&PROCESS);
-            process
+            if let Some(lease) = process
                 .leases
-                .retain(|lease| lease.id != id || lease.owner != realm.id);
+                .iter_mut()
+                .find(|lease| lease.id == id && lease.owner == realm.id)
+            {
+                lease.held = false;
+                lease.released = true;
+            }
+            process.leases.retain(|lease| !lease.released);
             process.grant();
-            serde_json::Value::Null
+            let ready = process
+                .leases
+                .iter()
+                .filter(|lease| lease.held)
+                .map(|lease| lease.owner)
+                .collect::<std::collections::HashSet<_>>();
+            drop(process);
+            for owner in ready {
+                storage::mark_platform_ready(owner);
+            }
+            Ok(Reply::Null)
+        }
+        Operation::LockCancel { id } => {
+            let mut process = lock(&PROCESS);
+            if let Some(index) = process
+                .leases
+                .iter()
+                .position(|lease| lease.id == id && lease.owner == realm.id && !lease.held)
+            {
+                process.leases.remove(index);
+                process.grant();
+            }
+            let ready = process
+                .leases
+                .iter()
+                .filter(|lease| lease.held)
+                .map(|lease| lease.owner)
+                .collect::<std::collections::HashSet<_>>();
+            drop(process);
+            for owner in ready {
+                storage::mark_platform_ready(owner);
+            }
+            Ok(Reply::Null)
         }
         Operation::LockQuery => {
             let process = lock(&PROCESS);
@@ -289,42 +681,49 @@ fn platform(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                 process
                     .leases
                     .iter()
-                    .filter(|lease| lease.origin == realm.origin && lease.held == held)
-                    .map(|lease| {
-                        serde_json::json!({
-                            "name": lease.name,
-                            "mode": if lease.shared { "shared" } else { "exclusive" },
-                            "clientId": lease.owner.to_string(),
-                        })
+                    .filter(|lease| {
+                        !lease.stolen
+                            && !lease.released
+                            && lease.origin == realm.origin
+                            && lease.held == held
+                    })
+                    .map(|lease| LockEntry {
+                        name: lease.name.clone(),
+                        mode: if lease.shared { "shared" } else { "exclusive" },
+                        client_id: lease.owner.to_string(),
                     })
                     .collect::<Vec<_>>()
             };
-            serde_json::json!({"held": entries(true), "pending": entries(false)})
+            Ok(Reply::LockQuery {
+                held: entries(true),
+                pending: entries(false),
+            })
         }
-        Operation::WebauthnInfo => {
-            serde_json::json!(realm.secure && crate::webauthn::platform_available())
-        }
-        Operation::WebauthnCreate { options } => crate::webauthn::create(
+        Operation::WebauthnInfo => Ok(Reply::Boolean(
+            realm.secure && crate::webauthn::platform_available(),
+        )),
+        Operation::WebauthnCreate { options } => Ok(Reply::Webauthn(crate::webauthn::create(
             realm.id,
             &realm.public_origin,
             realm.secure,
             options,
             &realm.notifications,
-        ),
-        Operation::WebauthnGet { options } => crate::webauthn::get(
+        ))),
+        Operation::WebauthnGet { options } => Ok(Reply::Webauthn(crate::webauthn::get(
             realm.id,
             &realm.public_origin,
             realm.secure,
             options,
             &realm.notifications,
-        ),
-        Operation::WebauthnStatus { id } => crate::webauthn::status(realm.id, id),
+        ))),
+        Operation::WebauthnStatus { id } => {
+            Ok(Reply::Webauthn(crate::webauthn::status(realm.id, id)))
+        }
         Operation::WebauthnAbort { id } => {
             crate::webauthn::abort(realm.id, id);
-            serde_json::Value::Null
+            Ok(Reply::Null)
         }
-    };
-    JsValue::from_json(&result, context)
+    }
 }
 
 fn inflate(format: &str, input: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -371,161 +770,205 @@ fn inflate(format: &str, input: &[u8]) -> std::io::Result<Vec<u8>> {
     }
 }
 
-fn codec(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let format = text(args, 0, context)?;
-    if !matches!(format.as_str(), "gzip" | "deflate" | "deflate-raw") {
-        return Err(native_error("unsupported compression format"));
+fn compress(format: &str, input: &[u8], decode: bool) -> Result<Vec<u8>, String> {
+    if !matches!(format, "gzip" | "deflate" | "deflate-raw") {
+        return Err("unsupported compression format".to_owned());
     }
-    let object = args
-        .get(1)
-        .and_then(JsValue::as_object)
-        .ok_or_else(|| native_error("compression requires an ArrayBuffer"))?;
-    let input = JsArrayBuffer::from_object(object)?
-        .to_vec()
-        .ok_or_else(|| native_error("detached compression input"))?;
     if input.len() > LIMIT {
-        return Err(native_error("compression allocation limit exceeded"));
+        return Err("compression allocation limit exceeded".to_owned());
     }
-    let decode = args.get(2).is_some_and(JsValue::to_boolean);
     let output = if decode {
-        inflate(&format, &input)
+        inflate(format, input)
     } else {
-        match format.as_str() {
+        match format {
             "gzip" => {
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(&input).and_then(|()| encoder.finish())
+                encoder.write_all(input).and_then(|()| encoder.finish())
             }
             "deflate" => {
                 let mut encoder =
                     flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(&input).and_then(|()| encoder.finish())
+                encoder.write_all(input).and_then(|()| encoder.finish())
             }
             _ => {
                 let mut encoder =
                     flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(&input).and_then(|()| encoder.finish())
+                encoder.write_all(input).and_then(|()| encoder.finish())
             }
         }
     }
-    .map_err(native_error)?;
+    .map_err(|error| error.to_string())?;
     if output.len() > LIMIT {
-        return Err(native_error("compression output allocation limit exceeded"));
+        return Err("compression output allocation limit exceeded".to_owned());
     }
-    Ok(JsArrayBuffer::from_byte_block(AlignedVec::from_iter(0, output), context)?.into())
+    Ok(output)
 }
 
-pub(crate) fn notifications(context: &Context) -> Option<Arc<crate::webauthn::Notifications>> {
-    context
-        .get_data::<Host>()
-        .map(|host| Arc::clone(&host.0.notifications))
-}
-
-pub(crate) fn drain_notifications(context: &mut Context) -> bool {
-    let Some(host) = context.get_data::<Host>().cloned() else {
-        return false;
-    };
-    let deliveries = host.0.notifications.take(host.0.id);
-    let changed = !deliveries.is_empty();
-    for (id, result) in deliveries {
-        let delivery = (|| -> JsResult<()> {
-            let callback = context
-                .global_object()
-                .get(JsString::from("__chuzzWebauthnResolve"), context)?
-                .as_object()
-                .filter(|function| function.is_callable())
-                .ok_or_else(|| native_error("WebAuthn completion hook unavailable"))?;
-            let value = JsValue::from_json(&result, context)?;
-            callback.call(
-                &JsValue::undefined(),
-                &[JsValue::from(id as f64), value],
-                context,
-            )?;
-            context.run_jobs()
-        })();
-        if let Err(error) = delivery {
-            eprintln!("WebAuthn completion: {error}");
+#[cfg(test)]
+mod wave35_tests {
+    use super::*;
+    fn realm(origin: &str) -> Arc<Realm> {
+        new_realm(
+            Some(&Url::parse(origin).unwrap()),
+            crate::net_bridge::PageWake::default(),
+        )
+    }
+    fn id(reply: Reply) -> u64 {
+        if let Reply::Id(id) = reply {
+            id
+        } else {
+            panic!("expected id")
         }
     }
-    changed
-}
-
-pub(crate) fn install_context(context: &mut Context, url: Option<&Url>) -> JsResult<()> {
-    install_context_with_wake(context, url, crate::net_bridge::PageWake::default())
-}
-
-fn install_context_with_wake(
-    context: &mut Context,
-    url: Option<&Url>,
-    wake: crate::net_bridge::PageWake,
-) -> JsResult<()> {
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let public_origin = url
-        .map(|url| url.origin().ascii_serialization())
-        .unwrap_or_else(|| "null".to_owned());
-    let origin = if public_origin == "null" {
-        format!("opaque:{id}")
-    } else {
-        public_origin.clone()
-    };
-    let secure = url.is_some_and(|url| {
-        matches!(url.scheme(), "https" | "file")
-            || url.host_str().is_some_and(|host| {
-                host == "localhost"
-                    || host.ends_with(".localhost")
-                    || host
-                        .trim_matches(['[', ']'])
-                        .parse::<std::net::IpAddr>()
-                        .is_ok_and(|address| address.is_loopback())
-            })
-    });
-    context.insert_data(Host(Arc::new(Realm {
-        id,
-        origin: Arc::from(origin),
-        public_origin,
-        secure,
-        notifications: crate::webauthn::Notifications::new(wake),
-    })));
-    for (name, length, function) in [
-        (
-            "__chuzzPlatformCall",
-            1,
-            platform as fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
-        ),
-        ("__chuzzCodec", 3, codec),
-    ] {
-        context.register_global_builtin_callable(
-            JsString::from(name),
-            length,
-            NativeFunction::from_fn_ptr(function),
-        )?;
+    #[test]
+    fn wave35_webapi_ports_queue_start_and_owner_close() {
+        let (a, b) = (
+            realm("https://ports.invalid"),
+            realm("https://ports.invalid"),
+        );
+        let port = id(dispatch(&a, Operation::PortPair).unwrap());
+        dispatch(
+            &a,
+            Operation::PortPost {
+                id: port,
+                wire: "one".into(),
+            },
+        )
+        .unwrap();
+        dispatch(
+            &a,
+            Operation::PortPost {
+                id: port,
+                wire: "two".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(dispatch(&a,Operation::PortRead).unwrap(),Reply::BroadcastDeliveries(v) if v.is_empty())
+        );
+        dispatch(&b, Operation::PortClose { id: port + 1 }).unwrap();
+        dispatch(&a, Operation::PortStart { id: port + 1 }).unwrap();
+        assert!(
+            matches!(dispatch(&a,Operation::PortRead).unwrap(),Reply::BroadcastDeliveries(v) if v.len()==2 && v[0].wire.as_ref()=="one" && v[1].wire.as_ref()=="two")
+        );
+        dispatch(&a, Operation::PortClose { id: port + 1 }).unwrap();
+        assert!(
+            dispatch(
+                &a,
+                Operation::PortPost {
+                    id: port,
+                    wire: "three".into()
+                }
+            )
+            .is_err()
+        );
     }
-    context.eval(Source::from_bytes(include_str!("platform/common.ts")))?;
-    Ok(())
-}
-
-pub(crate) fn install(document: &mut blitz_script::ScriptDocument) {
-    use blitz_dom::Document as _;
-    let url = document.current_url().cloned();
-    let wake = crate::net_bridge::PageWake::new(Arc::clone(&document.inner().shell_provider));
-    document.with_js_context(|context| {
-        install_context_with_wake(context, url.as_ref(), wake).expect("web API native bootstrap");
-        for source in [
-            include_str!("platform/streams.ts"),
-            include_str!("platform/body.ts"),
-            include_str!("platform/window.ts"),
-        ] {
-            context
-                .eval(Source::from_bytes(source))
-                .expect("web API page bootstrap");
+    #[test]
+    fn wave35_webapi_broadcast_origin_sender_and_fifo() {
+        let (a, b, c) = (
+            realm("https://broadcast.invalid"),
+            realm("https://broadcast.invalid"),
+            realm("https://other.invalid"),
+        );
+        let x = id(dispatch(
+            &a,
+            Operation::BroadcastOpen {
+                name: "test".into(),
+            },
+        )
+        .unwrap());
+        let y = id(dispatch(
+            &a,
+            Operation::BroadcastOpen {
+                name: "test".into(),
+            },
+        )
+        .unwrap());
+        let z = id(dispatch(
+            &b,
+            Operation::BroadcastOpen {
+                name: "test".into(),
+            },
+        )
+        .unwrap());
+        dispatch(
+            &c,
+            Operation::BroadcastOpen {
+                name: "test".into(),
+            },
+        )
+        .unwrap();
+        for wire in ["one", "two"] {
+            dispatch(
+                &a,
+                Operation::BroadcastPost {
+                    id: x,
+                    wire: wire.into(),
+                },
+            )
+            .unwrap();
         }
-    });
-    document.add_poll_hook(|document, task_context| {
-        document.with_js_context(|context| {
-            if let Some(notifications) = notifications(context) {
-                notifications.bind(task_context.map(|context| context.waker()));
-            }
-            drain_notifications(context)
-        })
-    });
+        assert!(
+            matches!(dispatch(&a,Operation::BroadcastRead).unwrap(),Reply::BroadcastDeliveries(v) if v.len()==2 && v.iter().all(|v|v.id==y) && v[0].wire.as_ref()=="one")
+        );
+        assert!(
+            matches!(dispatch(&b,Operation::BroadcastRead).unwrap(),Reply::BroadcastDeliveries(v) if v.len()==2 && v.iter().all(|v|v.id==z))
+        );
+        assert!(
+            matches!(dispatch(&c,Operation::BroadcastRead).unwrap(),Reply::BroadcastDeliveries(v) if v.is_empty())
+        );
+    }
+    #[test]
+    fn wave35_webapi_lock_fairness_and_steal_identity() {
+        let (a, b, c) = (
+            realm("https://locks.invalid"),
+            realm("https://locks.invalid"),
+            realm("https://locks.invalid"),
+        );
+        let request = |shared, available, steal| Operation::LockRequest {
+            name: "test".into(),
+            shared,
+            available,
+            steal,
+        };
+        let x = id(dispatch(&a, request(true, false, false)).unwrap());
+        let y = id(dispatch(&b, request(true, false, false)).unwrap());
+        let z = id(dispatch(&c, request(false, false, false)).unwrap());
+        assert!(matches!(
+            dispatch(&a, Operation::LockStatus { id: x }).unwrap(),
+            Reply::Boolean(true)
+        ));
+        assert!(matches!(
+            dispatch(&b, Operation::LockStatus { id: y }).unwrap(),
+            Reply::Boolean(true)
+        ));
+        assert!(matches!(
+            dispatch(&c, Operation::LockStatus { id: z }).unwrap(),
+            Reply::Boolean(false)
+        ));
+        assert!(matches!(
+            dispatch(&a, request(true, true, false)).unwrap(),
+            Reply::Null
+        ));
+        let stolen = id(dispatch(&b, request(false, false, true)).unwrap());
+        assert!(matches!(
+            dispatch(&a, Operation::LockState { id: x }).unwrap(),
+            Reply::Id(2)
+        ));
+        assert!(matches!(
+            dispatch(&b, Operation::LockStatus { id: stolen }).unwrap(),
+            Reply::Boolean(true)
+        ));
+        dispatch(&a, Operation::LockRelease { id: x }).unwrap();
+        assert!(matches!(
+            dispatch(&b, Operation::LockStatus { id: stolen }).unwrap(),
+            Reply::Boolean(true)
+        ));
+        drop(b);
+        assert!(matches!(
+            dispatch(&c, Operation::LockStatus { id: z }).unwrap(),
+            Reply::Boolean(true)
+        ));
+    }
 }

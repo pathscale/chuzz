@@ -25,7 +25,7 @@
 //! still work when the build is broken.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -49,10 +49,13 @@ impl Driver {
         let descriptor: Value = serde_json::from_slice(&std::fs::read(descriptor)?)?;
         let address = descriptor["address"]
             .as_str()
-            .ok_or("the driver descriptor has no address")?
-            .to_owned();
+            .ok_or("the driver descriptor has no address")?;
+        let address = loopback_address(address)?.to_string();
         let token = std::env::var("TAURI_BLITZ_DRIVER_TOKEN")
             .map_err(|_| "TAURI_BLITZ_DRIVER_TOKEN is required")?;
+        if token.len() < 32 {
+            return Err("TAURI_BLITZ_DRIVER_TOKEN must contain at least 32 bytes".into());
+        }
 
         let response = request(
             &address,
@@ -120,12 +123,21 @@ impl Driver {
     }
 }
 
+fn loopback_address(address: &str) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    let address: SocketAddr = address.parse()?;
+    if !address.ip().is_loopback() || address.port() == 0 {
+        return Err("the driver address must be a loopback IP with a nonzero port".into());
+    }
+    Ok(address)
+}
+
 fn request(
     address: &str,
     method: &str,
     path: &str,
     body: Option<Value>,
 ) -> Result<Value, Box<dyn std::error::Error>> {
+    let address = loopback_address(address)?;
     let mut stream = TcpStream::connect(address)?;
     // A screenshot of a 1440x960 window is a megabyte or so of base64 and the
     // renderer has to paint before it answers, so this is generous rather than
