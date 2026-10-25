@@ -183,6 +183,36 @@ pub fn poll(
 use super::resources::GpuError;
 use super::{Bridge, binary, canvas2d, external, readback};
 
+/// Keeps transferred buffers alive through synchronous command parsing and
+/// request admission, then releases any handle the request did not claim.
+/// Claimed buffers are owned by the request lease and `release_staged` leaves
+/// those alone.
+struct StagedUploads {
+    table: Arc<binary::Table>,
+    ids: Vec<u64>,
+}
+
+impl StagedUploads {
+    fn new(table: Arc<binary::Table>) -> Self {
+        Self {
+            table,
+            ids: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, id: u64) {
+        self.ids.push(id);
+    }
+}
+
+impl Drop for StagedUploads {
+    fn drop(&mut self) {
+        for id in self.ids.drain(..) {
+            self.table.release_staged(id);
+        }
+    }
+}
+
 struct NativeHost {
     bridge: Bridge,
     canvas: canvas2d::Host,
@@ -360,28 +390,26 @@ fn send(host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostValue,
     let command = args
         .first()
         .ok_or_else(|| type_error("invalid WebGPU command"))?;
-    let command = json_value(command)?;
     let uploads = match args.get(1) {
         Some(HostValue::Array(values)) => values,
         _ => return Err(type_error("expected byte handles")),
     };
-    if uploads.len() > RESOURCE_LIMIT {
+    let mut staged = StagedUploads::new(native_bridge(host)?.byte_table());
+    let too_many = uploads.len() > RESOURCE_LIMIT;
+    for (index, value) in uploads.iter().enumerate() {
+        let id = integer_arg(std::slice::from_ref(value), 0, "invalid WebGPU byte range")?;
+        if index < RESOURCE_LIMIT {
+            staged.push(id);
+        } else {
+            staged.table.release_staged(id);
+        }
+    }
+    if too_many {
         return Err(type_error("too many byte handles"));
     }
-    let table = native_bridge(host)?.byte_table();
-    let mut ids = Vec::with_capacity(uploads.len());
-    for value in uploads {
-        ids.push(integer_arg(
-            std::slice::from_ref(value),
-            0,
-            "invalid WebGPU byte range",
-        )?);
-    }
+    let command = json_value(command)?;
     let message = serde_json::to_string(&command).map_err(|error| type_error(error.to_string()))?;
     let handled = native_bridge(host)?.handle(&message);
-    for id in ids {
-        table.release_staged(id);
-    }
     if !handled {
         return Err(type_error("invalid WebGPU command"));
     }
@@ -593,4 +621,47 @@ pub fn install(
     }
     host.register_intrinsic("__chuzzGpuSubscribe", 1, subscribe)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_command(id: u64) -> super::super::resources::Command {
+        super::super::resources::Command {
+            op: "writeTexture".to_owned(),
+            handle: 0,
+            args: serde_json::json!({"data": id}),
+        }
+    }
+
+    #[test]
+    fn send_cleanup_preserves_uploads_claimed_by_the_request() {
+        let table = Arc::new(binary::Table::default());
+        let id = table.upload(&[74, 142, 210, 254]).expect("stage bytes");
+        let mut staged = StagedUploads::new(Arc::clone(&table));
+        staged.push(id);
+
+        let lease = table
+            .claim(&write_command(id))
+            .expect("request claims staged upload");
+        drop(staged);
+
+        assert_eq!(
+            table.take_input(id).expect("claimed upload").as_slice(),
+            [74, 142, 210, 254]
+        );
+        drop(lease);
+    }
+
+    #[test]
+    fn send_cleanup_releases_uploads_when_command_is_rejected() {
+        let table = Arc::new(binary::Table::default());
+        let id = table.upload(&[74, 142, 210, 254]).expect("stage bytes");
+        let mut staged = StagedUploads::new(Arc::clone(&table));
+        staged.push(id);
+        drop(staged);
+
+        assert!(table.claim(&write_command(id)).is_err());
+    }
 }
