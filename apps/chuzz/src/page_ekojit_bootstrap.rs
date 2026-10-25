@@ -17,80 +17,6 @@ const BOOTSTRAPS: &[(&str, &str)] = &[
     })(globalThis);"#,
     ),
     (
-        "fetch",
-        r#"(function (g) {
-  'use strict';
-  // The network host reports a record with {ok,status,statusText,url,headers,bytes}
-  // or {ok:false,error}. Keep body conversion in this realm and preserve bytes.
-  if (typeof __chuzzNetAsync === 'function') {
-    function headersObject(entries) {
-      var values = Object.create(null);
-      (entries || []).forEach(function (pair) {
-        var key = String(pair[0]).toLowerCase();
-        values[key] = values[key] ? values[key] + ', ' + String(pair[1]) : String(pair[1]);
-      });
-      return {
-        get: function (name) { return values[String(name).toLowerCase()] || null; },
-        has: function (name) { return Object.prototype.hasOwnProperty.call(values, String(name).toLowerCase()); },
-        forEach: function (callback) { Object.keys(values).forEach(function (key) { callback(values[key], key, this); }, this); }
-      };
-    }
-    function makeResponse(reply) {
-      if (!reply || !reply.ok) { throw new TypeError(reply && reply.error || 'Network request failed'); }
-      var data = reply.bytes || new Uint8Array(0);
-      var used = false;
-      var response = {
-        ok: reply.status >= 200 && reply.status < 300,
-        status: reply.status,
-        statusText: reply.statusText || '',
-        url: reply.url || '',
-        headers: headersObject(reply.headers),
-        redirected: false,
-        type: 'basic',
-        bodyUsed: false,
-        arrayBuffer: function () {
-          if (used) { return Promise.reject(new TypeError('body already used')); }
-          used = true; response.bodyUsed = true;
-          var copy = new Uint8Array(data.length); copy.set(data);
-          return Promise.resolve(copy.buffer);
-        },
-        text: function () {
-          if (used) { return Promise.reject(new TypeError('body already used')); }
-          used = true; response.bodyUsed = true;
-          return Promise.resolve(__chuzzDecodeUtf8(data));
-        },
-        json: function () { return response.text().then(function (text) { return JSON.parse(text); }); },
-        blob: function () { return response.arrayBuffer().then(function (buffer) { return new Blob([buffer]); }); },
-        clone: function () {
-          var copy = new Uint8Array(data.length); copy.set(data);
-          return makeResponse({ ok: true, status: reply.status, statusText: reply.statusText, url: reply.url, headers: reply.headers, bytes: copy });
-        }
-      };
-      return response;
-    }
-    g.fetch = function (input, init) {
-      init = init || {};
-      var url = input && typeof input === 'object' && input.url !== undefined ? input.url : String(input);
-      try { url = new URL(url, g.location && g.location.href || undefined).href; }
-      catch (_) { return Promise.reject(new TypeError('invalid request URL')); }
-      var headers = [];
-      if (Array.isArray(init.headers)) { headers = init.headers; }
-      else if (init.headers && typeof init.headers.forEach === 'function') {
-        init.headers.forEach(function (value, name) { headers.push([name, value]); });
-      } else if (init.headers) { Object.keys(init.headers).forEach(function (name) { headers.push([name, init.headers[name]]); }); }
-      var body = init.body == null ? null : init.body;
-      if (typeof body === 'string') { body = __chuzzEncodeUtf8(body); }
-      else if (body != null) { body = __chuzzCopyBytes(body); }
-      var request = { url: url, method: String(init.method || (input && input.method) || 'GET').toUpperCase(), headers: headers, body: body, credentials: init.credentials || 'same-origin' };
-      return new Promise(function (resolve, reject) {
-        try { __chuzzNetAsync(request, function (reply) { try { resolve(makeResponse(reply)); } catch (error) { reject(error); } }); }
-        catch (error) { reject(error); }
-      });
-    };
-  }
-})(globalThis);"#,
-    ),
-    (
         "websocket",
         r#"(function (g) {
   'use strict';
@@ -813,5 +739,6 @@ pub fn install(document: &mut EkojitDocument) -> Result<(), String> {
             }))
             .map_err(|error| format!("could not install Ekojit {name} bootstrap: {error}"))?;
     }
+    crate::page_ekojit_network::install(document)?;
     Ok(())
 }

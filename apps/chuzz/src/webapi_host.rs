@@ -35,17 +35,6 @@ fn realm(host: &dyn ChuzzScriptHost) -> Result<Rc<Realm>, HostError> {
         .ok_or_else(|| type_error("web API realm state is invalid"))
 }
 
-fn random_bytes() -> Result<[u8; 16], HostError> {
-    let provider = rustls::crypto::CryptoProvider::get_default()
-        .ok_or_else(|| type_error("secure random provider is unavailable"))?;
-    let mut bytes = [0_u8; 16];
-    provider
-        .secure_random
-        .fill(&mut bytes)
-        .map_err(|_| type_error("secure random generation failed"))?;
-    Ok(bytes)
-}
-
 fn reply_json(reply: super::Reply) -> Json {
     match reply {
         super::Reply::Info(info) => json!({
@@ -191,9 +180,28 @@ fn digest(_host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostVal
     )))
 }
 
-fn random(_host: &mut dyn ChuzzScriptHost, _args: &[HostValue]) -> Result<HostValue, HostError> {
+fn random(_host: &mut dyn ChuzzScriptHost, args: &[HostValue]) -> Result<HostValue, HostError> {
+    let length = crate::script_host::number_arg(args, 0)?;
+    if !length.is_finite() || length < 0.0 || length.fract() != 0.0 {
+        return Err(HostError::new(
+            "TypeError",
+            "random byte length must be a non-negative integer",
+        ));
+    }
+    if length > 65_536.0 {
+        return Err(HostError::new(
+            "QuotaExceededError",
+            "getRandomValues may request at most 65,536 bytes",
+        ));
+    }
+    let mut bytes = vec![0; length as usize];
+    rustls::crypto::CryptoProvider::get_default()
+        .ok_or_else(|| type_error("secure random provider is unavailable"))?
+        .secure_random
+        .fill(&mut bytes)
+        .map_err(|_| type_error("secure random generation failed"))?;
     Ok(HostValue::Buffer(crate::script_host::HostBuffer::new(
-        random_bytes()?.to_vec(),
+        bytes,
     )))
 }
 
@@ -266,7 +274,7 @@ pub fn install(
     )?;
     register(host, "__chuzzPlatformCall", 1, dispatch)?;
     register(host, "__chuzzCodec", 3, codec)?;
-    register(host, "__chuzzRandomBytes", 0, random)?;
+    register(host, "__chuzzRandomBytes", 1, random)?;
     register(host, "__chuzzDigest", 2, digest)?;
     register(host, "__chuzzWebauthnSubscribe", 2, subscribe_webauthn)?;
     Ok(())

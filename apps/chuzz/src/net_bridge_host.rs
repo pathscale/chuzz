@@ -157,6 +157,11 @@ fn response_value(reply: Result<super::NetReply, super::NetworkError>) -> HostVa
             ),
             ("statusText".to_owned(), string_value(reply.status_text)),
             ("url".to_owned(), string_value(reply.url.as_str())),
+            ("responseURL".to_owned(), string_value(reply.url.as_str())),
+            (
+                "redirected".to_owned(),
+                HostValue::Boolean(reply.redirected),
+            ),
             (
                 "headers".to_owned(),
                 HostValue::Array(
