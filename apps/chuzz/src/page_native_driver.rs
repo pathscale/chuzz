@@ -4,6 +4,7 @@
 //! owner-local bridge so every intrinsic callback reaches this page's host.
 
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Context;
@@ -24,11 +25,14 @@ use crate::page_document::{
     PageDiagnosticBatch, PageNativeMetrics, PageNativeReceipt, PageRuntimeDriver,
 };
 use crate::page_script_host::ChuzzPageRuntimeHost;
+use crate::script_host::{HostFrame, HostFrameSource};
 
 /// The engine-neutral page driver backed by one persistent native realm.
 pub(super) struct PageNativeDriver {
     document: EkojitDocument,
     host: Rc<RefCell<ChuzzPageRuntimeHost>>,
+    pending_frames: Rc<RefCell<Vec<HostFrame>>>,
+    frame_revision: u64,
     #[cfg(feature = "gui")]
     poll_hooks: Vec<izumo::DocumentPollHook>,
     #[cfg(feature = "gui")]
@@ -88,21 +92,215 @@ pub(super) fn default_page_runtime_factory(
             Some(Arc::clone(host.net_provider().map_err(|error| error.to_string())?) as _);
     }
     let fetcher = PageScriptFetcher(host.script_network().map_err(|error| error.to_string())?);
+    let pending_frames = Rc::new(RefCell::new(Vec::new()));
+    let mut host = host;
+    let frame_queue = Rc::clone(&pending_frames);
+    host.set_frame_sink(move |frame| {
+        frame_queue.borrow_mut().push(frame);
+        Ok(())
+    })
+    .map_err(|error| format!("could not install native page frame sink: {error}"))?;
     let host = Rc::new(RefCell::new(host));
     let mut document = EkojitDocument::from_html(html, config, NativePageDefect::None)
         .map_err(|error| error.to_string())?;
     crate::page_ekojit_bridge::install(&mut document, Rc::clone(&host))?;
     crate::page_ekojit_bootstrap::install(&mut document)?;
     crate::page_ekojit_compat::install(&mut document)?;
+    install_native_canvas_handles(&mut document)?;
     document.set_script_fetcher(fetcher);
     Ok(Box::new(PageNativeDriver {
         document,
         host,
+        pending_frames,
+        frame_revision: 0,
         #[cfg(feature = "gui")]
         poll_hooks: Vec::new(),
         #[cfg(feature = "gui")]
         deferred_scripts: Vec::new(),
     }))
+}
+
+/// Install the native canvas surface before author scripts run.
+///
+/// The bootstrap factory contract is
+/// `globalThis.__chuzzCreateCanvasContext(canvas, kind, options)`. `canvas` is
+/// the actual DOM element, `kind` is the requested context name, and `options`
+/// is the original options argument. The numeric handle below is a
+/// page-local canvas transport handle. The private DOM marker below resolves
+/// it back to the actual connected canvas node before a raster is installed.
+fn install_native_canvas_handles(document: &mut EkojitDocument) -> Result<(), String> {
+    const SOURCE: &str = r#"(function (g) {
+  'use strict';
+  var doc = g.document;
+  if (!doc || doc.__chuzzCanvasHandlesInstalled) { return; }
+  var next = 1;
+  function installDimension(canvas, name, defaultValue) {
+    if (typeof canvas[name] === 'number') { return; }
+    var assigned;
+    var hasAssigned = false;
+    function current() {
+      if (typeof canvas.getAttribute === 'function') {
+        var raw = canvas.getAttribute(name);
+        if (raw != null && String(raw).trim() !== '') {
+          var value = Number(raw);
+          if (Number.isFinite(value) && value >= 0) { return Math.min(4294967295, Math.floor(value)); }
+          return defaultValue;
+        }
+        if (raw != null) { return defaultValue; }
+      }
+      return hasAssigned ? assigned : defaultValue;
+    }
+    function set(value) {
+      value = Number(value);
+      var numeric = Number.isFinite(value) ? (Math.trunc(value) >>> 0) : 0;
+      if (typeof canvas.setAttribute === 'function') {
+        try {
+          canvas.setAttribute(name, String(numeric));
+          hasAssigned = false;
+          return;
+        } catch (_) {}
+      }
+      assigned = numeric;
+      hasAssigned = true;
+    }
+    try {
+      Object.defineProperty(canvas, name, {
+        configurable: true,
+        enumerable: true,
+        get: current,
+        set: set
+      });
+    } catch (_) {
+      try { canvas[name] = current(); } catch (_) {}
+    }
+  }
+  function attach(canvas) {
+    if (!canvas || String(canvas.tagName || canvas.nodeName || '').toLowerCase() !== 'canvas') { return canvas; }
+    if (canvas.__chuzzCanvasHandlesInstalled) { return canvas; }
+    canvas.__chuzzCanvasHandlesInstalled = true;
+    canvas.__chuzzCanvasHandle = next++;
+    if (typeof canvas.setAttribute === 'function') {
+      canvas.setAttribute('data-chuzz-canvas-handle', String(canvas.__chuzzCanvasHandle));
+    }
+    installDimension(canvas, 'width', 300);
+    installDimension(canvas, 'height', 150);
+    var nativeCloneNode = typeof canvas.cloneNode === 'function' ? canvas.cloneNode : null;
+    if (nativeCloneNode) {
+      canvas.cloneNode = function () {
+        return attach(nativeCloneNode.apply(this, arguments));
+      };
+    }
+    var canvasPrototype = g.HTMLCanvasElement && g.HTMLCanvasElement.prototype;
+    var nativeGetContext = canvas.__chuzzCanvasNativeGetContext ||
+      (canvasPrototype && canvasPrototype.__chuzzNativeGetContext) ||
+      (typeof canvas.getContext === 'function' ? canvas.getContext : null);
+    function trackWebGpuContext(context) {
+      if (!context || context.__chuzzPageFrameTracking) { return context; }
+      context.__chuzzPageFrameTracking = true;
+      var configure = typeof context.configure === 'function' ? context.configure : null;
+      var unconfigure = typeof context.unconfigure === 'function' ? context.unconfigure : null;
+      if (configure) {
+        context.configure = function () {
+          var result = configure.apply(this, arguments);
+          if (typeof canvas.setAttribute === 'function') {
+            canvas.setAttribute('data-chuzz-gpu-generation', String(this.__chuzzGeneration));
+            canvas.setAttribute('data-chuzz-gpu-active', this.__chuzzDevice ? '1' : '0');
+          }
+          return result;
+        };
+      }
+      if (unconfigure) {
+        context.unconfigure = function () {
+          var result = unconfigure.apply(this, arguments);
+          if (typeof canvas.setAttribute === 'function') {
+            canvas.setAttribute('data-chuzz-gpu-generation', String(Number(this.__chuzzGeneration) + 1));
+            canvas.setAttribute('data-chuzz-gpu-active', '0');
+          }
+          return result;
+        };
+      }
+      return context;
+    }
+    var getContext = function (kind, options) {
+      var context = nativeGetContext ? nativeGetContext.apply(this, arguments) : null;
+      if (context == null) {
+        context = typeof g.__chuzzCreateCanvasContext === 'function'
+          ? g.__chuzzCreateCanvasContext(this, kind, options)
+          : null;
+      }
+      return String(kind).toLowerCase() === 'webgpu' ? trackWebGpuContext(context) : context;
+    };
+    try {
+      Object.defineProperty(canvas, 'getContext', {
+        configurable: true,
+        writable: true,
+        enumerable: true,
+        value: getContext
+      });
+    } catch (_) {
+      try { canvas.getContext = getContext; } catch (_) {}
+    }
+    return canvas;
+  }
+  function installLazyPrototypeAccessors() {
+    var prototype = g.HTMLCanvasElement && g.HTMLCanvasElement.prototype;
+    // Native host interfaces can expose methods on instances instead of the
+    // prototype. Those instances are attached below and by createElement.
+    if (!prototype || typeof prototype.getContext !== 'function' || prototype.__chuzzCanvasLazyAccessorsInstalled) { return; }
+    var nativeGetContext = prototype.getContext;
+    if (typeof nativeGetContext === 'function') {
+      prototype.__chuzzNativeGetContext = nativeGetContext;
+      var lazyGetContext = function () {
+        attach(this);
+        var own = Object.getOwnPropertyDescriptor(this, 'getContext');
+        var target = own && typeof own.value === 'function' && own.value !== lazyGetContext
+          ? own.value : nativeGetContext;
+        return target.apply(this, arguments);
+      };
+      prototype.getContext = lazyGetContext;
+    }
+    var names = ['width', 'height'];
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i], descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+      if (!descriptor || typeof descriptor.get !== 'function' || typeof descriptor.set !== 'function') { continue; }
+      (function (property, nativeDescriptor) {
+        Object.defineProperty(prototype, property, {
+          configurable: nativeDescriptor.configurable,
+          enumerable: nativeDescriptor.enumerable,
+          get: function () {
+            var value = nativeDescriptor.get.call(this);
+            attach(this);
+            return value;
+          },
+          set: function (value) {
+            nativeDescriptor.set.call(this, value);
+            attach(this);
+          }
+        });
+      })(name, descriptor);
+    }
+    prototype.__chuzzCanvasLazyAccessorsInstalled = true;
+  }
+  installLazyPrototypeAccessors();
+  var canvases = typeof doc.getElementsByTagName === 'function' ? doc.getElementsByTagName('canvas') :
+    (typeof doc.querySelectorAll === 'function' ? doc.querySelectorAll('canvas') : []);
+  for (var index = 0; index < canvases.length; index++) { attach(canvases[index]); }
+  if (typeof doc.createElement === 'function') {
+    var createElement = doc.createElement;
+    doc.createElement = function (name) {
+      var element = createElement.apply(this, arguments);
+      return String(name).toLowerCase() === 'canvas' ? attach(element) : element;
+    };
+  }
+  doc.__chuzzCanvasHandlesInstalled = true;
+})(globalThis);"#;
+    document
+        .eval_source(Arc::new(PageSource {
+            text: Arc::from(SOURCE),
+            url: Arc::from("chuzz:page-bootstrap/webgpu-canvas-handles"),
+        }))
+        .map(|_| ())
+        .map_err(|error| format!("could not install native canvas handles: {error}"))
 }
 
 impl PageNativeDriver {
@@ -147,6 +345,108 @@ impl PageNativeDriver {
 
     fn page_host_mut(&self) -> RefMut<'_, ChuzzPageRuntimeHost> {
         self.host.borrow_mut()
+    }
+
+    /// Move frames produced by host polling into Blitz's replaced-element
+    /// image path. Handles are resolved through the page-private marker and
+    /// checked against the current connected node and WebGPU generation.
+    fn drain_native_frames(&mut self) -> bool {
+        let mut frames = std::mem::take(&mut *self.pending_frames.borrow_mut());
+        let (host_frames, torn_down) = {
+            let mut host = self.page_host_mut();
+            let torn_down = host.is_torn_down();
+            (host.drain_frames(), torn_down)
+        };
+        frames.extend(host_frames);
+        if torn_down {
+            return false;
+        }
+
+        // A canvas can be updated several times during one poll. Keep only
+        // the latest frame for each native source/target pair.
+        let mut latest = BTreeMap::new();
+        for frame in frames {
+            latest.insert((frame.source, frame.target), frame);
+        }
+
+        let mut changed = false;
+        for frame in latest.into_values() {
+            changed |= self.install_native_frame(frame);
+        }
+        changed
+    }
+
+    fn install_native_frame(&mut self, frame: HostFrame) -> bool {
+        if !matches!(
+            frame.source,
+            HostFrameSource::Canvas | HostFrameSource::WebGpu
+        ) {
+            return false;
+        }
+        let selector = format!("canvas[data-chuzz-canvas-handle=\"{}\"]", frame.target);
+        let mut inner = self.document.inner_mut();
+        let Ok(nodes) = inner.query_selector_all(&selector) else {
+            return false;
+        };
+        if nodes.len() != 1 {
+            return false;
+        }
+        let node_id = nodes[0];
+        let Some(node) = inner.get_node(node_id) else {
+            return false;
+        };
+        if !node.flags.is_in_document() {
+            return false;
+        }
+        let Some(element) = node.element_data() else {
+            return false;
+        };
+        if element.name.local.as_ref() != "canvas"
+            || element
+                .attr(blitz_dom::LocalName::from("data-chuzz-canvas-handle"))
+                .and_then(|value| value.parse::<u64>().ok())
+                != Some(frame.target)
+        {
+            return false;
+        }
+
+        if frame.source == HostFrameSource::WebGpu {
+            let current_generation = element
+                .attr(blitz_dom::LocalName::from("data-chuzz-gpu-generation"))
+                .and_then(|value| value.parse::<u64>().ok());
+            let active =
+                element.attr(blitz_dom::LocalName::from("data-chuzz-gpu-active")) == Some("1");
+            if current_generation != Some(frame.generation) || (frame.image.is_some() && !active) {
+                return false;
+            }
+        } else if frame.generation != 0 {
+            return false;
+        }
+
+        let Some(node) = inner.get_node_mut(node_id) else {
+            return false;
+        };
+        let Some(element) = node.element_data_mut() else {
+            return false;
+        };
+        element.special_data = match frame.image {
+            Some(image) => blitz_dom::node::SpecialElementData::Image(Box::new(
+                blitz_dom::node::ImageData::Raster(image.as_ref().clone()),
+            )),
+            None => blitz_dom::node::SpecialElementData::None,
+        };
+
+        self.frame_revision = self.frame_revision.wrapping_add(1);
+        inner.mutate().set_attribute(
+            node_id,
+            blitz_dom::QualName::new(
+                None,
+                blitz_dom::Namespace::from(""),
+                blitz_dom::LocalName::from("data-chuzz-raster-revision"),
+            ),
+            &self.frame_revision.to_string(),
+        );
+        true
     }
 
     #[cfg(feature = "gui")]
@@ -283,6 +583,7 @@ impl PageRuntimeDriver for PageNativeDriver {
         {
             work |= self.run_poll_hooks(context.as_ref());
         }
+        work |= self.drain_native_frames();
         Ok(work)
     }
 
@@ -309,6 +610,7 @@ impl PageRuntimeDriver for PageNativeDriver {
         {
             work |= self.run_poll_hooks(context.as_ref());
         }
+        work |= self.drain_native_frames();
         Ok(work)
     }
 
