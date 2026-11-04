@@ -32,5 +32,3 @@ docs/HANDOVER*.md
 Cargo.lock
 bun.lock
 
-# Operational execution tracking stays local.
-/docs/TODO.md
