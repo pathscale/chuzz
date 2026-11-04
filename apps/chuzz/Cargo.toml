@@ -70,10 +70,13 @@ gui = [
   "dep:anyrender",
   "dep:anyrender_vello_cpu",
   "dep:peniko",
+  "blitz-control-protocol/capture",
   # The window paints glyphs, so it wants real faces. On Linux this reaches
   # parley's enumeration and therefore fontconfig, which is why it is here and
   # not in the base dependencies. Rendered QA opts in through the same feature.
   "system-fonts",
+  # A window plays sound. Headless hosts turn the device off at startup.
+  "device-audio",
 ]
 
 # Most of the web builds its DOM in JavaScript: without this a script-rendered
