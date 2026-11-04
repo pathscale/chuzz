@@ -412,10 +412,22 @@ const CAPTURE_NETWORK_DEADLINE: std::time::Duration = std::time::Duration::from_
 /// capture, which loads one page and has nothing to carry.
 #[cfg(feature = "capture")]
 pub async fn load_for_capture(
+    request: Request,
+    net_provider: Arc<NetProvider>,
+    prelude: &str,
+    viewport: Option<blitz_traits::shell::Viewport>,
+) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
+    load_for_capture_with_navigation(request, net_provider, prelude, viewport, None).await
+}
+
+/// Load a captured page with its host navigation provider installed before scripts run.
+#[cfg(feature = "capture")]
+pub async fn load_for_capture_with_navigation(
     mut request: Request,
     net_provider: Arc<NetProvider>,
     prelude: &str,
     viewport: Option<blitz_traits::shell::Viewport>,
+    navigation_provider: Option<Arc<dyn blitz_traits::navigation::NavigationProvider>>,
 ) -> Result<CapturedDocument, Box<dyn std::error::Error>> {
     use blitz_dom::Document as _;
 
@@ -485,6 +497,9 @@ pub async fn load_for_capture(
     };
     crate::install_headless_fonts(&mut config);
 
+    #[cfg(not(feature = "javascript"))]
+    let _ = navigation_provider;
+
     #[cfg(feature = "javascript")]
     {
         let host_config = crate::script_host::HostInstallContext {
@@ -502,6 +517,12 @@ pub async fn load_for_capture(
             host_config,
         )
         .map_err(std::io::Error::other)?;
+        // Install host navigation before the prelude or page scripts can request it.
+        if let Some(navigation_provider) = navigation_provider {
+            document
+                .inner_mut()
+                .set_navigation_provider(navigation_provider);
+        }
         // A headless or captured page is the one foreground page, as in
         // headless Chrome: document.hasFocus() is true before its scripts run,
         // so input handlers that ignore keys while unfocused still take them.

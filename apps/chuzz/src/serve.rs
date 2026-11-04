@@ -1632,12 +1632,15 @@ fn serve_page(
                 headless_host_context(&url, &net_provider, &initiator),
             )?)
         } else {
-            let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
-                blitz_traits::net::Request::get(url.clone()).initiator(initiator.clone()),
-                Arc::clone(&net_provider),
-                &prelude,
-                Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
-            ));
+            let loaded = nagoya::block_on(
+                crate::document_loader::load_for_capture_with_navigation(
+                    blitz_traits::net::Request::get(url.clone()).initiator(initiator.clone()),
+                    Arc::clone(&net_provider),
+                    &prelude,
+                    Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
+                    Some(Arc::clone(&navigation) as _),
+                ),
+            );
             match loaded {
                 Ok(loaded) => loaded.into_page_document().ok_or(
                     "this build cannot run scripts, so it cannot host a page worth inspecting",
