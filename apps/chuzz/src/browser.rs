@@ -568,18 +568,26 @@ impl Browser {
             });
             izumo::set_page_diagnostics_handler(|document, request| {
                 use blitz_control_protocol::{DebugResponse, DiagnosticsRequest};
-                match request {
-                    DiagnosticsRequest::Evaluate { script } => match (document
-                        as &mut dyn std::any::Any)
+                if let DiagnosticsRequest::Evaluate { script } = request {
+                    let result = if let Some(page) = (document as &mut dyn std::any::Any)
                         .downcast_mut::<crate::page_document::PageDocument>()
-                        .ok_or_else(|| String::from("diagnostic target has no page runtime"))
-                        .and_then(|document| document.eval_json(&script))
                     {
+                        page.eval_json(&script)
+                    } else if let Some(page) = (document as &mut dyn std::any::Any)
+                        .downcast_mut::<crate::page_native_driver::PageNativeDriver>()
+                    {
+                        crate::page_document::PageRuntimeDriver::eval_json(page, &script)
+                    } else {
+                        Err("document is not owned by the page runtime".to_string())
+                    };
+                    return match result {
                         Ok(value) => DebugResponse::Evaluated(value),
                         Err(message) => DebugResponse::Error(
                             blitz_control_protocol::target::error("scriptError", &message),
                         ),
-                    },
+                    };
+                }
+                match request {
                     DiagnosticsRequest::WebGpuInspect
                     | DiagnosticsRequest::WebGpuCapture { .. }
                     | DiagnosticsRequest::WebGpuBuffer { .. } => {
@@ -600,11 +608,7 @@ impl Browser {
         let host = document.application_host();
         host.add_poll_hook(
             document,
-            Box::new(move |document, _| {
-                (document as &mut dyn std::any::Any)
-                    .downcast_mut::<crate::page_document::PageDocument>()
-                    .is_some_and(|document| browser.poll_document(document, &mut pending))
-            }),
+            Box::new(move |document, _| browser.poll_document(document, &mut pending)),
         );
     }
 
@@ -917,7 +921,7 @@ impl Browser {
 
     fn poll_document(
         &self,
-        ui: &mut crate::page_document::PageDocument,
+        ui: &mut dyn blitz_dom::Document,
         pending: &mut VecDeque<PageBundle>,
     ) -> bool {
         pending.extend(self.0.completed.lock().unwrap().drain(..));

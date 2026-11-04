@@ -288,8 +288,7 @@ fi
 
 run_guarded qa "$qa_command_timeout" "$artifacts/qa.txt" \
   "$qa_bin" --descriptor "$descriptor" --app "$root/ps-qa.ron" qa \
-  --checks "$root/tests/ps-qa" --require-paint-events \
-  --pixel-artifact-dir "$artifacts/pixels"
+  --checks "$root/tests/ps-qa" --require-paint-events
 
 for node_attempt in {1..10}; do
   run_guarded "nodes-$node_attempt" "$qa_command_timeout" \
@@ -304,7 +303,7 @@ fi
 run_guarded inventory "$qa_command_timeout" "$artifacts/inventory.txt" \
   "$qa_bin" --descriptor "$descriptor" --app "$root/ps-qa.ron" inventory \
   --require-outcomes --checks "$root/tests/ps-qa"
-grep -q '^components: 74$' "$artifacts/inventory.txt"
+grep -q '^components: 75$' "$artifacts/inventory.txt"
 grep -q '^  browser,true,' "$artifacts/inventory.txt"
 grep -q '^  inspector,true,' "$artifacts/inventory.txt"
 grep -q '^  settings,true,' "$artifacts/inventory.txt"
@@ -320,15 +319,13 @@ grep -q 'matched: 0' "$artifacts/hidden-painted-buttons.txt"
 run_guarded ghost "$qa_command_timeout" "$artifacts/ghost.txt" \
   "$qa_bin" --descriptor "$descriptor" ghost 64 3
 run_guarded capture "$qa_command_timeout" "$artifacts/capture.txt" \
-  "$qa_bin" --descriptor "$descriptor" capture '#chuzz-app' 0.25 \
-  --output "$artifacts/window.ppm"
+  "$qa_bin" --descriptor "$descriptor" capture '#chuzz-app' 0.25
 
 # The tab close suite leaves its own tabs behind, so it runs after the
 # inventory and reconcile stages that expect the base suite's tab strip.
 run_guarded tab-close "$qa_command_timeout" "$artifacts/tab-close-qa.txt" \
   "$qa_bin" --descriptor "$descriptor" --app "$root/ps-qa.ron" qa \
-  --checks "$root/apps/chuzz/tests/checks/tab-close.ron" --require-paint-events \
-  --pixel-artifact-dir "$artifacts/pixels"
+  --checks "$root/apps/chuzz/tests/checks/tab-close.ron" --require-paint-events
 
 # Agent-control Off deliberately closes the socket, so it runs after every
 # shared-instance assertion. The persisted state is its durable outcome.

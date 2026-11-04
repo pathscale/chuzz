@@ -98,6 +98,48 @@ const SOURCE: &str = r#"(function (g) {
   File.prototype = Object.create(Blob.prototype);
   Object.defineProperty(File.prototype, 'constructor', { value: File, writable: true, configurable: true });
   g.File = File;
+  function base64(bytes) {
+    var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', encoded = '';
+    for (var i = 0; i < bytes.length; i += 3) {
+      var a = bytes[i], b = i + 1 < bytes.length ? bytes[i + 1] : 0, c = i + 2 < bytes.length ? bytes[i + 2] : 0;
+      encoded += alphabet[a >> 2] + alphabet[((a & 3) << 4) | (b >> 4)] +
+        (i + 1 < bytes.length ? alphabet[((b & 15) << 2) | (c >> 6)] : '=') +
+        (i + 2 < bytes.length ? alphabet[c & 63] : '=');
+    }
+    return encoded;
+  }
+  function FileReader() {
+    if (!(this instanceof FileReader)) throw new TypeError("Failed to construct 'FileReader': use new");
+    eventTarget(this); this.readyState = 0; this.result = null; this.error = null;
+    this.onloadstart = this.onprogress = this.onload = this.onabort = this.onerror = this.onloadend = null;
+  }
+  FileReader.EMPTY = FileReader.prototype.EMPTY = 0;
+  FileReader.LOADING = FileReader.prototype.LOADING = 1;
+  FileReader.DONE = FileReader.prototype.DONE = 2;
+  var fileReads = new WeakMap();
+  function readAs(reader, blob, kind) {
+    if (reader.readyState === FileReader.LOADING) throw new DOMException('The object is already busy reading Blobs.','InvalidStateError');
+    var bytes = blobBytes.get(blob);
+    if (!bytes && blob && blob._bytes) bytes = blob._bytes;
+    if (!bytes) throw new TypeError('FileReader requires a Blob');
+    bytes = __chuzzCopyBytes(bytes); reader.readyState = FileReader.LOADING; reader.result = null; reader.error = null;
+    var read = {}; fileReads.set(reader,read);
+    reader.dispatchEvent({type:'loadstart',target:reader});
+    var self = reader;
+    setTimeout(function(){
+      if (fileReads.get(self) !== read || self.readyState !== FileReader.LOADING) return;
+      self.readyState = FileReader.DONE;
+      self.result = kind === 'dataurl' ? 'data:' + (blob.type || 'application/octet-stream') + ';base64,' + base64(bytes) :
+        kind === 'text' ? __chuzzDecodeUtf8(bytes) : __chuzzCopyBytes(bytes).buffer;
+      self.dispatchEvent({type:'load',target:self});
+      if (fileReads.get(self) === read) { fileReads.delete(self); self.dispatchEvent({type:'loadend',target:self}); }
+    },0);
+  }
+  FileReader.prototype.readAsDataURL = function(blob){readAs(this,blob,'dataurl');};
+  FileReader.prototype.readAsText = function(blob){readAs(this,blob,'text');};
+  FileReader.prototype.readAsArrayBuffer = function(blob){readAs(this,blob,'arraybuffer');};
+  FileReader.prototype.abort = function(){if(this.readyState!==FileReader.LOADING)return;var read=fileReads.get(this);this.readyState=FileReader.DONE;this.result=null;this.dispatchEvent({type:'abort',target:this});if(fileReads.get(this)===read){fileReads.delete(this);this.dispatchEvent({type:'loadend',target:this});}};
+  g.FileReader = FileReader;
   var formEntries = new WeakMap();
   function formSnapshot(form) { var entries = formEntries.get(form); if (!entries) throw new TypeError('incompatible FormData receiver'); return entries.slice(); }
   function formValue(value, filename) {

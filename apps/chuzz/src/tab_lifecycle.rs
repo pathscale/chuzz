@@ -288,7 +288,7 @@ impl Browser {
 
     fn restore_timeout(
         &self,
-        ui: &mut crate::page_document::PageDocument,
+        ui: &mut dyn blitz_dom::Document,
         id: u64,
         generation: u64,
     ) -> bool {
@@ -470,7 +470,7 @@ impl Browser {
 
     fn commit_sleep(
         &self,
-        ui: &mut crate::page_document::PageDocument,
+        ui: &mut dyn blitz_dom::Document,
         id: u64,
         generation: u64,
         epoch: u64,
@@ -697,7 +697,7 @@ impl Browser {
         });
     }
 
-    pub(super) fn poll_lifecycle(&self, ui: &mut crate::page_document::PageDocument) -> bool {
+    pub(super) fn poll_lifecycle(&self, ui: &mut dyn blitz_dom::Document) -> bool {
         let mut messages: Vec<_> = self.0.lifecycle.lock().unwrap().drain(..).collect();
         messages.sort_by_key(|message| {
             if matches!(message, LifecycleMessage::Surface(_)) {

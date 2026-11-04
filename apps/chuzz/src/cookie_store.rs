@@ -461,10 +461,10 @@ impl BrowserCookieStore {
             match serde_json::from_str::<Vec<StoredCookie<'static>>>(&joined) {
                 Ok(stored) => stored,
                 Err(error) => {
-                    // A jar torn between slice writes must not lock the
-                    // profile out of cookies; it starts empty and is rewritten.
-                    eprintln!("chuzz: stored cookies were unreadable, starting empty: {error}");
-                    Vec::new()
+                    drop(table);
+                    return Err(CookieStoreError::Open(format!(
+                        "stored cookies were unreadable: {error}"
+                    )));
                 }
             }
         };

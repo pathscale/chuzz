@@ -931,8 +931,10 @@ const COMPAT: &str = r#"(function (g) {
     g.Blob = Blob;
   }
 
+
   if (g.URL && typeof g.URL.createObjectURL === 'undefined' && typeof g.btoa === 'function') {
     g.URL.createObjectURL = function (blob) {
+
       if (!blob || !blob._bytes) { throw new TypeError('createObjectURL requires a Blob'); }
       var binary = '';
       for (var i = 0; i < blob._bytes.length; i++) { binary += String.fromCharCode(blob._bytes[i]); }
@@ -940,7 +942,6 @@ const COMPAT: &str = r#"(function (g) {
     };
     g.URL.revokeObjectURL = function () {};
   }
-
   if (typeof g.MessageChannel === 'undefined') {
     function MessagePort() { this.onmessage = null; this._listeners = []; this._closed = false; this._peer = null; }
     MessagePort.prototype.addEventListener = function (type, callback) {
@@ -1087,12 +1088,19 @@ const SCHEDULING: &str = r#"(function (g) {
     };
   }
   if (typeof g.PerformanceObserver === 'undefined') {
-    function PerformanceObserver(callback) { if (typeof callback !== 'function') { throw new DOMException('Observer callback must be callable', 'TypeError'); } }
-    PerformanceObserver.supportedEntryTypes = [];
+    function PerformanceObserver(callback) {
+      if (!(this instanceof PerformanceObserver)) { throw new TypeError("Failed to construct 'PerformanceObserver': use new"); }
+      if (typeof callback !== 'function') { throw new TypeError('Observer callback must be callable'); }
+      this._callback = callback;
+      this._options = null;
+    }
+    PerformanceObserver.supportedEntryTypes = Object.freeze([]);
     PerformanceObserver.prototype.observe = function (options) {
-      if (!options || options.type || !Array.isArray(options.entryTypes) || options.entryTypes.length) { throw new DOMException('Performance observer entry type is unsupported', 'NotSupportedError'); }
+      if (options === null || typeof options !== 'object') { throw new TypeError('PerformanceObserver.observe requires an options object'); }
+      if (!Array.isArray(options.entryTypes) && typeof options.type !== 'string') { throw new TypeError('PerformanceObserver.observe requires entryTypes or type'); }
+      this._options = options;
     };
-    PerformanceObserver.prototype.disconnect = function () {};
+    PerformanceObserver.prototype.disconnect = function () { this._options = null; };
     PerformanceObserver.prototype.takeRecords = function () { return []; };
     g.PerformanceObserver = PerformanceObserver;
   }
@@ -1105,6 +1113,17 @@ const SCHEDULING: &str = r#"(function (g) {
       }, 1);
     };
     g.cancelIdleCallback = clearTimeout;
+  }
+  if (g.navigator) {
+    function makeArrayLike() {
+      var array = [];
+      array.item = function(i){return this[i]||null;};
+      array.namedItem = function(n){return null;};
+      array.refresh = function(){};
+      return array;
+    }
+    if (typeof g.navigator.plugins === 'undefined') g.navigator.plugins = makeArrayLike();
+    if (typeof g.navigator.mimeTypes === 'undefined') g.navigator.mimeTypes = makeArrayLike();
   }
   if (g.navigator && typeof g.navigator.sendBeacon === 'undefined') {
     g.navigator.sendBeacon = function (url, data) {

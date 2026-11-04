@@ -622,7 +622,13 @@ impl PageRuntimeDriver for PageNativeDriver {
         let mut work = TypedNativeGuest::poll_runtime(&mut self.document, context);
         #[cfg(feature = "gui")]
         {
-            work |= self.run_poll_hooks(context.as_ref());
+            if self.run_poll_hooks(context.as_ref()) {
+                work = true;
+                let poll_context = context
+                    .as_ref()
+                    .map(|context| Context::from_waker(context.waker()));
+                work |= TypedNativeGuest::poll_runtime(&mut self.document, poll_context);
+            }
         }
         work |= self.drain_native_frames();
         Ok(work)
@@ -649,7 +655,17 @@ impl PageRuntimeDriver for PageNativeDriver {
             TypedNativeGuest::poll_runtime_for_settle(&mut self.document, context, run_timers);
         #[cfg(feature = "gui")]
         {
-            work |= self.run_poll_hooks(context.as_ref());
+            if self.run_poll_hooks(context.as_ref()) {
+                work = true;
+                let poll_context = context
+                    .as_ref()
+                    .map(|context| Context::from_waker(context.waker()));
+                work |= TypedNativeGuest::poll_runtime_for_settle(
+                    &mut self.document,
+                    poll_context,
+                    run_timers,
+                );
+            }
         }
         work |= self.drain_native_frames();
         Ok(work)
@@ -848,14 +864,68 @@ impl izumo::DocumentHost for PageDocumentHost {
     #[cfg(all(feature = "gui", unix))]
     fn diagnostics(
         &self,
-        _document: &mut dyn Document,
-        _control: &mut blitz_control_protocol::in_process::DocumentControl,
-        _request: blitz_control_protocol::DiagnosticsRequest,
+        document: &mut dyn Document,
+        control: &mut blitz_control_protocol::in_process::DocumentControl,
+        request: blitz_control_protocol::DiagnosticsRequest,
     ) -> blitz_control_protocol::DebugResponse {
-        host_error(
-            "unsupportedRequest",
-            "the native page backend does not implement this diagnostics operation",
-        )
+        use blitz_control_protocol::{
+            DebugResponse, DiagnosticsRequest, RevisionSet, SnapshotRequest,
+        };
+        let Some(page) = page_mut(document) else {
+            return host_error(
+                "unsupportedDocument",
+                "document is not owned by the page runtime",
+            );
+        };
+        match request {
+            DiagnosticsRequest::Observe { .. } => DebugResponse::Ack,
+            DiagnosticsRequest::Capture(request) => match control.capture(page, request) {
+                Ok(image) => DebugResponse::Captured(image),
+                Err(error) => DebugResponse::Error(error),
+            },
+            DiagnosticsRequest::Snapshot(request) => {
+                let revision = control.next_revision();
+                match blitz_control_protocol::document::snapshot_document(page, request, revision) {
+                    Ok(snapshot) => DebugResponse::Snapshot(snapshot),
+                    Err(error) => DebugResponse::Error(error),
+                }
+            }
+            DiagnosticsRequest::Metrics => {
+                let revision = control.next_revision();
+                match blitz_control_protocol::document::snapshot_document(
+                    page,
+                    SnapshotRequest {
+                        include_dom: false,
+                        include_layout: false,
+                        include_computed_style: false,
+                        node_ids: Vec::new(),
+                    },
+                    revision,
+                ) {
+                    Ok(snapshot) => DebugResponse::Metrics(snapshot.metrics),
+                    Err(error) => DebugResponse::Error(error),
+                }
+            }
+            DiagnosticsRequest::WaitForIdle => {
+                match blitz_control_protocol::in_process::settle(page) {
+                    Ok(()) => DebugResponse::Idle(RevisionSet {
+                        document: control.revision(),
+                        style: control.revision(),
+                        layout: control.revision(),
+                        paint: control.revision(),
+                    }),
+                    Err(error) => DebugResponse::Error(error),
+                }
+            }
+            DiagnosticsRequest::Evaluate { script } => match page.eval_json(&script) {
+                Ok(value) => DebugResponse::Evaluated(value),
+                Err(message) => host_error("scriptError", &message),
+            },
+            _ => host_error(
+                "unsupportedRequest",
+                "the native page backend does not implement this diagnostics operation",
+            ),
+        }
     }
 
     #[cfg(all(feature = "gui", unix))]

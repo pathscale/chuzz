@@ -499,7 +499,7 @@ fn resolve_brush(
     let transform = Affine::new(brush.matrix);
     let mut clip = None;
     let paint = match brush.kind.as_str() {
-        "color" => Paint::Solid(color(&brush.color)?),
+        "color" | "solid" => Paint::Solid(color(&brush.color)?),
         "linear" | "radial" => {
             let count = if brush.kind == "linear" { 4 } else { 6 };
             numbers(&brush.n, count)?;

@@ -14,6 +14,7 @@ pub struct Directories {
     pub home: PathBuf,
     pub reads: Vec<PathBuf>,
     pub shell: PathBuf,
+    pub metal_caches: Vec<PathBuf>,
 }
 
 static DIRECTORIES: OnceLock<Result<Arc<Directories>, String>> = OnceLock::new();
@@ -172,6 +173,11 @@ fn install() -> Result<Arc<Directories>, String> {
         && contents.file_name().is_some_and(|name| name == "Contents")
     {
         reads.push(own_directory(contents, &home)?);
+        if let Some(bundle) = contents.parent()
+            && bundle.extension().is_some_and(|ext| ext == "app")
+        {
+            reads.push(own_directory(bundle, &home)?);
+        }
     }
     let old_profile = home.join("Library/Application Support/ai.chuzz.browser");
     if old_profile.exists() {
@@ -230,12 +236,49 @@ fn install() -> Result<Arc<Directories>, String> {
     let shell = Path::new("/bin/sh")
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    let mut metal_caches = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; 4096];
+        let len = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_CACHE_DIR,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
+                buf.len(),
+            )
+        };
+        if len > 0 && len <= buf.len() {
+            if let Ok(cstr) = std::ffi::CStr::from_bytes_until_nul(&buf)
+                && let Ok(text) = cstr.to_str()
+            {
+                let darwin_cache = PathBuf::from(text);
+                if let Ok(darwin_cache) = darwin_cache.canonicalize() {
+                    for sub in [
+                        "com.pathscale.chuzz",
+                        "chuzz-gui",
+                        "com.apple.metal",
+                        "com.apple.metalfe",
+                        "com.apple.gpuarchiver",
+                    ] {
+                        let dir = darwin_cache.join(sub);
+                        let _ = std::fs::create_dir_all(&dir);
+                        if let Ok(canon) = own_directory(&dir, &home)
+                            && !metal_caches.contains(&canon)
+                        {
+                            metal_caches.push(canon);
+                        }
+                    }
+                }
+            }
+        }
+    }
     let directories = Arc::new(Directories {
         cache,
         profile,
         home,
         reads,
         shell,
+        metal_caches,
     });
     #[cfg(target_os = "macos")]
     macos::apply(&directories)?;

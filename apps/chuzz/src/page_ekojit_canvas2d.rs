@@ -25,7 +25,7 @@ pub(super) const SOURCE: &str = r#"(function (g) {
   }
   function initial(canvas) { return { fill:'black', stroke:'black', state:defaultState(), stack:[], path:[] }; }
   function api(canvas) {
-    var id = handle(canvas), dims = dimensions(canvas), c = initial(canvas), pending = [];
+    var id = handle(canvas), dims = dimensions(canvas), c = initial(canvas), pending = [], ctx = {canvas:canvas};
     function state() { var s = c.state, copy = {}; Object.keys(s).forEach(function (k) { copy[k] = Array.isArray(s[k]) ? s[k].slice() : s[k]; }); return copy; }
     function flush() {
       if (!pending.length) { return; }
@@ -33,25 +33,110 @@ pub(super) const SOURCE: &str = r#"(function (g) {
       bridge.request({action:'submit',id:id,width:dims[0],height:dims[1],commands:commands}, []);
       bridge.request({action:'paint',id:id,width:dims[0],height:dims[1]}, []);
     }
-    function submit(op, n, brush, text) {
+    function brushValue(value, fallback) {
+      var resource = value && value.__chuzzBrush;
+      if (!resource) { return {kind:'color',color:String(value === undefined ? fallback : value),matrix:c.state.matrix.slice()}; }
+      var brush = {kind:resource.kind,matrix:(resource.matrix || c.state.matrix).slice()};
+      if (resource.n) { brush.n = resource.n.slice(); }
+      if (resource.stops) { brush.stops = resource.stops.map(function(stop){return stop.slice();}); }
+      if (resource.repetition) { brush.repetition = resource.repetition; }
+      if (resource.bytes) { brush.bytes = resource.bytes; brush.width = resource.width; brush.height = resource.height; }
+      else if (resource.image) { brush.image = resource.image; }
+      return brush;
+    }
+    function submit(op, n, brush, text, path) {
       if (pending.length >= 128) { flush(); }
-      pending.push({op:op,n:n || [],matrix:[1,0,0,1,0,0],state:state(),brush:brush || {kind:'solid',color:c.fill},text:text || ''});
+      var command = {op:op,n:n || [],matrix:c.state.matrix.slice(),state:state(),brush:brush || brushValue(c.fill,'black'),text:text || ''};
+      if (path) { command.path = path.slice(); }
+      if (brush && brush.bytes) {
+        var bytes = bridge.copyBytes(brush.bytes);
+        command.brush.image = {index:0,width:brush.width,height:brush.height,offset:0,length:bytes.length};
+        delete command.brush.bytes; delete command.brush.width; delete command.brush.height;
+        pending.push(command);
+        var commands = pending; pending = [];
+        bridge.request({action:'submit',id:id,width:dims[0],height:dims[1],commands:commands},[bytes]);
+        bridge.request({action:'paint',id:id,width:dims[0],height:dims[1]},[]);
+        return;
+      }
+      pending.push(command);
       flush();
     }
+    function pathCommand(op, values) {
+      var n = values.map(Number);
+      if (n.some(function(value){return !Number.isFinite(value);})) { return; }
+      c.path.push({op:op,n:n,matrix:c.state.matrix.slice()});
+    }
+    function fillRule(value) {
+      value = value === undefined ? 'nonzero' : String(value);
+      if (value !== 'nonzero' && value !== 'evenodd') { throw new TypeError('invalid canvas fill rule'); }
+      return value === 'evenodd' ? 1 : 0;
+    }
+    function makeBrush(kind, n, image, repetition) {
+      var resource = {kind:kind,n:n || [],matrix:c.state.matrix.slice(),stops:[]};
+      if (image) {
+        resource.source = image;
+        if (image.data instanceof Uint8ClampedArray && Number(image.width)>0 && Number(image.height)>0) {
+          resource.width = Number(image.width); resource.height = Number(image.height); resource.bytes = image.data;
+        } else if (g.document && typeof g.document.createElement === 'function' && Number(image.width)>0 && Number(image.height)>0) {
+          var scratch = g.document.createElement('canvas'); scratch.width = Number(image.width); scratch.height = Number(image.height);
+          var scratchContext = scratch.getContext('2d');
+          if (!scratchContext) { throw new TypeError('canvas pattern source cannot be read'); }
+          scratchContext.drawImage(image,0,0);
+          resource.width = Number(image.width); resource.height = Number(image.height);
+          resource.bytes = scratchContext.getImageData(0,0,resource.width,resource.height).data;
+        } else if (image.__chuzzImage) { resource.image = image.__chuzzImage; }
+        if (!resource.bytes && !resource.image) { throw new TypeError('canvas pattern source cannot be read'); }
+      }
+      if (repetition) { resource.repetition = repetition; }
+      var brush = {__chuzzBrush:resource};
+      if (kind !== 'pattern') {
+        brush.addColorStop = function(offset, color) {
+          offset = Number(offset); color = String(color);
+          if (!Number.isFinite(offset) || offset < 0 || offset > 1) { throw new DOMException('invalid colour stop offset','IndexSizeError'); }
+          if (!validStyle(color)) { throw new DOMException('invalid colour stop','SyntaxError'); }
+          if (resource.stops.length >= 4096) { throw new RangeError('canvas gradient stop limit reached'); }
+          resource.stops.push([offset,color]);
+        };
+      } else {
+        brush.setTransform = function(value) {
+          var m = value && typeof value === 'object' ? [value.a,value.b,value.c,value.d,value.e,value.f].map(Number) : [];
+          if (m.length === 6 && m.every(Number.isFinite)) { resource.matrix = m; }
+        };
+      }
+      return brush;
+    }
+    ctx.beginPath = function(){c.path=[];};
+    ctx.closePath = function(){pathCommand('closePath',[]);};
+    [['moveTo',2],['lineTo',2],['rect',4],['quadraticCurveTo',4],['bezierCurveTo',6],['arcTo',5]].forEach(function(entry){ctx[entry[0]]=function(){pathCommand(entry[0],Array.prototype.slice.call(arguments,0,entry[1]));};});
+    ctx.arc = function(x,y,r,start,end,ccw){if(Number(r)<0)throw new DOMException('negative radius','IndexSizeError');pathCommand('arc',[x,y,r,start,end,ccw?1:0]);};
+    ctx.ellipse = function(x,y,rx,ry,rotation,start,end,ccw){if(Number(rx)<0||Number(ry)<0)throw new DOMException('negative radius','IndexSizeError');pathCommand('ellipse',[x,y,rx,ry,rotation,start,end,ccw?1:0]);};
+    ctx.roundRect = function(x,y,w,h,radii){var values=[x,y,w,h].map(Number);radii=radii===undefined?[0]:(Array.isArray(radii)?radii:[radii]);if(!radii.length||radii.length>4)throw new RangeError('invalid roundRect radii');radii.forEach(function(r){if(typeof r==='object'){values.push(Number(r.x),Number(r.y));}else values.push(Number(r),Number(r));});pathCommand('roundRect',values);};
+    ctx.fill = function(rule){submit('fill',[fillRule(rule)],brushValue(c.fill,'black'),undefined,c.path.slice());};
+    ctx.stroke = function(){submit('stroke',[],brushValue(c.stroke,'black'),undefined,c.path.slice());};
+    ctx.clip = function(rule){submit('clip',[fillRule(rule)],brushValue(c.fill,'black'),undefined,c.path.slice());};
+    ctx.isPointInPath = function(x,y,rule){flush();x=Number(x);y=Number(y);if(!Number.isFinite(x)||!Number.isFinite(y))return false;return !!bridge.request({action:'hit',id:id,width:dims[0],height:dims[1],query:{kind:'path',n:[x,y],fillRule:fillRule(typeof rule==='string'?rule:undefined),path:c.path.slice(),state:state()}},[]);};
+    ctx.isPointInStroke = function(x,y){flush();x=Number(x);y=Number(y);if(!Number.isFinite(x)||!Number.isFinite(y))return false;return !!bridge.request({action:'hit',id:id,width:dims[0],height:dims[1],query:{kind:'stroke',n:[x,y],fillRule:0,path:c.path.slice(),state:state()}},[]);};
+    ctx.createLinearGradient = function(x0,y0,x1,y1){return makeBrush('linear',[x0,y0,x1,y1]);};
+    ctx.createRadialGradient = function(x0,y0,r0,x1,y1,r1){if(Number(r0)<0||Number(r1)<0)throw new DOMException('negative radius','IndexSizeError');return makeBrush('radial',[x0,y0,r0,x1,y1,r1]);};
+    ctx.createPattern = function(image,repetition){repetition=repetition==null||repetition===''?'repeat':String(repetition);if(['repeat','repeat-x','repeat-y','no-repeat'].indexOf(repetition)<0)throw new DOMException('invalid pattern repetition','SyntaxError');if(!image||image.complete===false)return null;return makeBrush('pattern',[],image,repetition);};
+    ctx.getTransform = function(){var m=c.state.matrix;return {a:m[0],b:m[1],c:m[2],d:m[3],e:m[4],f:m[5],is2D:true};};
+    ctx.getContextAttributes = function(){return {alpha:true,colorSpace:'srgb'};};
+    ['shadowBlur','shadowOffsetX','shadowOffsetY'].forEach(function(key){Object.defineProperty(ctx,key,{enumerable:true,get:function(){return c.state[key];},set:function(value){value=Number(value);if(Number.isFinite(value)&&(key!=='shadowBlur'||value>=0))c.state[key]=value;}});});
+    ['shadowColor','filter'].forEach(function(key){Object.defineProperty(ctx,key,{enumerable:true,get:function(){return c.state[key];},set:function(value){if(typeof value==='string')c.state[key]=value;}});});
     function reset() {
       dims = dimensions(canvas); pending = []; c = initial(canvas);
       bridge.request({action:'reset',id:id,width:dims[0],height:dims[1]}, []);
       bridge.request({action:'paint',id:id,width:dims[0],height:dims[1]}, []);
     }
     function validStyle(v) {
+      if (v && v.__chuzzBrush) { return true; }
       if (typeof v !== 'string' || !v.trim() || v.length > 4096) { return false; }
       if (g.CSS && typeof g.CSS.supports === 'function') { return g.CSS.supports('color', v); }
       return /^(#[0-9a-f]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\)|[a-z]+)$/i.test(v.trim());
     }
     function install(name, get, set) { Object.defineProperty(ctx, name, {enumerable:true, configurable:false, get:get, set:set}); }
-    var ctx = {canvas:canvas};
-    install('fillStyle', function(){return c.fill;}, function(v){if(validStyle(v)) c.fill=String(v);});
-    install('strokeStyle', function(){return c.stroke;}, function(v){if(validStyle(v)) c.stroke=String(v);});
+    install('fillStyle', function(){return c.fill;}, function(v){if(validStyle(v)) c.fill=v&&v.__chuzzBrush?v:String(v);});
+    install('strokeStyle', function(){return c.stroke;}, function(v){if(validStyle(v)) c.stroke=v&&v.__chuzzBrush?v:String(v);});
     install('globalAlpha', function(){return c.state.alpha;}, function(v){v=Number(v);if(Number.isFinite(v)&&v>=0&&v<=1)c.state.alpha=v;});
     install('globalCompositeOperation', function(){return c.state.composite;}, function(v){var list=['source-over','source-in','source-out','source-atop','destination-over','destination-in','destination-out','destination-atop','lighter','copy','xor','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity'];if(list.indexOf(String(v))>=0)c.state.composite=String(v);});
     install('font', function(){return c.state.font;}, function(v){if(typeof v==='string'&&v.length<=1024&&/\d+(\.\d+)?(px|pt|em|rem)\s+.+/.test(v))c.state.font=v;});
@@ -72,11 +157,11 @@ pub(super) const SOURCE: &str = r#"(function (g) {
     ctx.translate=function(x,y){ctx.transform(1,0,0,1,Number(x),Number(y));};
     ctx.scale=function(x,y){ctx.transform(Number(x),0,0,Number(y),0,0);};
     ctx.rotate=function(a){a=Number(a);if(Number.isFinite(a)){var co=Math.cos(a),si=Math.sin(a);ctx.transform(co,si,-si,co,0,0);}};
-    ctx.fillRect=function(x,y,w,h){submit('fillRect',[Number(x),Number(y),Number(w),Number(h)],{kind:'solid',color:c.fill});};
-    ctx.strokeRect=function(x,y,w,h){submit('strokeRect',[Number(x),Number(y),Number(w),Number(h)],{kind:'solid',color:c.stroke});};
-    ctx.clearRect=function(x,y,w,h){submit('clearRect',[Number(x),Number(y),Number(w),Number(h)],{kind:'solid',color:'rgba(0,0,0,0)'});};
-    ctx.fillText=function(text,x,y,maxWidth){var n=[Number(x),Number(y),arguments.length>3?Number(maxWidth):0];submit('fillText',n,{kind:'solid',color:c.fill},String(text));};
-    ctx.strokeText=function(text,x,y,maxWidth){var n=[Number(x),Number(y),arguments.length>3?Number(maxWidth):0];submit('strokeText',n,{kind:'solid',color:c.stroke},String(text));};
+    ctx.fillRect=function(x,y,w,h){submit('fillRect',[Number(x),Number(y),Number(w),Number(h)],brushValue(c.fill,'black'));};
+    ctx.strokeRect=function(x,y,w,h){submit('strokeRect',[Number(x),Number(y),Number(w),Number(h)],brushValue(c.stroke,'black'));};
+    ctx.clearRect=function(x,y,w,h){submit('clearRect',[Number(x),Number(y),Number(w),Number(h)],{kind:'color',color:'rgba(0,0,0,0)'});};
+    ctx.fillText=function(text,x,y,maxWidth){var n=[Number(x),Number(y),arguments.length>3?Number(maxWidth):0];submit('fillText',n,brushValue(c.fill,'black'),String(text));};
+    ctx.strokeText=function(text,x,y,maxWidth){var n=[Number(x),Number(y),arguments.length>3?Number(maxWidth):0];submit('strokeText',n,brushValue(c.stroke,'black'),String(text));};
     ctx.measureText=function(text){flush();return bridge.request({action:'measure',id:id,width:dims[0],height:dims[1],text:String(text),state:state()},[]);};
     ctx.setLineDash=function(a){if(!Array.isArray(a)||a.length>1024)return;var d=a.map(Number);if(d.some(function(x){return !Number.isFinite(x)||x<0||x>1e7;}))return;if(d.length%2)d=d.concat(d);c.state.dash=d;};
     ctx.getLineDash=function(){return c.state.dash.slice();};
@@ -92,7 +177,7 @@ pub(super) const SOURCE: &str = r#"(function (g) {
     ctx.putImageData=function(im,dx,dy,dirtyX,dirtyY,dirtyW,dirtyH){
       if(!im||!Number.isSafeInteger(Number(im.width))||!Number.isSafeInteger(Number(im.height))||Number(im.width)<=0||Number(im.height)<=0||!(im.data instanceof Uint8ClampedArray)||im.data.length!==Number(im.width)*Number(im.height)*4)throw new TypeError('expected valid ImageData');
       var sx=0,sy=0,sw=Number(im.width),sh=Number(im.height);if(arguments.length>=7){sx=Number(dirtyX);sy=Number(dirtyY);sw=Number(dirtyW);sh=Number(dirtyH);if(![sx,sy,sw,sh].every(Number.isFinite))throw new TypeError('invalid dirty rectangle');var ex=sx+sw,ey=sy+sh;sx=Math.max(0,Math.ceil(Math.min(sx,ex)));sy=Math.max(0,Math.ceil(Math.min(sy,ey)));sw=Math.max(0,Math.floor(Math.max(Number(dirtyX),ex))-sx);sh=Math.max(0,Math.floor(Math.max(Number(dirtyY),ey))-sy);}
-      flush();var bytes=bridge.copyBytes(im.data);bridge.request({action:'submit',id:id,width:dims[0],height:dims[1],commands:[{op:'putImageData',n:[Number(dx),Number(dy),sx,sy,sw,sh],matrix:[1,0,0,1,0,0],brush:{kind:'solid',color:'black',matrix:[1,0,0,1,0,0],image:{index:0,width:Number(im.width),height:Number(im.height),offset:0,length:bytes.length}}}]},[bytes]);bridge.request({action:'paint',id:id,width:dims[0],height:dims[1]},[]);
+      flush();var bytes=bridge.copyBytes(im.data);bridge.request({action:'submit',id:id,width:dims[0],height:dims[1],commands:[{op:'putImageData',n:[Number(dx),Number(dy),sx,sy,sw,sh],matrix:[1,0,0,1,0,0],brush:{kind:'color',color:'black',matrix:[1,0,0,1,0,0],image:{index:0,width:Number(im.width),height:Number(im.height),offset:0,length:bytes.length}}}]},[bytes]);bridge.request({action:'paint',id:id,width:dims[0],height:dims[1]},[]);
     };
     ctx.toDataURL=function(type){flush();if(!dims[0]||!dims[1])return 'data:,';var bytes=bridge.copyBytes(bridge.request({action:'snapshot',id:id,width:dims[0],height:dims[1]},[]));var png=bridge.copyBytes(g.__chuzzEncodePng(dims[0],dims[1],bytes));var alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',encoded='';for(var i=0;i<png.length;i+=3){var a=png[i],b=i+1<png.length?png[i+1]:0,c=i+2<png.length?png[i+2]:0;encoded+=alphabet[a>>2]+alphabet[((a&3)<<4)|(b>>4)]+(i+1<png.length?alphabet[((b&15)<<2)|(c>>6)]:'=')+(i+2<png.length?alphabet[c&63]:'=');}return 'data:image/png;base64,'+encoded;};
     ctx.drawImage=function(source){flush();return bridge.drawImage(ctx,source,arguments);};
