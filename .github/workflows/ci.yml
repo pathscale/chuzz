@@ -1,8 +1,7 @@
 name: CI
 
-# The gate on pull requests. Until this existed, chuzz ran nothing on a PR:
-# `release.yml` fires on push to master and is the only other workflow, so the
-# first build of any change was the macOS release job, after the merge.
+# The manual CI gate. Both `ci.yml` and `release.yml` trigger only via
+# `workflow_dispatch`.
 #
 # What this can and cannot check, and why it is split that way:
 #
