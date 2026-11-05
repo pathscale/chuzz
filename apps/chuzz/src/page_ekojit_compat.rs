@@ -1189,6 +1189,13 @@ const CRYPTO: &str = r#"(function (g) {
       }
     }
   }
+  if (typeof g.sessionStorage !== 'undefined' &&
+      typeof g.sessionStorage.markSensitive === 'undefined' &&
+      typeof __chuzzSessionMarkSensitive === 'function') {
+    g.sessionStorage.markSensitive = function (key) {
+      return __chuzzSessionMarkSensitive(String(key));
+    };
+  }
 })(globalThis);"#;
 
 /// Install browser compatibility APIs in the document's own JavaScript realm.
