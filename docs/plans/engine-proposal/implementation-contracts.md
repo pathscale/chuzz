@@ -61,6 +61,8 @@ Facts carry their source and lifetime. The proposed classes are:
 
 Unknown host calls invalidate unprotected heap and buffer facts. Safepoints invalidate raw derived heap addresses. TypeScript `number`, `readonly`, casts, `any`, declaration files, or a stable-looking property do not independently prove integer width, own-slot layout, immutability, or safety from getters/proxies. A guard validates runtime values before entering specialized code; guard failure returns to generic semantics rather than inventing a new type error.
 
+For example, a numeric annotation can propose a number guard, but a call with a string must still follow JavaScript behavior unless a separate native contract rejects it at the boundary. An object property annotation does not prove an own slot or exclude a getter. A type assertion is not runtime evidence.
+
 Effects initially remain conservatively ordered. A pass may split effect ordering only after proving memory regions independent. Arithmetic modes, overflow, NaN/signed-zero behavior, conversions, pointer provenance, atomics, exception ordering, and observable effects remain explicit. Rust undefined-behavior or aliasing assumptions cannot be imported into JavaScript or Wasm merely because they share a backend.
 
 ## Deoptimization, OSR, and calls
@@ -82,6 +84,20 @@ Begin memory access with overflow-safe bounds checks. Memory growth or imported 
 The shared backend owns typed IR verification, machine constraints, register allocation, emission, relocations, and separate GC, resume, debug, and unwind metadata. Validate fixed/tied registers, call clobbers, spills, roots, branches, and literal references before publication. A GC map cannot replace a logical frame resume map, and neither can establish native unwind correctness.
 
 JIT publication writes only into private unpublished memory during the platform's approved write window, completes relocations and cache synchronization, restores protection on every exit path, installs metadata, then publishes the entry with release ordering. Avoid writable-and-executable code as a convenience. AOT uses symbolic relocations and checks target/runtime/schema compatibility before load.
+
+Optimization passes declare which IR dialects and semantic modes they accept. The initial fast tier is limited to local CFG cleanup, liveness, type/range propagation with provenance, exact-mode constant folding, local forwarding, dominated-guard elimination, representation selection, bounded inlining, and dead-code removal. Loop motion, unrolling, scalar replacement, and vectorization are later optional work. They require proof that callbacks, exceptions, traps, allocation, safepoints, and reconstruction state preserve their order; numeric-looking operands alone do not make a guest loop safe to reorder.
+
+## TypeScript and Rust boundaries
+
+TypeScript checking and TypeScript execution are distinct. A checked build waits for module-level diagnostics, but ordinary execution need not wait for whole-program checking. Parser or checker resource exhaustion is inconclusive, not success. Type facts retain provenance beside executable terms. Runtime-bearing TypeScript syntax lowers into engine-owned IR; annotations do not generate hidden runtime checks or layouts.
+
+An AOT package may contain native functions, generic fallback bytecode, module initialization descriptions, literals, symbolic runtime bindings, and root/reconstruction metadata. It contains no process addresses or live isolate shape IDs. Loading binds symbolic items to the current realm and runtime after compatibility checks. Dynamic import, `eval`, and `Function` retain their documented behavior when included; an AOT mode that excludes them must declare and check a different input contract.
+
+The Rust frontend retains MIR until an explicit semantic adapter lowers the supported subset. Native functions use a documented ABI-safe adapter; the spelling of an `extern "C"` boundary does not permit a C implementation dependency. Rust `Result`, panic, ownership, and aliasing behavior are converted explicitly. Panics never unwind across generated guest frames; any catch occurs in a Rust wrapper before returning to the engine.
+
+Raw movable guest references are not ordinary Rust FFI values. Rust calls use rooted handles, scoped capabilities, or explicitly verified GC-aware operations. Cross-language inlining starts only for leaf numeric functions whose arithmetic modes and ownership rules agree; general Rust borrowing or alias guarantees cannot be inferred from a JavaScript function signature.
+
+The proposal lists explicit WebAssembly support groups rather than an undifferentiated “Wasm supported” claim: core numeric/control operations, multi-value and bulk memory, reference types and indirect calls, SIMD, shared memories and atomics, memory64 and multiple memories, managed references, and exception handling. The owner must select the release contract. Unsupported declared features fail validation clearly.
 
 ## Licensing and source reuse
 
