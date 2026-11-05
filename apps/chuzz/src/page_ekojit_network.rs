@@ -303,11 +303,73 @@ const SOURCE: &str = r#"(function (g) {
   g.Headers = Headers; g.Request = Request; g.Response = Response;
   if (typeof __chuzzNetAsync === 'function') {
     g.fetch = function (input, init) {
-      var request;
-      try { request = requestRecord(input, init); } catch (error) { return Promise.reject(error); }
+      init = init || {};
       return new Promise(function (resolve, reject) {
-        try { __chuzzNetAsync(request, function (reply) { try { resolve(makeResponse(reply)); } catch (error) { reject(error); } }); }
-        catch (error) { reject(error); }
+        var signal;
+        try { signal = init.signal; } catch (error) { reject(error); return; }
+        var settled = false, aborted = false, id = null, idAssigned = false, listening = false;
+        function cleanup() {
+          if (!listening) return;
+          listening = false;
+          try { signal.removeEventListener('abort', onAbort); } catch (_) {}
+        }
+        function releaseCallback() {
+          if (idAssigned) { try { __chuzzNetForget(id); } catch (_) {} }
+        }
+        function abortReason() {
+          return signal.reason === undefined
+            ? new DOMException('The operation was aborted.', 'AbortError') : signal.reason;
+        }
+        function onAbort() {
+          if (settled) return;
+          settled = true;
+          aborted = true;
+          cleanup();
+          if (idAssigned) releaseCallback();
+          try { reject(abortReason()); } catch (error) { reject(error); }
+        }
+        if (signal && signal.aborted) {
+          settled = true;
+          reject(abortReason());
+          return;
+        }
+        if (signal) {
+          if (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function') {
+            settled = true;
+            reject(new TypeError('signal must be an AbortSignal'));
+            return;
+          }
+          try {
+            listening = true;
+            signal.addEventListener('abort', onAbort);
+            if (signal.aborted) { onAbort(); return; }
+          } catch (error) {
+            settled = true;
+            cleanup();
+            reject(error);
+            return;
+          }
+        }
+        var request;
+        try { request = requestRecord(input, init); }
+        catch (error) { settled = true; cleanup(); reject(error); return; }
+        // Request getters can synchronously abort while normalization runs.
+        if (settled) return;
+        try {
+          id = __chuzzNetAsync(request, function (reply) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            try { resolve(makeResponse(reply)); } catch (error) { reject(error); }
+          });
+          idAssigned = true;
+          if (aborted) releaseCallback();
+        } catch (error) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(error);
+        }
       });
     };
   }
