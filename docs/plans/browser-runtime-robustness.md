@@ -39,6 +39,10 @@ implementation tasks.
 
 ### Browser policy and observable API behavior
 
+- Revalidate API-inventory and prototype-probe reports against observable
+  behavior before implementing a reported missing API; rule out probe false
+  positives and assign renderer or engine causes to their respective owners.
+
 - Keep site permissions and user activation in the browser app. Gate WebAuthn
   and audio resume on the appropriate site identity, focused tab, and user
   gesture; arbitrate prompts per tab. Page-side API shims must not invent
@@ -65,6 +69,10 @@ implementation tasks.
 
 ### Rendering and media host integration
 
+- Revalidate URL audio playback in headless mode with a neutral fixture.
+  Require observable audio and video delivery, rather than connection success
+  alone, while preserving autoplay and permission policy.
+
 - Drive animation callbacks from the document frame lifecycle with one
   generation per frame, timestamps on the page performance clock, and no
   callbacks for hidden or discarded pages. Avoid coupling animation delivery
@@ -85,6 +93,10 @@ implementation tasks.
   constraint, not a performance claim until measured.
 
 ### Deterministic acceptance and release readiness
+
+- Verify TLS certificate-path selection under the approved crypto policy using
+  browser-native probes and the TLS fixture backend. Distinguish path-selection
+  failures from unsupported algorithms and application-level refusal.
 
 - Maintain a small, redistributable set of local pages with bundled fonts,
   stable viewport and scale, and explicit checks for DOM interaction, layout,

@@ -11,6 +11,13 @@ This plan records cross-cutting behavior that still needs focused verification o
 
 ## Runtime and rendering evidence
 
+- Run the GUI suite and the exact reported flow on an identified build. Cover
+  active, first, multiple, and last-tab closure, keyboard close, and page-panic
+  containment; verify PDF navigation and visible PDF rendering in the GUI.
+- Reduce historical stale-page reports to a neutral mutation-sequence fixture
+  before treating them as actionable. Assign renderer and engine causes to
+  their owners rather than assuming a browser-host defect.
+
 - Verify native document lifecycle behavior through the browser's GUI and headless control paths: polling, diagnostics, observation delivery, session capture, and idle revisions. An acknowledgement alone does not prove event delivery.
 - Validate browser compatibility APIs against observable behavior before advertising them. In particular, exercise abort and reentrant event handling, option validation, and any media APIs that claim stream support.
 - Add or maintain a small, redistributable cached-page fixture set with stable viewport, scale, and fonts. Compare rendered output and report per-page failures without relying on live-site rankings.
