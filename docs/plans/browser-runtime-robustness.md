@@ -43,12 +43,21 @@ implementation tasks.
   and audio resume on the appropriate site identity, focused tab, and user
   gesture; arbitrate prompts per tab. Page-side API shims must not invent
   permission grants or bypass browser policy.
+- The native WebAuthn `begin` path still lacks a focused-tab and one-use
+  activation capability. Decide whether to deny create/get until that mediation
+  is implemented or implement native capability consumption with blur
+  cancellation and an RP-named prompt. Origin validation alone is not focus or
+  user activation.
 - Validate browser compatibility APIs through observable behavior, including
   abort and reentrant event delivery, option validation, and media stream
   claims. Keep unsupported operations explicit and consistent.
 - Preserve cross-origin canvas and GPU tainting, prevent SVG image loads from
   accessing host files, and keep CSP checks at document and fetch boundaries
   distinct from browser-owned capability policy.
+- The shared video pixel-source resolver currently rejects every video pixel
+  import until origin-clean provenance is carried through decode and rendering.
+  Verify same-origin video imports and cross-origin taint before removing that
+  conservative guard.
 - Ensure keyboard focus and scrolling have coherent document behavior,
   including initial tab focus, tabindex ordering, contenteditable focus, and
   keyboard scrolling. Confirm window scroll and resize events reflect actual
