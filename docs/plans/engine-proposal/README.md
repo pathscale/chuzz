@@ -12,6 +12,7 @@ The design's benchmark and corpus specification is intentionally not reproduced 
 
 - [Architecture and invariants](architecture.md): boundaries, immutable artifacts, runtime, compiler, memory, scheduling, policy, and host integration.
 - [Runtime and compiler contracts](implementation-contracts.md): representation, heap, bytecode, IR facts, deoptimization, Wasm, code publication, and source-reuse constraints.
+- [Candidate component boundaries](component-assessment.md): Rust frontend, Wasm, compiler, scheduler, and host directions, all still subject to current source and license review.
 - [Staged implementation proposal](stages.md): dependency order, deliverables, and stop conditions without the removed benchmark matrix.
 
 ## Source disposition
