@@ -11,6 +11,7 @@ The design's benchmark and corpus specification is intentionally not reproduced 
 ## Contents
 
 - [Architecture and invariants](architecture.md): boundaries, immutable artifacts, runtime, compiler, memory, scheduling, policy, and host integration.
+- [Runtime and compiler contracts](implementation-contracts.md): representation, heap, bytecode, IR facts, deoptimization, Wasm, code publication, and source-reuse constraints.
 - [Staged implementation proposal](stages.md): dependency order, deliverables, and stop conditions without the removed benchmark matrix.
 
 ## Source disposition
