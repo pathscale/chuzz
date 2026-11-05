@@ -271,10 +271,11 @@ impl Bridge {
         match source {
             Source::Video { handle } => {
                 let frames = Arc::clone(&self.state().media_frames);
-                frames
-                    .take(handle)
-                    .map(|frame| frame.image)
-                    .map_err(GpuError::validation)
+                // Consume the handle without exposing pixels until provenance is tracked.
+                let _ = frames.take(handle);
+                Err(GpuError::validation(
+                    "video pixel extraction requires origin-clean tracking",
+                ))
             }
             Source::Bitmap { handle } => self
                 .state()
