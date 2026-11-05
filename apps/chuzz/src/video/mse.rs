@@ -392,19 +392,25 @@ impl Presentation {
 
     fn memory(&self) -> usize {
         let mut seen = HashSet::new();
-        self.buffers
-            .values()
-            .map(|buffer| {
-                buffer.parser.pending_bytes()
-                    + buffer
-                        .video
-                        .iter()
-                        .chain(buffer.audio.iter())
-                        .filter(|packet| seen.insert(Arc::as_ptr(&packet.bytes)))
-                        .map(|packet| packet.bytes.len())
-                        .sum::<usize>()
-            })
-            .sum()
+        self.buffers.values().fold(0usize, |total, buffer| {
+            let metadata = buffer
+                .video
+                .capacity()
+                .saturating_add(buffer.audio.capacity())
+                .saturating_mul(std::mem::size_of::<Encoded>());
+            let payload = buffer
+                .video
+                .iter()
+                .chain(buffer.audio.iter())
+                .filter(|packet| seen.insert(Arc::as_ptr(&packet.bytes)))
+                .fold(0usize, |bytes, packet| {
+                    bytes.saturating_add(packet.bytes.len())
+                });
+            total
+                .saturating_add(buffer.parser.pending_bytes())
+                .saturating_add(metadata)
+                .saturating_add(payload)
+        })
     }
 
     fn ranges(&self) -> Vec<[f64; 2]> {

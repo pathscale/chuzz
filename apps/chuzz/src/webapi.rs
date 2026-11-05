@@ -15,6 +15,13 @@ pub mod native_host;
 mod storage;
 
 const LIMIT: usize = 64 * 1024 * 1024;
+const MAX_BROADCAST_NAME_BYTES: usize = 1024;
+const MAX_BROADCAST_CHANNELS: usize = 128;
+const MAX_REALM_BROADCAST_CHANNELS: usize = 32;
+const MAX_BROADCAST_QUEUE_MESSAGES: usize = 32;
+const MAX_LOCK_NAME_BYTES: usize = 1024;
+const MAX_LOCKS: usize = 128;
+const MAX_REALM_LOCKS: usize = 32;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static PROCESS: LazyLock<Mutex<Process>> = LazyLock::new(Mutex::default);
 
@@ -305,8 +312,20 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
             Ok(Reply::Random(bytes))
         }
         Operation::BroadcastOpen { name } => {
+            let mut process = lock(&PROCESS);
+            if name.len() > MAX_BROADCAST_NAME_BYTES
+                || process.channels.len() >= MAX_BROADCAST_CHANNELS
+                || process
+                    .channels
+                    .values()
+                    .filter(|channel| channel.owner == realm.id)
+                    .count()
+                    >= MAX_REALM_BROADCAST_CHANNELS
+            {
+                return Err("broadcast channel limit reached".to_owned());
+            }
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            lock(&PROCESS).channels.insert(
+            process.channels.insert(
                 id,
                 Channel {
                     owner: realm.id,
@@ -358,14 +377,7 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
                     if *other_id != id
                         && channel.origin == realm.origin
                         && channel.name == name
-                        && (channel.incoming.len() >= 4096
-                            || channel
-                                .incoming
-                                .iter()
-                                .map(|wire| wire.len())
-                                .sum::<usize>()
-                                .saturating_add(wire.len())
-                                > LIMIT)
+                        && channel.incoming.len() >= MAX_BROADCAST_QUEUE_MESSAGES
                     {
                         return Err("broadcast queue limit reached".to_owned());
                     }
@@ -554,6 +566,9 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
                 );
             }
             let mut process = lock(&PROCESS);
+            if name.len() > MAX_LOCK_NAME_BYTES {
+                return Err("web lock name limit reached".to_owned());
+            }
             let blocked = process.leases.iter().any(|lease| {
                 !lease.stolen
                     && !lease.released
@@ -564,6 +579,16 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
             if available && blocked {
                 return Ok(Reply::Null);
             }
+            if process.leases.len() >= MAX_LOCKS
+                || process
+                    .leases
+                    .iter()
+                    .filter(|lease| lease.owner == realm.id)
+                    .count()
+                    >= MAX_REALM_LOCKS
+            {
+                return Err("web lock limit reached".to_owned());
+            }
             if steal {
                 for lease in &mut process.leases {
                     if lease.origin == realm.origin && lease.name == name && lease.held {
@@ -573,9 +598,6 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
                 }
             }
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            if process.leases.len() >= 4096 {
-                return Err("lock request limit reached".to_owned());
-            }
             let lease = Lease {
                 id,
                 owner: realm.id,
@@ -970,5 +992,127 @@ mod wave35_tests {
             dispatch(&c, Operation::LockStatus { id: z }).unwrap(),
             Reply::Boolean(true)
         ));
+    }
+
+    #[test]
+    fn webapi_bounds_broadcast_names_channels_queues_and_lock_requests() {
+        let owner = realm("https://resource-limits.invalid");
+        assert!(
+            dispatch(
+                &owner,
+                Operation::BroadcastOpen {
+                    name: "x".repeat(MAX_BROADCAST_NAME_BYTES + 1),
+                },
+            )
+            .is_err()
+        );
+        for _ in 0..MAX_REALM_BROADCAST_CHANNELS {
+            dispatch(
+                &owner,
+                Operation::BroadcastOpen {
+                    name: "bounded".into(),
+                },
+            )
+            .unwrap();
+        }
+        assert!(
+            dispatch(
+                &owner,
+                Operation::BroadcastOpen {
+                    name: "bounded".into(),
+                },
+            )
+            .is_err()
+        );
+
+        let (sender, receiver) = (
+            realm("https://empty-queue.invalid"),
+            realm("https://empty-queue.invalid"),
+        );
+        let sender_id = id(dispatch(
+            &sender,
+            Operation::BroadcastOpen {
+                name: "zero-byte-message".into(),
+            },
+        )
+        .unwrap());
+        dispatch(
+            &receiver,
+            Operation::BroadcastOpen {
+                name: "zero-byte-message".into(),
+            },
+        )
+        .unwrap();
+        for _ in 0..MAX_BROADCAST_QUEUE_MESSAGES {
+            dispatch(
+                &sender,
+                Operation::BroadcastPost {
+                    id: sender_id,
+                    wire: String::new(),
+                },
+            )
+            .unwrap();
+        }
+        assert!(
+            dispatch(
+                &sender,
+                Operation::BroadcastPost {
+                    id: sender_id,
+                    wire: String::new(),
+                },
+            )
+            .is_err()
+        );
+
+        let lock_owner = realm("https://lock-limits.invalid");
+        for index in 0..MAX_REALM_LOCKS {
+            dispatch(
+                &lock_owner,
+                Operation::LockRequest {
+                    name: format!("lock-{index}"),
+                    shared: false,
+                    available: false,
+                    steal: false,
+                },
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            dispatch(
+                &lock_owner,
+                Operation::LockRequest {
+                    name: "lock-0".into(),
+                    shared: false,
+                    available: true,
+                    steal: false,
+                },
+            )
+            .unwrap(),
+            Reply::Null
+        ));
+        assert!(
+            dispatch(
+                &lock_owner,
+                Operation::LockRequest {
+                    name: "another-lock".into(),
+                    shared: false,
+                    available: false,
+                    steal: false,
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            dispatch(
+                &lock_owner,
+                Operation::LockRequest {
+                    name: "x".repeat(MAX_LOCK_NAME_BYTES + 1),
+                    shared: false,
+                    available: false,
+                    steal: false,
+                },
+            )
+            .is_err()
+        );
     }
 }

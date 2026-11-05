@@ -26,6 +26,13 @@ implementation tasks.
 - Bound script work, host-object tables, event retention, node handles, and
   memory growth. Reclaim host objects when their script objects are no longer
   live; avoid permanent pinning of every node ever exposed to script.
+- Keep BroadcastChannel names, per-realm/process channel counts, per-channel
+  queued message counts, and Web Locks requests bounded. Current source caps
+  names at 1 KiB, channels and lock requests at 32 per realm/128 process-wide,
+  and each BroadcastChannel queue at 32 messages. Verify these limits and
+  observable refusal behavior against the supported workload before treating
+  them as compatibility-complete; focused tests are present but still need to
+  run.
 - Report console errors, runtime exceptions, panics, and useful per-document
   resource metrics through diagnostics. A successful command acknowledgement
   alone is not evidence that asynchronous events were delivered.

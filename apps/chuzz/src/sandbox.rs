@@ -106,13 +106,12 @@ fn own_directory(path: &Path, home: &Path) -> Result<PathBuf, String> {
 fn content_root(path: PathBuf, home: &Path, reads: &mut Vec<PathBuf>) -> Result<(), String> {
     let path = path.canonicalize().map_err(|error| error.to_string())?;
     let root = if path.is_dir() {
+        own_directory(&path, home)?
+    } else if path.is_file() {
         path
     } else {
-        path.parent()
-            .ok_or("content path has no directory")?
-            .to_path_buf()
+        return Err("sandbox-content-not-regular".to_owned());
     };
-    let root = own_directory(&root, home)?;
     if !reads.contains(&root) {
         reads.push(root);
     }
