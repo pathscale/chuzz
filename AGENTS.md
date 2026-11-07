@@ -54,7 +54,7 @@
   version error. A caret on both sides makes the shared range the thing that
   keeps them equal, instead of a revision someone has to remember to move twice.
 - Work on a branch and ship through a pull request. Do not commit to `main`.
-- Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` before delivery.
+- Before workspace tests, set `CHUZZ_TEST_SCRATCH_ROOT` to an existing owned, writable directory outside the checkout; the tests create and clean their own fixtures there. For example: `CHUZZ_TEST_SCRATCH_ROOT=/path/to/owned-scratch cargo test --workspace --all-features`. Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings` before delivery.
 
 ## Invariants (do not break these)
 

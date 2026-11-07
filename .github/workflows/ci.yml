@@ -192,6 +192,8 @@ jobs:
   # settings, theme controls, identity switching and the redraw stress page.
   app:
     runs-on: namespace-profile-agency-tahoe
+    env:
+      CHUZZ_TEST_SCRATCH_ROOT: ${{ runner.temp }}/chuzz-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -221,6 +223,13 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -p chuzz --all-targets -- -D warnings
+
+      - name: Prepare owned test scratch
+        id: test_scratch
+        run: |
+          mkdir -m 700 "$CHUZZ_TEST_SCRATCH_ROOT"
+          printf 'owned=true\n' >> "$GITHUB_OUTPUT"
+          printf 'Owner: Chuzz test job. Purpose: isolated fixtures. Delete after this job.\n' > "$CHUZZ_TEST_SCRATCH_ROOT/OWNER.md"
 
       - name: Test
         run: cargo test --workspace
@@ -254,3 +263,7 @@ jobs:
           path: ${{ runner.temp }}/chuzz-visible-qa
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Clean test scratch
+        if: ${{ always() && steps.test_scratch.outputs.owned == 'true' }}
+        run: rm -rf -- "$CHUZZ_TEST_SCRATCH_ROOT"

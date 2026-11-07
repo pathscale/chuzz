@@ -118,6 +118,48 @@ fn content_root(path: PathBuf, home: &Path, reads: &mut Vec<PathBuf>) -> Result<
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
+const METAL_CACHE_NAMES: [&str; 5] = [
+    "com.pathscale.chuzz",
+    "chuzz-gui",
+    "com.apple.metal",
+    "com.apple.metalfe",
+    "com.apple.gpuarchiver",
+];
+
+#[cfg(any(target_os = "macos", test))]
+fn collect_metal_caches(darwin_cache: &Path, home: &Path) -> Vec<PathBuf> {
+    let mut metal_caches = Vec::new();
+    for name in METAL_CACHE_NAMES {
+        let expected = darwin_cache.join(name);
+        match std::fs::create_dir(&expected) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => continue,
+        }
+
+        let Ok(metadata) = std::fs::symlink_metadata(&expected) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let Ok(canonical) = expected.canonicalize() else {
+            continue;
+        };
+        if canonical != expected || canonical.parent() != Some(darwin_cache) {
+            continue;
+        }
+        let Ok(owned) = own_directory(&expected, home) else {
+            continue;
+        };
+        if owned == expected && !metal_caches.contains(&owned) {
+            metal_caches.push(owned);
+        }
+    }
+    metal_caches
+}
+
 fn install() -> Result<Arc<Directories>, String> {
     crate::platform_hardening::ensure()?;
     let home = std::env::var_os("HOME")
@@ -252,21 +294,7 @@ fn install() -> Result<Arc<Directories>, String> {
             {
                 let darwin_cache = PathBuf::from(text);
                 if let Ok(darwin_cache) = darwin_cache.canonicalize() {
-                    for sub in [
-                        "com.pathscale.chuzz",
-                        "chuzz-gui",
-                        "com.apple.metal",
-                        "com.apple.metalfe",
-                        "com.apple.gpuarchiver",
-                    ] {
-                        let dir = darwin_cache.join(sub);
-                        let _ = std::fs::create_dir_all(&dir);
-                        if let Ok(canon) = own_directory(&dir, &home)
-                            && !metal_caches.contains(&canon)
-                        {
-                            metal_caches.push(canon);
-                        }
-                    }
+                    metal_caches = collect_metal_caches(&darwin_cache, &home);
                 }
             }
         }
@@ -318,4 +346,242 @@ fn migrate_profile(source: &Path, destination: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod metal_cache_tests {
+    use super::{METAL_CACHE_NAMES, collect_metal_caches};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const FIXTURE_ROOT_ENV: &str = "CHUZZ_TEST_SCRATCH_ROOT";
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct Fixture {
+        root: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::var_os(FIXTURE_ROOT_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    panic!("set {FIXTURE_ROOT_ENV} to an existing owned writable scratch directory")
+                });
+            Self::new_in(&root, NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed))
+        }
+
+        fn new_in(root: &Path, first_id: u64) -> Self {
+            let root = root
+                .canonicalize()
+                .expect("canonicalize owned scratch root");
+            assert!(root.is_dir(), "scratch root must be a directory");
+
+            for id in first_id..first_id.saturating_add(128) {
+                let path = root.join(format!("chuzz-sandbox-fixture-{}-{id}", std::process::id()));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => {
+                        let canonical = path.canonicalize().expect("canonicalize new fixture");
+                        assert_eq!(canonical, path, "fixture must remain a direct child");
+                        assert_eq!(canonical.parent(), Some(root.as_path()));
+                        return Self {
+                            root,
+                            path: canonical,
+                        };
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("create exclusive fixture directory: {error}"),
+                }
+            }
+            panic!("could not allocate a unique fixture directory under scratch root");
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if self.path.parent() != Some(self.root.as_path()) {
+                return;
+            }
+            let Ok(metadata) = std::fs::symlink_metadata(&self.path) else {
+                return;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return;
+            }
+            if self.path.canonicalize().ok().as_deref() != Some(self.path.as_path()) {
+                return;
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn fixture_retries_existing_directory_and_symlink_collisions() {
+        use std::os::unix::fs::symlink;
+
+        let collision_root_owner = Fixture::new();
+        let root = collision_root_owner.path();
+        let first_id = 0;
+        let directory_collision = root.join(format!(
+            "chuzz-sandbox-fixture-{}-{first_id}",
+            std::process::id()
+        ));
+        let symlink_collision = root.join(format!(
+            "chuzz-sandbox-fixture-{}-{}",
+            std::process::id(),
+            first_id + 1
+        ));
+        let witness = root.join(format!(
+            "chuzz-sandbox-collision-witness-{}-{first_id}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory_collision).expect("create preexisting directory collision");
+        let sentinel = directory_collision.join("sentinel");
+        std::fs::write(&sentinel, b"preserve directory collision")
+            .expect("write collision sentinel");
+        std::fs::create_dir(&witness).expect("create symlink collision target");
+        symlink(&witness, &symlink_collision).expect("create preexisting symlink collision");
+
+        let fixture = Fixture::new_in(root, first_id);
+        assert_ne!(fixture.path(), directory_collision);
+        assert_ne!(fixture.path(), symlink_collision);
+        assert_eq!(
+            std::fs::read(&sentinel).unwrap(),
+            b"preserve directory collision"
+        );
+        assert!(
+            std::fs::symlink_metadata(&directory_collision)
+                .unwrap()
+                .is_dir()
+        );
+        assert!(
+            std::fs::symlink_metadata(&symlink_collision)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(&symlink_collision).unwrap(), witness);
+
+        drop(fixture);
+        assert_eq!(
+            std::fs::read(&sentinel).unwrap(),
+            b"preserve directory collision"
+        );
+        assert!(
+            std::fs::symlink_metadata(&symlink_collision)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(&symlink_collision).unwrap(), witness);
+        std::fs::remove_file(&symlink_collision).expect("remove test symlink collision");
+        std::fs::remove_dir_all(&directory_collision).expect("remove test directory collision");
+        std::fs::remove_dir_all(&witness).expect("remove test symlink target");
+        drop(collision_root_owner);
+    }
+
+    #[test]
+    fn admits_only_exact_direct_metal_cache_directories() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let cache = fixture.path().join("cache");
+        let home = fixture.path().join("home");
+        let sibling = fixture.path().join("unrelated-sibling");
+        std::fs::create_dir(&cache).expect("create synthetic cache root");
+        std::fs::create_dir(&home).expect("create synthetic home");
+        let cache = cache.canonicalize().expect("canonicalize fixture cache");
+        let home = home.canonicalize().expect("canonicalize fixture home");
+        std::fs::create_dir(&sibling).expect("create unrelated sibling");
+        let sentinel = sibling.join("sentinel");
+        std::fs::write(&sentinel, b"untouched").expect("write unrelated sentinel");
+
+        let external_link = cache.join("com.apple.metal");
+        symlink(&sibling, &external_link).expect("create escaping symlink");
+        let positive = cache.join("com.pathscale.chuzz");
+        std::fs::create_dir(&positive).expect("create positive-control child");
+        let in_root_target = positive.clone();
+        let in_root_link = cache.join("com.apple.gpuarchiver");
+        symlink(&in_root_target, &in_root_link).expect("create in-root symlink");
+        let dangling_link = cache.join("com.apple.metalfe");
+        symlink(cache.join("missing-target"), &dangling_link).expect("create dangling symlink");
+        let admitted = collect_metal_caches(&cache, &home);
+        let expected: Vec<PathBuf> = ["com.pathscale.chuzz", "chuzz-gui"]
+            .into_iter()
+            .map(|name| cache.join(name))
+            .collect();
+
+        assert!(admitted.contains(&positive.canonicalize().unwrap()));
+        assert!(!admitted.contains(&cache.join("com.apple.gpuarchiver")));
+        assert!(!admitted.contains(&external_link));
+        assert!(!admitted.contains(&sibling));
+        assert!(!admitted.contains(&dangling_link));
+        assert!(admitted.contains(&cache.join("chuzz-gui")));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+        assert!(
+            std::fs::symlink_metadata(&external_link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(&external_link).unwrap(), sibling);
+        assert!(
+            std::fs::symlink_metadata(&in_root_link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(&in_root_link).unwrap(), in_root_target);
+        assert!(
+            std::fs::symlink_metadata(&dangling_link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(&dangling_link).unwrap(),
+            cache.join("missing-target")
+        );
+        for path in &admitted {
+            assert!(
+                METAL_CACHE_NAMES
+                    .iter()
+                    .any(|name| path == &cache.join(name))
+            );
+            assert_eq!(path.parent(), Some(cache.as_path()));
+        }
+        assert_eq!(admitted, expected);
+        assert!(in_root_target.is_dir());
+    }
+
+    #[test]
+    fn regular_file_at_allowlisted_child_does_not_suppress_valid_siblings() {
+        let fixture = Fixture::new();
+        let cache = fixture.path().join("cache");
+        let home = fixture.path().join("home");
+        std::fs::create_dir(&cache).expect("create synthetic cache root");
+        std::fs::create_dir(&home).expect("create synthetic home");
+        let cache = cache.canonicalize().expect("canonicalize fixture cache");
+        let home = home.canonicalize().expect("canonicalize fixture home");
+        let blocked = cache.join("com.apple.metal");
+        std::fs::write(&blocked, b"leave unchanged").expect("create regular-file child");
+
+        let admitted = collect_metal_caches(&cache, &home);
+        assert!(!admitted.contains(&blocked));
+        assert!(admitted.contains(&cache.join("com.pathscale.chuzz")));
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"leave unchanged");
+        for path in &admitted {
+            assert!(
+                METAL_CACHE_NAMES
+                    .iter()
+                    .any(|name| path == &cache.join(name))
+            );
+            assert_eq!(path.parent(), Some(cache.as_path()));
+        }
+    }
 }
