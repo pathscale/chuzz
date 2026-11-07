@@ -43,10 +43,10 @@
 - **Building against a working checkout is opt-in and never edits a tracked
   file.** Put the `[patch]` tables in `.cargo/local-engine.toml`, which is
   gitignored, and reach for them per command:
-  `scripts/local-engine.sh check -p chuzz-gui`. The wrapper snapshots and
-  restores any `Cargo.lock` a redirected build leaves behind, because that one
-  points at directories that exist on one machine and the next plain `cargo
-  build` would silently reuse it. Patch only the crates you are actually
+  `scripts/local-engine.sh check -p chuzz`. The wrapper gives each redirected
+  build a disposable manifest workspace and removes that workspace on exit.
+  Its lockfile stays inside the overlay; cleanup never reads, restores, or
+  deletes the checkout's `Cargo.lock`. Patch only the crates you are actually
   changing; every entry is a pin that stops being tested.
 - When you move the engine version, move `izumo`'s to match. Both
   resolve a ps-blitz, and two different ones put two engines in the graph, which
