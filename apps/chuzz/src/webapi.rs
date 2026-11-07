@@ -15,6 +15,7 @@ pub mod native_host;
 mod storage;
 
 const LIMIT: usize = 64 * 1024 * 1024;
+const MAX_MESSAGE_PORT_ENDPOINTS: usize = 4096;
 const MAX_BROADCAST_NAME_BYTES: usize = 1024;
 const MAX_BROADCAST_CHANNELS: usize = 128;
 const MAX_REALM_BROADCAST_CHANNELS: usize = 32;
@@ -37,6 +38,39 @@ struct Process {
 }
 
 impl Process {
+    fn create_port_pair(&mut self, owner: u64) -> Result<u64, String> {
+        if self
+            .ports
+            .ports
+            .len()
+            .checked_add(2)
+            .map_or(true, |count| count > MAX_MESSAGE_PORT_ENDPOINTS)
+        {
+            return Err("message port limit reached".to_owned());
+        }
+
+        let id = NEXT_ID.fetch_add(2, Ordering::Relaxed);
+        self.ports.ports.insert(
+            id,
+            storage::Port {
+                owner,
+                peer: id + 1,
+                started: false,
+                incoming: VecDeque::new(),
+            },
+        );
+        self.ports.ports.insert(
+            id + 1,
+            storage::Port {
+                owner,
+                peer: id,
+                started: false,
+                incoming: VecDeque::new(),
+            },
+        );
+        Ok(id)
+    }
+
     fn queued_bytes(&self) -> usize {
         self.channels
             .values()
@@ -428,29 +462,8 @@ fn dispatch(realm: &Realm, operation: Operation) -> Result<Reply, String> {
             Ok(Reply::Id(realm.id))
         }
         Operation::PortPair => {
-            if lock(&PROCESS).ports.ports.len() >= 4096 {
-                return Err("message port limit reached".to_owned());
-            }
-            let id = NEXT_ID.fetch_add(2, Ordering::Relaxed);
             let mut process = lock(&PROCESS);
-            process.ports.ports.insert(
-                id,
-                storage::Port {
-                    owner: realm.id,
-                    peer: id + 1,
-                    started: false,
-                    incoming: VecDeque::new(),
-                },
-            );
-            process.ports.ports.insert(
-                id + 1,
-                storage::Port {
-                    owner: realm.id,
-                    peer: id,
-                    started: false,
-                    incoming: VecDeque::new(),
-                },
-            );
+            let id = process.create_port_pair(realm.id)?;
             Ok(Reply::Id(id))
         }
         Operation::PortPost { id, wire } => {
@@ -830,6 +843,112 @@ fn compress(format: &str, input: &[u8], decode: bool) -> Result<Vec<u8>, String>
 #[cfg(test)]
 mod wave35_tests {
     use super::*;
+
+    const TEST_PORT_BASE: u64 = 1 << 60;
+
+    fn process_with_ports(count: usize) -> Process {
+        assert_eq!(count % 2, 0);
+        let mut process = Process::default();
+        for offset in (0..count).step_by(2) {
+            let id = TEST_PORT_BASE + offset as u64;
+            process.ports.ports.insert(
+                id,
+                storage::Port {
+                    owner: 7,
+                    peer: id + 1,
+                    started: offset == 0,
+                    incoming: if offset == 0 {
+                        VecDeque::from(["queued".to_owned()])
+                    } else {
+                        VecDeque::new()
+                    },
+                },
+            );
+            process.ports.ports.insert(
+                id + 1,
+                storage::Port {
+                    owner: 7,
+                    peer: id,
+                    started: false,
+                    incoming: VecDeque::new(),
+                },
+            );
+        }
+        process
+    }
+
+    fn port_snapshot(process: &Process) -> Vec<(u64, u64, u64, bool, Vec<String>)> {
+        let mut ports = process
+            .ports
+            .ports
+            .iter()
+            .map(|(id, port)| {
+                (
+                    *id,
+                    port.owner,
+                    port.peer,
+                    port.started,
+                    port.incoming.iter().cloned().collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        ports.sort_by_key(|port| port.0);
+        ports
+    }
+
+    fn close_endpoint(process: &mut Process, id: u64) {
+        if let Some(port) = process.ports.ports.remove(&id)
+            && let Some(peer) = process.ports.ports.get_mut(&port.peer)
+        {
+            peer.peer = 0;
+        }
+    }
+
+    #[test]
+    fn message_port_pair_admission_is_atomic_at_endpoint_limit() {
+        let mut process = process_with_ports(MAX_MESSAGE_PORT_ENDPOINTS - 2);
+
+        let id = process.create_port_pair(42).unwrap();
+        assert_eq!(process.ports.ports.len(), MAX_MESSAGE_PORT_ENDPOINTS);
+        let first = process.ports.ports.get(&id).unwrap();
+        let second = process.ports.ports.get(&(id + 1)).unwrap();
+        assert_eq!(first.owner, 42);
+        assert_eq!(second.owner, 42);
+        assert_eq!(first.peer, id + 1);
+        assert_eq!(second.peer, id);
+        assert!(!first.started && !second.started);
+        assert!(first.incoming.is_empty() && second.incoming.is_empty());
+
+        let full = port_snapshot(&process);
+        assert_eq!(
+            process.create_port_pair(43).unwrap_err(),
+            "message port limit reached"
+        );
+        assert_eq!(port_snapshot(&process), full);
+
+        close_endpoint(&mut process, TEST_PORT_BASE);
+        assert_eq!(process.ports.ports.len(), MAX_MESSAGE_PORT_ENDPOINTS - 1);
+        let one_slot = port_snapshot(&process);
+        assert_eq!(
+            process.create_port_pair(43).unwrap_err(),
+            "message port limit reached"
+        );
+        assert_eq!(port_snapshot(&process), one_slot);
+
+        close_endpoint(&mut process, TEST_PORT_BASE + 2);
+        assert_eq!(process.ports.ports.len(), MAX_MESSAGE_PORT_ENDPOINTS - 2);
+        let admitted_id = process.create_port_pair(43).unwrap();
+        assert_eq!(process.ports.ports.len(), MAX_MESSAGE_PORT_ENDPOINTS);
+        let admitted_first = process.ports.ports.get(&admitted_id).unwrap();
+        let admitted_second = process.ports.ports.get(&(admitted_id + 1)).unwrap();
+        assert_eq!(admitted_first.owner, 43);
+        assert_eq!(admitted_second.owner, 43);
+        assert_eq!(admitted_first.peer, admitted_id + 1);
+        assert_eq!(admitted_second.peer, admitted_id);
+        assert!(!admitted_first.started && !admitted_second.started);
+        assert!(admitted_first.incoming.is_empty() && admitted_second.incoming.is_empty());
+    }
+
     fn realm(origin: &str) -> Arc<Realm> {
         new_realm(
             Some(&Url::parse(origin).unwrap()),
