@@ -30,7 +30,10 @@ app_manifest="$root/apps/chuzz/Cargo.toml"
 # caller's explicit target directory when one is already set.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
 # A caller can supply a command runner for resource and concurrency policy.
-# The runner receives the same arguments as cargo, including global flags.
+# It must forward every supplied argument to Cargo with the same boundaries
+# and order, including the generated --manifest-path and --config, wait for
+# Cargo to finish, and propagate Cargo's status. It must not substitute a
+# checkout manifest or separately run Cargo against the checkout.
 run_cargo() {
     if [[ -n "${CHUZZ_CARGO_RUNNER:-}" ]]; then
         "$CHUZZ_CARGO_RUNNER" "$@"
@@ -71,7 +74,12 @@ fi
 # running. A temporary workspace contains copied manifests and symlinked
 # package files, preserving package-relative source and target paths.
 overlay="$(mktemp -d "${TMPDIR:-/tmp}/chuzz-local-engine.XXXXXX")"
-trap 'rm -rf "$overlay"' EXIT INT TERM
+cleanup() {
+    rm -rf "$overlay"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 root_snapshot="$overlay/source-Cargo.toml"
 app_snapshot="$overlay/source-chuzz-Cargo.toml"
 cp "$workspace_manifest" "$root_snapshot"
@@ -130,44 +138,12 @@ awk '
     END { if (feature != 1 || system_fonts != 1 || dependency != 1) exit 42 }
 ' "$app_snapshot" > "$overlay_app" || {
     printf 'Could not create the local Ekojit package manifest overlay.\n' >&2
-    rm -rf "$overlay"
     exit 1
 }
 
-# Cargo writes a lockfile in the temporary workspace when a `[patch]` redirects
-# a dependency to a path. The overlay cleanup removes that lockfile. Snapshot
-# the repository lock too so a custom runner cannot leave a redirected lock in
-# the checkout.
-#
-# Snapshot and restore on every exit path, including a failed build and a
-# Ctrl-C, so the redirect cannot outlive the command. There may be no lockfile
-# to snapshot on a fresh checkout, in which case the restore removes whatever
-# the redirected build created.
-lock="$root/Cargo.lock"
-snapshot="$(mktemp)"
-had_lock=0
-if [ -f "$lock" ]; then
-    had_lock=1
-    cp "$lock" "$snapshot"
-fi
-lock_restored=0
-restore() {
-    if [ "$lock_restored" -eq 1 ]; then
-        return
-    fi
-    lock_restored=1
-    if [ "$had_lock" -eq 1 ]; then
-        cp "$snapshot" "$lock"
-    else
-        rm -f "$lock"
-    fi
-    rm -f "$snapshot"
-    rm -rf "$overlay"
-}
-trap restore EXIT INT TERM
-
-# Resolve afresh in the disposable workspace so an existing lock cannot leave
-# a local patch unused. The trap restores the caller's lock, including on error.
+# Cargo resolves and writes its lockfile in the disposable overlay workspace;
+# the EXIT cleanup removes that lock with the overlay and never touches the
+# checkout's Cargo.lock. Both dispatch paths use the generated manifest.
 command="$1"
 shift
 if [ "$command" = fmt ]; then
