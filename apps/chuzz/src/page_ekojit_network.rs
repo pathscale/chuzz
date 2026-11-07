@@ -377,7 +377,7 @@ const SOURCE: &str = r#"(function (g) {
     if (!(this instanceof XMLHttpRequest)) throw new TypeError("XMLHttpRequest must be constructed");
     eventTarget(this); this.readyState = 0; this.responseType = ''; this.response = null; this.responseText = '';
     this.responseURL = ''; this.status = 0; this.statusText = ''; this.timeout = 0; this.withCredentials = false;
-    this._headers = new Headers(); this._responseHeaders = new Headers(); this._async = true; this._sent = false; this._sequence = 0;
+    this._headers = new Headers(); this._responseHeaders = new Headers(); this._async = true; this._sent = false; this._sequence = 0; this._send_generation = 0;
   }
   XMLHttpRequest.UNSENT = 0; XMLHttpRequest.OPENED = 1; XMLHttpRequest.HEADERS_RECEIVED = 2; XMLHttpRequest.LOADING = 3; XMLHttpRequest.DONE = 4;
   XMLHttpRequest.prototype.open = function (method, url, async) {
@@ -391,30 +391,92 @@ const SOURCE: &str = r#"(function (g) {
   XMLHttpRequest.prototype.getResponseHeader = function (name) { return this.readyState < 2 ? null : this._responseHeaders.get(name); };
   XMLHttpRequest.prototype.getAllResponseHeaders = function () { var rows = []; this._responseHeaders.forEach(function (value, name) { rows.push(name + ': ' + value + '\r\n'); }); return this.readyState < 2 ? '' : rows.join(''); };
   XMLHttpRequest.prototype.send = function (body) {
-    var self = this; if (this.readyState !== 1 || this._sent) throw new TypeError('XHR is not opened or is already sending');
+    var self = this;
+    if (this.readyState !== 1 || this._sent) throw new TypeError('XHR is not opened or is already sending');
+    var sequence = this._sequence, generation = ++this._send_generation, async = this._async;
     this._sent = true;
-    var sequence = this._sequence;
     var request = { url: this._url, method: this._method, headers: [], body: body == null ? null : bytesOf(body), credentials: this.withCredentials ? 'include' : 'same-origin' };
-    this._headers.forEach(function (value, name) { request.headers.push([name, value]); }); this.dispatchEvent({ type: 'loadstart' });
-    function finish(reply) {
-      if (self._sequence !== sequence) return;
-      self._sent = false;
-      if (!reply || !reply.ok) { self.readyState = 4; self.dispatchEvent({ type: 'readystatechange' }); self.dispatchEvent({ type: 'error', message: reply && reply.error }); self.dispatchEvent({ type: 'loadend' }); return; }
-      self.status = reply.status; self.statusText = reply.statusText || ''; self.responseURL = reply.responseURL || reply.url || '';
-      self._responseHeaders = new Headers(reply.headers || []); self.readyState = 2; self.dispatchEvent({ type: 'readystatechange' });
-      self.readyState = 3; self.dispatchEvent({ type: 'readystatechange' }); self.dispatchEvent({ type: 'progress', loaded: (reply.bytes || []).length, lengthComputable: false });
-      var text = __chuzzDecodeUtf8(bytesOf(reply.bytes)); self.responseText = text;
-      if (self.responseType === 'document') { var error = new Error('XHR responseType document is unsupported'); error.name = 'NotSupportedError'; self.response = null; self.dispatchEvent({ type: 'error', error: error }); }
-      else if (self.responseType === 'json') { try { self.response = JSON.parse(text); } catch (_) { self.response = null; } }
-      else if (self.responseType === 'arraybuffer') self.response = bytesOf(reply.bytes).buffer;
-      else if (self.responseType === 'blob') self.response = new Blob([bytesOf(reply.bytes)], { type: self._responseHeaders.get('content-type') || '' });
-      else self.response = text;
-      self.readyState = 4; self.dispatchEvent({ type: 'readystatechange' }); self.dispatchEvent({ type: 'load' }); self.dispatchEvent({ type: 'loadend' });
+    this._headers.forEach(function (value, name) { request.headers.push([name, value]); });
+    function sameSend() { return self._sequence === sequence && self._send_generation === generation; }
+    function active() { return sameSend() && self._sent; }
+    function dispatch(event) {
+      try { self.dispatchEvent(event); }
+      catch (error) {
+        if (active()) self._sent = false;
+        throw error;
+      }
     }
-    try { if (this._async) __chuzzNetAsync(request, finish); else finish(__chuzzNetSync(request)); }
-    catch (error) { this.dispatchEvent({ type: 'error', error: error }); this.dispatchEvent({ type: 'loadend' }); }
+    function sendException(error) {
+      if (!sameSend()) return;
+      self._sent = false;
+      dispatch({ type: 'error', error: error });
+      if (!sameSend()) return;
+      dispatch({ type: 'loadend' });
+    }
+    function failedReply(reply) {
+      self._sent = false; self.readyState = 4;
+      dispatch({ type: 'readystatechange' });
+      if (self._sequence !== sequence) return;
+      dispatch({ type: 'error', message: reply && reply.error });
+      if (self._sequence !== sequence) return;
+      dispatch({ type: 'loadend' });
+    }
+    function finish(reply) {
+      if (!active()) return;
+      if (!reply || !reply.ok) { failedReply(reply); return; }
+      self.status = reply.status; self.statusText = reply.statusText || ''; self.responseURL = reply.responseURL || reply.url || '';
+      self._responseHeaders = new Headers(reply.headers || []); self.readyState = 2;
+      dispatch({ type: 'readystatechange' });
+      if (!active()) return;
+      self.readyState = 3; dispatch({ type: 'readystatechange' });
+      if (!active()) return;
+      dispatch({ type: 'progress', loaded: (reply.bytes || []).length, lengthComputable: false });
+      if (!active()) return;
+      var responseBytes = bytesOf(reply.bytes), text = __chuzzDecodeUtf8(responseBytes);
+      self.responseText = text;
+      if (self.responseType === 'document') {
+        var error = new Error('XHR responseType document is unsupported'); error.name = 'NotSupportedError'; self.response = null;
+        dispatch({ type: 'error', error: error });
+        if (!active()) return;
+      } else if (self.responseType === 'json') { try { self.response = JSON.parse(text); } catch (_) { self.response = null; } }
+      else if (self.responseType === 'arraybuffer') self.response = responseBytes.buffer;
+      else if (self.responseType === 'blob') self.response = new Blob([responseBytes], { type: self._responseHeaders.get('content-type') || '' });
+      else self.response = text;
+      if (!active()) return;
+      self._sent = false; self.readyState = 4; dispatch({ type: 'readystatechange' });
+      if (self._sequence !== sequence) return;
+      dispatch({ type: 'load' });
+      if (self._sequence !== sequence) return;
+      dispatch({ type: 'loadend' });
+    }
+    dispatch({ type: 'loadstart' });
+    if (!active()) return;
+    if (async) {
+      try {
+        __chuzzNetAsync(request, finish);
+      } catch (error) { sendException(error); }
+    } else {
+      var reply;
+      try { reply = __chuzzNetSync(request); }
+      catch (error) { sendException(error); return; }
+      try { finish(reply); }
+      catch (error) { sendException(error); }
+    }
   };
-  XMLHttpRequest.prototype.abort = function () { this._sequence += 1; var active = this._sent; this._sent = false; this.status = 0; this.statusText = ''; this.response = null; this.responseText = ''; this.responseURL = ''; if (active) { this.readyState = 4; this.dispatchEvent({ type: 'readystatechange' }); this.dispatchEvent({ type: 'abort' }); this.dispatchEvent({ type: 'loadend' }); } this.readyState = 0; };
+  XMLHttpRequest.prototype.abort = function () {
+    var active = this._sent, sequence = ++this._sequence;
+    this._sent = false; this.status = 0; this.statusText = ''; this.response = null; this.responseText = ''; this.responseURL = '';
+    this._responseHeaders = new Headers();
+    if (active) {
+      this.readyState = 4; this.dispatchEvent({ type: 'readystatechange' });
+      if (this._sequence !== sequence) return;
+      this.dispatchEvent({ type: 'abort' });
+      if (this._sequence !== sequence) return;
+      this.dispatchEvent({ type: 'loadend' });
+      if (this._sequence !== sequence) return;
+    }
+    this.readyState = 0;
+  };
   g.XMLHttpRequest = XMLHttpRequest;
 })(globalThis);"#;
 
@@ -552,6 +614,260 @@ fetch('data:application/octet-stream,%00%FF%41').then(function (reply) { return 
             "multipart stage: {}",
             page.eval_json("formStage").unwrap()
         );
+    }
+
+    #[test]
+    fn page_ekojit_xhr_reentrant_callbacks_are_generation_isolated() {
+        let mut page = page();
+        page.eval(r#"
+function check(value, message) { if (!value) throw new Error(message); }
+function reply(body, ok) {
+  var bytes = new Uint8Array(body.length);
+  for (var i = 0; i < body.length; i++) bytes[i] = body.charCodeAt(i);
+  return { ok: ok !== false, status: ok === false ? 0 : 200, statusText: ok === false ? '' : 'OK', url: '', headers: [['x-reply', body]], bytes: bytes, error: ok === false ? 'offline' : undefined };
+}
+var nativeAsync = __chuzzNetAsync, nativeSync = __chuzzNetSync;
+var asyncCalls = [], pendingReplies = [];
+globalThis.__chuzzNetAsync = function (request, callback) { asyncCalls.push(request.url); pendingReplies.push({ request: request, callback: callback }); };
+globalThis.__chuzzNetSync = function (request) { if (request.url.indexOf('/failure') >= 0) return reply('offline', false); return request.url.indexOf('/sync-b') >= 0 ? reply('sync-B') : reply('sync-A'); };
+function deliver(index, body, ok) { pendingReplies[index].callback(reply(body, ok)); }
+function observe(label, xhr, events) {
+  ['loadstart', 'readystatechange', 'progress', 'error', 'abort', 'load', 'loadend'].forEach(function (type) {
+    xhr.addEventListener(type, function () { events.push([label, type, xhr.readyState, xhr.responseText, xhr.status, xhr.getResponseHeader('x-reply')]); });
+  });
+}
+var events = [], x = new XMLHttpRequest(), bOpened = false, headBoundary = -1;
+observe('head', x, events);
+x.addEventListener('readystatechange', function () {
+  if (x.readyState === 2 && !bOpened) { bOpened = true; x.open('GET', '/head-b'); x.send(); headBoundary = events.length; }
+});
+x.open('GET', '/head-a'); x.send();
+check(asyncCalls.length === 1 && asyncCalls[0].indexOf('/head-a') >= 0, 'HEADERS case dispatches A first');
+deliver(0, 'stale-A');
+check(events.length === headBoundary, 'superseded A emits no further event after HEADERS callback');
+check(asyncCalls.length === 2 && asyncCalls[1].indexOf('/head-b') >= 0, 'HEADERS callback dispatches B');
+check(x.readyState === 1 && x.responseText === '', 'A cannot advance B after HEADERS callback');
+deliver(1, 'fresh-B');
+check(x.readyState === 4 && x.responseText === 'fresh-B' && x.getResponseHeader('x-reply') === 'fresh-B', 'B response survives A completion');
+check(events.filter(function (e) { return e[1] === 'loadend'; }).length === 1, 'only B receives loadend after HEADERS reentrancy');
+
+var abortEvents = [], y = new XMLHttpRequest(), abortReopened = false;
+observe('abort', y, abortEvents);
+y.addEventListener('progress', function () { if (!abortReopened) y.abort(); });
+y.addEventListener('abort', function () { if (!abortReopened) { abortReopened = true; y.open('GET', '/abort-b'); y.send(); } });
+y.open('GET', '/abort-a'); y.send(); deliver(2, 'partial-A');
+check(abortEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 0, 'reopening from abort suppresses old loadend');
+check(asyncCalls.length === 4 && asyncCalls[2].indexOf('/abort-a') >= 0 && asyncCalls[3].indexOf('/abort-b') >= 0, 'abort callback starts B after A');
+check(y.readyState === 1 && y.responseText === '', 'old abort reset cannot clear B');
+check(abortEvents.filter(function (e) { return e[1] === 'abort'; }).length === 1, 'A aborts exactly once');
+check(abortEvents.some(function (e) { return e[1] === 'abort' && e[2] === 4; }), 'abort event is delivered before supersession');
+deliver(3, 'abort-B');
+check(y.responseText === 'abort-B' && abortEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 1, 'abort B response and its loadend survive');
+
+var startEvents = [], z = new XMLHttpRequest(), startReopened = false;
+observe('start', z, startEvents);
+z.addEventListener('loadstart', function () { if (!startReopened) { startReopened = true; z.open('GET', '/start-b'); z.send(); } });
+z.open('GET', '/start-a'); z.send();
+check(asyncCalls.length === 5 && asyncCalls[4].indexOf('/start-b') >= 0, 'loadstart supersession suppresses A host call');
+deliver(4, 'start-B');
+check(z.responseText === 'start-B', 'loadstart B completes');
+
+var syncEvents = [], s = new XMLHttpRequest(), syncReopened = false;
+observe('sync', s, syncEvents);
+s.addEventListener('readystatechange', function () { if (s.readyState === 2 && !syncReopened) { syncReopened = true; s.open('GET', '/sync-b', false); s.send(); } });
+s.open('GET', '/sync-a', false); s.send();
+check(s.responseText === 'sync-B' && s.status === 200, 'synchronous reentrant B owns final response');
+check(syncEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 1, 'superseded synchronous A stops terminal events');
+var ordinarySyncEvents = [], ordinarySync = new XMLHttpRequest(); observe('ordinary-sync', ordinarySync, ordinarySyncEvents);
+ordinarySync.open('GET', '/sync-ordinary', false); ordinarySync.send();
+check(ordinarySync.responseText === 'sync-A' && ordinarySyncEvents.filter(function (e) { return ['loadstart', 'progress', 'load', 'loadend'].indexOf(e[1]) >= 0; }).map(function (e) { return e[1]; }).join(',') === 'loadstart,progress,load,loadend', 'ordinary synchronous send event order');
+
+var terminalEvents = [], t = new XMLHttpRequest(), terminalReopened = false, terminalBoundary = -1;
+observe('done', t, terminalEvents);
+t.addEventListener('readystatechange', function () { if (t.readyState === 4 && !terminalReopened) { terminalReopened = true; t.open('GET', '/done-b'); t.send(); terminalBoundary = terminalEvents.length; } });
+t.open('GET', '/done-a'); t.send(); deliver(5, 'done-A');
+check(terminalEvents.length === terminalBoundary, 'DONE reopen suppresses old load and loadend');
+deliver(6, 'done-B');
+check(t.responseText === 'done-B' && terminalEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 1, 'DONE B receives its own terminal sequence');
+
+var loadEvents = [], l = new XMLHttpRequest(), loadReopened = false, loadBoundary = -1;
+observe('load', l, loadEvents);
+l.addEventListener('load', function () {
+  if (!loadReopened) { loadReopened = true; l.open('GET', '/load-b'); l.send(); loadBoundary = loadEvents.length; }
+});
+l.open('GET', '/load-a'); l.send(); deliver(7, 'load-A');
+check(loadEvents.length === loadBoundary, 'load reopen suppresses old loadend');
+deliver(8, 'load-B');
+check(l.readyState === 4 && l.responseText === 'load-B' && l.getResponseHeader('x-reply') === 'load-B', 'load B keeps its response');
+check(loadEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 1, 'load B alone receives loadend');
+
+var errorEvents = [], e = new XMLHttpRequest(), errorReopened = false, errorBoundary = -1;
+observe('error-reopen', e, errorEvents);
+e.addEventListener('error', function () {
+  if (!errorReopened) { errorReopened = true; e.open('GET', '/error-b'); e.send(); errorBoundary = errorEvents.length; }
+});
+e.open('GET', '/error-a'); e.send(); deliver(9, 'failed-A', false);
+check(errorEvents.length === errorBoundary, 'error reopen suppresses old loadend');
+deliver(10, 'error-B');
+check(e.readyState === 4 && e.responseText === 'error-B' && e.getResponseHeader('x-reply') === 'error-B', 'error B keeps its response');
+check(errorEvents.filter(function (event) { return event[1] === 'loadend'; }).length === 1, 'error B alone receives loadend');
+
+var failedEvents = [], f = new XMLHttpRequest(); observe('failed', f, failedEvents);
+var failedMessage;
+f.addEventListener('error', function (event) { failedMessage = event.message; });
+f.open('GET', '/failure', false); f.send();
+check(failedEvents.map(function (e) { return e[1]; }).filter(function (type) { return ['loadstart', 'readystatechange', 'error', 'loadend'].indexOf(type) >= 0; }).join(',') === 'readystatechange,loadstart,readystatechange,error,loadend', 'failed transport terminal event order');
+check(failedMessage === 'offline', 'failed reply retains its transport message');
+
+var throwing = new XMLHttpRequest(), listenerError = { marker: 'listener failure' }, thrownEvents = [], sendReturned = false;
+observe('throwing', throwing, thrownEvents);
+throwing.addEventListener('readystatechange', function () { if (throwing.readyState === 2) throw listenerError; });
+throwing.open('GET', '/throw-sync', false);
+throwing.send(); sendReturned = true;
+check(sendReturned, 'synchronous listener exception is handled by send');
+check(throwing.readyState === 2 && throwing.responseText === '' && throwing._sent === false, 'intermediate listener failure preserves partial state and releases send');
+check(thrownEvents.filter(function (e) { return e[1] === 'error' || e[1] === 'loadend'; }).map(function (e) { return e[1]; }).join(',') === 'error,loadend', 'intermediate listener failure dispatches error then loadend');
+
+var terminalThrow = new XMLHttpRequest(), terminalThrowEvents = [], loadError = { marker: 'load listener failure' };
+observe('terminal-throw', terminalThrow, terminalThrowEvents);
+terminalThrow.addEventListener('load', function () { throw loadError; });
+terminalThrow.open('GET', '/throw-load', false); terminalThrow.send();
+check(terminalThrow.readyState === 4 && terminalThrow.responseText === 'sync-A', 'load listener failure retains completed response');
+check(terminalThrowEvents.filter(function (e) { return ['load', 'error', 'loadend'].indexOf(e[1]) >= 0; }).map(function (e) { return e[1]; }).join(',') === 'load,error,loadend', 'terminal listener failure dispatches error then loadend');
+
+var reentrantThrow = new XMLHttpRequest(), reopenError = { marker: 'reentrant listener failure' }, reopenedFromThrow = false;
+var reentrantThrowEvents = [];
+observe('reentrant-throw', reentrantThrow, reentrantThrowEvents);
+reentrantThrow.addEventListener('readystatechange', function () {
+  if (reentrantThrow.readyState === 2 && !reopenedFromThrow) {
+    reopenedFromThrow = true;
+    reentrantThrow.open('GET', '/pending-b');
+    reentrantThrow.send();
+    throw reopenError;
+  }
+});
+reentrantThrow.open('GET', '/throw-reopen-a', false);
+reentrantThrow.send();
+check(reentrantThrow.readyState === 1 && reentrantThrow._sent === true && reentrantThrow.responseText === '', 'old listener exception leaves pending B active');
+check(reentrantThrowEvents.every(function (e) { return e[1] !== 'error' && e[1] !== 'loadend'; }), 'old listener exception emits no terminal event while B is pending');
+var pendingB = asyncCalls.length - 1;
+check(pendingReplies[pendingB].request.url.indexOf('/pending-b') >= 0, 'reentrant listener starts asynchronous B');
+deliver(pendingB, 'pending-B');
+check(reentrantThrow.readyState === 4 && reentrantThrow.responseText === 'pending-B' && reentrantThrow._sent === false, 'pending B completes after A listener exception');
+
+var asyncThrow = new XMLHttpRequest(), asyncThrowEvents = [], asyncListenerError = { marker: 'deferred listener failure' };
+observe('async-throw', asyncThrow, asyncThrowEvents);
+asyncThrow.addEventListener('readystatechange', function () { if (asyncThrow.readyState === 2) throw asyncListenerError; });
+asyncThrow.open('GET', '/async-throw'); asyncThrow.send();
+var asyncCaught;
+try { deliver(asyncCalls.length - 1, 'async-throw-body'); } catch (error) { asyncCaught = error; }
+check(asyncCaught === asyncListenerError, 'deferred listener exception propagates to callback caller');
+check(asyncThrow._sent === false && asyncThrowEvents.filter(function (e) { return e[1] === 'error' || e[1] === 'loadend'; }).length === 0, 'deferred listener exception is not converted to XHR failure events');
+
+var accessorThrow = new XMLHttpRequest(), accessorEvents = [], accessorReads = 0, accessorError = {};
+Object.defineProperty(accessorError, 'message', { get: function () { accessorReads++; throw new Error('message getter must not run'); } });
+observe('accessor-throw', accessorThrow, accessorEvents);
+var recoveredValue;
+accessorThrow.addEventListener('error', function (event) { recoveredValue = event.error; });
+accessorThrow.addEventListener('readystatechange', function () { if (accessorThrow.readyState === 2) throw accessorError; });
+accessorThrow.open('GET', '/accessor-throw', false);
+var accessorSendReturned = false; accessorThrow.send(); accessorSendReturned = true;
+check(accessorSendReturned && accessorReads === 0, 'synchronous recovery does not inspect thrown value properties');
+check(recoveredValue === accessorError && accessorThrow._sent === false, 'synchronous recovery forwards thrown value and releases send');
+check(accessorEvents.filter(function (e) { return e[1] === 'error' || e[1] === 'loadend'; }).map(function (e) { return e[1]; }).join(',') === 'error,loadend', 'synchronous recovery delivers error then loadend');
+
+var asyncFailed = new XMLHttpRequest(), asyncFailedEvents = [], asyncError = { marker: 'deferred error listener failure' };
+observe('async-failed', asyncFailed, asyncFailedEvents);
+var asyncErrorCalls = 0;
+asyncFailed.addEventListener('error', function () { if (++asyncErrorCalls === 1) throw asyncError; });
+asyncFailed.open('GET', '/async-failure'); asyncFailed.send();
+var asyncFailureCaught;
+try { deliver(asyncCalls.length - 1, 'offline', false); } catch (error) { asyncFailureCaught = error; }
+check(asyncFailureCaught === asyncError, 'deferred error listener exception propagates');
+check(asyncFailedEvents.filter(function (e) { return e[1] === 'error'; }).length === 1 && asyncFailedEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 0, 'deferred failure does not redispatch error or synthesize loadend');
+
+var deferredReopen = new XMLHttpRequest(), deferredEvents = [], deferredError = {};
+observe('deferred-reopen', deferredReopen, deferredEvents);
+deferredReopen.addEventListener('readystatechange', function () {
+  if (deferredReopen.readyState === 2 && deferredReopen.getResponseHeader('x-reply') === 'deferred-A') {
+    deferredReopen.open('GET', '/deferred-b');
+    deferredReopen.send();
+    throw deferredError;
+  }
+});
+deferredReopen.open('GET', '/deferred-a'); deferredReopen.send();
+var deferredCaught;
+try { deliver(asyncCalls.length - 1, 'deferred-A'); } catch (error) { deferredCaught = error; }
+check(deferredCaught === deferredError && deferredReopen.readyState === 1 && deferredReopen._sent, 'superseded deferred exception propagates and leaves B active');
+check(deferredEvents.every(function (e) { return e[1] !== 'error' && e[1] !== 'loadend'; }), 'superseded deferred exception emits no terminal events for A');
+deliver(asyncCalls.length - 1, 'deferred-B');
+check(deferredReopen.readyState === 4 && deferredReopen.responseText === 'deferred-B', 'B completes after superseded deferred exception');
+
+var ordinaryAbortEvents = [], q = new XMLHttpRequest(); observe('ordinary-abort', q, ordinaryAbortEvents);
+q.open('GET', '/ordinary-abort'); q.send(); q.abort();
+check(ordinaryAbortEvents.filter(function (e) { return ['abort', 'loadend'].indexOf(e[1]) >= 0; }).map(function (e) { return e[1]; }).join(',') === 'abort,loadend', 'ordinary abort delivers abort then loadend');
+
+var hostException = {}, hostMessageReads = 0;
+Object.defineProperty(hostException, 'message', { get: function () { hostMessageReads++; throw new Error('host message getter must not run'); } });
+globalThis.__chuzzNetAsync = globalThis.__chuzzNetSync = function () { throw hostException; };
+[false, true].forEach(function (async) {
+  var xhr = new XMLHttpRequest(), events = [], seenError;
+  observe('host-throw', xhr, events);
+  xhr.addEventListener('error', function (event) { seenError = event.error; });
+  xhr.open('GET', '/host-throw', async); xhr.send();
+  check(xhr.readyState === 1 && !xhr._sent && seenError === hostException, 'host invocation throw releases send and forwards the original value');
+  check(events.map(function (e) { return e[1]; }).join(',') === 'readystatechange,loadstart,error,loadend', 'host invocation throw keeps its terminal sequence');
+});
+check(hostMessageReads === 0, 'host invocation throw does not inspect thrown value properties');
+
+var asyncRetry = new XMLHttpRequest(), asyncRetryEvents = [], asyncRetryCalls = 0, asyncRetryStarted = false, asyncRetryBoundary = -1;
+observe('host-async-retry', asyncRetry, asyncRetryEvents);
+asyncRetry.addEventListener('error', function () { if (!asyncRetryStarted) { asyncRetryStarted = true; asyncRetry.send(); asyncRetryBoundary = asyncRetryEvents.length; } });
+globalThis.__chuzzNetAsync = function (request, callback) {
+  if (asyncRetryCalls++ === 0) throw hostException;
+  asyncCalls.push(request.url); pendingReplies.push({ request: request, callback: callback });
+};
+asyncRetry.open('GET', '/host-async-retry'); asyncRetry.send();
+check(asyncRetryCalls === 2 && asyncCalls[asyncCalls.length - 1].indexOf('/host-async-retry') >= 0, 'async host throw error handler accepts same-open retry');
+check(asyncRetryEvents.length === asyncRetryBoundary && asyncRetryEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 0, 'superseded async host throw emits no A loadend while B is pending');
+deliver(pendingReplies.length - 1, 'async-retry-B');
+check(asyncRetry.responseText === 'async-retry-B' && asyncRetryEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 1, 'async retry B completes with exactly its own loadend');
+
+var syncRetry = new XMLHttpRequest(), syncRetryEvents = [], syncRetryCalls = 0, syncRetryStarted = false;
+observe('host-sync-retry', syncRetry, syncRetryEvents);
+syncRetry.addEventListener('error', function () { if (!syncRetryStarted) { syncRetryStarted = true; syncRetry.send(); } });
+globalThis.__chuzzNetSync = function (request) {
+  if (syncRetryCalls++ === 0) throw hostException;
+  return reply('sync-retry-B');
+};
+syncRetry.open('GET', '/host-sync-retry', false); syncRetry.send();
+check(syncRetryCalls === 2 && syncRetry.readyState === 4 && syncRetry.responseText === 'sync-retry-B', 'sync host throw error handler completes same-open retry inline');
+check(syncRetryEvents.filter(function (e) { return e[1] === 'loadend'; }).length === 1, 'inline sync retry receives exactly one loadend without stale A loadend');
+
+globalThis.__chuzzNetAsync = nativeAsync; globalThis.__chuzzNetSync = nativeSync;
+var live = new XMLHttpRequest(), liveDone = false;
+live.addEventListener('loadend', function () { liveDone = true; });
+live.open('GET', 'data:text/plain,ordinary-async'); live.send();
+"#).expect("evaluate native XHR reentrancy witnesses");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            page.poll(None);
+            if page.eval_json("liveDone").unwrap() == json!(true) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            page.eval_json("liveDone").unwrap(),
+            json!(true),
+            "native async XHR must finish within bounded polling"
+        );
+        assert_eq!(
+            page.eval_json("live.responseText").unwrap(),
+            json!("ordinary-async")
+        );
+        let diagnostics = page.diagnostic_batch(0, 0, 100).unwrap();
+        assert!(diagnostics.errors.entries.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
