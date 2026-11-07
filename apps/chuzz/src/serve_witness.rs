@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
+use blitz_control_protocol::client::Client;
 use blitz_control_protocol::{AgentControlRequest, DebugResponse};
 
 use super::{ControlBridgeRequest, egress, page_control};
@@ -146,14 +147,18 @@ async fn cli(handle: &nagoya::reactor::Handle, root: &Path) -> Result<(), String
     )
     .await
     .map_err(|_| "stdout-announce: reactor pipe did not deliver the descriptor")??;
-    let mut client = chuzz_control::client::Client::connect(Path::new(announced.trim()))
-        .await
-        .map_err(|error| error.to_string())?;
-    let snapshot = nagoya::timeout(Duration::from_secs(15), client.inspect(None, 20))
+    let mut client = connect(announced.trim()).await?;
+    let inspect = AgentControlRequest::Inspect {
+        root: None,
+        max_depth: 20,
+    };
+    let snapshot = nagoya::timeout(Duration::from_secs(15), client.agent(&inspect))
         .await
         .map_err(|_| "cli-inspection: page did not answer")?
         .map_err(|error| error.to_string())?;
-    if !snapshot.to_string().contains("Reactive page ready") {
+    if !matches!(snapshot.response, DebugResponse::AgentSnapshot(ref snapshot)
+        if snapshot.nodes.iter().any(|node| node.name.contains("Reactive page ready")))
+    {
         return Err("cli-inspection: real page heading missing".into());
     }
     let _ = child.kill().await;
@@ -172,14 +177,12 @@ async fn cli(handle: &nagoya::reactor::Handle, root: &Path) -> Result<(), String
         child.stdout.take().ok_or("stdout-announce: pipe missing")?,
     )
     .await?;
-    let mut client = chuzz_control::client::Client::connect(Path::new(announced.trim()))
-        .await
-        .map_err(|error| error.to_string())?;
+    let mut client = connect(announced.trim()).await?;
     let _ = client
-        .inspect(None, 20)
+        .agent(&inspect)
         .await
         .map_err(|error| error.to_string())?;
-    // SIGSTOP is a real native stall, independent of Boa's JS time limit.
+    // SIGSTOP is a real process stall, independent of the JavaScript engine's time limit.
     let parent = child
         .id()
         .ok_or("supervisor-deadline: host already exited")?;
@@ -204,16 +207,13 @@ async fn cli(handle: &nagoya::reactor::Handle, root: &Path) -> Result<(), String
     if unsafe { libc::kill(pid, libc::SIGSTOP) } != 0 {
         return Err("supervisor-deadline: could not stop page worker".into());
     }
-    let reply = nagoya::timeout(
-        Duration::from_secs(12),
-        client.call(
-            serde_json::json!({ "command": "inspect", "params": { "root": null, "maxDepth": 20 } }),
-        ),
-    )
-    .await
-    .map_err(|_| "supervisor-deadline: a hung page never produced its control error")?
-    .map_err(|error| error.to_string())?;
-    if reply["value"]["code"] != "pageUnresponsive" {
+    let reply = nagoya::timeout(Duration::from_secs(12), client.agent_envelope(&inspect))
+        .await
+        .map_err(|_| "supervisor-deadline: a hung page never produced its control error")?
+        .map_err(|error| error.to_string())?;
+    let (_, response) = blitz_control_protocol::decode_response_value(reply.clone())
+        .map_err(|error| error.to_string())?;
+    if !matches!(response, DebugResponse::Error(ref error) if error.code == "pageUnresponsive") {
         return Err(format!(
             "supervisor-deadline: expected pageUnresponsive, got {reply}"
         ));
@@ -222,27 +222,44 @@ async fn cli(handle: &nagoya::reactor::Handle, root: &Path) -> Result<(), String
         .map_err(|_| "supervisor-recovery: invalid fixture path")?;
     let reply = nagoya::timeout(
         Duration::from_secs(12),
-        client.call(
-            serde_json::json!({ "command": "navigate", "params": { "url": recovery.as_str() } }),
-        ),
+        client.agent(&AgentControlRequest::Navigate {
+            url: recovery.to_string(),
+        }),
     )
     .await
     .map_err(|_| "supervisor-recovery: Navigate never acknowledged a fresh page")?
     .map_err(|error| error.to_string())?;
-    if reply["result"] != "ack" {
+    if !matches!(reply.response, DebugResponse::Ack) {
         return Err(format!(
-            "supervisor-recovery: wrong Navigate result {reply}"
+            "supervisor-recovery: wrong Navigate result {:?}",
+            reply.response
         ));
     }
     let snapshot = client
-        .inspect(None, 20)
+        .agent(&inspect)
         .await
         .map_err(|error| error.to_string())?;
-    if !snapshot.to_string().contains("Reactive page ready") {
+    if !matches!(snapshot.response, DebugResponse::AgentSnapshot(ref snapshot)
+        if snapshot.nodes.iter().any(|node| node.name.contains("Reactive page ready")))
+    {
         return Err("supervisor-recovery: recovered page heading missing".into());
     }
     let _ = child.kill().await;
     Ok(())
+}
+
+async fn connect(descriptor: &str) -> Result<Client, String> {
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(descriptor).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    let address = descriptor["address"]
+        .as_str()
+        .ok_or("the descriptor has no address")?;
+    Client::connect(Path::new(
+        address.strip_prefix("unix://").unwrap_or(address),
+    ))
+    .await
+    .map_err(|error| error.to_string())
 }
 
 pub(super) fn run() -> Result<(), String> {
@@ -264,7 +281,7 @@ pub(super) fn run() -> Result<(), String> {
         cookies(&root.join("cookies")).await?;
         wall_timeout(&reactor.handle()).await?;
         cli(&reactor.handle(), &root).await?;
-        Ok(())
+        Ok::<(), String>(())
     })?;
     println!(
         "page-ring-wakeup page-ring-ownership egress-accept egress-connection-limit egress-client-forward egress-upstream-forward egress-byte-cap cookie-debounce cookie-barrier wall-timeout stdout-announce cli-inspection supervisor-deadline supervisor-recovery: passed"

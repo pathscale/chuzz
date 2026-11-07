@@ -46,7 +46,7 @@ env:
   BUNDLE_DIR: target/release/bundle/macos
 
 jobs:
-  # Cheap gate, so a macOS runner is only spent on pushes that actually ship.
+  # Cheap gate, so a macOS runner is only spent on dispatches that actually ship.
   # This half has no macOS dependency, so it follows the usual runner rule.
   check:
     runs-on: ubicloud-standard-2

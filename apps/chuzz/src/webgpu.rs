@@ -1,8 +1,7 @@
 //! Page WebGPU objects, owned by the document's bridge.
 //!
-//! Native commands execute in page call order. Boa receives handles over IPC;
-//! GPU resources remain on the Rust side. Canvas readback uses Blitz's raster
-//! image path, including the headless CPU painter.
+//! Native commands execute in page call order. GPU resources remain on the
+//! Rust side, and canvas readback uses Blitz's raster image path.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +20,8 @@ mod encoder;
 mod external;
 mod host;
 mod inspector;
+#[path = "webgpu/webgpu_host_bridge.rs"]
+pub mod native_host;
 mod pipeline;
 mod readback;
 mod resources;
@@ -28,38 +29,30 @@ mod texture;
 
 use resources::{Command, GpuError, Resources};
 
-pub(crate) const WEBGPU_SHIM: &str = concat!(
-    include_str!("webgpu.ts"),
-    "\n",
-    include_str!("webgpu/canvas2d.ts"),
-    "\n",
-    include_str!("webgpu/images.ts"),
-    "\n",
-    include_str!("webgpu/video.ts")
-);
-
-pub(crate) fn script_document(
+/// Construct a page through the registered native page runtime.
+pub fn script_document(
     html: &str,
     config: blitz_dom::DocumentConfig,
-) -> blitz_script::ScriptDocument {
-    canvas2d::from_html(html, config)
+    host_config: crate::script_host::HostInstallContext,
+) -> Result<crate::page_document::PageDocument, String> {
+    canvas2d::from_html(html, config, host_config)
 }
 
 pub(crate) fn inspect_gpu(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
 ) -> Result<blitz_control_protocol::WebGpuReport, blitz_control_protocol::DebugError> {
     inspector::inspect_document(document)
 }
 
 pub(crate) fn capture_gpu(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
     target: &str,
 ) -> Result<blitz_control_protocol::CapturedImage, blitz_control_protocol::DebugError> {
     inspector::capture_document(document, target)
 }
 
 pub(crate) fn capture_gpu_buffer(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
     target: &str,
     offset: u64,
     length: Option<u64>,
@@ -69,7 +62,7 @@ pub(crate) fn capture_gpu_buffer(
 
 const DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) fn capture_gpu_buffer_reply(
-    document: &mut blitz_script::ScriptDocument,
+    document: &mut crate::page_document::PageDocument,
     target: &str,
     offset: u64,
     length: Option<u64>,
@@ -521,45 +514,6 @@ impl Bridge {
         true
     }
 
-    pub(crate) fn drain_into(&self, document: &mut blitz_script::ScriptDocument) -> bool {
-        // Scripts record commands throughout the task. Materialise and paint
-        // each changed 2D canvas once, before taking the document's image batch.
-        document.eval("globalThis.__chuzzFlush2D();");
-        let images_changed = self.prepare_images(document);
-        // Deadlines are host state, not page timers. No driver work runs on
-        // the document thread, including nominally nonblocking device.poll.
-        self.expire_requests();
-        self.poll_devices();
-
-        let (ready, events, frames) = {
-            let mut state = self.state();
-            (
-                std::mem::take(&mut state.ready),
-                std::mem::take(&mut state.events),
-                std::mem::take(&mut state.frames),
-            )
-        };
-        let mut changed = images_changed || !ready.is_empty() || !events.is_empty();
-        // Install newly requested JS devices before delivering their events.
-        for (id, payload) in ready {
-            document.eval(&format!("globalThis.__chuzzGpuResolve({id}, {payload});"));
-            // A missing or throwing resolver must not retain a readback.
-            if let Some(value) = payload.get("value") {
-                self.release_reply(value);
-            }
-        }
-        for (id, payload) in events {
-            document.eval(&format!("globalThis.__chuzzGpuEvent({id}, {payload});"));
-        }
-        for frame in frames.into_values() {
-            changed |= frame.paint(document);
-        }
-        // Present each submitted canvas texture at the end of this host turn.
-        // The shim expires it synchronously and queues the native readback.
-        document.eval("globalThis.__chuzzGpuFlushCanvases();");
-        changed
-    }
-
     async fn execute(&self, request: Request) -> Result<Value, GpuError> {
         match request {
             Request::Adapter { id, options } => self
@@ -828,4 +782,35 @@ fn limits_value(limits: &wgpu::Limits) -> Result<Value, String> {
         }
     }
     Ok(Value::Object(public))
+}
+
+#[cfg(test)]
+#[path = "webgpu/compressed_tests.rs"]
+mod compressed_tests;
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    fn compression_features_match_native_capabilities() {
+        for (name, flag) in [
+            (
+                "texture-compression-bc",
+                wgpu::Features::TEXTURE_COMPRESSION_BC,
+            ),
+            (
+                "texture-compression-etc2",
+                wgpu::Features::TEXTURE_COMPRESSION_ETC2,
+            ),
+            (
+                "texture-compression-astc",
+                wgpu::Features::TEXTURE_COMPRESSION_ASTC,
+            ),
+        ] {
+            assert_eq!(feature_names(flag), vec![name]);
+            assert!(FEATURE_NAMES.contains(&(name, flag)));
+        }
+        assert!(feature_names(wgpu::Features::empty()).is_empty());
+        assert!(feature_names(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS).is_empty());
+    }
 }

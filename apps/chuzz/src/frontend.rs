@@ -4,25 +4,6 @@ use crate::browser::Browser;
 
 include!(concat!(env!("OUT_DIR"), "/chuzz_embedded.rs"));
 
-struct EmbeddedChuzzScriptFetcher {
-    net: std::sync::Arc<crate::document_loader::NetProvider>,
-}
-
-impl blitz_script::ScriptFetcher for EmbeddedChuzzScriptFetcher {
-    fn fetch(&self, url: &blitz_traits::net::Url) -> Result<String, blitz_script::FetchError> {
-        if url.as_str() == CHUZZ_JS_URL {
-            decompress_asset(CHUZZ_JS_BROTLI, CHUZZ_JS_LEN, "JavaScript")
-                .map_err(blitz_script::FetchError::InvalidData)
-        } else {
-            let request = blitz_traits::net::Request::get(url.clone())
-                .initiator(self.net.browser_initiator(url.clone()));
-            nagoya::block_on(self.net.fetch_async(request))
-                .map(|(_, bytes)| crate::decode::decode_body(&bytes))
-                .map_err(|error| blitz_script::FetchError::InvalidData(error.to_string()))
-        }
-    }
-}
-
 fn decompress_asset(compressed: &[u8], expected_len: usize, label: &str) -> Result<String, String> {
     let mut decoder = brotli::Decompressor::new(compressed, 4096);
     let mut decoded = String::with_capacity(expected_len);
@@ -32,65 +13,92 @@ fn decompress_asset(compressed: &[u8], expected_len: usize, label: &str) -> Resu
     Ok(decoded)
 }
 
-const CHROME_API_SHIM: &str = r#"
-(function () {
-  if (typeof globalThis.ResizeObserver === 'undefined') {
-    globalThis.ResizeObserver = function () {
-      this.observe = function () {};
-      this.unobserve = function () {};
-      this.disconnect = function () {};
-    };
-  }
-})();
-"#;
+pub fn document(browser: Browser, url: &str) -> Result<crate::page_document::PageDocument, String> {
+    document_with_prelude(browser, url, None)
+}
 
-pub fn document(browser: Browser, url: &str) -> Result<blitz_script::ScriptDocument, String> {
+fn document_with_prelude(
+    browser: Browser,
+    url: &str,
+    prelude: Option<&str>,
+) -> Result<crate::page_document::PageDocument, String> {
     let css = decompress_asset(CHUZZ_CSS_BROTLI, CHUZZ_CSS_LEN, "CSS")?;
-    let html = CHUZZ_SHELL_HTML.replacen(CHUZZ_CSS_MARKER, &css, 1);
+    let javascript = decompress_asset(CHUZZ_JS_BROTLI, CHUZZ_JS_LEN, "JavaScript")?;
+    let html = CHUZZ_SHELL_HTML
+        .replacen(CHUZZ_CSS_MARKER, &css, 1)
+        .replace(&format!("<script src=\"{CHUZZ_JS_URL}\"></script>"), "");
+    let base = blitz_traits::net::Url::parse(url).map_err(|error| error.to_string())?;
+    let net = browser.net();
+    let navigation = net.browser_initiator(base.clone());
+    let document_net = std::sync::Arc::new(net.for_document(base.clone(), &navigation));
+    let lifetime = blitz_dom::release::Teardown::new();
+    let signal = blitz_traits::net::AbortSignal::default();
+    let page_net = std::sync::Arc::new(crate::tab_resources::PageNet {
+        net: std::sync::Arc::clone(&document_net),
+        lifetime: std::sync::Arc::clone(&lifetime),
+    });
     let config = blitz_dom::DocumentConfig {
         base_url: Some(url.to_owned()),
+        net_provider: Some(page_net as _),
+        teardown: Some(std::sync::Arc::clone(&lifetime)),
+        abort_signal: Some(signal.clone()),
+        html_parser_provider: Some(std::sync::Arc::new(blitz_html::HtmlProvider)),
         ..Default::default()
     };
-    let mut document = blitz_script::ScriptDocument::from_html(&html, config)
-        .with_fetcher(EmbeddedChuzzScriptFetcher { net: browser.net() });
-    document.eval(crate::document_loader::WEB_API_SHIM);
-    document.eval(CHROME_API_SHIM);
+    let host_config = crate::script_host::HostInstallContext {
+        net: document_net,
+        base: Some(base),
+        deadline: std::time::Duration::from_secs(15),
+        wake: crate::net_bridge::PageWake::default(),
+        lifetime,
+        signal,
+        session_backing: None,
+    };
+    let mut document = crate::page_document::PageDocument::from_html(
+        std::sync::Arc::<str>::from(html),
+        config,
+        host_config,
+    )?;
+    // Give chrome startup its finite native activation allowance.
+    document.set_initial_script_budget(std::time::Duration::from_secs(
+        if cfg!(debug_assertions) { 60 } else { 30 },
+    ))?;
+    // Install the browser hooks before evaluating any chrome code so every
+    // script runs after its document runtime and native host are in place.
     browser.install_document_lifecycle(&mut document);
+    document.eval("globalThis.__CHUZZ_BLITZ__ = true")?;
+    if let Some(prelude) = prelude {
+        document.eval(prelude)?;
+    }
+    // Finish parser-inserted shell scripts before the embedded bundle reads
+    // the document or mounts Solid into its root.
+    document.execute_scripts()?;
+    if prelude.is_some() {
+        // A supplied fixture bridge is already installed above.
+        document.eval_named(&javascript, CHUZZ_JS_URL)?;
+    } else {
+        // Izumo installs IPC after the document factory returns and before its
+        // first poll. Start the chrome after that installation so its client
+        // selects the native bridge when it first imports the API module.
+        let startup = format!(
+            "if (!globalThis.__IZUMO__) {{ throw new Error('native IPC bridge is unavailable'); }}\n{javascript}"
+        );
+        document.defer_named_script(startup.into(), CHUZZ_JS_URL.into());
+    }
     Ok(document)
 }
 
-/// A stand-in for the izumo command bridge, for tests that have no native app.
-///
-/// The interface bootstraps itself from `list_tabs`/`active_tab_id`/
-/// `panel_state`/`status`, so without a bridge the store keeps its empty
-/// defaults and renders no tabs at all. A test running against that empty shell
-/// cannot see the page mount, which is precisely the thing most worth testing:
-/// the mount is the rendezvous point between this document and the page
-/// document, and when its identifier drifts the browser silently renders
-/// nothing. Canned answers here put one tab on screen so the rendezvous is
-/// exercised for real.
 #[cfg(test)]
-pub(crate) const IZUMO_TEST_BRIDGE: &str = r#"
+mod tests {
+    use super::*;
+    use blitz_dom::Document as _;
+    use serde_json::json;
+
+    const TEST_BRIDGE: &str = r#"
 (function () {
-  var tabs = [{
-    id: 0,
-    title: 'Example Domain',
-    url: 'https://example.com/',
-    status: 'complete',
-    canGoBack: false,
-    canGoForward: false
-  }];
-  var panel = {
-    collapsed: true,
-    sections: { page: true, history: true, network: false, console: false, debugging: true }
-  };
-  var status = {
-    status: 'complete',
-    url: 'https://example.com/',
-    tabCount: 1,
-    nodeCount: 0,
-    transferred: '0 B'
-  };
+  var tabs = [{ id: 0, title: 'Sample page', url: 'https://fixture.invalid/', status: 'complete', canGoBack: false, canGoForward: false }];
+  var panel = { collapsed: true, sections: { page: true, history: true, network: false, console: false, debugging: true } };
+  var status = { status: 'complete', url: 'https://fixture.invalid/', tabCount: 1, nodeCount: 0, transferred: '0 B' };
   globalThis.__IZUMO__ = {
     listen: function () { return Promise.resolve(function () {}); },
     invoke: function (cmd) {
@@ -107,47 +115,36 @@ pub(crate) const IZUMO_TEST_BRIDGE: &str = r#"
 })();
 "#;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use blitz_dom::Document as _;
-    use serde_json::json;
-
     #[test]
-    fn embedded_ui_bundle_builds_the_solid_shell_in_boa() {
-        // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: test-only big stack.
-        #[allow(clippy::disallowed_methods)]
+    fn embedded_ui_bundle_builds_the_shell_and_page_mount() {
         std::thread::Builder::new()
-            .name("chuzz-ui-bundle-test".to_owned())
+            .name("chuzz-embedded-ui-test".into())
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {
-                let mut document = document(Browser::new(None), "chuzz://ui/").unwrap();
-                document.set_ipc_handler(|_| {});
-                // Before the bundle runs: the interface reads the bridge during
-                // its own module evaluation.
-                document.eval(IZUMO_TEST_BRIDGE);
-                document.execute_scripts();
-                for _ in 0..64 {
+                let mut document = document_with_prelude(
+                    Browser::new(None),
+                    "https://fixture.invalid/",
+                    Some(TEST_BRIDGE),
+                )
+                .expect("construct the UI with the registered page runtime");
+                for _ in 0..8 {
                     document.poll(None);
                 }
                 assert_eq!(
                     document
                         .eval_json("document.querySelectorAll('.app-shell').length")
-                        .expect("query the rendered UI"),
+                        .expect("query the rendered shell"),
                     json!(1)
                 );
                 assert_eq!(
                     document
-                        .eval_json("document.querySelectorAll('#chuzz-page-0').length")
+                        .eval_json("document.querySelectorAll('[id$=\"page-0\"]').length")
                         .expect("query the page mount"),
                     json!(1)
                 );
-                // The assertion that matters: the shell's own lookup, not a CSS
-                // query standing in for it. `page_node` is what decides whether
-                // a fetched page is ever attached, and it is what regressed.
                 assert!(
                     crate::browser::page_node(&document.inner(), 0).is_some(),
-                    "the shell could not find the page mount for tab 0"
+                    "the shell could not find its page mount"
                 );
                 let mut inner = document.inner_mut();
                 inner.set_viewport(blitz_traits::shell::Viewport::new(
@@ -161,12 +158,6 @@ mod tests {
                 let layout = inner.get_node(shell).unwrap().final_layout();
                 assert!(layout.size.width > 1000.0);
                 assert!(layout.size.height > 700.0);
-
-                // The mount has to be a real box, not just a node in the tree.
-                // It sits behind two wrappers that exist to keep the tab list
-                // reactive, and a wrapper that does not carry the size through
-                // collapses the page to nothing: the document would be attached
-                // and correct, and the window would still look empty.
                 let mount = crate::browser::page_node(&inner, 0).expect("page mount");
                 let mount_layout = inner.get_node(mount).unwrap().final_layout();
                 assert!(
@@ -175,8 +166,8 @@ mod tests {
                     mount_layout.size
                 );
             })
-            .unwrap()
+            .expect("spawn embedded UI test on a 16 MiB stack")
             .join()
-            .unwrap();
+            .expect("embedded UI test thread panicked");
     }
 }

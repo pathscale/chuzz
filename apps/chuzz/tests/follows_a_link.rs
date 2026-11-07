@@ -219,5 +219,13 @@ fn a_link_is_followed_and_storage_goes_with_it() {
             carried.contains("session=first"),
             "sessionStorage did not survive the navigation: {carried:?}"
         );
+        assert!(
+            carried.contains("local-prototype=local-prototype"),
+            "localStorage lost the __proto__ key during navigation: {carried:?}"
+        );
+        assert!(
+            carried.contains("session-prototype=session-prototype"),
+            "sessionStorage lost the __proto__ key during navigation: {carried:?}"
+        );
     });
 }

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Chuzz W38 guest readiness</title>
+  <style>body{font:16px sans-serif;margin:2rem;color:#18212b}#result{white-space:pre-wrap}</style>
+  <script src="./src/w38-readiness.ts" defer></script>
+</head>
+<body>
+  <h1>Guest readiness</h1>
+  <button id="run" type="button">Run real guest checks</button>
+  <p id="result" role="status">Ready</p>
+  <form id="fixture-form"><input name="fixture" value="w38"></form>
+  <div id="fixture-root"><span id="fixture-child">path</span></div>
+  <template id="fixture-template"><b>inert</b></template>
+</body>
+</html>

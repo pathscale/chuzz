@@ -14,6 +14,7 @@ pub struct Directories {
     pub home: PathBuf,
     pub reads: Vec<PathBuf>,
     pub shell: PathBuf,
+    pub metal_caches: Vec<PathBuf>,
 }
 
 static DIRECTORIES: OnceLock<Result<Arc<Directories>, String>> = OnceLock::new();
@@ -105,13 +106,12 @@ fn own_directory(path: &Path, home: &Path) -> Result<PathBuf, String> {
 fn content_root(path: PathBuf, home: &Path, reads: &mut Vec<PathBuf>) -> Result<(), String> {
     let path = path.canonicalize().map_err(|error| error.to_string())?;
     let root = if path.is_dir() {
+        own_directory(&path, home)?
+    } else if path.is_file() {
         path
     } else {
-        path.parent()
-            .ok_or("content path has no directory")?
-            .to_path_buf()
+        return Err("sandbox-content-not-regular".to_owned());
     };
-    let root = own_directory(&root, home)?;
     if !reads.contains(&root) {
         reads.push(root);
     }
@@ -172,6 +172,11 @@ fn install() -> Result<Arc<Directories>, String> {
         && contents.file_name().is_some_and(|name| name == "Contents")
     {
         reads.push(own_directory(contents, &home)?);
+        if let Some(bundle) = contents.parent()
+            && bundle.extension().is_some_and(|ext| ext == "app")
+        {
+            reads.push(own_directory(bundle, &home)?);
+        }
     }
     let old_profile = home.join("Library/Application Support/ai.chuzz.browser");
     if old_profile.exists() {
@@ -202,8 +207,19 @@ fn install() -> Result<Arc<Directories>, String> {
             content_root(path, &home, &mut reads)?;
         }
     }
+    // Inline storage seeds require no filesystem access. Existing seed files
+    // still need admission before Seatbelt is applied; missing paths are left
+    // to the seed reader so it can report the storage configuration error.
+    if let Some(seed) = std::env::var_os("QA_INSPECT_STORAGE") {
+        let inline = seed
+            .to_str()
+            .is_some_and(|text| text.trim_start().starts_with('{'));
+        let path = PathBuf::from(seed);
+        if !inline && path.exists() {
+            content_root(path, &home, &mut reads)?;
+        }
+    }
     for name in [
-        "QA_INSPECT_STORAGE",
         "CHUZZ_PAGE_SERVER_TLS_CERT",
         "CHUZZ_PAGE_SERVER_TLS_KEY",
         "CHUZZ_DEBUG_EVAL",
@@ -219,12 +235,49 @@ fn install() -> Result<Arc<Directories>, String> {
     let shell = Path::new("/bin/sh")
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    let mut metal_caches = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; 4096];
+        let len = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_CACHE_DIR,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
+                buf.len(),
+            )
+        };
+        if len > 0 && len <= buf.len() {
+            if let Ok(cstr) = std::ffi::CStr::from_bytes_until_nul(&buf)
+                && let Ok(text) = cstr.to_str()
+            {
+                let darwin_cache = PathBuf::from(text);
+                if let Ok(darwin_cache) = darwin_cache.canonicalize() {
+                    for sub in [
+                        "com.pathscale.chuzz",
+                        "chuzz-gui",
+                        "com.apple.metal",
+                        "com.apple.metalfe",
+                        "com.apple.gpuarchiver",
+                    ] {
+                        let dir = darwin_cache.join(sub);
+                        let _ = std::fs::create_dir_all(&dir);
+                        if let Ok(canon) = own_directory(&dir, &home)
+                            && !metal_caches.contains(&canon)
+                        {
+                            metal_caches.push(canon);
+                        }
+                    }
+                }
+            }
+        }
+    }
     let directories = Arc::new(Directories {
         cache,
         profile,
         home,
         reads,
         shell,
+        metal_caches,
     });
     #[cfg(target_os = "macos")]
     macos::apply(&directories)?;

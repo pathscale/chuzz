@@ -204,10 +204,12 @@ mkdir -p "$qa_home/Library/Application Support/ai.chuzz.browser" "$artifacts/pix
 printf '%s\n' '{"inspection":true,"profiling":false}' \
   > "$qa_home/Library/Application Support/ai.chuzz.browser/diagnostics.json"
 
-# Keep this run's descriptor and other temporary files inside its artifact
-# directory, so the app, this script and ps-qa resolve the same location.
+# Keep this run's cache, descriptor and temporary files inside its short
+# private temp directory, so Seatbelt, the app, this script and ps-qa resolve
+# the same location and unix domain socket paths stay well under 104 bytes.
 TMPDIR="$private_tmp"
-export TMPDIR
+CHUZZ_CACHE_DIR="$private_tmp"
+export TMPDIR CHUZZ_CACHE_DIR
 
 "$fixture_bin" --port 49124 > "$artifacts/fixture.log" 2>&1 &
 server_pid=$!
@@ -232,7 +234,7 @@ HOME="$qa_home" "$app/Contents/MacOS/chuzz-gui" \
   https://127.0.0.1:49123/ > "$artifacts/chuzz.log" 2>&1 &
 app_pid=$!
 
-descriptor_dir=$TMPDIR/tauri-blitz-agent
+descriptor_dir=$private_tmp/tmp/tauri-blitz-agent
 for _ in {1..200}; do
   candidate=$(find "$descriptor_dir" -maxdepth 1 -name "$app_pid-*.json" -print -quit 2>/dev/null || true)
   if [[ -n "$candidate" ]]; then
@@ -286,8 +288,7 @@ fi
 
 run_guarded qa "$qa_command_timeout" "$artifacts/qa.txt" \
   "$qa_bin" --descriptor "$descriptor" --app "$root/ps-qa.ron" qa \
-  --checks "$root/tests/ps-qa" --require-paint-events \
-  --pixel-artifact-dir "$artifacts/pixels"
+  --checks "$root/tests/ps-qa" --require-paint-events
 
 for node_attempt in {1..10}; do
   run_guarded "nodes-$node_attempt" "$qa_command_timeout" \
@@ -302,7 +303,7 @@ fi
 run_guarded inventory "$qa_command_timeout" "$artifacts/inventory.txt" \
   "$qa_bin" --descriptor "$descriptor" --app "$root/ps-qa.ron" inventory \
   --require-outcomes --checks "$root/tests/ps-qa"
-grep -q '^components: 74$' "$artifacts/inventory.txt"
+grep -q '^components: 75$' "$artifacts/inventory.txt"
 grep -q '^  browser,true,' "$artifacts/inventory.txt"
 grep -q '^  inspector,true,' "$artifacts/inventory.txt"
 grep -q '^  settings,true,' "$artifacts/inventory.txt"
@@ -318,15 +319,13 @@ grep -q 'matched: 0' "$artifacts/hidden-painted-buttons.txt"
 run_guarded ghost "$qa_command_timeout" "$artifacts/ghost.txt" \
   "$qa_bin" --descriptor "$descriptor" ghost 64 3
 run_guarded capture "$qa_command_timeout" "$artifacts/capture.txt" \
-  "$qa_bin" --descriptor "$descriptor" capture '#chuzz-app' 0.25 \
-  --output "$artifacts/window.ppm"
+  "$qa_bin" --descriptor "$descriptor" capture '#chuzz-app' 0.25
 
 # The tab close suite leaves its own tabs behind, so it runs after the
 # inventory and reconcile stages that expect the base suite's tab strip.
 run_guarded tab-close "$qa_command_timeout" "$artifacts/tab-close-qa.txt" \
   "$qa_bin" --descriptor "$descriptor" --app "$root/ps-qa.ron" qa \
-  --checks "$root/apps/chuzz/tests/checks/tab-close.ron" --require-paint-events \
-  --pixel-artifact-dir "$artifacts/pixels"
+  --checks "$root/apps/chuzz/tests/checks/tab-close.ron" --require-paint-events
 
 # Agent-control Off deliberately closes the socket, so it runs after every
 # shared-instance assertion. The persisted state is its durable outcome.
@@ -348,11 +347,11 @@ else
 fi
 for _ in {1..30}; do
   grep -q '"inspection"[[:space:]]*:[[:space:]]*false' \
-    "$qa_home/Library/Application Support/ai.chuzz.browser/diagnostics.json" && break
+    "$private_tmp/profile/diagnostics.json" 2>/dev/null && break
   sleep 0.1
 done
 grep -q '"inspection"[[:space:]]*:[[:space:]]*false' \
-  "$qa_home/Library/Application Support/ai.chuzz.browser/diagnostics.json"
+  "$private_tmp/profile/diagnostics.json"
 if run_guarded agent-control-disabled-socket "$qa_command_timeout" \
   "$artifacts/agent-control-disabled-socket.txt" \
   "$qa_bin" --descriptor "$descriptor" nodes; then
