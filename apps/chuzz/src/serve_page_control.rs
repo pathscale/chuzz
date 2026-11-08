@@ -25,7 +25,7 @@ impl Reply {
         self.0.abandon().await;
     }
 }
-type DocumentRequest = (ControlBridgeRequest, Arc<Reply>);
+type DocumentRequest = (ControlBridgeRequest, Arc<Reply>, bool);
 
 struct State {
     producer_open: bool,

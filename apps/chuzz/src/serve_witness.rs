@@ -29,6 +29,7 @@ fn page_ring() -> Result<(), String> {
             max_depth: 3,
         }),
         Arc::clone(&answer),
+        false,
     ));
     nagoya::block_on(async {
         let mut receiving = Box::pin(nagoya::timeout(Duration::from_secs(1), receiver.recv_arc()));

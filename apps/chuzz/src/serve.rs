@@ -67,7 +67,7 @@ use blitz_control_protocol::{
     RendererMetrics, RevisionSet, WindowComposition,
 };
 use blitz_dom::Document as _;
-use blitz_dom::NodeId;
+use blitz_dom::{FormSubmissionScope, LookupFormSubmission, NodeId};
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
@@ -148,7 +148,6 @@ const BOT_CHILD_MAX_VIEWPORT_PIXELS: u64 = 1_500_000;
 struct HeadlessPolicy {
     bot_child: bool,
     allowed_domains: Vec<String>,
-    allow_form_submit: bool,
     wall_time: Duration,
 }
 
@@ -169,11 +168,6 @@ impl HeadlessPolicy {
         } else {
             Vec::new()
         };
-        let allow_form_submit = if bot_child {
-            parse_bool_env("CHUZZ_HEADLESS_ALLOW_FORM_SUBMIT", false)?
-        } else {
-            false
-        };
         let wall_time = if bot_child {
             let timeout = optional_env("CHUZZ_HEADLESS_WALL_TIMEOUT_MS")?;
             let max = if optional_env(PUBLIC_HTTPS_TARGET_ENV)?.is_some() {
@@ -189,20 +183,18 @@ impl HeadlessPolicy {
         Ok(Self {
             bot_child,
             allowed_domains,
-            allow_form_submit,
             wall_time,
         })
     }
 
     #[cfg(test)]
-    fn bot_child_for_tests(allowed_domains: &[&str], allow_form_submit: bool) -> Self {
+    fn bot_child_for_tests(allowed_domains: &[&str]) -> Self {
         Self {
             bot_child: true,
             allowed_domains: allowed_domains
                 .iter()
                 .map(|host| (*host).to_owned())
                 .collect(),
-            allow_form_submit,
             wall_time: BOT_CHILD_MAX_WALL_TIME,
         }
     }
@@ -298,20 +290,6 @@ fn optional_env(variable: &str) -> Result<Option<String>, String> {
                 .map_err(|_| format!("{variable} is not valid UTF-8"))
         })
         .transpose()
-}
-
-fn parse_bool_env(variable: &str, default: bool) -> Result<bool, String> {
-    let Some(value) = std::env::var_os(variable) else {
-        return Ok(default);
-    };
-    let value = value
-        .into_string()
-        .map_err(|_| format!("{variable} is not valid UTF-8"))?;
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" => Ok(true),
-        "0" | "false" | "no" => Ok(false),
-        _ => Err(format!("{variable} must be a boolean value")),
-    }
 }
 
 fn parse_wall_time(value: Option<&str>, max: Duration) -> Result<Duration, String> {
@@ -569,13 +547,10 @@ pub fn classify(target: &str) -> Result<Target, String> {
 struct ActionContext {
     target_tag: Option<String>,
     target_type: String,
-    has_form: bool,
-    may_submit: bool,
     sensitive: bool,
     download: bool,
     new_window: bool,
     href: Option<String>,
-    form_action: Option<String>,
 }
 
 fn bounded_descendant_text(
@@ -713,9 +688,6 @@ fn action_context(document: &PageDocument, node_id: u64) -> Option<ActionContext
     let mut context = ActionContext::default();
     let mut current = Some(NodeId::from_u64(node_id));
     let mut depth = 0_u8;
-    let mut has_button_role = false;
-    let mut has_click_handler = false;
-    let mut has_submit_control = false;
 
     while let Some(id) = current {
         if depth >= 16 {
@@ -745,32 +717,16 @@ fn action_context(document: &PageDocument, node_id: u64) -> Option<ActionContext
             }
             context.sensitive |= sensitive_surface(&bounded_descendant_text(&inner, id, 192));
 
-            context.has_form |= tag == "form" || attribute("form").is_some();
-            if context.form_action.is_none() {
-                context.form_action = attribute("formaction").map(str::to_owned);
-            }
-            if tag == "form" && context.form_action.is_none() {
-                context.form_action = attribute("action").map(str::to_owned);
-            }
             if context.href.is_none() && tag == "a" {
                 context.href = attribute("href").map(str::to_owned);
             }
             context.download |= attribute("download").is_some();
             context.new_window |= attribute("target") == Some("_blank");
-            has_button_role |= attribute("role").is_some_and(|role| {
-                role.eq_ignore_ascii_case("button") || role.eq_ignore_ascii_case("menuitem")
-            });
-            has_click_handler |= attribute("onclick").is_some();
-            has_submit_control |= (tag == "button"
-                && !matches!(element_type.as_str(), "button" | "reset"))
-                || (tag == "input" && matches!(element_type.as_str(), "submit" | "image"));
         }
         current = node.parent;
         depth = depth.saturating_add(1);
     }
 
-    context.may_submit =
-        context.has_form && (has_submit_control || has_button_role || has_click_handler);
     Some(context)
 }
 
@@ -779,10 +735,6 @@ fn policy_denial(message: &str) -> DebugError {
         code: "policyDenied".to_owned(),
         message: message.to_owned(),
     }
-}
-
-fn submit_needs_permission(policy: &HeadlessPolicy, context: &ActionContext) -> bool {
-    context.may_submit && !policy.allow_form_submit
 }
 
 fn validate_action_url(
@@ -804,9 +756,14 @@ fn authorize_action(
     policy: &HeadlessPolicy,
     document: &PageDocument,
     action: &AgentAction,
-) -> Result<(), DebugError> {
+    lookup_click: bool,
+) -> Result<Option<LookupFormSubmission>, DebugError> {
     if !policy.bot_child {
-        return Ok(());
+        return if lookup_click {
+            Err(policy_denial("lookup clicks require bot mode"))
+        } else {
+            Ok(None)
+        };
     }
     match action {
         AgentAction::Click { node_id } => {
@@ -820,21 +777,27 @@ fn authorize_action(
                     "downloads and new browsing contexts are disabled",
                 ));
             }
-            if submit_needs_permission(policy, &context) {
-                return Err(policy_denial(
-                    "form submission requires explicit permission from the caller",
-                ));
-            }
             if let Some(href) = context.href.as_deref() {
                 validate_action_url(policy, document, href)?;
             }
-            if context.may_submit
-                && let Some(action_url) = context.form_action.as_deref()
-                && !action_url.is_empty()
-            {
-                validate_action_url(policy, document, action_url)?;
+            let grant = document
+                .inner()
+                .lookup_form_submission(NodeId::from_u64(*node_id))
+                .map_err(|_| policy_denial("this form is outside the lookup policy"))?;
+            if let Some(grant) = grant.as_ref() {
+                if !lookup_click {
+                    return Err(policy_denial("form submission requires a lookup click"));
+                }
+                let form = action_context(document, grant.form_id().as_u64())
+                    .ok_or_else(|| policy_denial("the live form could not be inspected"))?;
+                if form.sensitive || form.download || form.new_window {
+                    return Err(policy_denial("this form is outside the lookup policy"));
+                }
+                policy
+                    .validate_url(grant.destination())
+                    .map_err(|_| policy_denial("the form destination is outside the browser policy"))?;
             }
-            Ok(())
+            Ok(grant)
         }
         AgentAction::SetValue { node_id, value } => {
             if value.len() > BOT_CHILD_MAX_FILL_BYTES {
@@ -856,13 +819,25 @@ fn authorize_action(
             if !editable {
                 return Err(policy_denial("only ordinary search fields may be filled"));
             }
-            Ok(())
+            Ok(None)
         }
-        AgentAction::ScrollIntoView { .. } | AgentAction::ScrollBy { .. } => Ok(()),
+        AgentAction::ScrollIntoView { .. } | AgentAction::ScrollBy { .. } => Ok(None),
         _ => Err(policy_denial(
             "this action is not part of the bot browser control surface",
         )),
     }
+}
+
+fn dispatch_control_action(
+    policy: &HeadlessPolicy,
+    document: &mut PageDocument,
+    control: &mut DocumentControl,
+    action: AgentAction,
+    lookup_click: bool,
+) -> Result<(), DebugError> {
+    let _submission = authorize_action(policy, document, &action, lookup_click)?
+        .map(FormSubmissionScope::allow);
+    control.act(document, action)
 }
 
 fn sanitize_inspection(
@@ -1476,6 +1451,7 @@ fn serve_page(
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
     let policy = HeadlessPolicy::from_env()?;
+    let _submission_policy = policy.bot_child.then(FormSubmissionScope::restricted);
     let lookup_bridge = policy.bot_child && optional_env(PUBLIC_HTTPS_TARGET_ENV)?.is_some();
     let capacity = if policy.bot_child {
         BOT_CHILD_MAX_PENDING_REQUESTS
@@ -1493,7 +1469,7 @@ fn serve_page(
     } else {
         None
     };
-    supervisor::start_worker(request_tx)?;
+    supervisor::start_worker(request_tx, lookup_bridge)?;
     let target = classify(target).map_err(|error| {
         if policy.bot_child {
             let _ = error;
@@ -1794,7 +1770,7 @@ fn serve_page(
                 None => request_rx.receive(None),
             },
         };
-        let (request, reply) = match received {
+        let (request, reply, lookup_click) = match received {
             Ok(pair) => pair,
             Err(page_control::RecvTimeoutError::Timeout) => {
                 if tick_document(&mut document, &animation_clock) {
@@ -1983,16 +1959,19 @@ fn serve_page(
                     }
                     AgentControlRequest::Act(action) => {
                         let _action = supervisor::operation(supervisor::Operation::Action);
-                        match authorize_action(&policy, &document, &action) {
-                            Ok(()) => match control.act(&mut document, action) {
-                                Ok(()) => settle_response(
-                                    &mut document,
-                                    &animation_clock,
-                                    settle_deadline,
-                                    &mut painted,
-                                ),
-                                Err(error) => DebugResponse::Error(error),
-                            },
+                        match dispatch_control_action(
+                            &policy,
+                            &mut document,
+                            &mut control,
+                            action,
+                            lookup_click,
+                        ) {
+                            Ok(()) => settle_response(
+                                &mut document,
+                                &animation_clock,
+                                settle_deadline,
+                                &mut painted,
+                            ),
                             Err(error) => DebugResponse::Error(error),
                         }
                     }
@@ -2281,11 +2260,10 @@ fn serve_page(
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionContext, BOT_CHILD_MAX_INSPECT_BYTES, BOT_CHILD_MAX_WALL_TIME, HeadlessPolicy,
-        LOOKUP_MAX_WALL_TIME, MAX_PROXY_BYTES, Target, Url, bound_inspection_snapshot, classify,
-        condense_response, navigation_initiator, parse_allowed_domains, parse_wall_time,
-        proxy_connect_url, reserve_proxy_bytes, sensitive_surface, submit_needs_permission,
-        target_from,
+        BOT_CHILD_MAX_INSPECT_BYTES, BOT_CHILD_MAX_WALL_TIME, HeadlessPolicy, LOOKUP_MAX_WALL_TIME,
+        MAX_PROXY_BYTES, Target, Url, bound_inspection_snapshot, classify, condense_response,
+        navigation_initiator, parse_allowed_domains, parse_wall_time, proxy_connect_url,
+        reserve_proxy_bytes, sensitive_surface, target_from,
     };
     use blitz_control_protocol::{AgentSnapshot, DebugResponse, SemanticNode, condense};
 
@@ -2432,7 +2410,7 @@ mod tests {
 
     #[test]
     fn bot_mode_rejects_local_schemes_addresses_and_credentials() {
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         for target in [
             "http://example.com/",
             "file:///etc/passwd",
@@ -2455,7 +2433,7 @@ mod tests {
         use blitz_traits::platform::FetchRequest;
         use std::sync::Arc;
 
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         let url = Url::parse("https://supplier.example/").unwrap();
         let browser = Arc::new(ResourcePolicy::default()).browser(url.clone());
         let mut request = FetchRequest::get(url.clone());
@@ -2482,14 +2460,14 @@ mod tests {
 
     #[test]
     fn bot_mode_accepts_public_literal_addresses() {
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         let url = Url::parse("https://8.8.8.8/").expect("parse public URL");
         assert!(policy.validate_url(&url).is_ok());
     }
 
     #[test]
     fn bot_child_condense_is_denied_before_inspection() {
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         let response = condense_response(
             &policy,
             condense::Level::Content,
@@ -2506,7 +2484,7 @@ mod tests {
     fn host_allowlist_matches_only_exact_domains_and_subdomains() {
         let allowed =
             parse_allowed_domains(Some("Example.com, example.org")).expect("parse allowed domains");
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         let policy = HeadlessPolicy {
             allowed_domains: allowed,
             ..policy
@@ -2528,18 +2506,6 @@ mod tests {
         assert_eq!(tunnel.scheme(), "https");
         assert_eq!(tunnel.host_str(), Some("example.com"));
         assert!(proxy_connect_url("GET http://example.com/ HTTP/1.1\r\n\r\n").is_none());
-    }
-
-    #[test]
-    fn form_submission_requires_explicit_caller_permission() {
-        let context = ActionContext {
-            may_submit: true,
-            ..ActionContext::default()
-        };
-        let denied = HeadlessPolicy::bot_child_for_tests(&[], false);
-        let allowed = HeadlessPolicy::bot_child_for_tests(&[], true);
-        assert!(submit_needs_permission(&denied, &context));
-        assert!(!submit_needs_permission(&allowed, &context));
     }
 
     #[test]

@@ -3,7 +3,7 @@ members = ["apps/chuzz", "crates/chuzz-control", "crates/chuzz-qa-fixture"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.47"
+version = "0.1.48"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
@@ -32,7 +32,7 @@ homepage = "https://github.com/pathscale/chuzz"
 # the same range gets the same crate rather than a second copy. To build against
 # a working checkout, see `scripts/local-engine.sh`; it is opt-in so the default
 # exercises what a release actually resolves.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.7.0" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.7.2" }
 blitz-html = { package = "ps-blitz-html", version = "^0.7.0" }
 blitz-net = { package = "ps-blitz-net", version = "^0.7.1" }
 blitz-script = { package = "ps-blitz-script", version = "^0.7.0" }

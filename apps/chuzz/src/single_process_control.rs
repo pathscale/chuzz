@@ -9,8 +9,8 @@ use std::task::Context;
 #[path = "serve_supervisor.rs"]
 mod transport;
 
-pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
-    transport::start_worker(sender)
+pub(super) fn start_worker(sender: page_control::Sender, lookup_bridge: bool) -> Result<(), String> {
+    transport::start_worker(sender, lookup_bridge)
 }
 pub(super) fn events() -> Arc<Latest<DebugEvent>> {
     transport::events()

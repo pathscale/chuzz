@@ -442,7 +442,6 @@ pub(super) fn witness_proxy() -> Result<EgressProxy, String> {
     EgressProxy::start(HeadlessPolicy {
         bot_child: true,
         allowed_domains: vec!["example.com".into()],
-        allow_form_submit: false,
         wall_time: Duration::from_secs(1),
     })
 }
