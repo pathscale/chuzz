@@ -5,7 +5,8 @@
 #     scripts/local-engine.sh run -p chuzz --bin chuzz-gui -- example.com
 #
 # Cargo arguments are passed through, with an internal config and temporary
-# manifest path added by the wrapper.
+# manifest path added by the wrapper. Set CHUZZ_LOCAL_ENGINE_CONFIG to use
+# another Cargo config instead of the checkout's .cargo/local-engine.toml.
 #
 # This is opt-in on purpose, and the reason is written in this repository's
 # history. The engine used to be a `path = "../ps-blitz/..."` dependency, which
@@ -23,7 +24,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-config="$root/.cargo/local-engine.toml"
+config="${CHUZZ_LOCAL_ENGINE_CONFIG:-$root/.cargo/local-engine.toml}"
 workspace_manifest="$root/Cargo.toml"
 app_manifest="$root/apps/chuzz/Cargo.toml"
 # Keep outputs usable after the disposable manifests are removed. Respect a
@@ -141,9 +142,8 @@ awk '
     exit 1
 }
 
-# Cargo resolves and writes its lockfile in the disposable overlay workspace;
-# the EXIT cleanup removes that lock with the overlay and never touches the
-# checkout's Cargo.lock. Both dispatch paths use the generated manifest.
+# Cargo uses the generated manifest and writes its lockfile into the overlay
+# unless the selected config redirects it with resolver.lockfile-path.
 command="$1"
 shift
 if [ "$command" = fmt ]; then

@@ -50,7 +50,7 @@
 //! waits for the line, so a component that wedges the engine cannot poison the
 //! next one's verdict.
 
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -120,7 +120,12 @@ fn dimension(variable: &str, default: u32) -> Result<u32, String> {
         .ok_or_else(|| format!("{variable} must be a positive integer, got {text:?}"))
 }
 
+const PUBLIC_HTTPS_TARGET_ENV: &str = "CHUZZ_HEADLESS_PUBLIC_HTTPS_TARGET";
 const BOT_CHILD_MAX_WALL_TIME: Duration = Duration::from_secs(20);
+const LOOKUP_MAX_WALL_TIME: Duration = Duration::from_secs(60);
+const LOOKUP_MAX_INSPECT_DEPTH: u32 = 32;
+// Leave room for the control envelope under the lookup client's 4 MiB frame.
+const LOOKUP_MAX_INSPECT_BYTES: usize = 3 * 1024 * 1024;
 const BOT_CHILD_MAX_ACTIONS: usize = 8;
 const BOT_CHILD_MAX_INSPECTIONS: usize = 16;
 const BOT_CHILD_MAX_REQUESTS: usize = 24;
@@ -171,7 +176,12 @@ impl HeadlessPolicy {
         };
         let wall_time = if bot_child {
             let timeout = optional_env("CHUZZ_HEADLESS_WALL_TIMEOUT_MS")?;
-            parse_wall_time(timeout.as_deref())?
+            let max = if optional_env(PUBLIC_HTTPS_TARGET_ENV)?.is_some() {
+                LOOKUP_MAX_WALL_TIME
+            } else {
+                BOT_CHILD_MAX_WALL_TIME
+            };
+            parse_wall_time(timeout.as_deref(), max)?
         } else {
             Duration::ZERO
         };
@@ -215,49 +225,48 @@ impl HeadlessPolicy {
         if !self.bot_child {
             return Ok(());
         }
-        self.resolve_public_addresses(url).map(|_| ())
+        if url.scheme() != "https" {
+            return Err("only HTTPS navigation is allowed in bot mode".to_owned());
+        }
+        self.public_https_initiator(url.clone(), &blitz_traits::net::Initiator::Unknown)
+            .check_url(url)
+    }
+
+    fn public_https_initiator(
+        &self,
+        url: Url,
+        navigation: &blitz_traits::net::Initiator,
+    ) -> blitz_traits::net::Initiator {
+        Arc::new(blitz_traits::net::ResourcePolicy::default()).public_https_document(
+            url,
+            navigation,
+            &self.allowed_domains,
+        )
     }
 
     fn resolve_public_addresses(&self, url: &Url) -> Result<Vec<SocketAddr>, String> {
         if url.scheme() != "https" {
             return Err("only HTTPS navigation is allowed in bot mode".to_owned());
         }
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err("URLs with credentials are not allowed in bot mode".to_owned());
-        }
-        let host = url
-            .host_str()
-            .ok_or_else(|| "the URL has no host".to_owned())?;
-        let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
-        if normalized_host.is_empty() || is_local_hostname(&normalized_host) {
-            return Err("local hostnames are not allowed in bot mode".to_owned());
-        }
-        if !domain_is_allowed(&normalized_host, &self.allowed_domains) {
-            return Err("the URL host is outside the configured allowlist".to_owned());
-        }
-
+        let initiator =
+            self.public_https_initiator(url.clone(), &blitz_traits::net::Initiator::Unknown);
+        initiator.check_url(url)?;
         let port = url
             .port_or_known_default()
             .ok_or_else(|| "the URL has no known port".to_owned())?;
-        if let Ok(address) = normalized_host.parse::<IpAddr>() {
-            if !is_public_address(address) {
-                return Err("local and non-public IP addresses are not allowed".to_owned());
-            }
-            return Ok(vec![SocketAddr::new(address, port)]);
+        let addresses = match url.host().ok_or("the URL has no host")? {
+            url::Host::Domain(host) => (host, port)
+                .to_socket_addrs()
+                .map_err(|_| "the URL host could not be resolved".to_owned())?
+                .collect::<Vec<_>>(),
+            url::Host::Ipv4(ip) => vec![SocketAddr::new(ip.into(), port)],
+            url::Host::Ipv6(ip) => vec![SocketAddr::new(ip.into(), port)],
+        };
+        if addresses.is_empty() {
+            return Err("the URL host resolved to no addresses".to_owned());
         }
-
-        let addresses = (normalized_host.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|_| "the URL host could not be resolved".to_owned())?
-            .collect::<Vec<SocketAddr>>();
-        if addresses.is_empty()
-            || addresses
-                .iter()
-                .any(|address| !is_public_address(address.ip()))
-        {
-            return Err(
-                "the URL host does not resolve exclusively to public IP addresses".to_owned(),
-            );
+        for address in &addresses {
+            initiator.check_address(address.ip())?;
         }
         Ok(addresses)
     }
@@ -305,7 +314,7 @@ fn parse_bool_env(variable: &str, default: bool) -> Result<bool, String> {
     }
 }
 
-fn parse_wall_time(value: Option<&str>) -> Result<Duration, String> {
+fn parse_wall_time(value: Option<&str>, max: Duration) -> Result<Duration, String> {
     let Some(value) = value else {
         return Ok(BOT_CHILD_MAX_WALL_TIME);
     };
@@ -314,10 +323,10 @@ fn parse_wall_time(value: Option<&str>) -> Result<Duration, String> {
         .ok()
         .filter(|milliseconds| *milliseconds > 0)
         .ok_or_else(|| "CHUZZ_HEADLESS_WALL_TIMEOUT_MS must be a positive integer".to_owned())?;
-    if milliseconds > BOT_CHILD_MAX_WALL_TIME.as_millis() as u64 {
+    if milliseconds > max.as_millis() as u64 {
         return Err(format!(
             "CHUZZ_HEADLESS_WALL_TIMEOUT_MS cannot exceed {}ms",
-            BOT_CHILD_MAX_WALL_TIME.as_millis()
+            max.as_millis()
         ));
     }
     Ok(Duration::from_millis(milliseconds))
@@ -373,65 +382,12 @@ fn is_dns_hostname(host: &str) -> bool {
         })
 }
 
-fn domain_is_allowed(host: &str, allowed_domains: &[String]) -> bool {
-    allowed_domains.is_empty()
-        || allowed_domains.iter().any(|domain| {
-            host == domain
-                || host
-                    .strip_suffix(domain)
-                    .is_some_and(|prefix| prefix.ends_with('.'))
-        })
-}
-
 fn is_local_hostname(host: &str) -> bool {
     host == "localhost"
         || host.ends_with(".localhost")
         || host.ends_with(".local")
         || host.ends_with(".internal")
         || host.ends_with(".lan")
-}
-
-fn is_public_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => is_public_ipv4(address),
-        IpAddr::V6(address) => {
-            if let Some(mapped) = address.to_ipv4() {
-                return is_public_address(IpAddr::V4(mapped));
-            }
-            let segments = address.segments();
-            let special_purpose = (segments[0] == 0x2001 && matches!(segments[1], 0x0000 | 0x0db8))
-                || segments[0] == 0x2002
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b);
-            !(address.is_loopback()
-                || address.is_unique_local()
-                || address.is_unicast_link_local()
-                || address.is_unspecified()
-                || address.is_multicast()
-                || special_purpose)
-        }
-    }
-}
-
-fn is_public_ipv4(address: std::net::Ipv4Addr) -> bool {
-    let [first, second, third, _] = address.octets();
-    let shared = first == 100 && (64..=127).contains(&second);
-    let documentation = (first == 192 && second == 0 && third == 2)
-        || (first == 198 && second == 51 && third == 100)
-        || (first == 203 && second == 0 && third == 113);
-    let special_purpose = first == 0
-        || first == 10
-        || first == 127
-        || shared
-        || (first == 169 && second == 254)
-        || (first == 172 && (16..=31).contains(&second))
-        || (first == 192 && second == 168)
-        || (first == 192 && second == 0 && third == 0)
-        || (first == 192 && second == 88 && third == 99)
-        || (first == 198 && (18..=19).contains(&second))
-        || documentation
-        || first >= 224
-        || address == std::net::Ipv4Addr::BROADCAST;
-    !(special_purpose || address.is_private() || address.is_loopback() || address.is_multicast())
 }
 
 struct WallTimeoutGuard(Option<nagoya::JoinHandle<Arc<()>>>);
@@ -525,6 +481,12 @@ pub fn reactor_witness() -> Result<(), String> {
 }
 
 pub fn target_from(args: &[String]) -> Result<String, String> {
+    if let Some(target) = optional_env(PUBLIC_HTTPS_TARGET_ENV)? {
+        if optional_env("CHUZZ_HEADLESS_MODE")?.as_deref() != Some("bot") || args.len() != 1 {
+            return Err("the public HTTPS target requires bot mode with no arguments".to_owned());
+        }
+        return Ok(target);
+    }
     if let Some(argument) = args.iter().skip(1).find(|arg| !arg.starts_with("--")) {
         return Ok(argument.clone());
     }
@@ -907,6 +869,7 @@ fn sanitize_inspection(
     policy: &HeadlessPolicy,
     document: &PageDocument,
     response: DebugResponse,
+    lookup_bridge: bool,
 ) -> DebugResponse {
     if !policy.bot_child {
         return response;
@@ -915,13 +878,18 @@ fn sanitize_inspection(
         DebugResponse::AgentSnapshot(snapshot) => snapshot,
         response => return response,
     };
-    snapshot.nodes.truncate(BOT_CHILD_MAX_INSPECT_NODES);
+    let (max_nodes, max_bytes) = if lookup_bridge {
+        (BOT_CHILD_MAX_PAGE_NODES, LOOKUP_MAX_INSPECT_BYTES)
+    } else {
+        (BOT_CHILD_MAX_INSPECT_NODES, BOT_CHILD_MAX_INSPECT_BYTES)
+    };
+    snapshot.nodes.truncate(max_nodes);
     for node in &mut snapshot.nodes {
         if action_context(document, node.id).is_some_and(|context| context.sensitive) {
             node.value = None;
         }
     }
-    bound_inspection_snapshot(&mut snapshot);
+    bound_inspection_snapshot(&mut snapshot, max_bytes);
     DebugResponse::AgentSnapshot(snapshot)
 }
 
@@ -950,7 +918,10 @@ fn condense_response(
     }
 }
 
-fn bound_inspection_snapshot(snapshot: &mut blitz_control_protocol::AgentSnapshot) {
+fn bound_inspection_snapshot(
+    snapshot: &mut blitz_control_protocol::AgentSnapshot,
+    max_bytes: usize,
+) {
     fn trim_text(value: &mut String, field_limit: usize, remaining: &mut usize) {
         let mut end = value.len().min(field_limit).min(*remaining);
         while !value.is_char_boundary(end) {
@@ -966,7 +937,7 @@ fn bound_inspection_snapshot(snapshot: &mut blitz_control_protocol::AgentSnapsho
         }
     }
 
-    let mut remaining = BOT_CHILD_MAX_INSPECT_BYTES;
+    let mut remaining = max_bytes;
     trim_optional_text(&mut snapshot.active_window, 128, &mut remaining);
     for node in &mut snapshot.nodes {
         trim_optional_text(&mut node.dom_id, 128, &mut remaining);
@@ -976,21 +947,28 @@ fn bound_inspection_snapshot(snapshot: &mut blitz_control_protocol::AgentSnapsho
         trim_optional_text(&mut node.slot, 128, &mut remaining);
     }
 
-    // String contents are bounded before encoding, so these checks allocate
-    // only a small temporary buffer while enforcing the actual wire size.
-    loop {
-        match serde_json::to_vec(snapshot) {
-            Ok(encoded) if encoded.len() <= BOT_CHILD_MAX_INSPECT_BYTES => break,
-            Ok(_) if !snapshot.nodes.is_empty() => {
-                snapshot.nodes.pop();
-            }
-            _ => {
-                snapshot.nodes.clear();
-                snapshot.active_window = None;
-                break;
-            }
-        }
-    }
+    // The empty snapshot already includes the array brackets. Charge each
+    // encoded node and its separator once, keeping a prefix of the tree.
+    let nodes = std::mem::take(&mut snapshot.nodes);
+    let Ok(base) = serde_json::to_vec(snapshot) else {
+        return;
+    };
+    let mut remaining = max_bytes.saturating_sub(base.len());
+    let mut separator = 0;
+    snapshot.nodes = nodes
+        .into_iter()
+        .take_while(|node| {
+            let Ok(encoded) = serde_json::to_vec(node) else {
+                return false;
+            };
+            let Some(left) = remaining.checked_sub(encoded.len() + separator) else {
+                return false;
+            };
+            remaining = left;
+            separator = 1;
+            true
+        })
+        .collect();
 }
 
 #[derive(Default)]
@@ -1385,14 +1363,10 @@ fn navigation_initiator(
     url: Url,
     current: Option<blitz_traits::net::Initiator>,
 ) -> blitz_traits::net::Initiator {
-    let resources = Arc::new(blitz_traits::net::ResourcePolicy::default());
     if policy.bot_child {
-        match current {
-            Some(current) => resources.document(url, &current),
-            None => resources.document(url, &blitz_traits::net::Initiator::Unknown),
-        }
+        policy.public_https_initiator(url, &current.unwrap_or_default())
     } else {
-        current.unwrap_or_else(|| resources.browser(url))
+        current.unwrap_or_else(|| Arc::new(blitz_traits::net::ResourcePolicy::default()).browser(url))
     }
 }
 
@@ -1502,6 +1476,7 @@ fn serve_page(
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
     let policy = HeadlessPolicy::from_env()?;
+    let lookup_bridge = policy.bot_child && optional_env(PUBLIC_HTTPS_TARGET_ENV)?.is_some();
     let capacity = if policy.bot_child {
         BOT_CHILD_MAX_PENDING_REQUESTS
     } else {
@@ -1754,6 +1729,19 @@ fn serve_page(
     };
     let mut origin = document.inner().url().origin().ascii_serialization();
     trace("document ready");
+    if std::env::var_os("CHUZZ_TRACE").is_some() {
+        match document.diagnostic_batch(0, 0, 64) {
+            Ok(batch) => {
+                for entry in batch.errors.entries {
+                    verbose(&format!("startup runtime error: {}", entry.message));
+                }
+                if batch.errors.lost > 0 {
+                    verbose(&format!("startup runtime errors lost: {}", batch.errors.lost));
+                }
+            }
+            Err(error) => verbose(&format!("startup diagnostics unavailable: {error}")),
+        }
+    }
     // Debugging aid for real sites: CHUZZ_DEBUG_EVAL names a script file that
     // runs once in the page after load. It can schedule its own timers and
     // report through console; nothing runs unless the variable is set.
@@ -1974,7 +1962,12 @@ fn serve_page(
                     AgentControlRequest::Inspect { root, max_depth } => {
                         revision += 1;
                         let depth = if policy.bot_child {
-                            max_depth.min(BOT_CHILD_MAX_INSPECT_DEPTH)
+                            let limit = if lookup_bridge {
+                                LOOKUP_MAX_INSPECT_DEPTH
+                            } else {
+                                BOT_CHILD_MAX_INSPECT_DEPTH
+                            };
+                            max_depth.min(limit)
                         } else {
                             max_depth
                         };
@@ -1986,7 +1979,7 @@ fn serve_page(
                             depth as usize,
                             |document, id| inspect_document(document, Some(id), 1, revision),
                         );
-                        sanitize_inspection(&policy, &document, response)
+                        sanitize_inspection(&policy, &document, response, lookup_bridge)
                     }
                     AgentControlRequest::Act(action) => {
                         let _action = supervisor::operation(supervisor::Operation::Action);
@@ -2289,9 +2282,10 @@ fn serve_page(
 mod tests {
     use super::{
         ActionContext, BOT_CHILD_MAX_INSPECT_BYTES, BOT_CHILD_MAX_WALL_TIME, HeadlessPolicy,
-        MAX_PROXY_BYTES, Target, Url, bound_inspection_snapshot, classify, condense_response,
-        domain_is_allowed, parse_allowed_domains, parse_wall_time, proxy_connect_url,
-        reserve_proxy_bytes, sensitive_surface, submit_needs_permission, target_from,
+        LOOKUP_MAX_WALL_TIME, MAX_PROXY_BYTES, Target, Url, bound_inspection_snapshot, classify,
+        condense_response, navigation_initiator, parse_allowed_domains, parse_wall_time,
+        proxy_connect_url, reserve_proxy_bytes, sensitive_surface, submit_needs_permission,
+        target_from,
     };
     use blitz_control_protocol::{AgentSnapshot, DebugResponse, SemanticNode, condense};
 
@@ -2456,6 +2450,37 @@ mod tests {
     }
 
     #[test]
+    fn bot_navigation_restricts_a_browser_initiated_load() {
+        use blitz_traits::net::ResourcePolicy;
+        use blitz_traits::platform::FetchRequest;
+        use std::sync::Arc;
+
+        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let url = Url::parse("https://supplier.example/").unwrap();
+        let browser = Arc::new(ResourcePolicy::default()).browser(url.clone());
+        let mut request = FetchRequest::get(url.clone());
+        request.initiator = navigation_initiator(&policy, url, Some(browser));
+
+        assert!(
+            request
+                .initiator
+                .check_address("127.0.0.1".parse().unwrap())
+                .is_err()
+        );
+        assert!(
+            request
+                .initiator
+                .check_address("8.8.8.8".parse().unwrap())
+                .is_ok()
+        );
+        assert!(
+            request
+                .check_redirect(&Url::parse("http://supplier.example/").unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn bot_mode_accepts_public_literal_addresses() {
         let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
         let url = Url::parse("https://8.8.8.8/").expect("parse public URL");
@@ -2481,10 +2506,19 @@ mod tests {
     fn host_allowlist_matches_only_exact_domains_and_subdomains() {
         let allowed =
             parse_allowed_domains(Some("Example.com, example.org")).expect("parse allowed domains");
-        assert!(domain_is_allowed("example.com", &allowed));
-        assert!(domain_is_allowed("www.example.com", &allowed));
-        assert!(!domain_is_allowed("notexample.com", &allowed));
-        assert!(!domain_is_allowed("example.com.attacker", &allowed));
+        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy {
+            allowed_domains: allowed,
+            ..policy
+        };
+        for host in ["example.com", "www.example.com"] {
+            let url = Url::parse(&format!("https://{host}/")).unwrap();
+            assert!(policy.validate_url(&url).is_ok());
+        }
+        for host in ["notexample.com", "example.com.attacker"] {
+            let url = Url::parse(&format!("https://{host}/")).unwrap();
+            assert!(policy.validate_url(&url).is_err());
+        }
     }
 
     #[test]
@@ -2550,22 +2584,27 @@ mod tests {
             }],
             ..AgentSnapshot::default()
         };
-        bound_inspection_snapshot(&mut snapshot);
+        bound_inspection_snapshot(&mut snapshot, BOT_CHILD_MAX_INSPECT_BYTES);
         let encoded = serde_json::to_vec(&snapshot).expect("encode bounded inspection");
         assert!(encoded.len() <= BOT_CHILD_MAX_INSPECT_BYTES);
     }
 
     #[test]
-    fn wall_timeout_can_only_be_shortened() {
+    fn wall_timeout_keeps_its_default_and_rejects_unbounded_values() {
         assert_eq!(
-            parse_wall_time(None).expect("default timeout"),
+            parse_wall_time(None, BOT_CHILD_MAX_WALL_TIME).expect("default timeout"),
             BOT_CHILD_MAX_WALL_TIME
         );
         assert_eq!(
-            parse_wall_time(Some("1500")).expect("short timeout"),
+            parse_wall_time(Some("1500"), BOT_CHILD_MAX_WALL_TIME).expect("short timeout"),
             std::time::Duration::from_millis(1500)
         );
-        assert!(parse_wall_time(Some("20001")).is_err());
-        assert!(parse_wall_time(Some("0")).is_err());
+        assert!(parse_wall_time(Some("20001"), BOT_CHILD_MAX_WALL_TIME).is_err());
+        assert_eq!(
+            parse_wall_time(Some("60000"), LOOKUP_MAX_WALL_TIME).expect("lookup timeout"),
+            LOOKUP_MAX_WALL_TIME
+        );
+        assert!(parse_wall_time(Some("60001"), LOOKUP_MAX_WALL_TIME).is_err());
+        assert!(parse_wall_time(Some("0"), BOT_CHILD_MAX_WALL_TIME).is_err());
     }
 }

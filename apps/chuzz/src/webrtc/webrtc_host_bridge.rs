@@ -142,8 +142,12 @@ fn crypto_probe(_: &mut dyn ChuzzScriptHost, _: &[HostValue]) -> Result<HostValu
 
 pub fn install(
     host: &mut dyn ChuzzScriptHost,
-    _config: &HostInstallContext,
+    config: &HostInstallContext,
 ) -> Result<(), HostError> {
+    // Peer candidates use UDP and do not carry an HTTPS destination policy.
+    if config.net.initiator().public_https_only() {
+        return Ok(());
+    }
     let page = Arc::new(Page {
         state: Mutex::new(Default::default()),
     });
@@ -161,7 +165,9 @@ pub fn install(
 }
 
 pub fn poll(host: &mut dyn ChuzzScriptHost, waker: Option<&Waker>) -> Result<bool, HostError> {
-    let state = bridge_state(host)?;
+    let Some(state) = host.state(STATE_KEY) else {
+        return Ok(false);
+    };
     let state = state
         .downcast_ref::<BridgeState>()
         .ok_or_else(|| HostError::new("InvalidStateError", "peer host state is invalid"))?;

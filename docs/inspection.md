@@ -71,7 +71,11 @@ CHUZZ_HEADLESS_ALLOW_FORM_SUBMIT=true \
 chuzz-headless https://supplier.example/search
 ```
 
-`CHUZZ_HEADLESS_WALL_TIMEOUT_MS` is a positive integer up to 20000. The default is 20000. Crossing it prints `chuzz-headless: bot child reached its wall-time limit` and exits 124. `CHUZZ_HEADLESS_ALLOW_FORM_SUBMIT` accepts `1`, `true`, `yes`, `0`, `false`, `no`. The default is false. `CHUZZ_HEADLESS_ALLOWED_DOMAINS` is a comma-separated list of DNS hostnames. Each entry allows that host and its subdomains. An empty value leaves every public host allowed. Local names, credentials, and non-public addresses stay blocked either way.
+`CHUZZ_HEADLESS_WALL_TIMEOUT_MS` is a positive integer up to 20000, or up to 60000 for the lookup profile. The default is 20000. Crossing it prints `chuzz-headless: bot child reached its wall-time limit` and exits 124. `CHUZZ_HEADLESS_ALLOW_FORM_SUBMIT` accepts `1`, `true`, `yes`, `0`, `false`, `no`. The default is false. `CHUZZ_HEADLESS_ALLOWED_DOMAINS` is a comma-separated list of DNS hostnames. Each entry allows that host and its subdomains. An empty value leaves every public host allowed. Local names, credentials, and non-public addresses stay blocked either way.
+
+Lookup services can set `CHUZZ_HEADLESS_PUBLIC_HTTPS_TARGET` in bot mode and
+launch without positional arguments. This selects the bounded lookup inspection
+profile. Older hosts require a positional or QA target and exit if neither is set.
 
 Bot mode keeps cookies and script storage in the process. It does not install `QA_INSPECT_STORAGE`. It does not open the profile cookie jar. `tools/list` omits `blitz.diagnostics`.
 
@@ -652,14 +656,14 @@ These bot numbers are fixed in the host.
 
 | Limit | Value |
 | --- | --- |
-| Wall time | 20 s, exit 124. `CHUZZ_HEADLESS_WALL_TIMEOUT_MS` may only lower it. |
+| Wall time | 20 s by default, up to 60 s for the lookup profile, exit 124. |
 | Control requests | 24. The request that crosses the cap returns `policyDenied` and the process stops. |
 | Inspections (`inspect`) | 16, inside the 24. |
 | Actions (`act`) | 8, inside the 24. |
 | Queued requests | 16. QA allows 64. Overflow is `documentBusy`, `the inspection request queue is full`, and the process keeps serving. |
-| Inspect depth | A requested depth above 12 becomes 12. Depth 0 stays 0, which the inspector treats as the whole tree. |
-| Returned semantic nodes | 512. |
-| Snapshot wire size | 60 KiB. Nodes are dropped from the end until the JSON fits. |
+| Inspect depth | 12, or 32 for the lookup profile. Depth 0 requests the whole tree within the output limits. |
+| Returned semantic nodes | 512, or 20,000 for the lookup profile. |
+| Snapshot wire size | 60 KiB, or 3 MiB for the lookup profile. Nodes are dropped from the end until the JSON fits. |
 | Field trims inside that budget | Active window 128, DOM id 128, role 64, name 512, value 512, slot 128, counted in bytes. |
 | Live DOM nodes | 20,000. Crossing it on load fails the load. Crossing it later stops the loop. |
 | Fill value | 512 bytes. |
@@ -668,9 +672,16 @@ These bot numbers are fixed in the host.
 | Bytes through the egress filter | 32 MiB. |
 | Proxy header | 16 KiB. |
 
-The egress filter accepts HTTPS `CONNECT` only, checks the destination, and connects to a resolved public address. Any other request is HTTP 403. File and data resource URLs do not pass through that filter, and the engine disk cache is not disabled in this mode. Those two provider behaviors need a separate check before bot mode is treated as a complete network boundary.
+Bot navigation and remote page requests require public HTTPS without
+credentials. The native transport checks every candidate in the DNS answer,
+connects directly to a checked address, and applies the same policy before
+following redirects. The domain allowlist also applies to these requests.
+TLS WebSockets inherit the document policy. Bot pages do not expose WebRTC
+connections. Inline data and blob resources do not use the network.
 
-Bot navigation must be HTTPS, with a host, with no username or password. `localhost`, `*.localhost`, `*.local`, `*.internal`, and `*.lan` are rejected. Every resolved address must be public, including IPv4-mapped IPv6. A redirect that lands outside the policy fails the load. Link and form-action URLs on a click are checked the same way.
+The compatibility proxy accepts HTTPS `CONNECT` only and uses the same
+destination policy for clients that use proxy settings. Its tunnel and byte
+limits apply to those clients.
 
 A click is refused when the control, an ancestor within 16 levels, or a short sample of descendant text looks like a credential, identity, or payment surface. The match is on whole words: sign-in, login, password, payment, checkout, reservation, purchase, register, billing, email, username, phone, passport, OTP, card verification, book, booking, and the pairs and triples around "sign in", "pay now", "place order", "create account", "credit card", "first name", "date of birth", and "one time code". The same check clears `value` on those nodes in a snapshot. Downloads and `target="_blank"` are refused. A submit control inside a form needs `CHUZZ_HEADLESS_ALLOW_FORM_SUBMIT`. `setValue` is limited to `textarea`, `select`, and `input` of type empty, text, search, date, month, week, time, or number.
 
