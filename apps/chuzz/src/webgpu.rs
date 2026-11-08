@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
+use blitz_dom::net::JxlDecodeBudget;
 use serde_json::{Map, Value, json};
 
 mod binary;
@@ -395,6 +396,7 @@ struct State {
     devices: HashMap<u64, Arc<DeviceConnection>>,
     incoming: VecDeque<Request>,
     images: external::Images,
+    jxl_decode_budget: JxlDecodeBudget,
     media_frames: Arc<crate::video::Frames>,
     bytes: Arc<binary::Table>,
     requests: VecDeque<Request>,
@@ -449,9 +451,10 @@ fn post_loss(
 }
 
 impl Bridge {
-    pub(crate) fn new(wake: crate::net_bridge::PageWake) -> Self {
+    pub(crate) fn new(wake: crate::net_bridge::PageWake, jxl_decode_budget: JxlDecodeBudget) -> Self {
         Self(Arc::new(Mutex::new(State {
             wake,
+            jxl_decode_budget,
             ..Default::default()
         })))
     }

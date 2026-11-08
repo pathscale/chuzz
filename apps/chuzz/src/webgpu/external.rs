@@ -158,23 +158,6 @@ fn decode_raster(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
     )))
 }
 
-fn decode_encoded(data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
-    // One JPEG XL decoder for <img> and script images: blitz-dom's (first keyframe, sRGB, RGBA8).
-    if blitz_dom::net::is_jxl(data) {
-        let (width, height, rgba) = blitz_dom::net::decode_jxl(data)
-            .map_err(|error| GpuError::validation(format!("JPEG XL: {error}")))?;
-        return Ok(Arc::new(RasterImageData::new(
-            width,
-            height,
-            Arc::new(rgba),
-        )));
-    }
-    match decode_raster(data) {
-        Ok(image) => Ok(image),
-        Err(raster_error) => decode_svg(data)?.ok_or(raster_error),
-    }
-}
-
 /// `image` does not decode SVG. Rasterize with the painter blitz-paint already
 /// uses, at usvg's resolved size (root width/height, otherwise the viewBox).
 /// The CPU pixmap is premultiplied; ImageBitmap storage is straight RGBA.
@@ -224,6 +207,20 @@ fn decode_svg(_bytes: &[u8]) -> Result<Option<Arc<RasterImageData>>, GpuError> {
 }
 
 impl Bridge {
+    fn decode_encoded(&self, data: &[u8]) -> Result<Arc<RasterImageData>, GpuError> {
+        if blitz_dom::net::is_jxl(data) {
+            let budget = self.state().jxl_decode_budget.clone();
+            return budget
+                .decode(data)
+                .map(Arc::new)
+                .map_err(|error| GpuError::validation(format!("JPEG XL: {error}")));
+        }
+        match decode_raster(data) {
+            Ok(image) => Ok(image),
+            Err(raster_error) => decode_svg(data)?.ok_or(raster_error),
+        }
+    }
+
     pub(super) fn prepare_image_request(
         &self,
         mut request: Request,
@@ -307,7 +304,7 @@ impl Bridge {
                 if data.len() as u64 > ALLOCATION_LIMIT {
                     return Err(GpuError::validation("image decode limit reached in chuzz"));
                 }
-                decode_encoded(data.as_slice())
+                self.decode_encoded(data.as_slice())
             }
             Source::Canvas {
                 canvas,

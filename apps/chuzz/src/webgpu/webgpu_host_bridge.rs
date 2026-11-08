@@ -597,7 +597,10 @@ pub fn install(
     host: &mut dyn ChuzzScriptHost,
     config: &HostInstallContext,
 ) -> Result<(), HostError> {
-    let bridge = Bridge::new(config.wake.clone());
+    let bridge = Bridge::new(
+        config.wake.clone(),
+        config.lifetime.jxl_decode_budget().clone(),
+    );
     bridge.state().media_frames = crate::video::native_host::frames(host)?;
     let canvas = canvas2d::native_host(bridge.clone());
     host.set_state(STATE_KEY, HostObject::new(NativeHost { bridge, canvas }))?;
