@@ -1,0 +1,24 @@
+# The release workflow renders this template as Casks/chuzz.rb for the tap.
+cask "chuzz" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "@ASSET_URL@"
+  name "Chuzz"
+  desc "Pure Rust web browser built on the Pathscale Blitz engine"
+  homepage "https://github.com/pathscale/chuzz"
+
+  # arm64 only, deliberately. An Intel Mac would install this happily and then
+  # fail to launch, so refuse at install time where the message is legible.
+  depends_on arch: :arm64
+  depends_on macos: :big_sur
+
+  app "Chuzz.app"
+
+  # Chuzz keeps no profile on disk yet: history and cookies live in memory for
+  # the life of the process. These are the paths macOS creates on its own.
+  zap trash: [
+    "~/Library/Caches/com.pathscale.chuzz",
+    "~/Library/Saved Application State/com.pathscale.chuzz.savedState",
+  ]
+end
