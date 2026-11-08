@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Publish even if the version has not changed"
+        description: "Publish the macOS bundle even if the version has not changed"
         type: boolean
         default: false
 
@@ -103,10 +103,8 @@ jobs:
           fi
 
           HEADLESS=https://github.com/pathscale/chuzz/releases/download/headless-v$VERSION/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz
-          if [ "${{ inputs.force }}" = "true" ]; then
-            echo "headless_publish=true" >> "$GITHUB_OUTPUT"
-          elif curl -fsSIL --max-time 30 "$HEADLESS" >/dev/null 2>&1 && \
-               curl -fsSIL --max-time 30 "$HEADLESS.sha256" >/dev/null 2>&1; then
+          if curl -fsSIL --max-time 30 "$HEADLESS" >/dev/null 2>&1 && \
+             curl -fsSIL --max-time 30 "$HEADLESS.sha256" >/dev/null 2>&1; then
             echo "headless_publish=false" >> "$GITHUB_OUTPUT"
             echo "The Linux headless asset for $VERSION is already published."
           else
@@ -159,17 +157,15 @@ jobs:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           tag="headless-v$VERSION"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" \
-              --target "$GITHUB_SHA" \
-              --title "Chuzz headless $VERSION" \
-              --notes "Linux x86_64 native ps-qa host with capture, JavaScript, scrollbars, WebP, and system-font discovery." \
-              --prerelease
-          fi
-          gh release upload "$tag" \
+          # Attach both files before publishing the new release. An existing
+          # release for this version is never reused.
+          gh release create "$tag" \
             target/headless-release/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz \
             target/headless-release/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz.sha256 \
-            --clobber
+            --target "$GITHUB_SHA" \
+            --title "Chuzz headless $VERSION" \
+            --notes "Linux x86_64 native ps-qa host with capture, JavaScript, scrollbars, WebP, and system-font discovery." \
+            --prerelease
 
   release:
     needs: check
