@@ -83,6 +83,8 @@ gui = [
 # page parses to an empty mount point and paints nothing.
 javascript = [
   "dep:blitz-script",
+  "dep:blitz-script-ekojit",
+  "dep:ekojit",
   # Real sites format dates, numbers and plurals through Intl before they
   # render anything; without it their bundles throw "Intl is not defined".
   "blitz-script/intl",
@@ -191,6 +193,8 @@ blitz-html = { workspace = true, default-features = true }
 # cold, including a reload of the page you are already on.
 blitz-net = { workspace = true, features = ["cookies", "compression", "cache"] }
 blitz-script = { workspace = true, optional = true }
+blitz-script-ekojit = { workspace = true, optional = true }
+ekojit = { workspace = true, optional = true }
 blitz-traits = { workspace = true, default-features = true }
 
 brotli.workspace = true
