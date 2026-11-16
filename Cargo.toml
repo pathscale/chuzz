@@ -38,7 +38,7 @@ blitz-net = { package = "ps-blitz-net", version = "^0.7.1" }
 blitz-script = { package = "ps-blitz-script", version = "^0.7.0" }
 # ekojit's page runtime. ekojit is private, so it comes from the private crates.vip registry
 # (pathscale app) until it is public; build with `cargo vip build` and a crates.vip token.
-blitz-script-ekojit = { package = "ps-blitz-script-ekojit", version = "^0.1", registry = "vip" }
+blitz-script-ekojit = { package = "ps-blitz-script-ekojit", version = "^0.1.1", registry = "vip" }
 ekojit = { version = "^0.1", registry = "vip" }
 blitz-traits = { package = "ps-blitz-traits", version = "^0.7.1" }
 
