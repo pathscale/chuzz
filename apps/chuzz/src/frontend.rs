@@ -116,6 +116,8 @@ mod tests {
 "#;
 
     #[test]
+    // owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3; owner exception: test-only large stack for the embedded UI bundle.
+    #[allow(clippy::disallowed_methods)]
     fn embedded_ui_bundle_builds_the_shell_and_page_mount() {
         std::thread::Builder::new()
             .name("chuzz-embedded-ui-test".into())

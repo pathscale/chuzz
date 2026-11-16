@@ -50,8 +50,7 @@ $config does not exist.
 It is deliberately untracked: it names paths that exist on one machine, and
 committing them fails every build everywhere else. Create it with a [patch]
 table per git source, pointing at your checkouts. For Ekojit, point the patches
-at $HOME/code/ekojit/crates/ekojit and
-$HOME/code/ekojit/crates/blitz-script-ekojit.
+at crates/ekojit and crates/blitz-script-ekojit inside your Ekojit checkout.
 
 [patch.crates-io]
 ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
