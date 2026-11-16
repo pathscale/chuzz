@@ -103,6 +103,16 @@ fn own_directory(path: &Path, home: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// A page named by file is served from its directory (serve.rs serves `Target::File` from the
+/// file's parent), so its stylesheets and scripts must be readable too, not just the page.
+fn served_root(path: PathBuf) -> PathBuf {
+    if path.is_file() {
+        path.parent().map(Path::to_path_buf).unwrap_or(path)
+    } else {
+        path
+    }
+}
+
 fn content_root(path: PathBuf, home: &Path, reads: &mut Vec<PathBuf>) -> Result<(), String> {
     let path = path.canonicalize().map_err(|error| error.to_string())?;
     let root = if path.is_dir() {
@@ -232,7 +242,7 @@ fn install() -> Result<Arc<Directories>, String> {
     if let Some(page) = std::env::var_os("QA_INSPECT_PAGE") {
         let path = PathBuf::from(page);
         if path.exists() {
-            content_root(path, &home, &mut reads)?;
+            content_root(served_root(path), &home, &mut reads)?;
         }
     }
     for argument in std::env::args()
@@ -241,12 +251,12 @@ fn install() -> Result<Arc<Directories>, String> {
     {
         let path = PathBuf::from(&argument);
         if path.exists() {
-            content_root(path, &home, &mut reads)?;
+            content_root(served_root(path), &home, &mut reads)?;
         } else if let Ok(url) = url::Url::parse(&argument)
             && url.scheme() == "file"
             && let Ok(path) = url.to_file_path()
         {
-            content_root(path, &home, &mut reads)?;
+            content_root(served_root(path), &home, &mut reads)?;
         }
     }
     // Inline storage seeds require no filesystem access. Existing seed files
