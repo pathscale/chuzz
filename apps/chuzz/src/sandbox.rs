@@ -170,10 +170,44 @@ fn collect_metal_caches(darwin_cache: &Path, home: &Path) -> Vec<PathBuf> {
     metal_caches
 }
 
+/// The effective user's home from the account database, for hosts launched with a cleared
+/// environment (ps-qa clears it and passes only page, storage and control variables).
+#[cfg(unix)]
+fn account_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut buffer = vec![0u8; 16 * 1024];
+    // SAFETY: passwd is plain data; getpwuid_r fills it with pointers into `buffer`, which
+    // outlives every read below, and reports failure through its return value and `result`.
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut entry,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() || entry.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: pw_dir is a NUL-terminated string inside `buffer`, set by a successful call.
+    let dir = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(not(unix))]
+fn account_home() -> Option<PathBuf> {
+    None
+}
+
 fn install() -> Result<Arc<Directories>, String> {
     crate::platform_hardening::ensure()?;
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
+        .or_else(account_home)
         .ok_or("sandbox-home-missing")?
         .canonicalize()
         .map_err(|error| error.to_string())?;
