@@ -1,11 +1,34 @@
+use std::sync::Arc;
+
 #[test]
 fn event_listener_can_reuse_a_memoized_getter() {
-    let mut document = blitz_script::ScriptDocument::from_html(
-        "<html><body><input id='field'></body></html>",
-        blitz_dom::DocumentConfig::default(),
-    );
-    document.eval(
-        "globalThis.memoCalls = 0;\
+    let base = url::Url::parse("https://fixture.invalid/").expect("fixture URL");
+    let lifetime = blitz_dom::release::Teardown::new();
+    let signal = blitz_traits::net::AbortSignal::default();
+    let net = Arc::new(chuzz::document_loader::NetProvider::new(None));
+    let config = blitz_dom::DocumentConfig {
+        base_url: Some(base.to_string()),
+        html_parser_provider: Some(Arc::new(blitz_html::HtmlProvider)),
+        ..Default::default()
+    };
+    let host_config = chuzz::script_host::HostInstallContext {
+        net,
+        base: Some(base),
+        deadline: std::time::Duration::from_secs(15),
+        wake: chuzz::net_bridge::PageWake::default(),
+        lifetime,
+        signal,
+        session_backing: None,
+    };
+    let mut document = chuzz::page_document::PageDocument::from_html(
+        Arc::<str>::from("<html><body><input id='field'></body></html>"),
+        config,
+        host_config,
+    )
+    .expect("construct with the registered page runtime");
+    document
+        .eval(
+            "globalThis.memoCalls = 0;\
              class Fixture {\
                get handle() {\
                  globalThis.memoCalls += 1;\
@@ -22,7 +45,8 @@ fn event_listener_can_reuse_a_memoized_getter() {
              fixture.attach(field);\
              globalThis.fixture = fixture;\
              globalThis.field = field;",
-    );
+        )
+        .expect("install the event listener");
     let first = document
         .eval_json(
             "field.dispatchEvent(new Event('input'));\

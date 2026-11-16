@@ -15,14 +15,13 @@
 //! It used to be `qa-inspect-host`, a separate binary in ps-observability that
 //! built its own document out of a dist directory. That made two headless
 //! browsers: one that a person browses with and one that QA drives, and the web
-//! platform existed in only the first of them. `document_loader`'s shim is what
-//! makes `@solidjs/router` reach its first render at all, and a host without it
-//! reported every routed page in the fleet as blank. Every gap closed for the
-//! browser had to be closed a second time for the harness, by hand, or the
-//! harness kept measuring a browser nobody ships.
+//! platform existed in only the first of them. The native host and real page
+//! runtime are what let routed pages reach their first render. Every gap closed
+//! for the browser had to be closed a second time for the harness, by hand, or
+//! the harness kept measuring a browser nobody ships.
 //!
 //! So the host is a mode of the browser instead. What `ps-qa` drives is the
-//! same loader, the same shim and the same engine a tab uses; the only thing
+//! same loader, the same native hosts and the same runtime a tab uses; the only thing
 //! missing is the window.
 //!
 //! `ps-qa` still links none of this. It speaks `blitz-control-protocol` over
@@ -34,13 +33,15 @@
 //! ```sh
 //! chuzz-headless /path/to/dist            # or a file, or an http(s) URL
 //! QA_INSPECT_PAGE=/path/to/dist chuzz-headless
+//! QA_INSPECT_PAGE=/path/to/dist QA_INSPECT_STORAGE='{"key":"value"}' chuzz-headless
 //! QA_INSPECT_PAGE=/path/to/dist QA_INSPECT_STORAGE=/path/to/storage.json chuzz-headless
 //! ```
 //!
-//! `QA_INSPECT_STORAGE` is a JSON object of string values. The host installs
-//! them into `localStorage` for the page origin before any page script runs,
-//! through the same prelude a navigation uses to restore storage. A missing,
-//! unreadable, or invalid file prints
+//! `QA_INSPECT_STORAGE` accepts either an inline JSON object of string values
+//! or a path to a file containing that object. The host installs the values
+//! into `localStorage` for the page origin before any page script runs, through
+//! the same prelude a navigation uses to restore storage. An invalid object,
+//! missing file, or unreadable file prints
 //! `chuzz-headless: QA_INSPECT_STORAGE: ...` and exits 2.
 //!
 //! It prints its descriptor path on stdout when it is ready, then serves until
@@ -49,12 +50,13 @@
 //! waits for the line, so a component that wedges the engine cannot poison the
 //! next one's verdict.
 
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::page_document::PageDocument;
 use blitz_control_protocol::condense;
 use blitz_control_protocol::document::{DocumentCapture, inspect_document, snapshot_document};
 use blitz_control_protocol::in_process::DocumentControl;
@@ -65,8 +67,7 @@ use blitz_control_protocol::{
     RendererMetrics, RevisionSet, WindowComposition,
 };
 use blitz_dom::Document as _;
-use blitz_dom::NodeId;
-use blitz_script::ScriptDocument;
+use blitz_dom::{FormSubmissionScope, LookupFormSubmission, NodeId};
 use blitz_traits::net::Url;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
@@ -119,7 +120,12 @@ fn dimension(variable: &str, default: u32) -> Result<u32, String> {
         .ok_or_else(|| format!("{variable} must be a positive integer, got {text:?}"))
 }
 
+const PUBLIC_HTTPS_TARGET_ENV: &str = "CHUZZ_HEADLESS_PUBLIC_HTTPS_TARGET";
 const BOT_CHILD_MAX_WALL_TIME: Duration = Duration::from_secs(20);
+const LOOKUP_MAX_WALL_TIME: Duration = Duration::from_secs(60);
+const LOOKUP_MAX_INSPECT_DEPTH: u32 = 32;
+// Leave room for the control envelope under the lookup client's 4 MiB frame.
+const LOOKUP_MAX_INSPECT_BYTES: usize = 3 * 1024 * 1024;
 const BOT_CHILD_MAX_ACTIONS: usize = 8;
 const BOT_CHILD_MAX_INSPECTIONS: usize = 16;
 const BOT_CHILD_MAX_REQUESTS: usize = 24;
@@ -142,7 +148,6 @@ const BOT_CHILD_MAX_VIEWPORT_PIXELS: u64 = 1_500_000;
 struct HeadlessPolicy {
     bot_child: bool,
     allowed_domains: Vec<String>,
-    allow_form_submit: bool,
     wall_time: Duration,
 }
 
@@ -163,14 +168,14 @@ impl HeadlessPolicy {
         } else {
             Vec::new()
         };
-        let allow_form_submit = if bot_child {
-            parse_bool_env("CHUZZ_HEADLESS_ALLOW_FORM_SUBMIT", false)?
-        } else {
-            false
-        };
         let wall_time = if bot_child {
             let timeout = optional_env("CHUZZ_HEADLESS_WALL_TIMEOUT_MS")?;
-            parse_wall_time(timeout.as_deref())?
+            let max = if optional_env(PUBLIC_HTTPS_TARGET_ENV)?.is_some() {
+                LOOKUP_MAX_WALL_TIME
+            } else {
+                BOT_CHILD_MAX_WALL_TIME
+            };
+            parse_wall_time(timeout.as_deref(), max)?
         } else {
             Duration::ZERO
         };
@@ -178,20 +183,18 @@ impl HeadlessPolicy {
         Ok(Self {
             bot_child,
             allowed_domains,
-            allow_form_submit,
             wall_time,
         })
     }
 
     #[cfg(test)]
-    fn bot_child_for_tests(allowed_domains: &[&str], allow_form_submit: bool) -> Self {
+    fn bot_child_for_tests(allowed_domains: &[&str]) -> Self {
         Self {
             bot_child: true,
             allowed_domains: allowed_domains
                 .iter()
                 .map(|host| (*host).to_owned())
                 .collect(),
-            allow_form_submit,
             wall_time: BOT_CHILD_MAX_WALL_TIME,
         }
     }
@@ -214,49 +217,48 @@ impl HeadlessPolicy {
         if !self.bot_child {
             return Ok(());
         }
-        self.resolve_public_addresses(url).map(|_| ())
+        if url.scheme() != "https" {
+            return Err("only HTTPS navigation is allowed in bot mode".to_owned());
+        }
+        self.public_https_initiator(url.clone(), &blitz_traits::net::Initiator::Unknown)
+            .check_url(url)
+    }
+
+    fn public_https_initiator(
+        &self,
+        url: Url,
+        navigation: &blitz_traits::net::Initiator,
+    ) -> blitz_traits::net::Initiator {
+        Arc::new(blitz_traits::net::ResourcePolicy::default()).public_https_document(
+            url,
+            navigation,
+            &self.allowed_domains,
+        )
     }
 
     fn resolve_public_addresses(&self, url: &Url) -> Result<Vec<SocketAddr>, String> {
         if url.scheme() != "https" {
             return Err("only HTTPS navigation is allowed in bot mode".to_owned());
         }
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err("URLs with credentials are not allowed in bot mode".to_owned());
-        }
-        let host = url
-            .host_str()
-            .ok_or_else(|| "the URL has no host".to_owned())?;
-        let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
-        if normalized_host.is_empty() || is_local_hostname(&normalized_host) {
-            return Err("local hostnames are not allowed in bot mode".to_owned());
-        }
-        if !domain_is_allowed(&normalized_host, &self.allowed_domains) {
-            return Err("the URL host is outside the configured allowlist".to_owned());
-        }
-
+        let initiator =
+            self.public_https_initiator(url.clone(), &blitz_traits::net::Initiator::Unknown);
+        initiator.check_url(url)?;
         let port = url
             .port_or_known_default()
             .ok_or_else(|| "the URL has no known port".to_owned())?;
-        if let Ok(address) = normalized_host.parse::<IpAddr>() {
-            if !is_public_address(address) {
-                return Err("local and non-public IP addresses are not allowed".to_owned());
-            }
-            return Ok(vec![SocketAddr::new(address, port)]);
+        let addresses = match url.host().ok_or("the URL has no host")? {
+            url::Host::Domain(host) => (host, port)
+                .to_socket_addrs()
+                .map_err(|_| "the URL host could not be resolved".to_owned())?
+                .collect::<Vec<_>>(),
+            url::Host::Ipv4(ip) => vec![SocketAddr::new(ip.into(), port)],
+            url::Host::Ipv6(ip) => vec![SocketAddr::new(ip.into(), port)],
+        };
+        if addresses.is_empty() {
+            return Err("the URL host resolved to no addresses".to_owned());
         }
-
-        let addresses = (normalized_host.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|_| "the URL host could not be resolved".to_owned())?
-            .collect::<Vec<SocketAddr>>();
-        if addresses.is_empty()
-            || addresses
-                .iter()
-                .any(|address| !is_public_address(address.ip()))
-        {
-            return Err(
-                "the URL host does not resolve exclusively to public IP addresses".to_owned(),
-            );
+        for address in &addresses {
+            initiator.check_address(address.ip())?;
         }
         Ok(addresses)
     }
@@ -290,21 +292,7 @@ fn optional_env(variable: &str) -> Result<Option<String>, String> {
         .transpose()
 }
 
-fn parse_bool_env(variable: &str, default: bool) -> Result<bool, String> {
-    let Some(value) = std::env::var_os(variable) else {
-        return Ok(default);
-    };
-    let value = value
-        .into_string()
-        .map_err(|_| format!("{variable} is not valid UTF-8"))?;
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" => Ok(true),
-        "0" | "false" | "no" => Ok(false),
-        _ => Err(format!("{variable} must be a boolean value")),
-    }
-}
-
-fn parse_wall_time(value: Option<&str>) -> Result<Duration, String> {
+fn parse_wall_time(value: Option<&str>, max: Duration) -> Result<Duration, String> {
     let Some(value) = value else {
         return Ok(BOT_CHILD_MAX_WALL_TIME);
     };
@@ -313,10 +301,10 @@ fn parse_wall_time(value: Option<&str>) -> Result<Duration, String> {
         .ok()
         .filter(|milliseconds| *milliseconds > 0)
         .ok_or_else(|| "CHUZZ_HEADLESS_WALL_TIMEOUT_MS must be a positive integer".to_owned())?;
-    if milliseconds > BOT_CHILD_MAX_WALL_TIME.as_millis() as u64 {
+    if milliseconds > max.as_millis() as u64 {
         return Err(format!(
             "CHUZZ_HEADLESS_WALL_TIMEOUT_MS cannot exceed {}ms",
-            BOT_CHILD_MAX_WALL_TIME.as_millis()
+            max.as_millis()
         ));
     }
     Ok(Duration::from_millis(milliseconds))
@@ -372,65 +360,12 @@ fn is_dns_hostname(host: &str) -> bool {
         })
 }
 
-fn domain_is_allowed(host: &str, allowed_domains: &[String]) -> bool {
-    allowed_domains.is_empty()
-        || allowed_domains.iter().any(|domain| {
-            host == domain
-                || host
-                    .strip_suffix(domain)
-                    .is_some_and(|prefix| prefix.ends_with('.'))
-        })
-}
-
 fn is_local_hostname(host: &str) -> bool {
     host == "localhost"
         || host.ends_with(".localhost")
         || host.ends_with(".local")
         || host.ends_with(".internal")
         || host.ends_with(".lan")
-}
-
-fn is_public_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => is_public_ipv4(address),
-        IpAddr::V6(address) => {
-            if let Some(mapped) = address.to_ipv4() {
-                return is_public_address(IpAddr::V4(mapped));
-            }
-            let segments = address.segments();
-            let special_purpose = (segments[0] == 0x2001 && matches!(segments[1], 0x0000 | 0x0db8))
-                || segments[0] == 0x2002
-                || (segments[0] == 0x0064 && segments[1] == 0xff9b);
-            !(address.is_loopback()
-                || address.is_unique_local()
-                || address.is_unicast_link_local()
-                || address.is_unspecified()
-                || address.is_multicast()
-                || special_purpose)
-        }
-    }
-}
-
-fn is_public_ipv4(address: std::net::Ipv4Addr) -> bool {
-    let [first, second, third, _] = address.octets();
-    let shared = first == 100 && (64..=127).contains(&second);
-    let documentation = (first == 192 && second == 0 && third == 2)
-        || (first == 198 && second == 51 && third == 100)
-        || (first == 203 && second == 0 && third == 113);
-    let special_purpose = first == 0
-        || first == 10
-        || first == 127
-        || shared
-        || (first == 169 && second == 254)
-        || (first == 172 && (16..=31).contains(&second))
-        || (first == 192 && second == 168)
-        || (first == 192 && second == 0 && third == 0)
-        || (first == 192 && second == 88 && third == 99)
-        || (first == 198 && (18..=19).contains(&second))
-        || documentation
-        || first >= 224
-        || address == std::net::Ipv4Addr::BROADCAST;
-    !(special_purpose || address.is_private() || address.is_loopback() || address.is_multicast())
 }
 
 struct WallTimeoutGuard(Option<nagoya::JoinHandle<Arc<()>>>);
@@ -524,6 +459,12 @@ pub fn reactor_witness() -> Result<(), String> {
 }
 
 pub fn target_from(args: &[String]) -> Result<String, String> {
+    if let Some(target) = optional_env(PUBLIC_HTTPS_TARGET_ENV)? {
+        if optional_env("CHUZZ_HEADLESS_MODE")?.as_deref() != Some("bot") || args.len() != 1 {
+            return Err("the public HTTPS target requires bot mode with no arguments".to_owned());
+        }
+        return Ok(target);
+    }
     if let Some(argument) = args.iter().skip(1).find(|arg| !arg.starts_with("--")) {
         return Ok(argument.clone());
     }
@@ -606,13 +547,10 @@ pub fn classify(target: &str) -> Result<Target, String> {
 struct ActionContext {
     target_tag: Option<String>,
     target_type: String,
-    has_form: bool,
-    may_submit: bool,
     sensitive: bool,
     download: bool,
     new_window: bool,
     href: Option<String>,
-    form_action: Option<String>,
 }
 
 fn bounded_descendant_text(
@@ -729,7 +667,7 @@ fn sensitive_surface(value: &str) -> bool {
     false
 }
 
-fn action_context(document: &ScriptDocument, node_id: u64) -> Option<ActionContext> {
+fn action_context(document: &PageDocument, node_id: u64) -> Option<ActionContext> {
     const POLICY_ATTRIBUTES: [&str; 13] = [
         "type",
         "name",
@@ -750,9 +688,6 @@ fn action_context(document: &ScriptDocument, node_id: u64) -> Option<ActionConte
     let mut context = ActionContext::default();
     let mut current = Some(NodeId::from_u64(node_id));
     let mut depth = 0_u8;
-    let mut has_button_role = false;
-    let mut has_click_handler = false;
-    let mut has_submit_control = false;
 
     while let Some(id) = current {
         if depth >= 16 {
@@ -782,32 +717,16 @@ fn action_context(document: &ScriptDocument, node_id: u64) -> Option<ActionConte
             }
             context.sensitive |= sensitive_surface(&bounded_descendant_text(&inner, id, 192));
 
-            context.has_form |= tag == "form" || attribute("form").is_some();
-            if context.form_action.is_none() {
-                context.form_action = attribute("formaction").map(str::to_owned);
-            }
-            if tag == "form" && context.form_action.is_none() {
-                context.form_action = attribute("action").map(str::to_owned);
-            }
             if context.href.is_none() && tag == "a" {
                 context.href = attribute("href").map(str::to_owned);
             }
             context.download |= attribute("download").is_some();
             context.new_window |= attribute("target") == Some("_blank");
-            has_button_role |= attribute("role").is_some_and(|role| {
-                role.eq_ignore_ascii_case("button") || role.eq_ignore_ascii_case("menuitem")
-            });
-            has_click_handler |= attribute("onclick").is_some();
-            has_submit_control |= (tag == "button"
-                && !matches!(element_type.as_str(), "button" | "reset"))
-                || (tag == "input" && matches!(element_type.as_str(), "submit" | "image"));
         }
         current = node.parent;
         depth = depth.saturating_add(1);
     }
 
-    context.may_submit =
-        context.has_form && (has_submit_control || has_button_role || has_click_handler);
     Some(context)
 }
 
@@ -818,13 +737,9 @@ fn policy_denial(message: &str) -> DebugError {
     }
 }
 
-fn submit_needs_permission(policy: &HeadlessPolicy, context: &ActionContext) -> bool {
-    context.may_submit && !policy.allow_form_submit
-}
-
 fn validate_action_url(
     policy: &HeadlessPolicy,
-    document: &ScriptDocument,
+    document: &PageDocument,
     value: &str,
 ) -> Result<(), DebugError> {
     let destination = document
@@ -839,11 +754,16 @@ fn validate_action_url(
 
 fn authorize_action(
     policy: &HeadlessPolicy,
-    document: &ScriptDocument,
+    document: &PageDocument,
     action: &AgentAction,
-) -> Result<(), DebugError> {
+    lookup_click: bool,
+) -> Result<Option<LookupFormSubmission>, DebugError> {
     if !policy.bot_child {
-        return Ok(());
+        return if lookup_click {
+            Err(policy_denial("lookup clicks require bot mode"))
+        } else {
+            Ok(None)
+        };
     }
     match action {
         AgentAction::Click { node_id } => {
@@ -857,21 +777,27 @@ fn authorize_action(
                     "downloads and new browsing contexts are disabled",
                 ));
             }
-            if submit_needs_permission(policy, &context) {
-                return Err(policy_denial(
-                    "form submission requires explicit permission from the caller",
-                ));
-            }
             if let Some(href) = context.href.as_deref() {
                 validate_action_url(policy, document, href)?;
             }
-            if context.may_submit
-                && let Some(action_url) = context.form_action.as_deref()
-                && !action_url.is_empty()
-            {
-                validate_action_url(policy, document, action_url)?;
+            let grant = document
+                .inner()
+                .lookup_form_submission(NodeId::from_u64(*node_id))
+                .map_err(|_| policy_denial("this form is outside the lookup policy"))?;
+            if let Some(grant) = grant.as_ref() {
+                if !lookup_click {
+                    return Err(policy_denial("form submission requires a lookup click"));
+                }
+                let form = action_context(document, grant.form_id().as_u64())
+                    .ok_or_else(|| policy_denial("the live form could not be inspected"))?;
+                if form.sensitive || form.download || form.new_window {
+                    return Err(policy_denial("this form is outside the lookup policy"));
+                }
+                policy
+                    .validate_url(grant.destination())
+                    .map_err(|_| policy_denial("the form destination is outside the browser policy"))?;
             }
-            Ok(())
+            Ok(grant)
         }
         AgentAction::SetValue { node_id, value } => {
             if value.len() > BOT_CHILD_MAX_FILL_BYTES {
@@ -893,19 +819,32 @@ fn authorize_action(
             if !editable {
                 return Err(policy_denial("only ordinary search fields may be filled"));
             }
-            Ok(())
+            Ok(None)
         }
-        AgentAction::ScrollIntoView { .. } | AgentAction::ScrollBy { .. } => Ok(()),
+        AgentAction::ScrollIntoView { .. } | AgentAction::ScrollBy { .. } => Ok(None),
         _ => Err(policy_denial(
             "this action is not part of the bot browser control surface",
         )),
     }
 }
 
+fn dispatch_control_action(
+    policy: &HeadlessPolicy,
+    document: &mut PageDocument,
+    control: &mut DocumentControl,
+    action: AgentAction,
+    lookup_click: bool,
+) -> Result<(), DebugError> {
+    let _submission = authorize_action(policy, document, &action, lookup_click)?
+        .map(FormSubmissionScope::allow);
+    control.act(document, action)
+}
+
 fn sanitize_inspection(
     policy: &HeadlessPolicy,
-    document: &ScriptDocument,
+    document: &PageDocument,
     response: DebugResponse,
+    lookup_bridge: bool,
 ) -> DebugResponse {
     if !policy.bot_child {
         return response;
@@ -914,13 +853,18 @@ fn sanitize_inspection(
         DebugResponse::AgentSnapshot(snapshot) => snapshot,
         response => return response,
     };
-    snapshot.nodes.truncate(BOT_CHILD_MAX_INSPECT_NODES);
+    let (max_nodes, max_bytes) = if lookup_bridge {
+        (BOT_CHILD_MAX_PAGE_NODES, LOOKUP_MAX_INSPECT_BYTES)
+    } else {
+        (BOT_CHILD_MAX_INSPECT_NODES, BOT_CHILD_MAX_INSPECT_BYTES)
+    };
+    snapshot.nodes.truncate(max_nodes);
     for node in &mut snapshot.nodes {
         if action_context(document, node.id).is_some_and(|context| context.sensitive) {
             node.value = None;
         }
     }
-    bound_inspection_snapshot(&mut snapshot);
+    bound_inspection_snapshot(&mut snapshot, max_bytes);
     DebugResponse::AgentSnapshot(snapshot)
 }
 
@@ -949,7 +893,10 @@ fn condense_response(
     }
 }
 
-fn bound_inspection_snapshot(snapshot: &mut blitz_control_protocol::AgentSnapshot) {
+fn bound_inspection_snapshot(
+    snapshot: &mut blitz_control_protocol::AgentSnapshot,
+    max_bytes: usize,
+) {
     fn trim_text(value: &mut String, field_limit: usize, remaining: &mut usize) {
         let mut end = value.len().min(field_limit).min(*remaining);
         while !value.is_char_boundary(end) {
@@ -965,7 +912,7 @@ fn bound_inspection_snapshot(snapshot: &mut blitz_control_protocol::AgentSnapsho
         }
     }
 
-    let mut remaining = BOT_CHILD_MAX_INSPECT_BYTES;
+    let mut remaining = max_bytes;
     trim_optional_text(&mut snapshot.active_window, 128, &mut remaining);
     for node in &mut snapshot.nodes {
         trim_optional_text(&mut node.dom_id, 128, &mut remaining);
@@ -975,21 +922,28 @@ fn bound_inspection_snapshot(snapshot: &mut blitz_control_protocol::AgentSnapsho
         trim_optional_text(&mut node.slot, 128, &mut remaining);
     }
 
-    // String contents are bounded before encoding, so these checks allocate
-    // only a small temporary buffer while enforcing the actual wire size.
-    loop {
-        match serde_json::to_vec(snapshot) {
-            Ok(encoded) if encoded.len() <= BOT_CHILD_MAX_INSPECT_BYTES => break,
-            Ok(_) if !snapshot.nodes.is_empty() => {
-                snapshot.nodes.pop();
-            }
-            _ => {
-                snapshot.nodes.clear();
-                snapshot.active_window = None;
-                break;
-            }
-        }
-    }
+    // The empty snapshot already includes the array brackets. Charge each
+    // encoded node and its separator once, keeping a prefix of the tree.
+    let nodes = std::mem::take(&mut snapshot.nodes);
+    let Ok(base) = serde_json::to_vec(snapshot) else {
+        return;
+    };
+    let mut remaining = max_bytes.saturating_sub(base.len());
+    let mut separator = 0;
+    snapshot.nodes = nodes
+        .into_iter()
+        .take_while(|node| {
+            let Ok(encoded) = serde_json::to_vec(node) else {
+                return false;
+            };
+            let Some(left) = remaining.checked_sub(encoded.len() + separator) else {
+                return false;
+            };
+            remaining = left;
+            separator = 1;
+            true
+        })
+        .collect();
 }
 
 #[derive(Default)]
@@ -1045,7 +999,7 @@ impl RequestBudget {
 /// `pageUnresponsive` made the supervisor tear the session down. Hangs are
 /// still caught by the control request and Poll deadlines.
 fn settle_immediate(
-    document: &mut ScriptDocument,
+    document: &mut PageDocument,
     clock: &std::time::Instant,
     deadline: std::time::Duration,
 ) -> bool {
@@ -1114,7 +1068,7 @@ const IDLE_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// `document` and `paint` count committed renders; `style` and `layout`
 /// count the Stylo traversals and layout passes blitz-dom actually ran.
-fn headless_revisions(rendered: u64, page: &ScriptDocument) -> RevisionSet {
+fn headless_revisions(rendered: u64, page: &PageDocument) -> RevisionSet {
     let inner = page.inner();
     RevisionSet {
         document: rendered,
@@ -1135,11 +1089,11 @@ fn headless_revisions(rendered: u64, page: &ScriptDocument) -> RevisionSet {
 /// as it was left running.
 ///
 /// Returns whether the page painted.
-fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> bool {
+fn tick_document(document: &mut PageDocument, clock: &std::time::Instant) -> bool {
     let before = document.inner().paint_damage().generation;
     // One due timer or one continuing checkpoint per poll. Return to the
-    // request receiver before another timer starts. Boa's execution limit
-    // interrupts runaway script; the supervisor remains the native hang guard.
+    // request receiver before another timer starts. The supervisor remains
+    // the native hang guard for a runaway runtime call.
     let poll_started = std::time::Instant::now();
     let progressed = {
         let _turn = supervisor::operation(supervisor::Operation::Poll);
@@ -1165,7 +1119,7 @@ fn tick_document(document: &mut ScriptDocument, clock: &std::time::Instant) -> b
 }
 
 fn settle_response(
-    document: &mut ScriptDocument,
+    document: &mut PageDocument,
     clock: &std::time::Instant,
     deadline: std::time::Duration,
     painted: &mut bool,
@@ -1267,15 +1221,9 @@ impl blitz_traits::navigation::NavigationProvider for RequestedNavigation {
 
 /// What the page put in storage, carried from one document to the next.
 ///
-/// The shim's `localStorage` is in-memory and per document, which is right for
-/// a capture and wrong the moment the host follows a link: an application
-/// writes its settings on one route and reads them while booting the next, and
-/// a fresh store makes that read a miss. Every check of the shape "save, go
-/// somewhere, come back" is undecidable without this.
-///
-/// It is a copy, not real storage. Nothing here is on disk, no quota is
-/// enforced, and no `storage` event is delivered; what it buys is that the same
-/// origin sees what it wrote.
+/// Storage carried by this headless tab across same-origin link navigation.
+/// Entries are encoded as pairs so every key, including `__proto__`, stays data.
+/// The native localStorage owner also persists its origin bucket to the profile.
 struct StoredState {
     origin: String,
     local: String,
@@ -1284,37 +1232,36 @@ struct StoredState {
 
 /// Read both stores out of the document that is about to be replaced.
 ///
-/// Through the public interface -- `length`, `key`, `getItem` -- rather than
-/// through the shim's internals, so this keeps working the day storage stops
-/// being a closure over an object.
-fn snapshot_storage(document: &mut ScriptDocument, origin: &str) -> StoredState {
+/// Through the public interface -- `length`, `key`, `getItem` -- so this keeps
+/// working if the storage implementation changes.
+fn snapshot_storage(document: &mut PageDocument, origin: &str) -> Result<StoredState, String> {
     let _storage = supervisor::operation(supervisor::Operation::Storage);
-    fn dump(document: &mut ScriptDocument, store: &str) -> String {
+    fn dump(document: &mut PageDocument, store: &str) -> Result<String, String> {
         let script = format!(
             "(function () {{
                try {{
-                 var out = {{}};
+                 var out = [];
                  for (var i = 0; i < {store}.length; i++) {{
                    var key = {store}.key(i);
-                   if (key !== null) {{ out[key] = {store}.getItem(key); }}
+                   if (key !== null) {{ out.push([key, {store}.getItem(key)]); }}
                  }}
                  return JSON.stringify(out);
-               }} catch (error) {{ return '{{}}'; }}
+               }} catch (error) {{ return '[]'; }}
              }})()"
         );
-        document.eval(&format!("globalThis.__chuzz_dump = {script};"));
+        document.eval(&format!("globalThis.__chuzz_dump = {script};"))?;
         document
-            .eval_json("globalThis.__chuzz_dump")
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "{}".to_owned())
+            .eval_json("globalThis.__chuzz_dump")?
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "page storage snapshot did not return a string".to_owned())
     }
 
-    StoredState {
+    Ok(StoredState {
         origin: origin.to_owned(),
-        local: dump(document, "localStorage"),
-        session: dump(document, "sessionStorage"),
-    }
+        local: dump(document, "localStorage")?,
+        session: dump(document, "sessionStorage")?,
+    })
 }
 
 /// The prelude that puts it back, or nothing when it does not belong here.
@@ -1332,16 +1279,16 @@ fn restore_script(stored: Option<&StoredState>, destination: &Url) -> String {
         "(function () {{
            try {{
              var local = JSON.parse({local});
-             for (var key in local) {{ localStorage.setItem(key, local[key]); }}
+             for (var i = 0; i < local.length; i++) {{ localStorage.setItem(local[i][0], local[i][1]); }}
              var session = JSON.parse({session});
-             for (var key in session) {{ sessionStorage.setItem(key, session[key]); }}
+             for (var i = 0; i < session.length; i++) {{ sessionStorage.setItem(session[i][0], session[i][1]); }}
            }} catch (error) {{}}
          }})();",
         // Serialized twice on purpose: the inner JSON is the data, and the
         // outer encoding makes it a JavaScript string literal that cannot end
         // the statement early. A page's own key is untrusted input here.
-        local = serde_json::to_string(&stored.local).unwrap_or_else(|_| "\"{}\"".to_owned()),
-        session = serde_json::to_string(&stored.session).unwrap_or_else(|_| "\"{}\"".to_owned()),
+        local = serde_json::to_string(&stored.local).unwrap_or_else(|_| "\"[]\"".to_owned()),
+        session = serde_json::to_string(&stored.session).unwrap_or_else(|_| "\"[]\"".to_owned()),
     )
 }
 
@@ -1386,35 +1333,76 @@ fn failure_page_url(url: &str, error: &str) -> Result<Url, String> {
     Ok(page)
 }
 
+fn navigation_initiator(
+    policy: &HeadlessPolicy,
+    url: Url,
+    current: Option<blitz_traits::net::Initiator>,
+) -> blitz_traits::net::Initiator {
+    if policy.bot_child {
+        policy.public_https_initiator(url, &current.unwrap_or_default())
+    } else {
+        current.unwrap_or_else(|| Arc::new(blitz_traits::net::ResourcePolicy::default()).browser(url))
+    }
+}
+
+/// Leave the outgoing document: fire its unload events and read the storage it
+/// carries to the next document.
+///
+/// A realm that terminated on a resource limit refuses every later activation,
+/// so none of its handlers can run and its storage cannot be read through
+/// script. That must not block the navigation: the next document is a new
+/// realm with its own budget. The retained first denial is reported here once,
+/// and nothing is carried out of the dead realm.
+fn leave_document(
+    document: &mut PageDocument,
+    origin: &str,
+    policy: &HeadlessPolicy,
+) -> Result<Option<StoredState>, String> {
+    if let Some(terminal) = document.terminated_realm() {
+        let leaving = display_url(document.inner().url(), policy.bot_child);
+        trace(&format!(
+            "leaving {leaving} after its script realm terminated: {terminal}; \
+             its pagehide and unload handlers could not run and no storage was carried"
+        ));
+        return Ok(None);
+    }
+    document.eval(
+        "globalThis.dispatchEvent(new Event('pagehide')); \
+         globalThis.dispatchEvent(new Event('unload'));",
+    )?;
+    if policy.bot_child {
+        Ok(None)
+    } else {
+        snapshot_storage(document, origin).map(Some)
+    }
+}
+
 fn follow_navigation(
     destination: Url,
-    document: &mut ScriptDocument,
+    document: &mut PageDocument,
     origin: &mut String,
     policy: &HeadlessPolicy,
     load: &impl Fn(
         Url,
         Option<&StoredState>,
         blitz_traits::net::Initiator,
-    ) -> Result<Box<ScriptDocument>, String>,
+    ) -> Result<Box<PageDocument>, String>,
     render: (&Latest<DebugEvent>, &mut u64),
     browser_initiated: bool,
 ) -> Result<(), String> {
     let _navigation = supervisor::operation(supervisor::Operation::Load);
     policy.validate_url(&destination)?;
-    document.eval(
-        "globalThis.dispatchEvent(new Event('pagehide')); \
-         globalThis.dispatchEvent(new Event('unload'));",
+    let carried = leave_document(document, origin, policy)?;
+    let current = document.inner().net_provider.resource_initiator();
+    let initiator = navigation_initiator(
+        policy,
+        destination.clone(),
+        if policy.bot_child || !browser_initiated {
+            Some(current)
+        } else {
+            None
+        },
     );
-    let carried = if policy.bot_child {
-        None
-    } else {
-        Some(snapshot_storage(document, origin))
-    };
-    let initiator = if browser_initiated {
-        Arc::new(blitz_traits::net::ResourcePolicy::default()).browser(destination.clone())
-    } else {
-        document.inner().net_provider.resource_initiator()
-    };
     let next = load(destination, carried.as_ref(), initiator)?;
     let arriving = next.inner().url().origin().ascii_serialization();
     *document = *next;
@@ -1429,17 +1417,22 @@ fn follow_navigation(
 ///
 /// Read once per process. The supervisor validates before it announces a
 /// descriptor, and the page worker applies the map through the storage
-/// prelude. A bad file exits 2 here so the check cannot run without its state.
+/// prelude. A bad object or file exits 2 here so the check cannot run without
+/// its state.
 fn read_qa_inspect_storage() -> Option<std::collections::BTreeMap<String, String>> {
-    let path = match std::env::var("QA_INSPECT_STORAGE") {
-        Ok(path) if !path.is_empty() => path,
-        Ok(_) => fail_qa_inspect_storage("path is empty"),
+    let input = match std::env::var("QA_INSPECT_STORAGE") {
+        Ok(input) if !input.is_empty() => input,
+        Ok(_) => fail_qa_inspect_storage("value is empty"),
         Err(std::env::VarError::NotPresent) => return None,
         Err(error) => fail_qa_inspect_storage(&error.to_string()),
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) => fail_qa_inspect_storage(&format!("{path}: {error}")),
+    let text = if input.trim_start().starts_with('{') {
+        input
+    } else {
+        match std::fs::read_to_string(&input) {
+            Ok(text) => text,
+            Err(error) => fail_qa_inspect_storage(&format!("{input}: {error}")),
+        }
     };
     match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text) {
         Ok(map) => Some(map),
@@ -1459,6 +1452,22 @@ pub fn serve(target: &str) -> Result<(), String> {
     serve_page(target, storage.as_ref())
 }
 
+fn headless_host_context(
+    url: &Url,
+    net_provider: &Arc<crate::document_loader::NetProvider>,
+    initiator: &blitz_traits::net::Initiator,
+) -> crate::script_host::HostInstallContext {
+    crate::script_host::HostInstallContext {
+        net: Arc::new(net_provider.for_document(url.clone(), initiator)),
+        base: Some(url.clone()),
+        deadline: std::time::Duration::from_secs(30),
+        wake: crate::net_bridge::PageWake::default(),
+        lifetime: blitz_dom::release::Teardown::new(),
+        signal: blitz_traits::net::AbortSignal::default(),
+        session_backing: None,
+    }
+}
+
 fn serve_page(
     target: &str,
     seeded: Option<&std::collections::BTreeMap<String, String>>,
@@ -1466,6 +1475,8 @@ fn serve_page(
     // Start the private reader before loading, so losing the supervisor also
     // stops a worker wedged during bootstrap.
     let policy = HeadlessPolicy::from_env()?;
+    let _submission_policy = policy.bot_child.then(FormSubmissionScope::restricted);
+    let lookup_bridge = policy.bot_child && optional_env(PUBLIC_HTTPS_TARGET_ENV)?.is_some();
     let capacity = if policy.bot_child {
         BOT_CHILD_MAX_PENDING_REQUESTS
     } else {
@@ -1482,7 +1493,7 @@ fn serve_page(
     } else {
         None
     };
-    supervisor::start_worker(request_tx)?;
+    supervisor::start_worker(request_tx, lookup_bridge)?;
     let target = classify(target).map_err(|error| {
         if policy.bot_child {
             let _ = error;
@@ -1559,11 +1570,16 @@ fn serve_page(
     let load = |url: Url,
                 carried: Option<&StoredState>,
                 initiator: blitz_traits::net::Initiator|
-     -> Result<Box<ScriptDocument>, String> {
+     -> Result<Box<PageDocument>, String> {
         // Includes HTML and external-script fetches, script execution, loader
-        // pumping, shim evaluation and the initial viewport settle.
+        // pumping, prelude evaluation and the initial viewport settle.
         let _load = supervisor::operation(supervisor::Operation::Load);
         policy.validate_url(&url)?;
+        let initiator = if policy.bot_child {
+            navigation_initiator(&policy, url.clone(), Some(initiator))
+        } else {
+            initiator
+        };
         trace(&format!("loading {}", display_url(&url, policy.bot_child)));
         let mut prelude = if policy.bot_child {
             String::new()
@@ -1582,22 +1598,26 @@ fn serve_page(
         }
         let mut policy_error = None;
         let mut document = if let Some(html) = crate::internal_pages::html_for(&url) {
-            Box::new(ScriptDocument::from_html(
-                &html,
+            Box::new(PageDocument::from_html(
+                Arc::<str>::from(html),
                 blitz_dom::DocumentConfig {
                     base_url: Some(url.to_string()),
                     ..Default::default()
                 },
-            ))
+                headless_host_context(&url, &net_provider, &initiator),
+            )?)
         } else {
-            let loaded = nagoya::block_on(crate::document_loader::load_for_capture(
-                blitz_traits::net::Request::get(url.clone()).initiator(initiator),
-                Arc::clone(&net_provider),
-                &prelude,
-                Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
-            ));
+            let loaded = nagoya::block_on(
+                crate::document_loader::load_for_capture_with_navigation(
+                    blitz_traits::net::Request::get(url.clone()).initiator(initiator.clone()),
+                    Arc::clone(&net_provider),
+                    &prelude,
+                    Some(Viewport::new(width, height, 1.0, ColorScheme::Dark)),
+                    Some(Arc::clone(&navigation) as _),
+                ),
+            );
             match loaded {
-                Ok(loaded) => loaded.into_script().ok_or(
+                Ok(loaded) => loaded.into_page_document().ok_or(
                     "this build cannot run scripts, so it cannot host a page worth inspecting",
                 )?,
                 Err(error) => {
@@ -1607,13 +1627,16 @@ fn serve_page(
                     {
                         policy_error = Some(*reason);
                         trace(&format!("TLS refused for {url}: {reason}"));
-                        Box::new(ScriptDocument::from_html(
-                            &crate::internal_pages::tls_refused_html(&url, *reason),
+                        Box::new(PageDocument::from_html(
+                            Arc::<str>::from(crate::internal_pages::tls_refused_html(
+                                &url, *reason,
+                            )),
                             blitz_dom::DocumentConfig {
                                 base_url: Some(url.to_string()),
                                 ..Default::default()
                             },
-                        ))
+                            headless_host_context(&url, &net_provider, &initiator),
+                        )?)
                     } else {
                         return Err(if policy.bot_child {
                             format!(
@@ -1666,20 +1689,21 @@ fn serve_page(
     let seed = match seeded {
         None => None,
         Some(entries) => {
-            let local = match serde_json::to_string(entries) {
+            let pairs: Vec<_> = entries.iter().collect();
+            let local = match serde_json::to_string(&pairs) {
                 Ok(local) => local,
                 Err(error) => fail_qa_inspect_storage(&error.to_string()),
             };
             Some(StoredState {
                 origin: url.origin().ascii_serialization(),
                 local,
-                session: "{}".to_owned(),
+                session: "[]".to_owned(),
             })
         }
     };
     let failed_url = display_url(&url, policy.bot_child);
-    let initial = net_provider.browser_initiator(url.clone());
-    let mut document = match load(url, seed.as_ref(), initial) {
+    let initial = navigation_initiator(&policy, url.clone(), None);
+    let mut document = *match load(url, seed.as_ref(), initial) {
         Ok(document) => document,
         // A page that cannot load is still a page, as in any browser: show why
         // and keep the inspection socket up, so the caller can read the reason,
@@ -1698,19 +1722,36 @@ fn serve_page(
             .map_err(|page_error| {
                 format!("{error}; the failure page did not load either: {page_error}")
             })?
-            .into_script()
+            .into_page_document()
             .ok_or("this build cannot run scripts, so it cannot host a page worth inspecting")?
         }
         Err(error) => return Err(error),
     };
     let mut origin = document.inner().url().origin().ascii_serialization();
     trace("document ready");
+    if std::env::var_os("CHUZZ_TRACE").is_some() {
+        match document.diagnostic_batch(0, 0, 64) {
+            Ok(batch) => {
+                for entry in batch.errors.entries {
+                    verbose(&format!("startup runtime error: {}", entry.message));
+                }
+                if batch.errors.lost > 0 {
+                    verbose(&format!("startup runtime errors lost: {}", batch.errors.lost));
+                }
+            }
+            Err(error) => verbose(&format!("startup diagnostics unavailable: {error}")),
+        }
+    }
     // Debugging aid for real sites: CHUZZ_DEBUG_EVAL names a script file that
     // runs once in the page after load. It can schedule its own timers and
     // report through console; nothing runs unless the variable is set.
     if let Some(path) = std::env::var_os("CHUZZ_DEBUG_EVAL") {
         match std::fs::read_to_string(&path) {
-            Ok(script) => document.eval(&script),
+            Ok(script) => {
+                if let Err(error) = document.eval(&script) {
+                    trace(&format!("CHUZZ_DEBUG_EVAL failed: {error}"));
+                }
+            }
             Err(error) => trace(&format!("CHUZZ_DEBUG_EVAL unreadable: {error}")),
         }
     }
@@ -1743,8 +1784,8 @@ fn serve_page(
             Some(std::time::Duration::ZERO)
         } else {
             document
-                .next_timer_deadline()
-                .map(|due| due.saturating_duration_since(std::time::Instant::now()))
+                .next_timer_deadline_ns()
+                .map(|due| std::time::Duration::from_nanos(due.saturating_sub(nagoya::now_ns())))
         };
         let received = match queued_request.take() {
             Some(pair) => Ok(pair),
@@ -1753,7 +1794,7 @@ fn serve_page(
                 None => request_rx.receive(None),
             },
         };
-        let (request, reply) = match received {
+        let (request, reply, lookup_click) = match received {
             Ok(pair) => pair,
             Err(page_control::RecvTimeoutError::Timeout) => {
                 if tick_document(&mut document, &animation_clock) {
@@ -1877,7 +1918,12 @@ fn serve_page(
             ControlBridgeRequest::Agent(AgentControlRequest::Act(_)) => "request act",
             _ => "request other",
         });
-        let request_turn = supervisor::operation(supervisor::Operation::Request);
+        let request_turn = match &request {
+            ControlBridgeRequest::Agent(
+                AgentControlRequest::Navigate { .. } | AgentControlRequest::Act(_),
+            ) => None,
+            _ => Some(supervisor::operation(supervisor::Operation::Request)),
+        };
         let mut painted = false;
         let deferred_buffer =
             if let ControlBridgeRequest::Diagnostics(DiagnosticsRequest::WebGpuBuffer {
@@ -1916,7 +1962,12 @@ fn serve_page(
                     AgentControlRequest::Inspect { root, max_depth } => {
                         revision += 1;
                         let depth = if policy.bot_child {
-                            max_depth.min(BOT_CHILD_MAX_INSPECT_DEPTH)
+                            let limit = if lookup_bridge {
+                                LOOKUP_MAX_INSPECT_DEPTH
+                            } else {
+                                BOT_CHILD_MAX_INSPECT_DEPTH
+                            };
+                            max_depth.min(limit)
                         } else {
                             max_depth
                         };
@@ -1928,21 +1979,23 @@ fn serve_page(
                             depth as usize,
                             |document, id| inspect_document(document, Some(id), 1, revision),
                         );
-                        sanitize_inspection(&policy, &document, response)
+                        sanitize_inspection(&policy, &document, response, lookup_bridge)
                     }
                     AgentControlRequest::Act(action) => {
                         let _action = supervisor::operation(supervisor::Operation::Action);
-                        let _execution = document.enter_execution_time_limit();
-                        match authorize_action(&policy, &document, &action) {
-                            Ok(()) => match control.act(&mut document, action) {
-                                Ok(()) => settle_response(
-                                    &mut document,
-                                    &animation_clock,
-                                    settle_deadline,
-                                    &mut painted,
-                                ),
-                                Err(error) => DebugResponse::Error(error),
-                            },
+                        match dispatch_control_action(
+                            &policy,
+                            &mut document,
+                            &mut control,
+                            action,
+                            lookup_click,
+                        ) {
+                            Ok(()) => settle_response(
+                                &mut document,
+                                &animation_clock,
+                                settle_deadline,
+                                &mut painted,
+                            ),
                             Err(error) => DebugResponse::Error(error),
                         }
                     }
@@ -2080,6 +2133,9 @@ fn serve_page(
                     DebugResponse::Metrics(RendererMetrics {
                         revisions: headless_revisions(render_revision, &document),
                         queue_depth: Some(document.pending_task_count()),
+                        script: blitz_control_protocol::ControlScriptBackend::script_metrics(
+                            &document,
+                        ),
                         ..RendererMetrics::default()
                     })
                 }
@@ -2226,12 +2282,128 @@ fn serve_page(
 }
 
 #[cfg(test)]
+mod terminated_realm_tests {
+    use super::{HeadlessPolicy, PageDocument, Url, headless_host_context, leave_document};
+    use std::sync::Arc;
+
+    fn page(net: &Arc<crate::document_loader::NetProvider>, url: &Url) -> PageDocument {
+        let initiator = net.browser_initiator(url.clone());
+        PageDocument::from_html(
+            Arc::from("<!doctype html><html><body></body></html>"),
+            blitz_dom::DocumentConfig {
+                base_url: Some(url.to_string()),
+                ..Default::default()
+            },
+            headless_host_context(url, net, &initiator),
+        )
+        .expect("native page")
+    }
+
+    fn budget_records(document: &mut PageDocument) -> Vec<serde_json::Value> {
+        document
+            .diagnostic_batch(0, 0, 1000)
+            .expect("host diagnostics")
+            .errors
+            .entries
+            .iter()
+            .filter_map(|entry| serde_json::from_str::<serde_json::Value>(&entry.message).ok())
+            .filter_map(|value| value.get("budget_failure").cloned())
+            .collect()
+    }
+
+    /// The cascade: once one document's realm ran out of instructions, every
+    /// later navigation in the host failed, because leaving the old document
+    /// ran script in the dead realm. Leaving must not need that realm, and the
+    /// next document must start with its own realm and budget.
+    #[test]
+    fn a_navigation_after_a_terminated_realm_gets_a_fresh_budget() {
+        crate::install_crypto_provider();
+        let net = Arc::new(crate::document_loader::NetProvider::new(None));
+        let policy = HeadlessPolicy {
+            bot_child: false,
+            allowed_domains: Vec::new(),
+            wall_time: std::time::Duration::ZERO,
+        };
+        let first = Url::parse("https://budget.invalid/first").unwrap();
+        let mut document = page(&net, &first);
+        assert!(document.terminated_realm().is_none());
+        document
+            .eval("let n = 0; while (true) { n = n + 1; }")
+            .expect_err("the real native execution must terminate");
+        document
+            .eval("globalThis.after = 1;")
+            .expect_err("a terminated realm refuses later script");
+        let terminal = document
+            .terminated_realm()
+            .expect("the realm refuses activation");
+        let denial: serde_json::Value =
+            serde_json::from_str(&terminal).expect("the retained budget record");
+        assert_eq!(denial["budget_failure"]["reason"], "InstructionBudget");
+        assert_eq!(denial["budget_failure"]["resource"], "Instructions");
+        let records = budget_records(&mut document);
+        assert_eq!(records, vec![denial["budget_failure"].clone()]);
+
+        let carried = leave_document(&mut document, &first.origin().ascii_serialization(), &policy)
+            .expect("a terminated realm does not block leaving its document");
+        assert!(
+            carried.is_none(),
+            "storage of a terminated realm cannot be read"
+        );
+        assert_eq!(
+            budget_records(&mut document),
+            records,
+            "the first denial stays recorded exactly once"
+        );
+
+        let second = Url::parse("https://budget.invalid/second").unwrap();
+        let mut next = page(&net, &second);
+        assert!(
+            next.terminated_realm().is_none(),
+            "a new document never inherits a terminated realm"
+        );
+        assert!(budget_records(&mut next).is_empty());
+        let total = next
+            .eval_json(
+                "(function () { var n = 0; for (var i = 0; i < 100000; i++) { n = n + 1; } return n; })()",
+            )
+            .expect("the new realm runs script on its own budget");
+        assert_eq!(total, serde_json::json!(100000));
+        assert!(next.terminated_realm().is_none());
+    }
+
+    /// Control: a live realm still runs its own unload handlers when left.
+    #[test]
+    fn leaving_a_live_realm_runs_its_unload_handlers() {
+        crate::install_crypto_provider();
+        let net = Arc::new(crate::document_loader::NetProvider::new(None));
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
+        let url = Url::parse("https://budget.invalid/live").unwrap();
+        let mut document = page(&net, &url);
+        document
+            .eval(
+                "globalThis.left = []; \
+                 globalThis.addEventListener('pagehide', function () { left.push('pagehide'); }); \
+                 globalThis.addEventListener('unload', function () { left.push('unload'); });",
+            )
+            .expect("live realm");
+        let carried = leave_document(&mut document, &url.origin().ascii_serialization(), &policy)
+            .expect("leaving a live realm");
+        assert!(carried.is_none(), "a bot child carries no storage");
+        assert!(document.terminated_realm().is_none());
+        assert_eq!(
+            document.eval_json("left.join(',')").expect("live realm"),
+            serde_json::json!("pagehide,unload")
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
-        ActionContext, BOT_CHILD_MAX_INSPECT_BYTES, BOT_CHILD_MAX_WALL_TIME, HeadlessPolicy,
+        BOT_CHILD_MAX_INSPECT_BYTES, BOT_CHILD_MAX_WALL_TIME, HeadlessPolicy, LOOKUP_MAX_WALL_TIME,
         MAX_PROXY_BYTES, Target, Url, bound_inspection_snapshot, classify, condense_response,
-        domain_is_allowed, parse_allowed_domains, parse_wall_time, proxy_connect_url,
-        reserve_proxy_bytes, sensitive_surface, submit_needs_permission, target_from,
+        navigation_initiator, parse_allowed_domains, parse_wall_time, proxy_connect_url,
+        reserve_proxy_bytes, sensitive_surface, target_from,
     };
     use blitz_control_protocol::{AgentSnapshot, DebugResponse, SemanticNode, condense};
 
@@ -2378,7 +2550,7 @@ mod tests {
 
     #[test]
     fn bot_mode_rejects_local_schemes_addresses_and_credentials() {
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         for target in [
             "http://example.com/",
             "file:///etc/passwd",
@@ -2396,15 +2568,46 @@ mod tests {
     }
 
     #[test]
+    fn bot_navigation_restricts_a_browser_initiated_load() {
+        use blitz_traits::net::ResourcePolicy;
+        use blitz_traits::platform::FetchRequest;
+        use std::sync::Arc;
+
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
+        let url = Url::parse("https://supplier.example/").unwrap();
+        let browser = Arc::new(ResourcePolicy::default()).browser(url.clone());
+        let mut request = FetchRequest::get(url.clone());
+        request.initiator = navigation_initiator(&policy, url, Some(browser));
+
+        assert!(
+            request
+                .initiator
+                .check_address("127.0.0.1".parse().unwrap())
+                .is_err()
+        );
+        assert!(
+            request
+                .initiator
+                .check_address("8.8.8.8".parse().unwrap())
+                .is_ok()
+        );
+        assert!(
+            request
+                .check_redirect(&Url::parse("http://supplier.example/").unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn bot_mode_accepts_public_literal_addresses() {
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         let url = Url::parse("https://8.8.8.8/").expect("parse public URL");
         assert!(policy.validate_url(&url).is_ok());
     }
 
     #[test]
     fn bot_child_condense_is_denied_before_inspection() {
-        let policy = HeadlessPolicy::bot_child_for_tests(&[], false);
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
         let response = condense_response(
             &policy,
             condense::Level::Content,
@@ -2421,10 +2624,19 @@ mod tests {
     fn host_allowlist_matches_only_exact_domains_and_subdomains() {
         let allowed =
             parse_allowed_domains(Some("Example.com, example.org")).expect("parse allowed domains");
-        assert!(domain_is_allowed("example.com", &allowed));
-        assert!(domain_is_allowed("www.example.com", &allowed));
-        assert!(!domain_is_allowed("notexample.com", &allowed));
-        assert!(!domain_is_allowed("example.com.attacker", &allowed));
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
+        let policy = HeadlessPolicy {
+            allowed_domains: allowed,
+            ..policy
+        };
+        for host in ["example.com", "www.example.com"] {
+            let url = Url::parse(&format!("https://{host}/")).unwrap();
+            assert!(policy.validate_url(&url).is_ok());
+        }
+        for host in ["notexample.com", "example.com.attacker"] {
+            let url = Url::parse(&format!("https://{host}/")).unwrap();
+            assert!(policy.validate_url(&url).is_err());
+        }
     }
 
     #[test]
@@ -2434,18 +2646,6 @@ mod tests {
         assert_eq!(tunnel.scheme(), "https");
         assert_eq!(tunnel.host_str(), Some("example.com"));
         assert!(proxy_connect_url("GET http://example.com/ HTTP/1.1\r\n\r\n").is_none());
-    }
-
-    #[test]
-    fn form_submission_requires_explicit_caller_permission() {
-        let context = ActionContext {
-            may_submit: true,
-            ..ActionContext::default()
-        };
-        let denied = HeadlessPolicy::bot_child_for_tests(&[], false);
-        let allowed = HeadlessPolicy::bot_child_for_tests(&[], true);
-        assert!(submit_needs_permission(&denied, &context));
-        assert!(!submit_needs_permission(&allowed, &context));
     }
 
     #[test]
@@ -2490,22 +2690,27 @@ mod tests {
             }],
             ..AgentSnapshot::default()
         };
-        bound_inspection_snapshot(&mut snapshot);
+        bound_inspection_snapshot(&mut snapshot, BOT_CHILD_MAX_INSPECT_BYTES);
         let encoded = serde_json::to_vec(&snapshot).expect("encode bounded inspection");
         assert!(encoded.len() <= BOT_CHILD_MAX_INSPECT_BYTES);
     }
 
     #[test]
-    fn wall_timeout_can_only_be_shortened() {
+    fn wall_timeout_keeps_its_default_and_rejects_unbounded_values() {
         assert_eq!(
-            parse_wall_time(None).expect("default timeout"),
+            parse_wall_time(None, BOT_CHILD_MAX_WALL_TIME).expect("default timeout"),
             BOT_CHILD_MAX_WALL_TIME
         );
         assert_eq!(
-            parse_wall_time(Some("1500")).expect("short timeout"),
+            parse_wall_time(Some("1500"), BOT_CHILD_MAX_WALL_TIME).expect("short timeout"),
             std::time::Duration::from_millis(1500)
         );
-        assert!(parse_wall_time(Some("20001")).is_err());
-        assert!(parse_wall_time(Some("0")).is_err());
+        assert!(parse_wall_time(Some("20001"), BOT_CHILD_MAX_WALL_TIME).is_err());
+        assert_eq!(
+            parse_wall_time(Some("60000"), LOOKUP_MAX_WALL_TIME).expect("lookup timeout"),
+            LOOKUP_MAX_WALL_TIME
+        );
+        assert!(parse_wall_time(Some("60001"), LOOKUP_MAX_WALL_TIME).is_err());
+        assert!(parse_wall_time(Some("0"), BOT_CHILD_MAX_WALL_TIME).is_err());
     }
 }

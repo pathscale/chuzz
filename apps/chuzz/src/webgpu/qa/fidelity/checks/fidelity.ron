@@ -1,0 +1,27 @@
+[
+    (
+        id: "gpu-fidelity-ready",
+        group: "webgpu",
+        what: "image and compressed texture uploads sample their expected pixels",
+        click: Some("#run"),
+        subject: "READY: texture fidelity",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 30000,
+    ),
+    (
+        id: "gpu-fidelity-no-errors",
+        group: "webgpu",
+        what: "image and compressed texture uploads raise no WebGPU errors",
+        subject: "gpu",
+        expect: GpuNoErrors,
+        outcome_timeout_ms: 5000,
+    ),
+    (
+        id: "gpu-fidelity-capture",
+        group: "webgpu",
+        what: "the sampled texture result remains visible after submission",
+        subject: "canvas:#stage",
+        expect: GpuTextureInk,
+        outcome_timeout_ms: 5000,
+    ),
+]

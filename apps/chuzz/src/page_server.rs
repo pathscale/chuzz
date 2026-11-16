@@ -527,24 +527,25 @@ fn resolve(root: &Path, target: &str) -> Option<PathBuf> {
         return None;
     }
 
+    let root = root.canonicalize().ok()?;
+    let checked_file = |candidate: PathBuf| {
+        let resolved = candidate.canonicalize().ok()?;
+        (resolved.starts_with(&root) && resolved.is_file()).then_some(resolved)
+    };
     let index = root.join("index.html");
     if relative.as_os_str().is_empty() {
-        return index.is_file().then_some(index);
+        return checked_file(index);
     }
 
     let candidate = root.join(relative);
     if candidate.is_file() {
-        // Canonicalised and checked, because a symlink inside the directory can
-        // still point out of it.
-        let resolved = candidate.canonicalize().ok()?;
-        return resolved.starts_with(root).then_some(resolved);
+        return checked_file(candidate);
     }
     if candidate.is_dir() {
-        let nested = candidate.join("index.html");
-        return nested.is_file().then_some(nested);
+        return checked_file(candidate.join("index.html"));
     }
     if relative.extension().is_none() {
-        return index.is_file().then_some(index);
+        return checked_file(index);
     }
     None
 }

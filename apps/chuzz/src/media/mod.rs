@@ -2,18 +2,17 @@
 //!
 //! Fake devices are the default capture policy. They never open OS devices.
 //! Rust consumers lease Track, VideoFrame and Pcm directly through Arc.
-//! The JS bridge carries descriptors and measured diagnostics only.
+//! The ChuzzScriptHost bridge carries descriptors and measured diagnostics only.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use blitz_script::ScriptDocument;
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-};
 use serde_json::{Value, json};
+
+#[path = "media_host_bridge.rs"]
+pub mod native_host;
 
 pub mod fake;
 pub mod frame;
@@ -107,6 +106,11 @@ impl Default for Store {
     }
 }
 
+pub(crate) trait AudioResources {
+    fn track(&self, id: u64) -> Result<Arc<crate::audio::pcm::Track>, String>;
+    fn register(&self, track: Arc<crate::audio::pcm::Track>) -> Result<u64, String>;
+}
+
 pub struct Host {
     store: Mutex<Store>,
     origin: Instant,
@@ -178,7 +182,7 @@ impl Host {
         }
     }
 
-    fn control(&self, request: Value, context: &Context) -> Result<Value, Error> {
+    fn control(&self, request: Value, resources: &dyn AudioResources) -> Result<Value, Error> {
         let op = request
             .get("op")
             .and_then(Value::as_str)
@@ -211,13 +215,12 @@ impl Host {
                     .get("audio")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| Error::typ("a graph PCM track identifier is required"))?;
-                let audio = crate::audio::registered_track(context, id)
-                    .map_err(|error| Error::state(&error.to_string()))?;
+                let audio_track = resources.track(id).map_err(|error| Error::state(&error))?;
                 let settings = Settings::Audio {
-                    sample_rate: audio.sample_rate(),
-                    channel_count: audio.channels(),
+                    sample_rate: audio_track.sample_rate(),
+                    channel_count: audio_track.channels(),
                 };
-                let source = Arc::new(Source::from_audio(audio, self.origin)?);
+                let source = Arc::new(Source::from_audio(audio_track, self.origin)?);
                 let track = Arc::new(Track::new(allocate()?, source, json!({}), settings));
                 let descriptor = track.descriptor()?;
                 store.tracks.insert(track.id, track);
@@ -356,8 +359,9 @@ impl Host {
                         }
                         let audio = crate::audio::pcm::Track::from_media(&track)
                             .map_err(|error| Error::state(&error))?;
-                        let audio_id = crate::audio::register_track(context, audio)
-                            .map_err(|error| Error::state(&error.to_string()))?;
+                        let audio_id = resources
+                            .register(audio)
+                            .map_err(|error| Error::state(&error))?;
                         store.audio_tracks.insert(track.id, audio_id);
                         Ok(json!(audio_id))
                     }
@@ -502,80 +506,4 @@ fn probe(track: &Track, micros: u64) -> Result<Value, Error> {
             }))
         }
     }
-}
-
-struct NativeHost(Arc<Host>);
-
-impl Drop for NativeHost {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-
-/// Obtain the page's native capture registry without passing samples through JS.
-pub fn host(context: &Context) -> JsResult<Arc<Host>> {
-    context
-        .get_data::<NativeHost>()
-        .map(|host| Arc::clone(&host.0))
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("capture host is unavailable")
-                .into()
-        })
-}
-
-fn control(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let host = host(context)?;
-    let text = args
-        .first()
-        .cloned()
-        .unwrap_or_default()
-        .to_string(context)?
-        .to_std_string_escaped();
-    let result = if text.len() > COMMAND_LIMIT {
-        Err(Error::typ("media command exceeds 64 KiB"))
-    } else {
-        serde_json::from_str::<Value>(&text)
-            .map_err(|_| Error::typ("invalid media command"))
-            .and_then(|request| host.control(request, context))
-    };
-    let updates = host
-        .updates()
-        .unwrap_or(json!({"devicechange": false, "tracks": []}));
-    let reply = match result {
-        Ok(value) => json!({"ok": true, "value": value, "updates": updates}),
-        Err(error) => json!({"ok": false, "error": error, "updates": updates}),
-    };
-    Ok(JsString::from(reply.to_string()).into())
-}
-
-pub(crate) fn install(document: &mut ScriptDocument) {
-    let url = document.current_url().map(ToString::to_string);
-    let host = Arc::new(Host {
-        store: Mutex::new(Store::default()),
-        origin: Instant::now(),
-        secure: trusted(url.as_deref()),
-    });
-    document.with_js_context(|context| {
-        context.insert_data(NativeHost(Arc::clone(&host)));
-        context
-            .register_global_builtin_callable(
-                JsString::from("__chuzzMediaControl"),
-                1,
-                NativeFunction::from_fn_ptr(control),
-            )
-            .expect("capture metadata bridge");
-    });
-    document.eval_named(include_str!("../media.ts"), "<chuzz-media>");
-    document.add_poll_hook(move |document, _| {
-        let Ok(updates) = host.updates() else {
-            return false;
-        };
-        if updates["devicechange"] != true && updates["tracks"].as_array().is_none_or(Vec::is_empty)
-        {
-            return false;
-        }
-        document.eval(&format!("globalThis.__chuzzMediaUpdate({updates});"));
-        true
-    });
 }

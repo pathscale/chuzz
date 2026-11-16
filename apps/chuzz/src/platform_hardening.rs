@@ -109,7 +109,18 @@ fn install() -> Result<(), String> {
         std::sync::atomic::Ordering::Release,
     );
     // A panic payload can contain page bytes, credentials or heap values.
-    std::panic::set_hook(Box::new(|_| eprintln!("chuzz: internal failure")));
+    std::panic::set_hook(Box::new(|info| {
+        if let Some(location) = info.location() {
+            eprintln!(
+                "chuzz: internal failure at {}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            );
+        } else {
+            eprintln!("chuzz: internal failure");
+        }
+    }));
     Ok(())
 }
 

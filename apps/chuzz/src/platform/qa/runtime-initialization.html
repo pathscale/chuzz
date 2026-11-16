@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Long initialization runtime QA</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 24px; background: #182335; color: #fff; font-family: sans-serif; }
+    main { max-width: 680px; padding: 24px; border: 1px solid #52647d; border-radius: 12px; background: #223249; }
+    h1 { margin-top: 0; }
+    button { padding: 10px 16px; }
+    #result { min-height: 56px; margin-bottom: 0; padding: 16px; border: 1px solid #7f93af; border-radius: 8px; background: #101a28; color: #fff; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Long initialization runtime</h1>
+    <p>This manual witness runs finite numeric and graph work in a timer promise continuation, then checks a later timer.</p>
+    <button id="run" type="button">Run witness</button>
+    <p id="result" role="status" aria-live="polite">READY: witness has not run</p>
+  </main>
+  <script>
+    (function () {
+      var runButton = document.getElementById("run");
+      var result = document.getElementById("result");
+
+      function describeError(error) {
+        return error && error.message ? error.message : String(error);
+      }
+
+      function runInitializationWork() {
+        var started = performance.now();
+        var deadline = started + 9250;
+        var vertexCount = 128;
+        var edgesPerVertex = 3;
+        var edgeTargets = new Array(vertexCount * edgesPerVertex);
+        var source = new Array(vertexCount);
+        var transformed = new Array(vertexCount);
+        var target = new Array(vertexCount);
+
+        for (var vertex = 0; vertex < vertexCount; vertex++) {
+          source[vertex] = Math.sin(vertex * 0.17);
+          edgeTargets[vertex * edgesPerVertex] = (vertex + 1) % vertexCount;
+          edgeTargets[vertex * edgesPerVertex + 1] = (vertex + 7) % vertexCount;
+          edgeTargets[vertex * edgesPerVertex + 2] = (vertex + 19) % vertexCount;
+        }
+
+        var batches = 0;
+        var checksum = 0;
+        while (performance.now() < deadline) {
+          for (var index = 0; index < vertexCount; index++) {
+            transformed[index] = Math.sin(source[index] * 0.91 + Math.cos(index * 0.01));
+          }
+
+          for (var node = 0; node < vertexCount; node++) {
+            var edgeOffset = node * edgesPerVertex;
+            var value = transformed[node]
+              + transformed[edgeTargets[edgeOffset]] * 0.31
+              + transformed[edgeTargets[edgeOffset + 1]] * 0.23
+              + transformed[edgeTargets[edgeOffset + 2]] * 0.17;
+            target[node] = Math.sin(value);
+            checksum += target[node];
+          }
+
+          var previous = source;
+          source = target;
+          target = previous;
+          batches++;
+        }
+
+        return {
+          durationMs: performance.now() - started,
+          batches: batches,
+          vertices: vertexCount,
+          edges: vertexCount * edgesPerVertex,
+          checksum: checksum
+        };
+      }
+
+      runButton.addEventListener("click", function () {
+        var state = {
+          workComplete: false,
+          checkpointComplete: false,
+          failed: false
+        };
+
+        delete globalThis.runtimeInitializationProof;
+        runButton.disabled = true;
+        result.textContent = "RUNNING: waiting for timer work";
+
+        function fail(message) {
+          if (state.failed) {
+            return;
+          }
+          state.failed = true;
+          result.textContent = "FAIL: " + message;
+          runButton.disabled = false;
+        }
+
+        function updateCompletion() {
+          if (state.failed) {
+            return;
+          }
+          if (state.checkpointComplete && !state.workComplete) {
+            fail("the later timer ran before initialization completed");
+            return;
+          }
+          if (state.workComplete && state.checkpointComplete) {
+            result.textContent = "PASS: initialization and later timer completed";
+            runButton.disabled = false;
+            return;
+          }
+          if (state.workComplete) {
+            result.textContent = "INITIALIZATION COMPLETE: waiting for later timer";
+          }
+        }
+
+        setTimeout(function () {
+          Promise.resolve()
+            .then(runInitializationWork)
+            .then(function (proof) {
+              globalThis.runtimeInitializationProof = Object.freeze({
+                completed: true,
+                durationMs: proof.durationMs,
+                batches: proof.batches,
+                vertices: proof.vertices,
+                edges: proof.edges,
+                checksum: proof.checksum
+              });
+              state.workComplete = true;
+              updateCompletion();
+            })
+            .catch(function (error) {
+              fail("initialization work: " + describeError(error));
+            });
+        }, 0);
+
+        setTimeout(function () {
+          Promise.resolve()
+            .then(function () {
+              state.checkpointComplete = true;
+              updateCompletion();
+            })
+            .catch(function (error) {
+              fail("later timer checkpoint: " + describeError(error));
+            });
+        }, 100);
+      });
+    }());
+  </script>
+</body>
+</html>

@@ -16,6 +16,7 @@ pub(super) struct Command {
     pub args: Value,
 }
 
+#[derive(Debug)]
 pub(super) struct GpuError {
     pub kind: &'static str,
     pub message: String,

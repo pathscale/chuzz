@@ -31,10 +31,22 @@ pub(super) fn apply(dirs: &Directories) -> Result<(), String> {
     let reads = dirs
         .reads
         .iter()
-        .map(|path| quote(path).map(|path| format!("(allow file-read* (subpath {path}))")))
+        .map(|path| {
+            let filter = if path.is_dir() { "subpath" } else { "literal" };
+            quote(path).map(|path| format!("(allow file-read* ({filter} {path}))"))
+        })
         .collect::<Result<Vec<_>, _>>()?
         .join("\n");
     profile = profile.replace("@READS@", &reads);
+    let metal_caches = dirs
+        .metal_caches
+        .iter()
+        .map(|path| {
+            quote(path).map(|path| format!("(allow file-read* file-write* (subpath {path}))"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    profile = profile.replace("@METAL_CACHES@", &metal_caches);
     let process = if super::defect("spawn-denied") {
         "(allow process-exec process-fork)"
     } else {

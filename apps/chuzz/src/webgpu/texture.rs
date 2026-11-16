@@ -125,6 +125,83 @@ pub(super) fn format(name: &str) -> Result<wgpu::TextureFormat, GpuError> {
     decode(Value::String(name.to_owned()))
 }
 
+/// Converts a logical texture-copy size to the physical block extent expected
+/// by wgpu. Compressed copies may reach a mip's right or bottom edge with a
+/// partial final block; wgpu represents that edge using the complete block.
+pub(super) fn copy_extent(
+    format: wgpu::TextureFormat,
+    dimension: wgpu::TextureDimension,
+    base_size: [u32; 3],
+    mip_level_count: u32,
+    mip_level: u32,
+    origin: [u32; 3],
+    size: [u32; 3],
+) -> Result<wgpu::Extent3d, GpuError> {
+    let (block_width, block_height) = format.block_dimensions();
+    if (block_width == 1 && block_height == 1) || size.contains(&0) {
+        return Ok(wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: size[2],
+        });
+    }
+    if mip_level >= mip_level_count || mip_level >= u32::BITS {
+        return Err(GpuError::validation(
+            "GPUTexture copy mip level is out of bounds",
+        ));
+    }
+    let mip = |value: u32| (value >> mip_level).max(1);
+    let mip_size = [
+        mip(base_size[0]),
+        if dimension == wgpu::TextureDimension::D1 {
+            1
+        } else {
+            mip(base_size[1])
+        },
+        if dimension == wgpu::TextureDimension::D3 {
+            mip(base_size[2])
+        } else {
+            base_size[2]
+        },
+    ];
+    let mut bounds = mip_size;
+    for (axis, block) in [(0, block_width), (1, block_height)] {
+        bounds[axis] = bounds[axis]
+            .div_ceil(block)
+            .checked_mul(block)
+            .ok_or_else(|| GpuError::validation("GPUTexture copy extent overflow"))?;
+    }
+    if (0..3).any(|axis| {
+        origin[axis] >= mip_size[axis]
+            || origin[axis]
+                .checked_add(size[axis])
+                .is_none_or(|end| end > bounds[axis])
+    }) {
+        return Err(GpuError::validation(
+            "GPUTexture copy range is out of bounds",
+        ));
+    }
+
+    let mut physical = size;
+    for (axis, block) in [(0, block_width), (1, block_height)] {
+        let end = origin[axis] + size[axis];
+        if !origin[axis].is_multiple_of(block)
+            || (!size[axis].is_multiple_of(block) && end != mip_size[axis])
+        {
+            return Err(GpuError::validation("unaligned compressed GPUTexture copy"));
+        }
+        physical[axis] = size[axis]
+            .div_ceil(block)
+            .checked_mul(block)
+            .ok_or_else(|| GpuError::validation("GPUTexture copy extent overflow"))?;
+    }
+    Ok(wgpu::Extent3d {
+        width: physical[0],
+        height: physical[1],
+        depth_or_array_layers: physical[2],
+    })
+}
+
 fn dimension(name: &str) -> Result<wgpu::TextureDimension, GpuError> {
     match name {
         "1d" => Ok(wgpu::TextureDimension::D1),
@@ -355,6 +432,19 @@ impl DeviceConnection {
             ));
         }
         let aspect = aspect(&write.aspect)?;
+        let copy_extent = copy_extent(
+            texture.format(),
+            texture.dimension(),
+            [
+                texture.width(),
+                texture.height(),
+                texture.depth_or_array_layers(),
+            ],
+            texture.mip_level_count(),
+            write.mip_level,
+            write.origin,
+            write.size,
+        )?;
         checked(&self.device, || {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -373,11 +463,7 @@ impl DeviceConnection {
                     bytes_per_row: write.bytes_per_row,
                     rows_per_image: write.rows_per_image,
                 },
-                wgpu::Extent3d {
-                    width: write.size[0],
-                    height: write.size[1],
-                    depth_or_array_layers: write.size[2],
-                },
+                copy_extent,
             );
             self.submit_gpu([]);
         })
@@ -405,5 +491,159 @@ impl DeviceConnection {
         let sampler = checked(&self.device, || self.device.create_sampler(&descriptor)).await?;
         self.resources().samplers.insert(handle, Arc::new(sampler));
         Ok(Value::Null)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webgpu_compressed_formats_map_to_wgpu() {
+        for name in [
+            "bc1-rgba-unorm",
+            "bc1-rgba-unorm-srgb",
+            "bc2-rgba-unorm",
+            "bc2-rgba-unorm-srgb",
+            "bc3-rgba-unorm",
+            "bc3-rgba-unorm-srgb",
+            "bc4-r-unorm",
+            "bc4-r-snorm",
+            "bc5-rg-unorm",
+            "bc5-rg-snorm",
+            "bc6h-rgb-ufloat",
+            "bc6h-rgb-float",
+            "bc7-rgba-unorm",
+            "bc7-rgba-unorm-srgb",
+            "etc2-rgb8unorm",
+            "etc2-rgb8unorm-srgb",
+            "etc2-rgb8a1unorm",
+            "etc2-rgb8a1unorm-srgb",
+            "etc2-rgba8unorm",
+            "etc2-rgba8unorm-srgb",
+            "eac-r11unorm",
+            "eac-r11snorm",
+            "eac-rg11unorm",
+            "eac-rg11snorm",
+            "astc-4x4-unorm",
+            "astc-4x4-unorm-srgb",
+            "astc-5x4-unorm",
+            "astc-5x4-unorm-srgb",
+            "astc-5x5-unorm",
+            "astc-5x5-unorm-srgb",
+            "astc-6x5-unorm",
+            "astc-6x5-unorm-srgb",
+            "astc-6x6-unorm",
+            "astc-6x6-unorm-srgb",
+            "astc-8x5-unorm",
+            "astc-8x5-unorm-srgb",
+            "astc-8x6-unorm",
+            "astc-8x6-unorm-srgb",
+            "astc-8x8-unorm",
+            "astc-8x8-unorm-srgb",
+            "astc-10x5-unorm",
+            "astc-10x5-unorm-srgb",
+            "astc-10x6-unorm",
+            "astc-10x6-unorm-srgb",
+            "astc-10x8-unorm",
+            "astc-10x8-unorm-srgb",
+            "astc-10x10-unorm",
+            "astc-10x10-unorm-srgb",
+            "astc-12x10-unorm",
+            "astc-12x10-unorm-srgb",
+            "astc-12x12-unorm",
+            "astc-12x12-unorm-srgb",
+        ] {
+            assert!(format(name).is_ok(), "GPUTextureFormat.{name}");
+        }
+    }
+
+    #[test]
+    fn compressed_tail_mips_expand_to_physical_block_extent() {
+        let format = format("bc1-rgba-unorm").unwrap_or_else(|error| panic!("{}", error.message));
+        for (mip, logical) in [(1, [2, 2, 1]), (2, [1, 1, 1])] {
+            let physical = copy_extent(
+                format,
+                wgpu::TextureDimension::D2,
+                [4, 4, 1],
+                3,
+                mip,
+                [0, 0, 0],
+                logical,
+            )
+            .unwrap_or_else(|error| panic!("{}", error.message));
+            assert_eq!(
+                copy_extent(
+                    format,
+                    wgpu::TextureDimension::D2,
+                    [4, 4, 1],
+                    3,
+                    mip,
+                    [0, 0, 0],
+                    [4, 4, 1],
+                )
+                .unwrap_or_else(|error| panic!("{}", error.message)),
+                physical,
+            );
+            assert_eq!(
+                physical,
+                wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                }
+            );
+            let layout = wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(8),
+                rows_per_image: Some(1),
+            };
+            assert!(
+                layout
+                    .get_buffer_texture_copy_info(format, wgpu::TextureAspect::All, &physical)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn compressed_tail_copy_rejects_invalid_logical_ranges() {
+        let format = format("bc1-rgba-unorm").unwrap_or_else(|error| panic!("{}", error.message));
+        let copy = |origin, size| {
+            copy_extent(
+                format,
+                wgpu::TextureDimension::D2,
+                [4, 4, 1],
+                3,
+                1,
+                origin,
+                size,
+            )
+        };
+        assert!(copy([4, 0, 0], [1, 2, 1]).is_err());
+        assert!(copy([0, 0, 0], [1, 2, 1]).is_err());
+        assert!(copy([0, 0, 0], [3, 2, 1]).is_err());
+    }
+
+    #[test]
+    fn compressed_allocation_rounds_each_mip_to_blocks() {
+        let options = Options {
+            label: String::new(),
+            size: [8, 8, 1],
+            mip_level_count: 4,
+            sample_count: 1,
+            dimension: "2d".to_owned(),
+            format: "bc1-rgba-unorm".to_owned(),
+            usage: 1,
+            view_formats: Vec::new(),
+        };
+        assert_eq!(
+            allocation(
+                &options,
+                format(&options.format).unwrap_or_else(|error| panic!("{}", error.message))
+            )
+            .unwrap_or_else(|error| panic!("{}", error.message)),
+            56
+        );
     }
 }

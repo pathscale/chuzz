@@ -418,12 +418,25 @@ fn buffer_copy<'a>(
     })
 }
 
-fn extent(size: [u32; 3]) -> wgpu::Extent3d {
-    wgpu::Extent3d {
-        width: size[0],
-        height: size[1],
-        depth_or_array_layers: size[2],
-    }
+fn texture_extent(
+    resources: &Resources,
+    copy: &TextureCopy,
+    size: [u32; 3],
+) -> Result<wgpu::Extent3d, GpuError> {
+    let texture = &get(&resources.textures, copy.texture, "GPUTexture")?.texture;
+    texture::copy_extent(
+        texture.format(),
+        texture.dimension(),
+        [
+            texture.width(),
+            texture.height(),
+            texture.depth_or_array_layers(),
+        ],
+        texture.mip_level_count(),
+        copy.mip_level,
+        copy.origin,
+        size,
+    )
 }
 
 impl DeviceConnection {
@@ -1247,10 +1260,11 @@ fn replay(
                     "copy source requires declared COPY_SRC usage",
                 ));
             }
+            let copy_extent = texture_extent(resources, destination, *size)?;
             encoder.copy_buffer_to_texture(
                 buffer_copy(resources, source)?,
                 texture_copy(resources, destination)?,
-                extent(*size),
+                copy_extent,
             );
         }
         Operation::CopyTextureToBuffer {
@@ -1258,10 +1272,11 @@ fn replay(
             destination,
             size,
         } => {
+            let copy_extent = texture_extent(resources, source, *size)?;
             encoder.copy_texture_to_buffer(
                 texture_copy(resources, source)?,
                 buffer_copy(resources, destination)?,
-                extent(*size),
+                copy_extent,
             );
         }
         Operation::CopyTextureToTexture {
@@ -1269,10 +1284,17 @@ fn replay(
             destination,
             size,
         } => {
+            let source_extent = texture_extent(resources, source, *size)?;
+            let destination_extent = texture_extent(resources, destination, *size)?;
+            if source_extent != destination_extent {
+                return Err(GpuError::validation(
+                    "compressed GPUTexture copies require matching physical extents",
+                ));
+            }
             encoder.copy_texture_to_texture(
                 texture_copy(resources, source)?,
                 texture_copy(resources, destination)?,
-                extent(*size),
+                source_extent,
             );
         }
     }

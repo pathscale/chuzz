@@ -9,14 +9,10 @@ name: Release
 # version the app does not report.
 #
 # "Changed" is decided against what is actually published, not against git
-# history. Comparing to the live latest.json makes this idempotent: a release
-# that failed halfway is retried by the next push, a re-run is harmless, and
-# squashes and force-pushes cannot confuse it.
+# history. A later dispatch can retry a version that never went live.
 #
-# Publishing overwrites a fixed, versionless CDN path, so latest.json is the
-# only record of the current version. That is why the purges below are hard
-# failures: a stale edge copy is indistinguishable, to a client, from a release
-# that never happened.
+# Homebrew uses a versioned, content-addressed archive. The existing updater
+# feed and versionless download paths still require the purges below.
 #
 # The publish choreography follows AgencyZero's, which follows the 24x.ai site
 # pipeline: DELETE the storage object before uploading its replacement, and
@@ -31,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Publish even if the version has not changed"
+        description: "Publish the macOS bundle even if the version has not changed"
         type: boolean
         default: false
 
@@ -46,7 +42,7 @@ env:
   BUNDLE_DIR: target/release/bundle/macos
 
 jobs:
-  # Cheap gate, so a macOS runner is only spent on pushes that actually ship.
+  # Cheap gate, so a macOS runner is only spent on dispatches that actually ship.
   # This half has no macOS dependency, so it follows the usual runner rule.
   check:
     runs-on: ubicloud-standard-2
@@ -103,10 +99,8 @@ jobs:
           fi
 
           HEADLESS=https://github.com/pathscale/chuzz/releases/download/headless-v$VERSION/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz
-          if [ "${{ inputs.force }}" = "true" ]; then
-            echo "headless_publish=true" >> "$GITHUB_OUTPUT"
-          elif curl -fsSIL --max-time 30 "$HEADLESS" >/dev/null 2>&1 && \
-               curl -fsSIL --max-time 30 "$HEADLESS.sha256" >/dev/null 2>&1; then
+          if curl -fsSIL --max-time 30 "$HEADLESS" >/dev/null 2>&1 && \
+             curl -fsSIL --max-time 30 "$HEADLESS.sha256" >/dev/null 2>&1; then
             echo "headless_publish=false" >> "$GITHUB_OUTPUT"
             echo "The Linux headless asset for $VERSION is already published."
           else
@@ -159,17 +153,15 @@ jobs:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           tag="headless-v$VERSION"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" \
-              --target "$GITHUB_SHA" \
-              --title "Chuzz headless $VERSION" \
-              --notes "Linux x86_64 native ps-qa host with capture, JavaScript, scrollbars, WebP, and system-font discovery." \
-              --prerelease
-          fi
-          gh release upload "$tag" \
+          # Attach both files before publishing the new release. An existing
+          # release for this version is never reused.
+          gh release create "$tag" \
             target/headless-release/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz \
             target/headless-release/chuzz-headless-x86_64-unknown-linux-gnu.tar.gz.sha256 \
-            --clobber
+            --target "$GITHUB_SHA" \
+            --title "Chuzz headless $VERSION" \
+            --notes "Linux x86_64 native ps-qa host with capture, JavaScript, scrollbars, WebP, and system-font discovery." \
+            --prerelease
 
   release:
     needs: check
@@ -252,11 +244,7 @@ jobs:
           shared-key: chuzz-macos-release
           cache-targets: true
 
-      # Ad-hoc signed by build-app.sh via `codesign --sign -`, which needs no
-      # certificate. Notarization needs a current Apple Developer Program
-      # membership; the verify step below asserts the bundle is still ad-hoc so
-      # that acquiring one cannot silently leave the cask stripping a Gatekeeper
-      # check users should be getting.
+      # The bundle uses the ad-hoc signature applied by build-app.ts.
       - name: Build the bundle
         run: bun apps/chuzz/build-app.ts release
 
@@ -278,7 +266,7 @@ jobs:
           if codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "TeamIdentifier=not set"; then
             echo "ad-hoc as expected"
           else
-            echo "::error::bundle is no longer ad-hoc; update the verification and the cask"
+            echo "::error::expected an ad-hoc signature on the release bundle"
             exit 1
           fi
 
@@ -347,6 +335,24 @@ jobs:
           }
           echo "signed"
 
+      - name: Generate the Homebrew cask
+        id: cask
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          SHA256=$(shasum -a 256 "$BUNDLE_DIR/Chuzz.app.tar.gz" | cut -d' ' -f1)
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$ && "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::invalid release version or archive SHA-256"
+            exit 1
+          fi
+          PINNED_PATH="releases/$VERSION/$SHA256/Chuzz.app.tar.gz"
+          sed -e "s|@VERSION@|$VERSION|g" \
+              -e "s|@SHA256@|$SHA256|g" \
+              -e "s|@ASSET_URL@|$CDN_BASE/$PINNED_PATH|g" \
+              packaging/chuzz.rb.in > chuzz.rb
+          printf 'path=%s\nsha256=%s\n' "$PINNED_PATH" "$SHA256" >> "$GITHUB_OUTPUT"
+
       - name: Build latest.json
         env:
           VERSION: ${{ needs.check.outputs.version }}
@@ -365,8 +371,7 @@ jobs:
 
           # The url query string is a cache-buster, and it works because this
           # pull zone keys its cache on the full URL including the query, so
-          # each release advertises a URL no edge has ever held. Brew fetches
-          # the bare URL and relies on the purge.
+          # each new version of the updater feed uses a separate cache key.
           cat > latest.json <<JSON
           {
             "version": "$VERSION",
@@ -385,11 +390,39 @@ jobs:
       # tarball goes live and is confirmed live *before* latest.json advertises
       # it. Reversed, a client reads the new version and fetches an edge-cached
       # older tarball.
-      - name: Upload the tarball
+      - name: Upload the tarballs
+        shell: bash
         env:
+          PINNED_PATH: ${{ steps.cask.outputs.path }}
+          PINNED_SHA256: ${{ steps.cask.outputs.sha256 }}
           STORAGE_API_KEY: ${{ secrets.BUNNYCDN_STORAGE_API_KEY }}
           STORAGE_NAME: ${{ secrets.BUNNYCDN_STORAGE_NAME }}
         run: |
+          tarball="$BUNDLE_DIR/Chuzz.app.tar.gz"
+          pinned_url="https://storage.bunnycdn.com/$STORAGE_NAME/$CDN_DIR/$PINNED_PATH"
+          origin_copy=$(mktemp "$BUNDLE_DIR/cask-origin.XXXXXXXX")
+          trap 'rm -f "$origin_copy"' EXIT
+          status=$(curl -sS --max-time 300 -H "AccessKey: $STORAGE_API_KEY" \
+            -o "$origin_copy" -w '%{http_code}' "$pinned_url")
+          case "$status" in
+            200)
+              if ! cmp -s "$tarball" "$origin_copy"; then
+                echo "::error::refusing to replace an existing Homebrew archive"
+                exit 1
+              fi
+              ;;
+            404)
+              checksum=$(printf '%s' "$PINNED_SHA256" | tr '[:lower:]' '[:upper:]')
+              curl -fsS --max-time 300 -H "AccessKey: $STORAGE_API_KEY" \
+                -H "Checksum: $checksum" -H 'Content-Type: application/octet-stream' \
+                -T "$tarball" "$pinned_url"
+              ;;
+            *)
+              echo "::error::Homebrew archive lookup failed: HTTP $status"
+              exit 1
+              ;;
+          esac
+
           upload() {
             file="$1"; dest="$2"; attempt=1
             curl -sS -X DELETE -H "AccessKey: $STORAGE_API_KEY" \
@@ -424,22 +457,25 @@ jobs:
             "https://bunnycdn.com/api/pullzone/$ZONE_ID/purgeCache"
           echo "purged pull zone $ZONE_ID"
 
-      - name: Confirm the live tarball is the one just built
+      - name: Confirm the live tarballs match the build
         env:
+          PINNED_PATH: ${{ steps.cask.outputs.path }}
           ZONE_API_KEY: ${{ secrets.BUNNYCDN_ZONE_API_KEY }}
           ZONE_ID: ${{ secrets.BUNNYCDN_ZONE_ID }}
         run: |
-          LOCAL=$(shasum -a 256 "$BUNDLE_DIR/Chuzz.app.tar.gz" | cut -d' ' -f1)
+          tarball="$BUNDLE_DIR/Chuzz.app.tar.gz"
+          edge_copy=$(mktemp "$BUNDLE_DIR/cask-edge.XXXXXXXX")
+          trap 'rm -f "$edge_copy"' EXIT
+          matches_build() {
+            curl -fsSL --max-time 300 -o "$edge_copy" "$CDN_BASE/$1" &&
+              cmp -s "$tarball" "$edge_copy"
+          }
           for attempt in 1 2 3 4 5 6; do
-            curl -sS -L -o edge.tar.gz "$CDN_BASE/Chuzz.app.tar.gz" || true
-            REMOTE=$(shasum -a 256 edge.tar.gz | cut -d' ' -f1)
-            # The sha proves identity; gunzip proves the edge did not cache a
-            # partial response. Both, so the failure message names the culprit.
-            if [ "$LOCAL" = "$REMOTE" ] && gunzip -t edge.tar.gz; then
-              echo "edge matches build ($LOCAL) and the gzip is intact"
+            if matches_build "$PINNED_PATH" && matches_build Chuzz.app.tar.gz; then
+              echo "both edge downloads match the build"
               exit 0
             fi
-            echo "attempt $attempt: edge has $REMOTE, want $LOCAL"
+            echo "attempt $attempt: at least one edge download does not match the build"
             if [ "$attempt" = 3 ]; then
               echo "::warning::edge still stale after purge; purging the zone again"
               curl -sS --fail-with-body -X POST -H "AccessKey: $ZONE_API_KEY" \
@@ -447,8 +483,15 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::edge never served the new tarball; not publishing latest.json"
+          echo "::error::edge never served both tarballs; not publishing latest.json"
           exit 1
+
+      - name: Save the generated Homebrew cask
+        uses: actions/upload-artifact@v4
+        with:
+          name: chuzz-homebrew-cask
+          path: chuzz.rb
+          if-no-files-found: error
 
       - name: Publish latest.json
         env:

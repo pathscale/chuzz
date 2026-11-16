@@ -4,13 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use blitz_dom::Document as _;
-use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
-use blitz_script::ScriptDocument;
-use blitz_script::boa_engine::{
-    Context, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-};
-use serde_json::json;
+use blitz_dom::node::RasterImageData;
+use serde_json::{Value, json};
 
 use super::sink::HeadlessSink;
 use super::{Command, MediaError, TIMEUPDATE_INTERVAL};
@@ -21,13 +16,6 @@ const FRAME_BYTES_LIMIT: usize = 512 * 1024 * 1024;
 const LEASE_LIMIT: usize = 8192;
 const LEASE_TIME: Duration = Duration::from_secs(10);
 const MAX_HANDLE: u64 = 9_007_199_254_740_991;
-
-#[derive(Clone)]
-pub(crate) struct FrameLease {
-    pub image: Arc<RasterImageData>,
-    pub pixels: Arc<Vec<u8>>,
-}
-
 #[derive(Default)]
 struct Registry {
     current: HashMap<u64, (u64, FrameLease)>,
@@ -36,10 +24,80 @@ struct Registry {
     closed: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct FrameLease {
+    pub(crate) image: Arc<RasterImageData>,
+    pub(crate) pixels: Arc<Vec<u8>>,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct FrameDescriptor {
+    handle: u64,
+    width: u32,
+    height: u32,
+}
+
 #[derive(Default)]
 pub(crate) struct Frames(Mutex<Registry>);
 
 impl Frames {
+    pub(crate) fn acquire(&self, id: u64, generation: u64) -> Result<FrameDescriptor, String> {
+        let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
+        if registry.closed {
+            return Err("video document has closed".to_owned());
+        }
+        let now = Instant::now();
+        registry
+            .leases
+            .retain(|_, (created, _)| now.duration_since(*created) < LEASE_TIME);
+        let frame = registry
+            .current
+            .get(&id)
+            .filter(|(current, _)| *current == generation)
+            .map(|(_, frame)| frame.clone())
+            .ok_or("video frame is unavailable or belongs to an old source")?;
+        let allocated = registry
+            .current
+            .values()
+            .map(|(_, frame)| frame.pixels.len())
+            .chain(
+                registry
+                    .leases
+                    .values()
+                    .map(|(_, frame)| frame.pixels.len()),
+            )
+            .sum::<usize>();
+        if registry.leases.len() >= LEASE_LIMIT
+            || registry.next >= MAX_HANDLE
+            || allocated.saturating_add(frame.pixels.len()) > FRAME_BYTES_LIMIT
+        {
+            return Err("native video lease limit reached".to_owned());
+        }
+        registry.next += 1;
+        let handle = registry.next;
+        registry.leases.insert(handle, (now, frame.clone()));
+        Ok(FrameDescriptor {
+            handle,
+            width: frame.image.width,
+            height: frame.image.height,
+        })
+    }
+
+    pub(crate) fn take(&self, handle: u64) -> Result<FrameLease, String> {
+        let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
+        if registry.closed {
+            return Err("video document has closed".to_owned());
+        }
+        let (created, frame) = registry
+            .leases
+            .remove(&handle)
+            .ok_or("invalid or consumed video frame lease")?;
+        if created.elapsed() >= LEASE_TIME {
+            return Err("video frame lease expired".to_owned());
+        }
+        Ok(frame)
+    }
+
     pub(crate) fn publish(
         &self,
         id: u64,
@@ -90,128 +148,13 @@ impl Frames {
         }
     }
 
-    fn acquire(&self, id: u64, generation: u64) -> Result<serde_json::Value, String> {
-        let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
-        if registry.closed {
-            return Err("video document has closed".to_owned());
-        }
-        let now = Instant::now();
-        registry
-            .leases
-            .retain(|_, (created, _)| now.duration_since(*created) < LEASE_TIME);
-        let frame = registry
-            .current
-            .get(&id)
-            .filter(|(current, _)| *current == generation)
-            .map(|(_, frame)| frame.clone())
-            .ok_or("video frame is unavailable or belongs to an old source")?;
-        let allocated = registry
-            .current
-            .values()
-            .map(|(_, frame)| frame.pixels.len())
-            .chain(
-                registry
-                    .leases
-                    .values()
-                    .map(|(_, frame)| frame.pixels.len()),
-            )
-            .sum::<usize>();
-        if registry.leases.len() >= LEASE_LIMIT
-            || registry.next >= MAX_HANDLE
-            || allocated.saturating_add(frame.pixels.len()) > FRAME_BYTES_LIMIT
-        {
-            return Err("native video lease limit reached".to_owned());
-        }
-        registry.next += 1;
-        let handle = registry.next;
-        let descriptor = json!({
-            "handle": handle,
-            "width": frame.image.width,
-            "height": frame.image.height
-        });
-        registry.leases.insert(handle, (now, frame));
-        Ok(descriptor)
-    }
-
-    pub(crate) fn take(&self, handle: u64) -> Result<FrameLease, String> {
-        let mut registry = self.0.lock().map_err(|_| "video registry was poisoned")?;
-        if registry.closed {
-            return Err("video document has closed".to_owned());
-        }
-        let (created, frame) = registry
-            .leases
-            .remove(&handle)
-            .ok_or("invalid or consumed video frame lease")?;
-        if created.elapsed() >= LEASE_TIME {
-            return Err("video frame lease expired".to_owned());
-        }
-        Ok(frame)
-    }
-
-    fn close(&self) {
+    pub(super) fn close(&self) {
         if let Ok(mut registry) = self.0.lock() {
             registry.closed = true;
             registry.current.clear();
             registry.leases.clear();
         }
     }
-}
-
-struct NativeFrames(Arc<Frames>);
-
-impl Drop for NativeFrames {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-
-pub(crate) fn frame_registry(context: &mut Context) -> Arc<Frames> {
-    if let Some(registry) = context.get_data::<NativeFrames>() {
-        return Arc::clone(&registry.0);
-    }
-    let frames = Arc::new(Frames::default());
-    context.insert_data(NativeFrames(Arc::clone(&frames)));
-    frames
-}
-
-pub(crate) fn take_frame(context: &Context, handle: u64) -> Result<FrameLease, String> {
-    context
-        .get_data::<NativeFrames>()
-        .ok_or("native video registry is unavailable")?
-        .0
-        .take(handle)
-}
-
-fn acquire(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let mut numbers = [0_u64; 2];
-    for (index, number) in numbers.iter_mut().enumerate() {
-        let value = args
-            .get(index)
-            .cloned()
-            .unwrap_or_default()
-            .to_number(context)?;
-        if !value.is_finite() || value.fract() != 0.0 || !(0.0..=MAX_HANDLE as f64).contains(&value)
-        {
-            return Err(JsNativeError::typ()
-                .with_message("invalid video handle")
-                .into());
-        }
-        *number = value as u64;
-    }
-    let value = frame_registry(context)
-        .acquire(numbers[0], numbers[1])
-        .map_err(|error| JsNativeError::typ().with_message(error))?;
-    Ok(JsString::from(value.to_string()).into())
-}
-
-pub(super) fn install_frame_bridge(context: &mut Context) {
-    context
-        .register_global_builtin_callable(
-            JsString::from("__chuzzVideoAcquire"),
-            2,
-            NativeFunction::from_fn_ptr(acquire),
-        )
-        .expect("native video frame leases");
 }
 
 type FrameKey = (u64, i64, u32, u32, (bool, bool, bool));
@@ -342,7 +285,6 @@ impl Entry {
 
     fn tick(
         &mut self,
-        document: &mut ScriptDocument,
         capture: &crate::media::Host,
         frames: &Frames,
         id: u64,
@@ -408,12 +350,10 @@ impl Entry {
                 }
                 self.frame_key = Some(key);
                 self.total_frames += 1;
-                paint(document, id, Some(frames_image(frames, id)?));
                 self.dirty = true;
             }
         } else if video.is_none() && self.frame_key.take().is_some() {
             frames.remove(id);
-            paint(document, id, None);
             self.width = 0;
             self.height = 0;
             self.ink = false;
@@ -455,7 +395,7 @@ impl Entry {
         Ok(())
     }
 
-    fn publish(&mut self, document: &mut ScriptDocument, id: u64, now: Instant) {
+    fn update(&mut self, now: Instant) -> Value {
         let payload = json!({
             "src": "",
             "duration": null,
@@ -479,10 +419,7 @@ impl Entry {
         });
         self.dirty = false;
         self.last_publish = now;
-        document.eval(&format!(
-            "globalThis.__chuzzVideoUpdate({id}, {}, {payload});",
-            self.generation
-        ));
+        payload
     }
 }
 
@@ -523,16 +460,6 @@ impl Host {
         self.entries.insert(command.id, entry);
     }
 
-    pub(super) fn remove(&mut self, document: &mut ScriptDocument, id: u64) -> bool {
-        if self.entries.remove(&id).is_some() {
-            self.frames.remove(id);
-            paint(document, id, None);
-            true
-        } else {
-            false
-        }
-    }
-
     pub(super) fn command(&mut self, command: &Command) -> bool {
         let Some(entry) = self.entries.get_mut(&command.id) else {
             return false;
@@ -543,51 +470,36 @@ impl Host {
         true
     }
 
-    pub(super) fn poll(&mut self, document: &mut ScriptDocument, now: Instant) -> bool {
-        let mut changed = false;
+    pub(super) fn remove_native(&mut self, id: u64) {
+        self.entries.remove(&id);
+        self.frames.remove(id);
+    }
+
+    pub(super) fn poll_native(&mut self, now: Instant) -> Vec<NativeUpdate> {
+        let mut updates = Vec::new();
         for (&id, entry) in &mut self.entries {
-            if let Err(error) = entry.tick(document, &self.capture, &self.frames, id, now) {
+            if let Err(error) = entry.tick(&self.capture, &self.frames, id, now) {
                 self.frames.remove(id);
                 entry.fail(error);
             }
             if entry.dirty || !entry.events.is_empty() {
-                entry.publish(document, id, now);
-                changed = true;
+                updates.push(NativeUpdate {
+                    id,
+                    generation: entry.generation,
+                    value: entry.update(now),
+                    image: frames_image(&self.frames, id).ok(),
+                });
             }
         }
-        changed
+        updates
     }
 }
 
-fn paint(document: &mut ScriptDocument, marker: u64, image: Option<Arc<RasterImageData>>) {
-    let marker = marker.to_string();
-    let mut document = document.inner_mut();
-    let id = document.tree().iter().find_map(|(id, node)| {
-        let element = node.element_data()?;
-        element
-            .attrs()
-            .iter()
-            .any(|attribute| {
-                attribute.name.local.as_ref() == "data-chuzz-video"
-                    && attribute.value.as_ref() == marker
-            })
-            .then_some(id)
-    });
-    let Some(node) = id.and_then(|id| document.get_node_mut(id)) else {
-        return;
-    };
-    node.cache_mut().clear();
-    let Some(element) = node.element_data_mut() else {
-        return;
-    };
-    element.special_data = image.map_or(SpecialElementData::None, |image| {
-        SpecialElementData::Image(Box::new(ImageData::Raster((*image).clone())))
-    });
-    if let Some(damage) = node.damage() {
-        node.insert_damage(damage.union(damage.complement()));
-    }
-    node.set_dirty_descendants();
-    node.mark_ancestors_dirty();
+pub(super) struct NativeUpdate {
+    pub(super) id: u64,
+    pub(super) generation: u64,
+    pub(super) value: Value,
+    pub(super) image: Option<Arc<RasterImageData>>,
 }
 
 fn rgba(frame: &VideoFrame) -> Result<Vec<u8>, MediaError> {

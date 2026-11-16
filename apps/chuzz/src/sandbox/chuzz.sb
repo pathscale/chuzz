@@ -36,7 +36,7 @@
 (allow process-info-pidinfo process-info-rusage process-codesigning-status* (target self))
 (allow signal (target self))
 (allow sysctl-read
-    (sysctl-name "hw.memsize" "hw.ncpu" "hw.activecpu" "hw.logicalcpu" "hw.physicalcpu" "hw.pagesize" "kern.osrelease" "kern.osversion" "kern.boottime" "kern.osproductversion" "kern.ostype" "kern.maxfilesperproc" "hw.cputype" "hw.cpusubtype" "hw.machine" "sysctl.name2oid")
+    (sysctl-name "hw.memsize" "hw.ncpu" "hw.activecpu" "hw.logicalcpu" "hw.physicalcpu" "hw.logicalcpu_max" "hw.physicalcpu_max" "kern.hv_vmm_present" "hw.pagesize" "kern.osrelease" "kern.osversion" "kern.boottime" "kern.osproductversion" "kern.ostype" "kern.maxfilesperproc" "hw.cputype" "hw.cpusubtype" "hw.machine" "sysctl.name2oid" "kern.bootargs" "kern.willshutdown")
     (sysctl-name-prefix "hw.optional." "hw.perflevel" "net.routetable"))
 ; Metadata does not permit file contents or directory enumeration.
 (allow file-read-metadata)
@@ -49,12 +49,13 @@
     (subpath "/System/Library" "/System/Cryptexes/OS" "/System/Volumes/Preboot/Cryptexes/OS" "/usr/lib")
     (literal @SHELL@))
 (allow file-read* file-write* (subpath @CACHE@))
+@METAL_CACHES@
 @READS@
+(allow user-preference-read)
 (allow mach-lookup
-    (global-name "com.apple.CARenderServer" "com.apple.WindowServer" "com.apple.windowserver.active" "com.apple.FontObjectsServer" "com.apple.fonts" "com.apple.SecurityServer" "com.apple.trustd" "com.apple.trustd.agent" "com.apple.system.opendirectoryd.libinfo" "com.apple.SystemConfiguration.configd" "com.apple.cfprefsd.daemon" "com.apple.cfprefsd.agent" "com.apple.system.notification_center" "com.apple.notifyd" "com.apple.MTLCompilerService"))
-(allow mach-register (local-name "com.apple.axserver" "com.apple.tsm.portname"))
+    (global-name "com.apple.CARenderServer" "com.apple.WindowServer" "com.apple.windowserver.active" "com.apple.FontObjectsServer" "com.apple.fonts" "com.apple.SecurityServer" "com.apple.trustd" "com.apple.trustd.agent" "com.apple.system.opendirectoryd.libinfo" "com.apple.SystemConfiguration.configd" "com.apple.cfprefsd.daemon" "com.apple.cfprefsd.agent" "com.apple.system.notification_center" "com.apple.notifyd" "com.apple.MTLCompilerService" "com.apple.coreservices.launchservicesd" "com.apple.CoreServices.coreservicesd" "com.apple.lsd.mapdb" "com.apple.lsd.modifydb" "com.apple.dock.server" "com.apple.hiservices-xpcservice" "com.apple.pbs.fetch_services" "com.apple.runningboard" "com.apple.bsd.dirhelper" "com.apple.system.opendirectoryd.membership" "com.apple.SafariPlatformSupport.Helper" "com.apple.view-bridge" "com.apple.windowmanager.server" "com.apple.dock.fullscreen" "com.apple.tsm.uiserver" "com.apple.inputmethodkit.launchagent" "com.apple.inputmethodkit.launcher" "com.apple.inputmethodkit.getxpcendpoint" "com.apple.TextInputUI.xpc.CursorUIViewService" "com.apple.backboard.hid-services.xpc" "com.apple.backboard.BKSEndpointProviderService" "com.apple.uiintelligencesupport.agent" "com.apple.spotlight.IndexAgent" "com.apple.ViewBridgeAuxiliary" "com.apple.window_proxies" "com.apple.pasteboard.1" "com.apple.distributed_notifications@Uv3" "com.apple.tccd.system" "com.apple.touchbarserver.mig" "com.apple.appkit.restoration_storage" "com.apple.coreservices.appleevents" "com.apple.DiskArbitration.diskarbitrationd"))
+(allow mach-register (local-name "com.apple.axserver" "com.apple.tsm.portname" "com.apple.coredrag") (local-name-prefix "com.apple.coredrag"))
 (allow ipc-posix-shm-read* ipc-posix-shm-write-data (ipc-posix-name-prefix "com.apple.WindowServer"))
-(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))
-(allow iokit-open-user-client (iokit-user-client-class "IOSurfaceRootUserClient" "AGXDeviceUserClient" "IOAccelerator"))
-(allow iokit-open-service (iokit-user-client-class "IOSurfaceRoot") (iokit-registry-entry-class "IOAccelerator"))
+(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center") (ipc-posix-name-prefix "apple.cfprefs."))
+(allow iokit-open* iokit-get-properties)
 (allow dynamic-code-generation)

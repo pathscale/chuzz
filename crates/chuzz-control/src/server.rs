@@ -9,9 +9,9 @@
 //! lives. The bridge preserves its published request and reply types.
 
 use std::fs::{OpenOptions, remove_file};
-use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use blitz_control_protocol::latest::{Flag, Once};
@@ -98,6 +98,10 @@ impl ControlServer {
             // so a mode applied to it afterwards is always late.
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
+        // Sweep other dead instances before publishing this one.
+        if let Some(parent) = socket_path.parent() {
+            let _ = sweep_stale_controls(parent);
+        }
         // A stale socket from a killed process would refuse the bind.
         let _ = remove_file(&socket_path);
 
@@ -166,6 +170,104 @@ fn runtime_dir() -> PathBuf {
     std::env::var_os("CHUZZ_CONTROL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
+}
+
+fn sweep_stale_controls(directory: &Path) -> io::Result<()> {
+    // SAFETY: geteuid takes no arguments and has no memory preconditions.
+    let uid = unsafe { libc::geteuid() };
+    for entry in std::fs::read_dir(directory)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(digits) = name
+            .strip_prefix("chuzz-")
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let Ok(pid) = digits.parse::<libc::pid_t>() else {
+            continue;
+        };
+        if pid <= 0 || name != format!("chuzz-{pid}.json") {
+            continue;
+        }
+
+        let descriptor_path = entry.path();
+        let Ok(metadata) = std::fs::symlink_metadata(&descriptor_path) else {
+            continue;
+        };
+        if metadata.uid() != uid || !metadata.is_file() || metadata.len() > 65_536 {
+            continue;
+        }
+        let Ok(file) = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&descriptor_path)
+        else {
+            continue;
+        };
+        let Ok(opened) = file.metadata() else {
+            continue;
+        };
+        if opened.uid() != uid
+            || !opened.is_file()
+            || opened.dev() != metadata.dev()
+            || opened.ino() != metadata.ino()
+            || opened.len() > 65_536
+        {
+            continue;
+        }
+        let Ok(descriptor) = serde_json::from_reader::<_, ControlDescriptor>(file.take(65_537))
+        else {
+            continue;
+        };
+        let socket_path = descriptor_path.with_extension("sock");
+        if descriptor.pid != pid as u32
+            || descriptor.address != format!("unix://{}", socket_path.display())
+        {
+            continue;
+        }
+
+        // SAFETY: pid is positive and representable; signal 0 only probes existence.
+        if unsafe { libc::kill(pid, 0) } >= 0
+            || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        {
+            continue;
+        }
+
+        match std::fs::symlink_metadata(&socket_path) {
+            Ok(socket) => {
+                if socket.uid() != uid
+                    || !socket.file_type().is_socket()
+                    || !remove_unchanged_control(&socket_path, &socket)
+                {
+                    continue;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => continue,
+        }
+        let _ = remove_unchanged_control(&descriptor_path, &opened);
+    }
+    Ok(())
+}
+
+fn remove_unchanged_control(path: &Path, expected: &std::fs::Metadata) -> bool {
+    let Ok(current) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if current.uid() != expected.uid()
+        || current.dev() != expected.dev()
+        || current.ino() != expected.ino()
+        || current.mode() != expected.mode()
+    {
+        return false;
+    }
+    remove_file(path).is_ok()
 }
 
 fn write_descriptor(path: &std::path::Path, descriptor: &ControlDescriptor) -> io::Result<()> {

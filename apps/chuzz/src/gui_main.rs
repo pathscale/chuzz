@@ -113,7 +113,9 @@ fn main() {
 
     let document_browser = Arc::clone(&browser);
     izumo::set_document_factory(move |url| {
-        frontend::document(document_browser.as_ref().clone(), url)
+        let document = frontend::document(document_browser.as_ref().clone(), url)?;
+        let host = document.application_host();
+        Ok(izumo::ApplicationDocument::new(Box::new(document), host))
     });
 
     let setup_browser = Arc::clone(&browser);

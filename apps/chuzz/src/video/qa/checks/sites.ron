@@ -35,4 +35,15 @@
         covers: ["READY: idle fetch worker GPU presentation PASS"],
         outcome_timeout_ms: 30000,
     ),
+    (
+        id: "sites-window-frame",
+        group: "sites",
+        what: "the completed WebGPU frame reaches document painting",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "#window-canvas",
+        expect: VisibleInk,
+        outcome_timeout_ms: 5000,
+    ),
 ]

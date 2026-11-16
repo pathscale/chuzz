@@ -1,9 +1,7 @@
-use blitz_dom::Document as _;
-use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
-
 use super::buffer::map_read;
 use super::resources::{ALLOCATION_LIMIT, checked, decode};
 use super::*;
+use blitz_dom::node::RasterImageData;
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -39,49 +37,6 @@ pub(super) struct Frame {
     pub width: u32,
     pub height: u32,
     pub rgba: Option<Arc<Vec<u8>>>,
-}
-
-impl Frame {
-    pub fn paint(self, document: &mut blitz_script::ScriptDocument) -> bool {
-        // A configure, unconfigure or resize may have overtaken a readback.
-        // Do not let its old pixels replace the current canvas generation.
-        let live = document
-            .eval_json(&format!(
-                "globalThis.__chuzzGpuCanvasLive({}, {}, {}, {})",
-                self.canvas, self.generation, self.width, self.height
-            ))
-            .ok()
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        if !live {
-            return false;
-        }
-        let selector = format!("canvas[data-chuzz-webgpu='{}']", self.canvas);
-        let Some(id) = document.inner().query_selector(&selector).ok().flatten() else {
-            return false;
-        };
-        // The guard must outlive the node borrow taken from it.
-        let mut doc = document.inner_mut();
-        let Some(node) = doc.get_node_mut(id) else {
-            return false;
-        };
-        let Some(element) = node.element_data_mut() else {
-            return false;
-        };
-        element.special_data = match self.rgba {
-            Some(rgba) => SpecialElementData::Image(Box::new(ImageData::Raster(
-                RasterImageData::new(self.width, self.height, rgba),
-            ))),
-            None => SpecialElementData::None,
-        };
-        node.cache_mut().clear();
-        if let Some(damage) = node.damage() {
-            node.insert_damage(damage.union(damage.complement()));
-        }
-        node.set_dirty_descendants();
-        node.mark_ancestors_dirty();
-        true
-    }
 }
 
 impl DeviceConnection {

@@ -1,0 +1,14 @@
+[
+    (
+        id: "w38-guest-readiness",
+        group: "w38-readiness",
+        what: "Real guest fetch and raw bodies, events and composed paths, observers, storage and history, crypto, animation frames, style, template, parser and FormData; reports the first exact missing capability",
+        open: None,
+        hover: None,
+        click: Some("#run"),
+        subject: "READY: W38 GUEST PASS",
+        expect: PaintsNamed,
+        covers: ["READY: W38 GUEST PASS"],
+        outcome_timeout_ms: 15000,
+    ),
+]

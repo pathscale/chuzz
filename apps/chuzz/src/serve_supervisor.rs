@@ -14,12 +14,12 @@ use std::time::Duration;
 use blitz_control_protocol::latest::{Flag, Latest};
 use blitz_control_protocol::server::ControlBridgeRequest;
 use blitz_control_protocol::{
-    self as protocol, DebugDescriptor, DebugEvent, DebugResponse, DebugStream, DiagnosticsRequest,
-    IncomingRequest, NagoyaStream, framed_json_neutral,
+    self as protocol, AgentAction, AgentControlRequest, DebugDescriptor, DebugEvent, DebugResponse,
+    DebugStream, DiagnosticsRequest, IncomingRequest, NagoyaStream, framed_json_neutral,
 };
 use blitz_traits::net::Url;
 use endpoint_libs::libs::ws::WireMessage;
-use endpoint_libs::libs::ws::mcp_wire::{INVALID_REQUEST, JsonRpcError};
+use endpoint_libs::libs::ws::mcp_wire::{INVALID_REQUEST, JsonRpcError, JsonRpcId};
 use endpoint_libs::libs::ws::transport::FramedError;
 use futures::future::{Either, select};
 use futures::{SinkExt, StreamExt};
@@ -28,8 +28,47 @@ use nagoya::reactor::{Addr, Reactor};
 
 use super::page_control;
 
+const LOOKUP_CLICK_TOOL: &str = "chuzz.lookup.click";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LookupClick {
+    node_id: u64,
+}
+
+fn is_lookup_click_request(value: &serde_json::Value) -> bool {
+    value.get("jsonrpc").and_then(serde_json::Value::as_str) == Some("2.0")
+        && value.get("method").and_then(serde_json::Value::as_str) == Some("tools/call")
+        && value.pointer("/params/name").and_then(serde_json::Value::as_str)
+            == Some(LOOKUP_CLICK_TOOL)
+}
+
+fn tools_list(id: JsonRpcId, lookup_bridge: bool) -> Result<WireMessage, protocol::DebugProtocolError> {
+    let frame = protocol::encode_tools_list_response(id, true)?;
+    if !lookup_bridge {
+        return Ok(frame);
+    }
+    let mut value = protocol::decode_wire_value(frame)?;
+    let tools = value
+        .pointer_mut("/result/tools")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or(protocol::DebugProtocolError::UnexpectedMessage)?;
+    tools.push(serde_json::json!({
+        "name": LOOKUP_CLICK_TOOL,
+        "description": "Click a live control with one scoped native GET form submission",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "node_id": { "type": "integer", "minimum": 0 } },
+            "required": ["node_id"],
+            "additionalProperties": false
+        }
+    }));
+    Ok(WireMessage::text(serde_json::to_string(&value)?))
+}
+
 struct ControlState {
     sender: Mutex<page_control::Sender>,
+    lookup_bridge: bool,
     events: Arc<Latest<DebugEvent>>,
     descriptor: PathBuf,
     ready: OnceLock<Url>,
@@ -62,7 +101,7 @@ pub(super) fn ready(url: &Url) {
     }
 }
 
-pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
+pub(super) fn start_worker(sender: page_control::Sender, lookup_bridge: bool) -> Result<(), String> {
     crate::sandbox::ensure()?;
     let _runtime = nagoya::runtime::background();
     static REACTOR: OnceLock<Result<Reactor, String>> = OnceLock::new();
@@ -115,6 +154,7 @@ pub(super) fn start_worker(sender: page_control::Sender) -> Result<(), String> {
         .map_err(|_| "document wake initialized twice")?;
     let state = Arc::new(ControlState {
         sender: Mutex::new(sender),
+        lookup_bridge,
         events: Latest::new(),
         descriptor,
         ready: OnceLock::new(),
@@ -169,12 +209,20 @@ fn selected(streams: &[DebugStream], event: &DebugEvent) -> bool {
 }
 
 async fn response(state: &ControlState, request: ControlBridgeRequest) -> DebugResponse {
+    scoped_response(state, request, false).await
+}
+
+async fn scoped_response(
+    state: &ControlState,
+    request: ControlBridgeRequest,
+    lookup_click: bool,
+) -> DebugResponse {
     let answer = page_control::Reply::new();
     let sent = state
         .sender
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .try_send(Arc::new((request, Arc::clone(&answer))));
+        .try_send(Arc::new((request, Arc::clone(&answer), lookup_click)));
     if sent.is_err() {
         return DebugResponse::Error(protocol::DebugError {
             code: "documentBusy".into(),
@@ -235,6 +283,25 @@ async fn connection(work: Arc<ConnectionWork>) -> Arc<ConnectionWork> {
             Input::Message(_) => break,
         };
         let frame = match protocol::decode_wire_value(message) {
+            Ok(value) if is_lookup_click_request(&value) => {
+                let id = protocol::peek_value_request_id(&value);
+                let args = value.pointer("/params/arguments").cloned().unwrap_or_default();
+                match (work.state.lookup_bridge, id, serde_json::from_value(args)) {
+                    (true, Some(id), Ok(LookupClick { node_id })) => {
+                        let request = ControlBridgeRequest::Agent(AgentControlRequest::Act(
+                            AgentAction::Click { node_id },
+                        ));
+                        protocol::encode_response(
+                            id,
+                            &scoped_response(&work.state, request, true).await,
+                        )
+                    }
+                    (_, id, _) => protocol::encode_rpc_error(
+                        id,
+                        JsonRpcError::new(INVALID_REQUEST, "invalid lookup click"),
+                    ),
+                }
+            }
             Ok(value) => {
                 let id = protocol::peek_value_request_id(&value);
                 match protocol::decode_incoming_value(value) {
@@ -245,7 +312,7 @@ async fn connection(work: Arc<ConnectionWork>) -> Arc<ConnectionWork> {
                     ),
                     Ok(IncomingRequest::Initialized) => continue,
                     Ok(IncomingRequest::ToolsList { id }) => {
-                        protocol::encode_tools_list_response(id, true)
+                        tools_list(id, work.state.lookup_bridge)
                     }
                     Ok(IncomingRequest::Agent { id, request }) => protocol::encode_response(
                         id,

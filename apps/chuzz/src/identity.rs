@@ -124,7 +124,7 @@ fn chrome_major(user_agent: &str) -> Option<&str> {
 }
 
 /// `same-origin`, `same-site` or `cross-site`, by registrable domain.
-fn fetch_site(initiator: &url::Url, target: &url::Url) -> &'static str {
+pub(crate) fn fetch_site(initiator: &url::Url, target: &url::Url) -> &'static str {
     if initiator.origin() == target.origin() {
         return "same-origin";
     }

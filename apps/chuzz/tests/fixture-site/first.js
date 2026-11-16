@@ -4,6 +4,8 @@
 // the fleet, and it is the activation the router does not intercept.
 localStorage.setItem("endpoint", "wss://saved.example");
 sessionStorage.setItem("visit", "first");
+localStorage.setItem("__proto__", "local-prototype");
+sessionStorage.setItem("__proto__", "session-prototype");
 
 const link = document.createElement("a");
 link.setAttribute("href", "/second.html");
