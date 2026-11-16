@@ -33,6 +33,7 @@ pub(super) struct PageNativeDriver {
     host: Rc<RefCell<ChuzzPageRuntimeHost>>,
     pending_frames: Rc<RefCell<Vec<HostFrame>>>,
     frame_revision: u64,
+    budget_diagnostic: RefCell<Option<DiagnosticEntry>>,
     #[cfg(feature = "gui")]
     poll_hooks: Vec<izumo::DocumentPollHook>,
     #[cfg(feature = "gui")]
@@ -116,6 +117,7 @@ pub(super) fn default_page_runtime_factory(
         host,
         pending_frames,
         frame_revision: 0,
+        budget_diagnostic: RefCell::new(None),
         #[cfg(feature = "gui")]
         poll_hooks: Vec::new(),
         #[cfg(feature = "gui")]
@@ -374,6 +376,13 @@ impl PageNativeDriver {
         }
     }
 
+    fn host_runtime_errors(&self) -> Vec<DiagnosticEntry> {
+        crate::page_ekojit_bridge::host_runtime_errors(
+            &self.document,
+            &self.budget_diagnostic,
+        )
+    }
+
     fn page_host(&self) -> Ref<'_, ChuzzPageRuntimeHost> {
         self.host.borrow()
     }
@@ -564,6 +573,19 @@ impl PageRuntimeDriver for PageNativeDriver {
         self.document.report_runtime_error(error);
     }
 
+    fn terminated_realm(&mut self) -> Option<String> {
+        let failure = crate::page_ekojit_bridge::terminal_failure(&mut self.document)?;
+        // Reading the host stream retains the first budget denial when the
+        // realm has one. It never enters the guest.
+        self.host_runtime_errors();
+        let retained = self
+            .budget_diagnostic
+            .borrow()
+            .as_ref()
+            .map(|entry| entry.message.clone());
+        Some(retained.unwrap_or_else(|| format!("{failure:?}")))
+    }
+
     fn native_metrics(&self) -> Option<PageNativeMetrics> {
         let (compilations, native_entries) = self.document.native_counts();
         let receipts = self
@@ -602,7 +624,7 @@ impl PageRuntimeDriver for PageNativeDriver {
     ) -> Result<PageDiagnosticBatch, String> {
         Ok(DiagnosticBatch {
             console: Self::diagnostics(self.document.console_entries(), console_after, limit),
-            errors: Self::diagnostics(self.document.runtime_errors(), errors_after, limit),
+            errors: Self::diagnostics(self.host_runtime_errors(), errors_after, limit),
         })
     }
 
@@ -682,6 +704,58 @@ impl PageRuntimeDriver for PageNativeDriver {
             (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
             (None, None) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod budget_transport_tests {
+    use super::*;
+
+    #[test]
+    fn terminated_realm_retains_first_denial_in_host_stream() {
+        let mut document = EkojitDocument::from_html(
+            Arc::from("<!doctype html><title>budget transport</title>"),
+            DocumentConfig::default(),
+            NativePageDefect::None,
+        )
+        .expect("native document");
+        let retained = RefCell::new(None);
+        let healthy = crate::page_ekojit_bridge::host_runtime_errors(&document, &retained);
+        assert!(retained.borrow().is_none());
+        let cursor = healthy.last().map_or(0, |entry| entry.sequence);
+        let result = TypedNativeGuest::evaluate(
+            &mut document,
+            Arc::new(PageSource {
+                text: Arc::from("let n = 0; while (true) { n = n + 1; }"),
+                url: Arc::from("test://budget-transport/exhaust.js"),
+            }),
+        );
+        assert!(result.is_err(), "the real native execution must terminate");
+        let denial = document.native_budget_failure().expect("real budget denial");
+        assert_eq!(format!("{:?}", denial.reason), "InstructionBudget");
+        let counts = document.native_counts();
+        let first = crate::page_ekojit_bridge::host_runtime_errors(&document, &retained);
+        let failure = retained.borrow().as_ref().expect("host record").clone();
+        let payload: serde_json::Value = serde_json::from_str(&failure.message).unwrap();
+        assert_eq!(payload["budget_failure"]["requested"], denial.requested);
+        assert_eq!(payload["budget_failure"]["remaining"], denial.remaining);
+        assert_eq!(payload["budget_failure"]["first_failure"], denial.first_failure);
+        assert_eq!(payload["budget_failure"]["scope"], format!("{:?}", denial.scope));
+        assert_eq!(payload["budget_failure"]["resource"], "Instructions");
+        let delivered = PageNativeDriver::diagnostics(first, cursor, 1000);
+        assert!(delivered.entries.iter().any(|entry| entry.message == failure.message));
+        let next = delivered.next_sequence;
+        document.report_runtime_error(String::from("subsequent host-boundary failure"));
+        let second = crate::page_ekojit_bridge::host_runtime_errors(&document, &retained);
+        let stable = second.iter().find(|entry| entry.sequence == failure.sequence).unwrap();
+        assert_eq!(stable.message, failure.message);
+        let later = PageNativeDriver::diagnostics(second, next, 1000);
+        assert_eq!(later.entries.len(), 1);
+        assert_eq!(later.entries[0].message, "subsequent host-boundary failure");
+        let third = crate::page_ekojit_bridge::host_runtime_errors(&document, &retained);
+        assert!(PageNativeDriver::diagnostics(third, later.next_sequence, 1000).entries.is_empty());
+        assert_eq!(document.native_counts(), counts, "host snapshots must not execute guest code");
+        assert_eq!(document.native_budget_failure().unwrap(), denial);
     }
 }
 
@@ -949,7 +1023,7 @@ impl izumo::DocumentHost for PageDocumentHost {
                     limit,
                 ),
                 errors: PageNativeDriver::diagnostics(
-                    page.document.runtime_errors(),
+                    page.host_runtime_errors(),
                     errors_after,
                     limit,
                 ),

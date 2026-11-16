@@ -23,6 +23,8 @@ const STATE_KEY: &str = "chuzz.page.runtime.bridge";
 // Keep this protocol in lockstep with Izumo's local IPC shim. The native
 // document driver calls `install_ipc` before it polls deferred chrome scripts,
 // so this object is present before any chrome module chooses its API client.
+// Only the GUI build installs it; headless builds have no IPC peer.
+#[cfg(feature = "gui")]
 const IZUMO_IPC_SHIM: &str = r#"
 (function (global) {
   "use strict";
@@ -460,6 +462,18 @@ fn native_error(error: NativeFailure) -> String {
     format!("Ekojit page bridge installation failed: {error:?}")
 }
 
+/// The terminal failure of this document's realm, found by asking the realm
+/// to open an activation whose operation runs no guest code. Only a terminal
+/// native failure refuses it; a deadline window reopens on the next activation.
+pub(super) fn terminal_failure(
+    document: &mut blitz_script_ekojit::EkojitDocument,
+) -> Option<NativeFailure> {
+    match document.with_realm_host(|_| Ok(())) {
+        Err(failure @ NativeFailure::Terminated(_)) => Some(failure),
+        _ => None,
+    }
+}
+
 fn refused(message: &str) -> NativeFailure {
     NativeFailure::Refused(format!("CHUZZ_EKO_BRIDGE: {message}"))
 }
@@ -504,6 +518,54 @@ fn ipc_post_message(
     Ok(EkojitValue::Undefined)
 }
 
+/// Read host-owned diagnostics without entering the guest, including a terminated
+/// realm. The extra record uses the existing runtime-error wire envelope; its
+/// message is JSON with an optional, real budget_failure payload.
+pub(super) fn host_runtime_errors(
+    document: &blitz_script_ekojit::EkojitDocument,
+    retained: &std::cell::RefCell<Option<blitz_script::DiagnosticEntry>>,
+) -> Vec<blitz_script::DiagnosticEntry> {
+    let mut entries = document.runtime_errors();
+    let mut retained = retained.borrow_mut();
+    if retained.is_none()
+        && let Some(failure) = document.native_budget_failure()
+    {
+        let sequence = entries.last().map_or(1, |entry| entry.sequence.saturating_add(1));
+        // Share the preceding host diagnostic's ordering boundary. No guest
+        // source, entry identity, or timestamp is inferred from the denial.
+        let order = entries.last().map_or(0, |entry| entry.order);
+        *retained = Some(blitz_script::DiagnosticEntry {
+            sequence,
+            order,
+            level: String::from("error"),
+            message: serde_json::json!({
+                "budget_failure": {
+                    "reason": format!("{:?}", failure.reason),
+                    "scope": format!("{:?}", failure.scope),
+                    "resource": format!("{:?}", failure.resource),
+                    "requested": failure.requested,
+                    "remaining": failure.remaining,
+                    "first_failure": failure.first_failure,
+                }
+            }).to_string(),
+            stack: String::new(),
+        });
+    }
+    if let Some(failure) = retained.as_ref() {
+        // Insert exactly one host record into the existing sequence space.
+        // Later native records shift by one, so a previously advanced cursor
+        // neither replays old errors nor misses errors after the denial.
+        for entry in &mut entries {
+            if entry.sequence >= failure.sequence {
+                entry.sequence = entry.sequence.saturating_add(1);
+            }
+        }
+        entries.push(failure.clone());
+        entries.sort_by_key(|entry| entry.sequence);
+    }
+    entries
+}
+
 /// Refresh receipt data outside a guest borrow. The intrinsic reads execution
 /// counters directly from its owning realm at the time of the diagnostic call.
 pub(super) fn refresh_diagnostics(
@@ -537,7 +599,7 @@ pub(super) fn refresh_diagnostics(
         .collect::<Vec<_>>();
     document
         .with_realm_host(|realm| realm.set_state("chuzz.runtime.receipts", Rc::new(receipts)))
-        .map_err(native_error)
+        .map_err(|error| format!("Ekojit diagnostics refresh failed: {error:?}"))
 }
 
 fn record<const N: usize>(fields: [(&str, EkojitValue); N]) -> EkojitValue {

@@ -1345,6 +1345,38 @@ fn navigation_initiator(
     }
 }
 
+/// Leave the outgoing document: fire its unload events and read the storage it
+/// carries to the next document.
+///
+/// A realm that terminated on a resource limit refuses every later activation,
+/// so none of its handlers can run and its storage cannot be read through
+/// script. That must not block the navigation: the next document is a new
+/// realm with its own budget. The retained first denial is reported here once,
+/// and nothing is carried out of the dead realm.
+fn leave_document(
+    document: &mut PageDocument,
+    origin: &str,
+    policy: &HeadlessPolicy,
+) -> Result<Option<StoredState>, String> {
+    if let Some(terminal) = document.terminated_realm() {
+        let leaving = display_url(document.inner().url(), policy.bot_child);
+        trace(&format!(
+            "leaving {leaving} after its script realm terminated: {terminal}; \
+             its pagehide and unload handlers could not run and no storage was carried"
+        ));
+        return Ok(None);
+    }
+    document.eval(
+        "globalThis.dispatchEvent(new Event('pagehide')); \
+         globalThis.dispatchEvent(new Event('unload'));",
+    )?;
+    if policy.bot_child {
+        Ok(None)
+    } else {
+        snapshot_storage(document, origin).map(Some)
+    }
+}
+
 fn follow_navigation(
     destination: Url,
     document: &mut PageDocument,
@@ -1360,15 +1392,7 @@ fn follow_navigation(
 ) -> Result<(), String> {
     let _navigation = supervisor::operation(supervisor::Operation::Load);
     policy.validate_url(&destination)?;
-    document.eval(
-        "globalThis.dispatchEvent(new Event('pagehide')); \
-         globalThis.dispatchEvent(new Event('unload'));",
-    )?;
-    let carried = if policy.bot_child {
-        None
-    } else {
-        Some(snapshot_storage(document, origin)?)
-    };
+    let carried = leave_document(document, origin, policy)?;
     let current = document.inner().net_provider.resource_initiator();
     let initiator = navigation_initiator(
         policy,
@@ -2255,6 +2279,122 @@ fn serve_page(
     nagoya::block_on(net_provider.cookie_store().flush())
         .map_err(|error| format!("could not flush browser cookies: {error}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod terminated_realm_tests {
+    use super::{HeadlessPolicy, PageDocument, Url, headless_host_context, leave_document};
+    use std::sync::Arc;
+
+    fn page(net: &Arc<crate::document_loader::NetProvider>, url: &Url) -> PageDocument {
+        let initiator = net.browser_initiator(url.clone());
+        PageDocument::from_html(
+            Arc::from("<!doctype html><html><body></body></html>"),
+            blitz_dom::DocumentConfig {
+                base_url: Some(url.to_string()),
+                ..Default::default()
+            },
+            headless_host_context(url, net, &initiator),
+        )
+        .expect("native page")
+    }
+
+    fn budget_records(document: &mut PageDocument) -> Vec<serde_json::Value> {
+        document
+            .diagnostic_batch(0, 0, 1000)
+            .expect("host diagnostics")
+            .errors
+            .entries
+            .iter()
+            .filter_map(|entry| serde_json::from_str::<serde_json::Value>(&entry.message).ok())
+            .filter_map(|value| value.get("budget_failure").cloned())
+            .collect()
+    }
+
+    /// The cascade: once one document's realm ran out of instructions, every
+    /// later navigation in the host failed, because leaving the old document
+    /// ran script in the dead realm. Leaving must not need that realm, and the
+    /// next document must start with its own realm and budget.
+    #[test]
+    fn a_navigation_after_a_terminated_realm_gets_a_fresh_budget() {
+        crate::install_crypto_provider();
+        let net = Arc::new(crate::document_loader::NetProvider::new(None));
+        let policy = HeadlessPolicy {
+            bot_child: false,
+            allowed_domains: Vec::new(),
+            wall_time: std::time::Duration::ZERO,
+        };
+        let first = Url::parse("https://budget.invalid/first").unwrap();
+        let mut document = page(&net, &first);
+        assert!(document.terminated_realm().is_none());
+        document
+            .eval("let n = 0; while (true) { n = n + 1; }")
+            .expect_err("the real native execution must terminate");
+        document
+            .eval("globalThis.after = 1;")
+            .expect_err("a terminated realm refuses later script");
+        let terminal = document
+            .terminated_realm()
+            .expect("the realm refuses activation");
+        let denial: serde_json::Value =
+            serde_json::from_str(&terminal).expect("the retained budget record");
+        assert_eq!(denial["budget_failure"]["reason"], "InstructionBudget");
+        assert_eq!(denial["budget_failure"]["resource"], "Instructions");
+        let records = budget_records(&mut document);
+        assert_eq!(records, vec![denial["budget_failure"].clone()]);
+
+        let carried = leave_document(&mut document, &first.origin().ascii_serialization(), &policy)
+            .expect("a terminated realm does not block leaving its document");
+        assert!(
+            carried.is_none(),
+            "storage of a terminated realm cannot be read"
+        );
+        assert_eq!(
+            budget_records(&mut document),
+            records,
+            "the first denial stays recorded exactly once"
+        );
+
+        let second = Url::parse("https://budget.invalid/second").unwrap();
+        let mut next = page(&net, &second);
+        assert!(
+            next.terminated_realm().is_none(),
+            "a new document never inherits a terminated realm"
+        );
+        assert!(budget_records(&mut next).is_empty());
+        let total = next
+            .eval_json(
+                "(function () { var n = 0; for (var i = 0; i < 100000; i++) { n = n + 1; } return n; })()",
+            )
+            .expect("the new realm runs script on its own budget");
+        assert_eq!(total, serde_json::json!(100000));
+        assert!(next.terminated_realm().is_none());
+    }
+
+    /// Control: a live realm still runs its own unload handlers when left.
+    #[test]
+    fn leaving_a_live_realm_runs_its_unload_handlers() {
+        crate::install_crypto_provider();
+        let net = Arc::new(crate::document_loader::NetProvider::new(None));
+        let policy = HeadlessPolicy::bot_child_for_tests(&[]);
+        let url = Url::parse("https://budget.invalid/live").unwrap();
+        let mut document = page(&net, &url);
+        document
+            .eval(
+                "globalThis.left = []; \
+                 globalThis.addEventListener('pagehide', function () { left.push('pagehide'); }); \
+                 globalThis.addEventListener('unload', function () { left.push('unload'); });",
+            )
+            .expect("live realm");
+        let carried = leave_document(&mut document, &url.origin().ascii_serialization(), &policy)
+            .expect("leaving a live realm");
+        assert!(carried.is_none(), "a bot child carries no storage");
+        assert!(document.terminated_realm().is_none());
+        assert_eq!(
+            document.eval_json("left.join(',')").expect("live realm"),
+            serde_json::json!("pagehide,unload")
+        );
+    }
 }
 
 #[cfg(test)]

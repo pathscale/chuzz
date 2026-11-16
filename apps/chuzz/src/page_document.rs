@@ -71,6 +71,13 @@ pub trait PageRuntimeDriver:
     fn pending_task_count(&self) -> u64;
     fn report_runtime_error(&mut self, error: String);
 
+    /// The terminal failure that makes this realm refuse every further
+    /// activation, read without running guest code. `None` while script can
+    /// still run, including after a recoverable deadline.
+    fn terminated_realm(&mut self) -> Option<String> {
+        None
+    }
+
     fn native_metrics(&self) -> Option<PageNativeMetrics> {
         None
     }
@@ -258,6 +265,12 @@ impl PageDocument {
 
     pub fn native_metrics(&self) -> Option<PageNativeMetrics> {
         self.driver.native_metrics()
+    }
+
+    /// The terminal failure of this document's script realm, or `None` while
+    /// its script can still run. A new document never inherits it.
+    pub fn terminated_realm(&mut self) -> Option<String> {
+        self.driver.terminated_realm()
     }
 
     pub fn dispatch_node_event(&mut self, node: NodeId, name: &str) -> Result<bool, String> {
