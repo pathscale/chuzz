@@ -46,6 +46,13 @@ if (index !== 19 || new Set(ids).size !== ids.length) {
   throw new Error("Expected the recorded 19-check prefix; review fixture changes explicitly");
 }
 const results: object[] = [];
+type WorkflowState = {
+  id: string;
+  passed: boolean;
+  diagnostics: Awaited<ReturnType<typeof command>>;
+};
+let lastSuccessful: WorkflowState | null = null;
+let firstFailed: { previous: WorkflowState | null; current: WorkflowState } | null = null;
 async function save() {
   await writeFile(path.join(output, "result.json"), JSON.stringify(results, null, 2) + "\n",
     { mode: 0o600 });
@@ -54,7 +61,18 @@ async function qa(id: string) {
   const result = await command(id, [...common, "qa", "--checks", checks, id], 180000);
   results.push({ kind: "qa", id, ...result });
   await save();
-  return result.code === 0 && !result.timedOut;
+  const passed = result.code === 0 && !result.timedOut;
+  // Host-owned runtime-error batches survive termination. Do not replace this
+  // with eval or __chuzzRuntimeDiagnostics, which enters the failed realm.
+  const diagnostics = await command(id + ".host-watch", [...common, "watch", "0.2"], 15000);
+  const current: WorkflowState = { id, passed, diagnostics };
+  if (passed) lastSuccessful = current;
+  else if (firstFailed === null) firstFailed = { previous: lastSuccessful, current };
+  results.push({ kind: "host-workflow-state", ...current });
+  await save();
+  await writeFile(path.join(output, "workflow-boundary.json"),
+    JSON.stringify({ lastSuccessful, firstFailed }, null, 2) + "\n", { mode: 0o600 });
+  return passed;
 }
 for (const id of ids.slice(0, index)) {
   if (!await qa(id)) throw new Error(`Precondition failed: ${id}; evidence in ${output}`);
