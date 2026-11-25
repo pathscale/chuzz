@@ -1078,7 +1078,11 @@ impl Browser {
                             // PageDocument construction binds the native host
                             // to this runtime; seed restore state before the
                             // guest's first script runs in that same realm.
-                            page.execute_scripts()?;
+                            // A failing page script is recorded in the realm's
+                            // error list; the page still loads and renders.
+                            if let Err(error) = page.execute_scripts() {
+                                eprintln!("page script error in {}: {error}", bundle.resolved_url);
+                            }
                             let title = page
                                 .inner()
                                 .find_title_node()

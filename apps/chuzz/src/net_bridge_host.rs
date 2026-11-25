@@ -144,6 +144,7 @@ fn parse_request(value: &HostValue) -> Result<super::NetRequest, HostError> {
         headers: parse_headers(fields.get("headers"))?,
         body: parse_body(fields.get("body"))?,
         credentials: field_string(fields, "credentials", Some("same-origin"))?,
+        no_cors_destination: None,
     })
 }
 

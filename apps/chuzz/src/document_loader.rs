@@ -530,7 +530,12 @@ pub async fn load_for_capture_with_navigation(
         if !prelude.is_empty() {
             document.eval(prelude).map_err(std::io::Error::other)?;
         }
-        document.execute_scripts().map_err(std::io::Error::other)?;
+        // A failing page script is the page's error, not a failed load: it is
+        // already recorded in the realm's error list (and dispatched as an
+        // error event), and the document renders on, as in every browser.
+        if let Err(error) = document.execute_scripts() {
+            eprintln!("page script error: {error}");
+        }
         // Pump the script runtime until the page has built its DOM, then keep
         // pumping for a few more passes.
         //

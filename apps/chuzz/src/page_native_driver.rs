@@ -52,6 +52,8 @@ impl blitz_script::ScriptFetcher for PageScriptFetcher {
             headers: Vec::new(),
             body: None,
             credentials: String::from("same-origin"),
+            // A classic script without crossorigin loads in no-cors mode.
+            no_cors_destination: Some("script"),
         }))
         .map_err(|error| FetchError::InvalidData(error.to_string()))?;
         if !(200..300).contains(&reply.status) {

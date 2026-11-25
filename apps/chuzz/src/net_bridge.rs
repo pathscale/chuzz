@@ -84,6 +84,11 @@ pub struct NetRequest {
     pub body: Option<Vec<u8>>,
     #[serde(default = "default_credentials")]
     pub credentials: String,
+    /// A browser-initiated no-cors subresource load (a classic `<script src>`),
+    /// named by its fetch destination. Page `fetch()` requests leave it unset
+    /// and keep CORS.
+    #[serde(skip)]
+    pub no_cors_destination: Option<&'static str>,
 }
 
 fn get_method() -> String {
@@ -417,7 +422,8 @@ impl NetworkHost {
         let mut redirects = 0;
         let response = loop {
             let current_origin = wire.url.origin();
-            cors |= matches!(wire.url.scheme(), "http" | "https")
+            cors |= request.no_cors_destination.is_none()
+                && matches!(wire.url.scheme(), "http" | "https")
                 && document_origin.as_ref() != Some(&current_origin);
             let request_origin = if tainted_origin {
                 "null"
@@ -429,8 +435,14 @@ impl NetworkHost {
                 &mut wire.headers,
                 self.net.user_agent(),
                 &wire.url,
-                crate::identity::RequestKind::Fetch {
-                    initiator: self.base.as_ref(),
+                match request.no_cors_destination {
+                    Some(destination) => crate::identity::RequestKind::Subresource {
+                        destination,
+                        initiator: self.base.as_ref(),
+                    },
+                    None => crate::identity::RequestKind::Fetch {
+                        initiator: self.base.as_ref(),
+                    },
                 },
             );
             if let Some(site) = redirect_site
@@ -709,6 +721,7 @@ mod redirect_regression {
                 headers: vec![(header.0.to_owned(), header.1.to_owned())],
                 body: Some(BODY.to_vec()),
                 credentials: "omit".to_owned(),
+                no_cors_destination: None,
             }))
         };
         let probe = ("x-probe", "present");
