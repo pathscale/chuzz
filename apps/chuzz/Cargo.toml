@@ -47,6 +47,9 @@ required-features = ["capture", "javascript"]
 [features]
 # Compile-time gated defects and local trust anchors for functional witnesses.
 sandbox2-witness = ["blitz-net/sandbox2-witness"]
+# Off by default: TLS compatibility for servers that need RSA certificates or
+# AES-GCM (blitz-net legacy-bullshit). The strict ChaCha20 + ECC policy otherwise.
+legacy-bullshit = ["blitz-net/legacy-bullshit"]
 reactor-witness = ["blitz-control-protocol/client"]
 # The renderer choice follows AgencyZero's Blitz performance thesis: Vello on
 # wgpu, so macOS gets Metal and Linux/Windows keep Vulkan and D3D12 later.
