@@ -1072,14 +1072,33 @@ const SCHEDULING: &str = r#"(function (g) {
       if (entries.length >= 256) { throw new DOMException('Performance entry limit', 'QuotaExceededError'); }
       entries.push(entry); return entry;
     }
+    // PerformanceTiming attribute names are valid marks; the page starts at time 0.
+    var TIMING = ['navigationStart', 'unloadEventStart', 'unloadEventEnd', 'redirectStart', 'redirectEnd', 'fetchStart',
+      'domainLookupStart', 'domainLookupEnd', 'connectStart', 'connectEnd', 'secureConnectionStart', 'requestStart',
+      'responseStart', 'responseEnd', 'domLoading', 'domInteractive', 'domContentLoadedEventStart',
+      'domContentLoadedEventEnd', 'domComplete', 'loadEventStart', 'loadEventEnd'];
     function find(name) {
       for (var i = entries.length - 1; i >= 0; i--) { if (entries[i].name === name && entries[i].entryType === 'mark') { return entries[i].startTime; } }
+      if (TIMING.indexOf(name) >= 0) { return 0; }
       throw new DOMException('Unknown performance mark', 'SyntaxError');
     }
+    function point(value) { return typeof value === 'number' ? value : find(String(value)); }
     g.performance = {
       timeOrigin: __chuzzTimeOrigin(), now: __chuzzMonotonicNow,
       mark: function (name, options) { return add({ name: String(name), entryType: 'mark', startTime: options && options.startTime !== undefined ? Number(options.startTime) : __chuzzMonotonicNow(), duration: 0, detail: options && options.detail !== undefined ? options.detail : null }); },
-      measure: function (name, start, end) { var from = start === undefined ? 0 : find(String(start)); var to = end === undefined ? __chuzzMonotonicNow() : find(String(end)); return add({ name: String(name), entryType: 'measure', startTime: from, duration: to - from, detail: null }); },
+      measure: function (name, start, end) {
+        var detail = null;
+        if (start !== null && typeof start === 'object') {
+          var options = start; detail = options.detail !== undefined ? options.detail : null;
+          var begin = options.start !== undefined ? point(options.start) : undefined;
+          var finish = options.end !== undefined ? point(options.end) : undefined;
+          if (begin === undefined && finish !== undefined && options.duration !== undefined) { begin = finish - Number(options.duration); }
+          if (finish === undefined && begin !== undefined && options.duration !== undefined) { finish = begin + Number(options.duration); }
+          start = begin === undefined ? 0 : begin; end = finish;
+        }
+        var from = start === undefined ? 0 : point(start); var to = end === undefined ? __chuzzMonotonicNow() : point(end);
+        return add({ name: String(name), entryType: 'measure', startTime: from, duration: to - from, detail: detail });
+      },
       getEntries: function () { return entries.slice(); },
       getEntriesByType: function (type) { return entries.filter(function (entry) { return entry.entryType === type; }); },
       getEntriesByName: function (name, type) { return entries.filter(function (entry) { return entry.name === name && (type === undefined || entry.entryType === type); }); },
