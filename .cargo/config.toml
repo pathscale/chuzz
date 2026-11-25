@@ -3,3 +3,8 @@
 # arc_swap crate only; cargo does not let a dependency set it. See worktable README.
 [env]
 RUSTC_BOOTSTRAP = "arc_swap"
+
+# The private registry the ekojit crates come from (crates.vip). Only a name here:
+# `cargo vip` replaces it with the real source for each run.
+[registries.vip]
+index = "sparse+https://crates.vip/index/"
