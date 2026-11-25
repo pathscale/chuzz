@@ -38,8 +38,8 @@ blitz-net = { package = "ps-blitz-net", version = "^0.7.1" }
 blitz-script = { package = "ps-blitz-script", version = "^0.7.0" }
 # ekojit's page runtime. ekojit is private, so it comes from the private crates.vip registry
 # (pathscale app) until it is public; build with `cargo vip build` and a crates.vip token.
-blitz-script-ekojit = { package = "ps-blitz-script-ekojit", version = "^0.1.1", registry = "vip" }
-ekojit = { version = "^0.1", registry = "vip" }
+blitz-script-ekojit = { package = "ps-blitz-script-ekojit", version = "^0.1.2", registry = "vip" }
+ekojit = { version = "^0.1.1", registry = "vip" }
 blitz-traits = { package = "ps-blitz-traits", version = "^0.7.1" }
 
 # The MCP framing the control server speaks, same source and feature as
@@ -123,7 +123,7 @@ nagoya = { version = "^0.1.18", features = ["reactor"] }
 # Pure-Rust global allocator for every chuzz binary (owner decision: no C allocator).
 rusty_alloc = { package = "ps-rusty_alloc", version = "^2.3.3" }
 url = "^2.5"
-worktable = "^1.11.0"
+worktable = "^1.13.9"
 # `diagnostics`, always, rather than behind a cargo feature.
 #
 # It is two runtime planes, and neither costs anything until it is switched on
