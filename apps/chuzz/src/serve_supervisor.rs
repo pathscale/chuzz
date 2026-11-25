@@ -408,7 +408,10 @@ impl Drop for OperationGuard {
 
 pub(super) fn operation(operation: Operation) -> OperationGuard {
     let duration = match operation {
-        Operation::Load => Duration::from_secs(60),
+        Operation::Load => std::env::var("CHUZZ_ACTIVATION_SECS")
+            .ok()
+            .and_then(|secs| secs.parse::<u64>().ok())
+            .map_or(Duration::from_secs(60), |secs| Duration::from_secs(secs.max(60) * 2)),
         // CHUZZ_ACTIVATION_SECS (shared with the script runtime) lengthens this for heavy pages.
         Operation::Poll | Operation::Resolve | Operation::Action => std::env::var("CHUZZ_ACTIVATION_SECS")
             .ok()
