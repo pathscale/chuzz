@@ -607,7 +607,8 @@ async fn open_socket(
         let name = nago_wss::tls::rustls_pki_types::ServerName::try_from(host)
             .map_err(|error| error.to_string())?;
         let session =
-            rustls::ClientConnection::new(config, name).map_err(|error| error.to_string())?;
+            rustls::client::UnbufferedClientConnection::new(config, name)
+                .map_err(|error| error.to_string())?;
         let mut stream = nago_wss::tls::TlsStream::client(stream, session);
         stream
             .handshake()

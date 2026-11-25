@@ -69,10 +69,11 @@ MSG
     exit 1
 fi
 
-# The Ekojit crates are not published yet. Keep their dependency declarations
-# out of the tracked manifests, and add them only while this opt-in command is
-# running. A temporary workspace contains copied manifests and symlinked
-# package files, preserving package-relative source and target paths.
+# The tracked manifests take Ekojit from the private crates.vip registry. While
+# this opt-in command runs, a temporary workspace points those two dependencies
+# at the Ekojit checkout instead (CHUZZ_EKOJIT_DIR, default ../ekojit). It holds
+# copied manifests and symlinked package files, preserving package-relative
+# source and target paths.
 overlay="$(mktemp -d "${TMPDIR:-/tmp}/chuzz-local-engine.XXXXXX")"
 cleanup() {
     rm -rf "$overlay"
@@ -98,48 +99,30 @@ done
 cp "$root/crates/chuzz-control/Cargo.toml" "$overlay/crates/chuzz-control/Cargo.toml"
 cp "$root/crates/chuzz-qa-fixture/Cargo.toml" "$overlay/crates/chuzz-qa-fixture/Cargo.toml"
 
-awk '
-    /^blitz-script = \{ package = "ps-blitz-script"/ {
-        print
-        print "blitz-script-ekojit = { package = \"ps-blitz-script-ekojit\", version = \"^0.1\" }"
-        print "ekojit = { version = \"^0.1\" }"
+ekojit_dir="${CHUZZ_EKOJIT_DIR:-$root/../ekojit}"
+if [[ ! -d "$ekojit_dir/crates/ekojit" || ! -d "$ekojit_dir/crates/blitz-script-ekojit" ]]; then
+    printf 'No Ekojit checkout at %s; set CHUZZ_EKOJIT_DIR.\n' "$ekojit_dir" >&2
+    exit 1
+fi
+ekojit_dir="$(cd "$ekojit_dir" && pwd)"
+awk -v dir="$ekojit_dir" '
+    /^blitz-script-ekojit = \{ package = "ps-blitz-script-ekojit",.*registry = "vip" \}$/ {
+        print "blitz-script-ekojit = { package = \"ps-blitz-script-ekojit\", path = \"" dir "/crates/blitz-script-ekojit\" }"
+        found++
+        next
+    }
+    /^ekojit = \{ .*registry = "vip" \}$/ {
+        print "ekojit = { path = \"" dir "/crates/ekojit\" }"
         found++
         next
     }
     { print }
-    END { if (found != 1) exit 42 }
+    END { if (found != 2) exit 42 }
 ' "$root_snapshot" > "$overlay_root" || {
     printf 'Could not create the local Ekojit workspace manifest overlay.\n' >&2
     exit 1
 }
-
 cp "$app_snapshot" "$overlay_app"
-awk '
-    /^  "dep:blitz-script",$/ {
-        print
-        print "  \"dep:blitz-script-ekojit\","
-        print "  \"dep:ekojit\","
-        feature++
-        next
-    }
-    /^system-fonts = \["blitz-dom\/system-fonts", "blitz-script\?\/system-fonts"\]$/ {
-        print "system-fonts = [\"blitz-dom/system-fonts\", \"blitz-script?/system-fonts\", \"blitz-script-ekojit?/system-fonts\"]"
-        system_fonts++
-        next
-    }
-    /^blitz-script = \{ workspace = true, optional = true \}$/ {
-        print
-        print "blitz-script-ekojit = { workspace = true, optional = true }"
-        print "ekojit = { workspace = true, optional = true }"
-        dependency++
-        next
-    }
-    { print }
-    END { if (feature != 1 || system_fonts != 1 || dependency != 1) exit 42 }
-' "$app_snapshot" > "$overlay_app" || {
-    printf 'Could not create the local Ekojit package manifest overlay.\n' >&2
-    exit 1
-}
 
 # Cargo uses the generated manifest and writes its lockfile into the overlay
 # unless the selected config redirects it with resolver.lockfile-path.
