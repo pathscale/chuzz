@@ -1,0 +1,5 @@
+# worktable (here and through blitz-net) uses arc-swap with experimental-thread-local,
+# which needs the thread_local language feature. This allows unstable features in the
+# arc_swap crate only; cargo does not let a dependency set it. See worktable README.
+[env]
+RUSTC_BOOTSTRAP = "arc_swap"
